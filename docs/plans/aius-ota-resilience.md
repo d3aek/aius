@@ -22,22 +22,24 @@ standing requirement is remote upgrade with no physical-access failure mode.
 
 ## State — resume here
 
-**Status:** IN-PROGRESS 2026-08-16. The forensic thread is RESOLVED from
-source (below — no bench read needed or possible), Phase 1 is implemented
-with its host proof green, and the device still runs `d5dab0618f4c`; nothing
-new has been flashed. Phase 1's hardware half (rehearsal fault-stamp
-survives a reboot) waits on bench access with the other hardware proofs.
+**Status:** IN-PROGRESS 2026-08-16. Phases 1, 2 and 4 are IMPLEMENTED with
+every host proof green (commits of 2026-08-16; each phase's as-built note
+sits under its heading). The forensic thread is RESOLVED from source (below
+— no bench read needed or possible). The device still runs `d5dab0618f4c`;
+NOTHING NEW HAS BEEN FLASHED, so every on-device half — Phase 1's rehearsal
+stamp surviving a reboot, Phase 2's activation-with-recorder-armed + soak,
+Phase 4's lit-carrier bring-up row — rides the next flash/bench session.
 
-**Next action:** Phase 2, then Phase 4 (which folds in the register's
-2026-08-16 SD bring-up starvation fix). Phase 3 needs the owner's flash-map
-decision before 3a lands.
+**Next action:** Phase 3, which is BLOCKED on the owner's flash-map decision
+before 3a lands (the A/B split of the 8 MiB boot flash; a concrete proposal
+is queued in chat 2026-08-16). The interim no-remote-activation rule stands
+until Phase 3 ships.
 
-**Evidence that lives only in session scratch (7-day GC from 2026-08-16):**
-the working uploader script (`ota_flash.py` — Phase 4b promotes a corrected
-descendant into `firmware/tools/ota/`) and the staged-session fault
-transcript (chunk 500 at offset 1,454,080; post-abort clean restage in
-11.6 s / 387 chunks). The durable facts are all in this plan and the
-open-work register entry.
+**Evidence recovered from session scratch before the 7-day GC:** the working
+uploader was promoted as `firmware/tools/ota/aius_ota_flash.py` (Phase 4b,
+corrected order + resumable faults). The staged-session fault transcript's
+durable facts (chunk 500 at offset 1,454,080; post-abort clean restage in
+11.6 s / 387 chunks) are in this plan and the open-work register entry.
 
 **Decisions taken at scoping (owner, in chat):** remote upgrade without a
 physical-access failure mode is the requirement ("the whole point of OTA
@@ -174,6 +176,24 @@ ROM-level A/B for this boot medium, so the scheme is application-owned:
   owner decision on the flash map before 3a lands.
 
 ### Phase 4 — session and client hardening from this cycle
+
+Shipped 2026-08-16 (host proofs green; the on-device halves ride the next
+flash). As built: (a) the session absorb moved to the SD write's COMMITTED
+terminal — `aius_ota_offer_check`/`aius_ota_absorb_check` (pure previews in
+the core), a `chunk_check` seam verb, a dispatcher pending-chunk stash and a
+new `sd_settle` hook on the transaction's SD-job responses (exactly-once at
+COMPLETE/FAILED/CANCELLED or a terminal-less recycle), with a drain backstop
+in the composition's settle arm; a faulted chunk now leaves the session
+exactly where it was. (b) `tools/ota/aius_ota_flash.py` promoted from the
+session scratch with the incident's lessons: the state machine's actual
+stage→verify→arm(→activate) order, resume from the device's `next_offset`
+on 500/503/507 and transport faults, and activation gated behind
+`--activate` with the interim rule printed; proven against a state-machine
+fake including the landed-but-unanswered chunk case. (c) the Phase C guard
+gained the `g_sd_bringup_done` once-per-boot latch — the first mount is
+exempt from the carrier deferral, steady-state deferral unchanged.
+Memory note: the seam's 64 B of OCRAM took the ratchet to exactly the
+defect-26 128 KiB floor; the next OCRAM byte must be funded.
 
 - outcome: the smaller defects this incident surfaced are closed:
   (a) a failed staging chunk no longer poisons the session digest — absorb

@@ -426,6 +426,55 @@ FLASHMEM AiusOtaStatus aius_ota_offer(AiusOtaSession *session,
 	return AIUS_OTA_OK;
 }
 
+FLASHMEM AiusOtaStatus aius_ota_offer_check(const AiusOtaSession *session,
+	                                    const uint8_t *bytes, size_t length,
+	                                    AiusOtaImageHeader *parsed)
+{
+	AiusOtaImageHeader header;
+	AiusOtaStatus status;
+
+	if (session == NULL)
+		return AIUS_OTA_INVALID_ARG;
+	if (session->latch != AIUS_OTA_LATCH_ARMED)
+		return AIUS_OTA_DISARMED;
+	/* The ROUTE's admission, not offer()'s: a re-sent offset 0 is a
+	 * deliberate restart (abort-if-offered, then offer), and abort()
+	 * reaches IDLE from every state but ACTIVATION_REQUESTED. */
+	if (session->state == AIUS_OTA_STATE_ACTIVATION_REQUESTED)
+		return AIUS_OTA_STATE;
+
+	status = aius_ota_header_parse(&header, bytes, length);
+	if (status != AIUS_OTA_OK)
+		return status;
+	if (strcmp(header.target_id, session->target_id) != 0)
+		return AIUS_OTA_UNSUPPORTED;
+	if (parsed != NULL)
+		*parsed = header;
+	return AIUS_OTA_OK;
+}
+
+FLASHMEM AiusOtaStatus aius_ota_absorb_check(const AiusOtaSession *session,
+	                                     uint32_t offset, size_t length)
+{
+	uint32_t remaining;
+
+	if (session == NULL)
+		return AIUS_OTA_INVALID_ARG;
+	if (session->latch != AIUS_OTA_LATCH_ARMED)
+		return AIUS_OTA_DISARMED;
+	if (session->state != AIUS_OTA_STATE_OFFERED &&
+	    session->state != AIUS_OTA_STATE_STAGING)
+		return AIUS_OTA_STATE;
+	if (length == 0u || length > AIUS_OTA_MAX_CHUNK_BYTES)
+		return AIUS_OTA_INVALID_ARG;
+	if (offset != session->staged_length)
+		return AIUS_OTA_RANGE;
+	remaining = session->header.image_length - session->staged_length;
+	if (length > (size_t)remaining)
+		return AIUS_OTA_OVERFLOW;
+	return AIUS_OTA_OK;
+}
+
 FLASHMEM AiusOtaStatus aius_ota_absorb(AiusOtaSession *session,
 	                               uint32_t offset, const uint8_t *data,
 	                               size_t length)

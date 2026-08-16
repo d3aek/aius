@@ -61,6 +61,19 @@ typedef struct {
 	 * transaction formats itself never carry it. The value is dispatcher-
 	 * authored, never wire input. */
 	uint32_t cache_max_age_s;
+	/* Optional settle hook for an SD-JOB response (aius-ota-resilience.md
+	 * Phase 4a), the seam that lets a route defer a session mutation to
+	 * the moment its durable write actually lands. Called EXACTLY ONCE:
+	 * committed=true when the job's terminal is COMPLETE (the write is on
+	 * the card; the request body the dispatcher borrowed is still intact,
+	 * because the transaction has not yet recycled the request), false at
+	 * FAILED or CANCELLED, and false if the transaction recycles with the
+	 * job's terminal unseen (a released connection -- the storage drain
+	 * then owns the job's fate and the composition's drain arm owns any
+	 * remaining cleanup). NULL for every response that needs none, and
+	 * forbidden on an IMMEDIATE response, which has no job to settle. */
+	void (*sd_settle)(void *ctx, bool committed);
+	void *sd_settle_ctx;
 } AiusHttpApplicationResponse;
 
 typedef enum {
@@ -184,6 +197,10 @@ typedef struct {
 	size_t outstanding_length;
 	AiusHttpRequest parsed_request;
 	AiusSdJobRequest sd_request;
+	/* The accepted response's settle hook, fired exactly once (see the
+	 * response struct); nulled the moment it fires. */
+	void (*sd_settle)(void *ctx, bool committed);
+	void *sd_settle_ctx;
 	char sd_target_path[AIUS_SD_PATH_STORAGE];
 	char sd_temp_path[AIUS_SD_PATH_STORAGE];
 	char sd_backup_path[AIUS_SD_PATH_STORAGE];

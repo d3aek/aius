@@ -484,7 +484,7 @@ typedef struct {
 } AiusOpticalAppOtaStatus;
 
 /* The OTA seam. Every entry is required as a SET: aius_optical_app_set_ota()
- * takes all ten or none, so a half-wired table is refused at registration
+ * takes all eleven or none, so a half-wired table is refused at registration
  * rather than discovered as a null call at dispatch.
  *
  * `context` is the OTA adapter's own, not AiusOpticalApp's: the session, its
@@ -522,6 +522,17 @@ typedef struct {
 	AiusOpticalAppOtaResult (*chunk)(void *context, uint32_t offset,
 	                                 const uint8_t *data, size_t length,
 	                                 uint32_t *next_offset);
+
+	/* PURE preview of `chunk`: the exact refusal the same call would earn,
+	 * with the session untouched (aius-ota-resilience.md Phase 4a). The
+	 * route answers refusals from THIS, promises the acceptance, and runs
+	 * the mutating `chunk` only when the durable SD write commits -- so a
+	 * chunk whose write faults leaves the session exactly where it was and
+	 * the 500/503 is honestly resumable instead of a poisoned digest.
+	 * Writes `next_offset` under the same rules as `chunk`. */
+	AiusOpticalAppOtaResult (*chunk_check)(void *context, uint32_t offset,
+	                                       const uint8_t *data, size_t length,
+	                                       uint32_t *next_offset);
 
 	/* The deliberate act: arm the FEATURE LATCH. Arming does not start an
 	 * upgrade, it makes one possible. */
@@ -611,6 +622,18 @@ typedef struct {
 	uint32_t upload_sequence;
 	uint32_t http_dispatches;
 	uint32_t usb_dispatches;
+	/* The pending OTA absorb (aius-ota-resilience.md Phase 4a): the chunk
+	 * the route promised but has not yet absorbed, applied by the
+	 * transaction's sd_settle hook at the write's COMMITTED terminal and
+	 * cleared at any other outcome. `data` borrows the job-owning
+	 * transaction's request body, which outlives the job (the settle fires
+	 * before that transaction recycles); the drain arm in the composition
+	 * clears a pending left by a released connection. While armed, the
+	 * chunk route answers 503 sd_busy -- a one-epoch window. */
+	bool ota_pending;
+	uint32_t ota_pending_offset;
+	const uint8_t *ota_pending_data;
+	size_t ota_pending_length;
 	bool valid;
 } AiusOpticalAppDispatcher;
 
@@ -630,6 +653,15 @@ bool aius_optical_app_init(AiusOpticalAppDispatcher *dispatcher,
  * build that compiles OTA out simply never calls this. */
 bool aius_optical_app_set_ota(AiusOpticalAppDispatcher *dispatcher,
                               const AiusOpticalAppOta *ota);
+
+/* Drops a pending OTA absorb WITHOUT applying it -- the drain backstop for a
+ * job whose owning connection was released before its terminal (the storage
+ * service drains it ownerless, so the transaction's settle hook never fires).
+ * The composition's settle arm calls this when it observes such a terminal
+ * for the OTA staging target; safe (and a no-op) any other time. The session
+ * stays exactly where it was, which is the honest state: nothing was
+ * absorbed, and a resuming client re-reads next_offset and continues. */
+void aius_optical_app_ota_pending_clear(AiusOpticalAppDispatcher *dispatcher);
 
 /* One bounded decision for one parsed request. Returns NULL only for an
  * invalid dispatcher or a null request -- every reachable route, method and

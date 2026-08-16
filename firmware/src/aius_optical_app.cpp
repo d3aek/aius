@@ -1582,18 +1582,62 @@ static FLASHMEM const AiusHttpApplicationResponse *ota_status_document(
  * socket needs, and the reason this mirrors the replay upload rather than
  * inventing a session.
  *
- * DURABLE STAGING. On an accepted chunk the route additionally writes the
- * chunk's bytes to the fixed staging file /aius/ota-staged.img through the
- * existing bounded SD job engine (AIUS_SD_INSTALL_APPEND_PART at the chunk's
- * file offset, exactly the replay APPEND_PART upload), so the container survives
- * to activation. The 200 is therefore the SD job's -- withheld until the write
- * commits -- not an immediate one; the application's absorb() has already hashed
- * the chunk synchronously, so a chunk whose async write later fails leaves the
- * session hash ahead of the card, which the ACTIVATION verify pass catches
- * before any flash write (it digests the SD-staged bytes and readback-compares).
- * The card is checked before absorb so a chunk the card cannot take does not
- * advance the session's offset. The route still never holds OTA state and hands
- * (offset, bytes) down exactly once. */
+ * DURABLE STAGING, ABSORB DEFERRED TO THE COMMIT (aius-ota-resilience.md
+ * Phase 4a). On an accepted chunk the route writes the chunk's bytes to the
+ * fixed staging file /aius/ota-staged.img through the existing bounded SD job
+ * engine (AIUS_SD_INSTALL_APPEND_PART at the chunk's file offset, exactly the
+ * replay APPEND_PART upload), so the container survives to activation. The
+ * 200 is the SD job's -- withheld until the write commits.
+ *
+ * The session's absorb no longer runs here. It used to run synchronously
+ * BEFORE the write, and a chunk whose write then faulted left the session
+ * hash ahead of the card: the client's resume (the session's next_offset)
+ * skipped the hole, the eventual verify passed on bytes the card never got,
+ * and only activation's pre-window re-digest convicted it -- a doomed
+ * session whose only remedy was a full restage (the 2026-08-16 incident's
+ * "poisoned session"). Now the route asks the PURE chunk_check for the exact
+ * refusal absorb would earn, stashes the accepted chunk on the dispatcher,
+ * and the transaction's sd_settle hook runs the real absorb at the write's
+ * COMMITTED terminal (the borrowed body is still intact there). A faulted
+ * write settles uncommitted: the session has not moved, and the 500/503 the
+ * client sees is honestly resumable. The pre-formatted ack can promise
+ * next_offset arithmetically -- the check pinned the chunk's offset to the
+ * session's next expected one. */
+FLASHMEM void aius_optical_app_ota_pending_clear(
+	AiusOpticalAppDispatcher *dispatcher)
+{
+	if (dispatcher == NULL)
+		return;
+	dispatcher->ota_pending = false;
+	dispatcher->ota_pending_offset = 0u;
+	dispatcher->ota_pending_data = NULL;
+	dispatcher->ota_pending_length = 0u;
+}
+
+/* The transaction's settle hook for a staged OTA chunk: the deferred absorb.
+ * Runs the REAL chunk mutation only at the write's COMMITTED terminal, so a
+ * faulted or cancelled write leaves the session untouched and the client's
+ * retry genuinely resumable. The absorb's own verdict is deliberately
+ * unanswered -- the 200 has already been promised -- and the one way it can
+ * refuse after a passing precheck is a session that moved between dispatch
+ * and terminal (an abort raced the write), where the client's next chunk
+ * earns a RANGE with the honest next_offset and self-heals. */
+static FLASHMEM void ota_chunk_settle(void *ctx, bool committed)
+{
+	AiusOpticalAppDispatcher *dispatcher = (AiusOpticalAppDispatcher *)ctx;
+	uint32_t next_offset = 0u;
+
+	if (dispatcher == NULL || !dispatcher->ota_pending)
+		return;
+	if (committed && dispatcher->ota.chunk != NULL)
+		(void)dispatcher->ota.chunk(dispatcher->ota.context,
+		                            dispatcher->ota_pending_offset,
+		                            dispatcher->ota_pending_data,
+		                            dispatcher->ota_pending_length,
+		                            &next_offset);
+	aius_optical_app_ota_pending_clear(dispatcher);
+}
+
 static FLASHMEM const AiusHttpApplicationResponse *ota_image_chunk(
 	AiusOpticalAppDispatcher *dispatcher, const AiusHttpRequest *request)
 {
@@ -1631,21 +1675,28 @@ static FLASHMEM const AiusHttpApplicationResponse *ota_image_chunk(
 	if (request->content_range_start == 0u &&
 	    request->body_length < AIUS_OPTICAL_APP_OTA_HEADER_BYTES)
 		return http_error(dispatcher, 400, "ota_header");
-	/* 5. The card, before hashing: durable staging needs it, and a chunk it
-	 * cannot take must not advance the session's offset. A busy volume is
-	 * 503 sd_busy -- the retryable vocabulary every other SD route speaks
-	 * -- NOT 507: mid-stream chunks legitimately collide with root SD jobs
-	 * holding the volume (convicted 2026-08-04, three collisions in ~1,150
-	 * staged chunks, the defect-2 "1 in 15 large uploads" arithmetic), and
-	 * answering "the staging medium refused" for a transient hold sent
-	 * clients into failure paths a plain retry resolves. 507 remains the
-	 * genuine storage refusals below. */
+	/* 5. The card, before the check: durable staging needs it, and a chunk
+	 * it cannot take must not advance the session's offset. A busy volume
+	 * is 503 sd_busy -- the retryable vocabulary every other SD route
+	 * speaks -- NOT 507: mid-stream chunks legitimately collide with root
+	 * SD jobs holding the volume (convicted 2026-08-04, three collisions
+	 * in ~1,150 staged chunks, the defect-2 "1 in 15 large uploads"
+	 * arithmetic), and answering "the staging medium refused" for a
+	 * transient hold sent clients into failure paths a plain retry
+	 * resolves. 507 remains the genuine storage refusals below. */
 	if (!app->sd_ready(app->context))
 		return http_error(dispatcher, 503, "sd_unavailable");
 	if (app->sd_busy(app->context))
 		return http_error(dispatcher, 503, "sd_busy");
-	result = ota->chunk(ota->context, request->content_range_start,
-	                    request->body, request->body_length, &next_offset);
+	/* 6. One absorb in flight at a time: while a promised chunk awaits its
+	 * write's terminal (a one-epoch window), a second chunk could not be
+	 * prechecked against the session the pending absorb is about to
+	 * advance. The same retryable answer as a busy volume. */
+	if (dispatcher->ota_pending)
+		return http_error(dispatcher, 503, "sd_busy");
+	result = ota->chunk_check(ota->context, request->content_range_start,
+	                          request->body, request->body_length,
+	                          &next_offset);
 	/* A range refusal is the one that carries an instruction rather than an
 	 * apology, so it answers with next_offset beside the error: the client
 	 * seeks there and continues instead of restarting a multi-megabyte
@@ -1660,9 +1711,10 @@ static FLASHMEM const AiusHttpApplicationResponse *ota_image_chunk(
 	if (result != AIUS_OPTICAL_APP_OTA_OK)
 		return ota_refusal(dispatcher, result);
 	/* Accepted: stage this chunk durably. The 200 becomes the SD job's, its
-	 * body the next_offset ack pre-formatted here. APPEND_PART writes
-	 * body_length bytes at the container file offset, so a dropped connection
-	 * still costs one chunk. */
+	 * body the next_offset ack pre-formatted here -- arithmetically, since
+	 * the committed absorb of THIS chunk lands the file cursor at exactly
+	 * start + length. APPEND_PART writes body_length bytes at the container
+	 * file offset, so a dropped connection still costs one chunk. */
 	if (!build_root_path(dispatcher->target_path,
 	                     sizeof(dispatcher->target_path),
 	                     AIUS_OPTICAL_APP_OTA_STAGED_NAME,
@@ -1670,7 +1722,8 @@ static FLASHMEM const AiusHttpApplicationResponse *ota_image_chunk(
 		return http_error(dispatcher, 507, "ota_storage");
 	written = snprintf((char *)dispatcher->body, dispatcher->body_capacity,
 	                   "{\"ok\":true,\"next_offset\":%lu}",
-	                   (unsigned long)next_offset);
+	                   (unsigned long)(request->content_range_start +
+	                                   (uint32_t)request->body_length));
 	if (written <= 0 || (size_t)written >= dispatcher->body_capacity)
 		return http_too_large(dispatcher);
 	/* THE FIRST CHUNK RESTARTS THE FILE. The staged image persists across
@@ -1681,22 +1734,40 @@ static FLASHMEM const AiusHttpApplicationResponse *ota_image_chunk(
 	 * scratch/backup dance every web-tree PUT uses), mirroring the
 	 * session-level rule above where a re-sent offset 0 is a deliberate
 	 * restart; every later chunk appends. */
-	if (request->content_range_start == 0u) {
-		if (!build_upload_scratch(dispatcher, true))
-			return http_error(dispatcher, 507, "ota_storage");
-		return sd_upload(dispatcher, AIUS_SD_INSTALL_REPLACE,
-		                 request->content_length, 0u,
-		                 dispatcher->body, (size_t)written);
+	{
+		const AiusHttpApplicationResponse *response;
+		if (request->content_range_start == 0u) {
+			if (!build_upload_scratch(dispatcher, true))
+				return http_error(dispatcher, 507, "ota_storage");
+			response = sd_upload(dispatcher, AIUS_SD_INSTALL_REPLACE,
+			                     request->content_length, 0u,
+			                     dispatcher->body, (size_t)written);
+		} else {
+			response = sd_upload(dispatcher,
+			                     AIUS_SD_INSTALL_APPEND_PART,
+			                     request->content_length,
+			                     request->content_range_start,
+			                     dispatcher->body, (size_t)written);
+		}
+		/* The promise: absorb at the COMMITTED terminal, through the
+		 * transaction's settle hook. The stashed data borrows the
+		 * request body, which outlives the job (the hook fires before
+		 * the owning transaction recycles). */
+		dispatcher->ota_pending = true;
+		dispatcher->ota_pending_offset = request->content_range_start;
+		dispatcher->ota_pending_data = request->body;
+		dispatcher->ota_pending_length = request->body_length;
+		dispatcher->http_response.sd_settle = ota_chunk_settle;
+		dispatcher->http_response.sd_settle_ctx = dispatcher;
+		return response;
 	}
-	return sd_upload(dispatcher, AIUS_SD_INSTALL_APPEND_PART,
-	                 request->content_length, request->content_range_start,
-	                 dispatcher->body, (size_t)written);
 }
 
 static FLASHMEM bool ota_wired(const AiusOpticalAppOta *ota)
 {
 	return ota->present != NULL && ota->status != NULL &&
-	       ota->chunk != NULL && ota->arm != NULL && ota->verify != NULL &&
+	       ota->chunk != NULL && ota->chunk_check != NULL &&
+	       ota->arm != NULL && ota->verify != NULL &&
 	       ota->abort != NULL && ota->activate != NULL &&
 	       ota->enable_activation != NULL && ota->self_test_flash != NULL &&
 	       ota->rehearse != NULL;

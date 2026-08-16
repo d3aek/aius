@@ -1912,6 +1912,109 @@ static void test_end_to_end_upgrade(void)
 }
 
 /* -------------------------------------------------------------------------
+ * The pure chunk prechecks (aius-ota-resilience.md Phase 4a)
+ *
+ * The deferred-absorb route promises a chunk's acceptance from these and
+ * runs the mutation at the SD write's commit, so each check must earn the
+ * EXACT refusal its mutator would -- and must not move the session.
+ * ---------------------------------------------------------------------- */
+
+static void test_chunk_prechecks_mirror_the_mutators(void)
+{
+	AiusOtaSession session;
+	AiusOtaSession before;
+	AiusOtaImageHeader parsed;
+	FakeVerifier fake = { 0u, 0, { 0 }, { 0 } };
+	AiusOtaVerifier verifier = verifier_over(&fake);
+	uint8_t wire[AIUS_OTA_HEADER_BYTES];
+	uint8_t other_wire[AIUS_OTA_HEADER_BYTES];
+
+	current_key = "precheck.offer";
+	armed_session(&session);
+	build_wire(wire, g_payload, TEST_IMAGE_BYTES);
+	memset(&parsed, 0, sizeof(parsed));
+	before = session;
+	CHECK(aius_ota_offer_check(NULL, wire, sizeof(wire), NULL) ==
+	      AIUS_OTA_INVALID_ARG);
+	CHECK(aius_ota_offer_check(&session, wire, sizeof(wire), &parsed) ==
+	      AIUS_OTA_OK);
+	CHECK(parsed.image_length == TEST_IMAGE_BYTES);
+	CHECK(memcmp(&before, &session, sizeof(session)) == 0);
+	/* A malformed header earns the parse's own verdict, untouched. */
+	wire[0] ^= 0x01u;
+	CHECK(aius_ota_offer_check(&session, wire, sizeof(wire), NULL) ==
+	      AIUS_OTA_MALFORMED);
+	wire[0] ^= 0x01u;
+	/* Another board's image: same refusal offer() gives. */
+	{
+		AiusOtaImageHeader other =
+			valid_header_struct(g_payload, TEST_IMAGE_BYTES);
+		memset(other.target_id, 0, sizeof(other.target_id));
+		memcpy(other.target_id, "other-board", sizeof("other-board"));
+		CHECK(aius_ota_header_serialize(&other, other_wire,
+		                                sizeof(other_wire)) ==
+		      AIUS_OTA_OK);
+	}
+	CHECK(aius_ota_offer_check(&session, other_wire, sizeof(other_wire),
+	                           NULL) == AIUS_OTA_UNSUPPORTED);
+	/* Disarmed refuses like every mutator. */
+	CHECK(aius_ota_latch_disarm(&session) == AIUS_OTA_OK);
+	CHECK(aius_ota_offer_check(&session, wire, sizeof(wire), NULL) ==
+	      AIUS_OTA_DISARMED);
+	CHECK(aius_ota_latch_arm(&session) == AIUS_OTA_OK);
+
+	/* The ROUTE's restart admission: mid-staging is fine (abort covers
+	 * it); only ACTIVATION_REQUESTED -- the one state abort cannot leave
+	 * -- refuses. */
+	current_key = "precheck.offer.restart-admission";
+	CHECK(aius_ota_offer(&session, wire, sizeof(wire)) == AIUS_OTA_OK);
+	CHECK(aius_ota_absorb(&session, 0u, g_payload, 512u) == AIUS_OTA_OK);
+	before = session;
+	CHECK(aius_ota_offer_check(&session, wire, sizeof(wire), NULL) ==
+	      AIUS_OTA_OK);
+	CHECK(memcmp(&before, &session, sizeof(session)) == 0);
+	stage_all(&session, g_payload, TEST_IMAGE_BYTES, 512u);
+	CHECK(aius_ota_verify(&session, &verifier) == AIUS_OTA_OK);
+	CHECK(aius_ota_arm_image(&session) == AIUS_OTA_OK);
+	CHECK(aius_ota_request_activation(&session) == AIUS_OTA_OK);
+	CHECK(aius_ota_offer_check(&session, wire, sizeof(wire), NULL) ==
+	      AIUS_OTA_STATE);
+
+	current_key = "precheck.absorb";
+	armed_session(&session);
+	CHECK(aius_ota_absorb_check(NULL, 0u, 512u) == AIUS_OTA_INVALID_ARG);
+	/* Wrong state: nothing offered yet. */
+	CHECK(aius_ota_absorb_check(&session, 0u, 512u) == AIUS_OTA_STATE);
+	CHECK(aius_ota_offer(&session, wire, sizeof(wire)) == AIUS_OTA_OK);
+	CHECK(aius_ota_absorb(&session, 0u, g_payload, 512u) == AIUS_OTA_OK);
+	before = session;
+	/* Every arm the mutator has, in dry-run: OK at the exact next offset,
+	 * RANGE on gap and overlap, INVALID_ARG on the length rules, OVERFLOW
+	 * past image_length -- and none of them move the session. */
+	CHECK(aius_ota_absorb_check(&session, 512u, 512u) == AIUS_OTA_OK);
+	CHECK(aius_ota_absorb_check(&session, 1024u, 512u) == AIUS_OTA_RANGE);
+	CHECK(aius_ota_absorb_check(&session, 0u, 512u) == AIUS_OTA_RANGE);
+	CHECK(aius_ota_absorb_check(&session, 512u, 0u) ==
+	      AIUS_OTA_INVALID_ARG);
+	CHECK(aius_ota_absorb_check(&session, 512u,
+	                            AIUS_OTA_MAX_CHUNK_BYTES + 1u) ==
+	      AIUS_OTA_INVALID_ARG);
+	CHECK(memcmp(&before, &session, sizeof(session)) == 0);
+	/* And the passing dry-run's mutator agrees. */
+	CHECK(aius_ota_absorb(&session, 512u, g_payload + 512u, 512u) ==
+	      AIUS_OTA_OK);
+	/* One byte past image_length, with the chunk itself legal (5,000-byte
+	 * image, 1,024 staged: 3,977 <= the 4,096 cap): OVERFLOW, exactly the
+	 * mutator's refusal. */
+	CHECK(aius_ota_absorb_check(&session, 1024u,
+	                            TEST_IMAGE_BYTES - 1024u + 1u) ==
+	      AIUS_OTA_OVERFLOW);
+	CHECK(aius_ota_latch_disarm(&session) == AIUS_OTA_OK);
+	CHECK(aius_ota_absorb_check(&session, 1024u, 512u) ==
+	      AIUS_OTA_DISARMED);
+}
+
+/* -------------------------------------------------------------------------
  * Activation staging placement (aius-ota-resilience.md Phase 2)
  * ---------------------------------------------------------------------- */
 
@@ -1991,6 +2094,7 @@ int main(void)
 	test_health_trial_budget_and_rollback();
 	test_health_record_round_trip();
 	test_end_to_end_upgrade();
+	test_chunk_prechecks_mirror_the_mutators();
 	test_staging_placement_per_fitment();
 	puts("ota core tests passed");
 	return 0;

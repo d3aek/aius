@@ -48,7 +48,14 @@ DECODER_ARENA_BYTES = 218688
 # window, plus 32 B of section alignment measured post-link) -- the record a
 # bricked window carries into its WDOG reset (aius-ota-resilience.md
 # Phase 1). Still 64 B above the defect-26 floor.
-COMMITTED_OCRAM_FREE_BYTES = 131136
+# Lowered to 131072 on 2026-08-16, later: the deferred-absorb staging seam
+# (aius-ota-resilience.md Phase 4a) -- the dispatcher's pending-chunk stash
+# and the transaction's settle-hook latch, 64 B after cache-line alignment.
+# This value IS the defect-26 128 KiB link-time floor: OCRAM margin is now
+# ZERO, and the next OCRAM byte must be funded (move something to DTCM/flash
+# or widen the floor with fresh NativeEthernet headroom measurements), not
+# ratcheted past.
+COMMITTED_OCRAM_FREE_BYTES = 131072
 
 SECTION_RE = re.compile(
     r"^\s*\[\s*(\d+)\]\s+(\S+)\s+\S+\s+"

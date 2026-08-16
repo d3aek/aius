@@ -97,6 +97,7 @@ typedef struct {
 	bool ota_present;
 	bool ota_status_ok;
 	AiusOpticalAppOtaResult ota_chunk_result;
+	AiusOpticalAppOtaResult ota_chunk_check_result;
 	AiusOpticalAppOtaResult ota_arm_result;
 	AiusOpticalAppOtaResult ota_verify_result;
 	AiusOpticalAppOtaResult ota_abort_result;
@@ -436,6 +437,25 @@ static AiusOpticalAppOtaResult fake_ota_chunk(void *context, uint32_t offset,
 	return fake->ota_chunk_result;
 }
 
+static AiusOpticalAppOtaResult fake_ota_chunk_check(void *context,
+                                                    uint32_t offset,
+                                                    const uint8_t *data,
+                                                    size_t length,
+                                                    uint32_t *next_offset)
+{
+	Fake *fake = (Fake *)context;
+	record(fake, "ota_chunk_check");
+	/* The same bounded-slice contract as the mutating chunk. */
+	assert(data != NULL);
+	assert(length != 0u && length <= AIUS_OPTICAL_APP_OTA_MAX_CHUNK_BYTES);
+	assert(next_offset != NULL);
+	fake->last_ota_offset = offset;
+	fake->last_ota_length = length;
+	fake->last_ota_data = data;
+	*next_offset = fake->ota_next_offset;
+	return fake->ota_chunk_check_result;
+}
+
 static AiusOpticalAppOtaResult fake_ota_arm(void *context)
 {
 	Fake *fake = (Fake *)context;
@@ -495,6 +515,7 @@ static AiusOpticalAppOta fake_ota(Fake *fake)
 	ota.present = fake_ota_present;
 	ota.status = fake_ota_status;
 	ota.chunk = fake_ota_chunk;
+	ota.chunk_check = fake_ota_chunk_check;
 	ota.arm = fake_ota_arm;
 	ota.verify = fake_ota_verify;
 	ota.abort = fake_ota_abort;
@@ -610,6 +631,7 @@ static void fixture_init(Fixture *fixture)
 	fixture->fake.ota_present = true;
 	fixture->fake.ota_status_ok = true;
 	fixture->fake.ota_chunk_result = AIUS_OPTICAL_APP_OTA_OK;
+	fixture->fake.ota_chunk_check_result = AIUS_OPTICAL_APP_OTA_OK;
 	fixture->fake.ota_arm_result = AIUS_OPTICAL_APP_OTA_OK;
 	fixture->fake.ota_verify_result = AIUS_OPTICAL_APP_OTA_OK;
 	fixture->fake.ota_abort_result = AIUS_OPTICAL_APP_OTA_OK;
@@ -2652,16 +2674,17 @@ static void test_ota_table_registration(void)
 	fixture_init(&fixture);
 	ota = fake_ota(&fixture.fake);
 
-	for (size_t i = 0; i < 10u; ++i) {
+	for (size_t i = 0; i < 11u; ++i) {
 		AiusOpticalAppOta holed = fake_ota(&fixture.fake);
 		void **slots[] = {
 			(void **)&holed.present, (void **)&holed.status,
-			(void **)&holed.chunk, (void **)&holed.arm,
+			(void **)&holed.chunk, (void **)&holed.chunk_check,
+			(void **)&holed.arm,
 			(void **)&holed.verify, (void **)&holed.abort,
 			(void **)&holed.activate, (void **)&holed.enable_activation,
 			(void **)&holed.self_test_flash, (void **)&holed.rehearse
 		};
-		assert(ARRAY_LENGTH(slots) == 10u);
+		assert(ARRAY_LENGTH(slots) == 11u);
 		*slots[i] = NULL;
 		assert(!aius_optical_app_set_ota(&fixture.dispatcher, &holed));
 		/* Refused AND left absent -- fail-closed, not half-wired. */
@@ -2791,22 +2814,28 @@ static void test_ota_image_chunks(void)
 	char scratch[AIUS_OPTICAL_APP_OTA_MAX_CHUNK_BYTES + 2u];
 	const AiusHttpApplicationResponse *response;
 	static const char *const chunk_calls[] = {
-		"ota_present", "auth_matches", "sd_ready", "sd_busy", "ota_chunk"
+		"ota_present", "auth_matches", "sd_ready", "sd_busy",
+		"ota_chunk_check"
 	};
 	/* The first chunk also names the REPLACE scratch pair, whose entropy is
 	 * the application's. */
 	static const char *const chunk0_calls[] = {
-		"ota_present", "auth_matches", "sd_ready", "sd_busy", "ota_chunk",
-		"upload_id"
+		"ota_present", "auth_matches", "sd_ready", "sd_busy",
+		"ota_chunk_check", "upload_id"
 	};
+	static const char *const settle_calls[] = { "ota_chunk" };
 	static const char *const refused_calls[] = {
 		"ota_present", "auth_matches"
 	};
 	fixture_init(&fixture);
 
-	/* In order. The first chunk carries the 256-byte container header, and the
-	 * answer is the transport's own next offset -- but the 200 is now the SD
-	 * job's, because the chunk is durably staged to /aius/ota-staged.img. */
+	/* In order. The first chunk carries the 256-byte container header. The
+	 * 200 is the SD job's (durably staged to /aius/ota-staged.img), and the
+	 * SESSION IS NOT TOUCHED AT DISPATCH: the route runs only the pure
+	 * chunk_check, and the mutating chunk fires at the write's COMMITTED
+	 * terminal through the response's settle hook (Phase 4a). The ack's
+	 * next_offset is arithmetic -- start + length -- because the check
+	 * pinned start to the session's next expected offset. */
 	fixture.fake.ota_next_offset = 512u;
 	response = dispatch_ota_chunk(&fixture, scratch, sizeof(scratch), 0u, 512u,
 	                              585728u, "token");
@@ -2817,6 +2846,27 @@ static void test_ota_image_chunks(void)
 	/* The slice handed down IS the parsed request body: borrowed in place
 	 * for the call, never copied into the dispatcher. */
 	assert(fixture.fake.last_ota_data == fixture.request.body);
+	/* The promise is armed: the settle hook is on the response and the
+	 * pending stash on the dispatcher, borrowing the same body slice. */
+	assert(response->sd_settle != NULL);
+	assert(response->sd_settle_ctx == &fixture.dispatcher);
+	assert(fixture.dispatcher.ota_pending);
+	assert(fixture.dispatcher.ota_pending_offset == 0u);
+	assert(fixture.dispatcher.ota_pending_length == 512u);
+	assert(fixture.dispatcher.ota_pending_data == fixture.request.body);
+	/* THE COMMITTED TERMINAL: the transaction fires the hook, the deferred
+	 * absorb runs with the stashed identity, and the pending clears. */
+	fixture_reset_log(&fixture);
+	response->sd_settle(response->sd_settle_ctx, true);
+	expect_log(&fixture, settle_calls, ARRAY_LENGTH(settle_calls));
+	assert(fixture.fake.last_ota_offset == 0u);
+	assert(fixture.fake.last_ota_length == 512u);
+	assert(!fixture.dispatcher.ota_pending);
+	/* Settling twice is inert -- the transaction's exactly-once rule has a
+	 * second guard here. */
+	fixture_reset_log(&fixture);
+	response->sd_settle(response->sd_settle_ctx, true);
+	expect_log(&fixture, NULL, 0u);
 
 	/* Resume. A later chunk states its own offset, so a connection lost
 	 * between chunks costs one request and nothing else. The staged write seeks
@@ -2827,10 +2877,42 @@ static void test_ota_image_chunks(void)
 	expect_ota_stage(response, 1536u, 512u, 1024u);
 	assert(fixture.fake.last_ota_offset == 1024u);
 
+	/* A FAULTED write settles uncommitted: the pending clears and the
+	 * mutating chunk NEVER runs -- the session has not moved, so the
+	 * client's 500 is honestly resumable (the incident's poisoned-session
+	 * shape, closed). */
+	assert(fixture.dispatcher.ota_pending);
+	fixture_reset_log(&fixture);
+	response->sd_settle(response->sd_settle_ctx, false);
+	expect_log(&fixture, NULL, 0u);
+	assert(!fixture.dispatcher.ota_pending);
+
+	/* ONE ABSORB IN FLIGHT: while a promised chunk awaits its terminal the
+	 * route answers the retryable 503, and the window closes with the
+	 * settle. */
+	fixture.fake.ota_next_offset = 1536u;
+	response = dispatch_ota_chunk(&fixture, scratch, sizeof(scratch),
+	                              1024u, 512u, 585728u, "token");
+	expect_ota_stage(response, 1536u, 512u, 1024u);
+	assert(fixture.dispatcher.ota_pending);
+	{
+		const AiusHttpApplicationResponse *second =
+			dispatch_ota_chunk(&fixture, scratch, sizeof(scratch),
+			                   1536u, 512u, 585728u, "token");
+		expect_immediate(second, 503,
+		                 "{\"ok\":false,\"error\":\"sd_busy\"}");
+	}
+	/* The refusal's dispatch rebuilt the request buffer, so settle the
+	 * pending WITHOUT applying (its borrowed slice is gone -- exactly the
+	 * released-connection shape the drain backstop clears). */
+	fixture_reset_log(&fixture);
+	aius_optical_app_ota_pending_clear(&fixture.dispatcher);
+	assert(!fixture.dispatcher.ota_pending);
+
 	/* A bad offset is the one refusal that carries an instruction rather
 	 * than an apology: the core refuses out-of-order bytes without failing
 	 * the session, so the answer says where to resume from. */
-	fixture.fake.ota_chunk_result = AIUS_OPTICAL_APP_OTA_RANGE;
+	fixture.fake.ota_chunk_check_result = AIUS_OPTICAL_APP_OTA_RANGE;
 	fixture.fake.ota_next_offset = 1536u;
 	expect_immediate(dispatch_ota_chunk(&fixture, scratch, sizeof(scratch),
 	                                    4096u, 512u, 585728u, "token"),
@@ -2838,7 +2920,7 @@ static void test_ota_image_chunks(void)
 	                 "{\"ok\":false,\"error\":\"ota_range\","
 	                 "\"next_offset\":1536}");
 	expect_log(&fixture, chunk_calls, ARRAY_LENGTH(chunk_calls));
-	fixture.fake.ota_chunk_result = AIUS_OPTICAL_APP_OTA_OK;
+	fixture.fake.ota_chunk_check_result = AIUS_OPTICAL_APP_OTA_OK;
 
 	/* HEADER FIRST. The container header is validated whole -- magic, CRC,
 	 * identity, digest and signature slot together -- so half of one is not
@@ -2853,18 +2935,21 @@ static void test_ota_image_chunks(void)
 	assert(fixture.fake.last_ota_length == 0u);
 
 	/* Exactly one header is enough, and the rule is offset-zero only: a
-	 * one-byte chunk further in is ordinary payload. Both stage. */
+	 * one-byte chunk further in is ordinary payload. Both stage (settled
+	 * between, since one absorb may be in flight at a time). */
 	fixture.fake.ota_next_offset = AIUS_OPTICAL_APP_OTA_HEADER_BYTES;
 	response = dispatch_ota_chunk(&fixture, scratch, sizeof(scratch), 0u,
 	                             AIUS_OPTICAL_APP_OTA_HEADER_BYTES,
 	                             585728u, "token");
 	expect_ota_stage(response, AIUS_OPTICAL_APP_OTA_HEADER_BYTES,
 	                 AIUS_OPTICAL_APP_OTA_HEADER_BYTES, 0u);
+	response->sd_settle(response->sd_settle_ctx, true);
 	fixture.fake.ota_next_offset = 257u;
 	response = dispatch_ota_chunk(&fixture, scratch, sizeof(scratch),
 	                             256u, 1u, 585728u, "token");
 	expect_ota_stage(response, 257u, 1u, 256u);
 	assert(fixture.fake.last_ota_length == 1u);
+	response->sd_settle(response->sd_settle_ctx, true);
 
 	/* One chunk is one bounded epoch's worth of hashing. The cap is
 	 * admitted exactly, and one byte past it is refused whole rather than
@@ -2878,6 +2963,7 @@ static void test_ota_image_chunks(void)
 	                 AIUS_OPTICAL_APP_OTA_MAX_CHUNK_BYTES, 0u);
 	assert(fixture.fake.last_ota_length ==
 	       AIUS_OPTICAL_APP_OTA_MAX_CHUNK_BYTES);
+	response->sd_settle(response->sd_settle_ctx, true);
 	fixture.fake.last_ota_length = 0u;
 	expect_immediate(dispatch_ota_chunk(&fixture, scratch, sizeof(scratch), 0u,
 	                                    AIUS_OPTICAL_APP_OTA_MAX_CHUNK_BYTES +
@@ -2972,7 +3058,7 @@ static void test_ota_verdict_map(void)
 	fixture_init(&fixture);
 
 	for (size_t i = 0; i < ARRAY_LENGTH(verdicts); ++i) {
-		fixture.fake.ota_chunk_result = verdicts[i].result;
+		fixture.fake.ota_chunk_check_result = verdicts[i].result;
 		expect_immediate(dispatch_ota_chunk(&fixture, scratch, sizeof(scratch),
 		                                    0u, 256u, 1024u, "token"),
 		                 verdicts[i].status, verdicts[i].body);

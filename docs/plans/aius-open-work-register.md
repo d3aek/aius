@@ -199,8 +199,13 @@ ends left open:
   NEXT in-window failure names itself. The PSRAM-staging and
   reproducibility questions become Phase 2's bench soak; the queued owner
   decision is the plan's Phase 3 flash-map decision.
-- **Phase C probe guard starves SD bring-up when a carrier is lit at boot
-  (2026-08-16, found in post-incident re-review; fix owed).** The
+- ~~**Phase C probe guard starves SD bring-up when a carrier is lit at boot
+  (2026-08-16, found in post-incident re-review; fix owed).**~~ **FIXED
+  2026-08-16 (aius-ota-resilience.md Phase 4c, not yet flashed):** the
+  `g_sd_bringup_done` once-per-boot latch exempts the FIRST mount from the
+  carrier deferral; steady-state deferral (hot-swap detection, usage
+  refresh) is unchanged. On-device confirmation (bring-up completes under a
+  lit carrier) rides the next flash. Original entry: the
   output-jitter Phase C guard defers the SD probe on
   `g_tx_gate_open || pllLocked()`; on a boot with the source already
   emitting a carrier, `pllLocked()` is true before the FIRST probe ever

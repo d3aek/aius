@@ -1637,6 +1637,125 @@ static size_t drain_writes_to_close(Fixture *fixture, AiusHttpAction action)
 	return total;
 }
 
+/* The sd_settle hook (aius-ota-resilience.md Phase 4a): fired EXACTLY ONCE at
+ * the job's terminal -- committed only at COMPLETE, with the request body
+ * still readable at the hook (the deferred-absorb contract) -- uncommitted at
+ * FAILED, and forbidden on an IMMEDIATE response. */
+static struct {
+	int calls;
+	bool last_committed;
+	const Fixture *fixture;
+	size_t body_at;
+	const uint8_t *expect_body;
+	size_t expect_length;
+	bool body_intact;
+} g_settle;
+
+static void settle_probe(void *ctx, bool committed)
+{
+	assert(ctx == (void *)g_settle.fixture);
+	g_settle.calls++;
+	g_settle.last_committed = committed;
+	g_settle.body_intact =
+		memcmp(g_settle.fixture->request + g_settle.body_at,
+		       g_settle.expect_body, g_settle.expect_length) == 0;
+}
+
+static void settle_arm(const Fixture *fixture, size_t header_length,
+	                   const uint8_t *body, size_t body_length)
+{
+	memset(&g_settle, 0, sizeof(g_settle));
+	g_settle.fixture = fixture;
+	g_settle.body_at = header_length;
+	g_settle.expect_body = body;
+	g_settle.expect_length = body_length;
+}
+
+static void test_sd_settle_hook_terminals(void)
+{
+	static const uint8_t body[] = "0123456789abcdef";
+	const size_t body_length = sizeof(body) - 1u;
+
+	/* COMPLETE: once, committed, the borrowed body intact at the hook. */
+	{
+		Fixture fixture;
+		init_fixture(&fixture);
+		AiusHttpAction action =
+			dispatch_buffered_put(&fixture, body, body_length);
+		size_t header_length = action.request->header_length;
+		AiusHttpApplicationResponse response =
+			buffered_upload_application(body_length);
+		response.sd_settle = settle_probe;
+		response.sd_settle_ctx = &fixture;
+		settle_arm(&fixture, header_length, body, body_length);
+		action = call_step(&fixture, 0,
+		                   application_result(&action, &response));
+		AiusHttpEvent started = sd_result(&action, AIUS_HTTP_SD_STARTED);
+		started.sd_capacity = 8;
+		action = call_step(&fixture, 0, started);
+		assert(g_settle.calls == 0); /* not before the terminal */
+		(void)supply_buffered_upload(&fixture, action, body, body_length,
+		                             header_length, 8);
+		assert(g_settle.calls == 1);
+		assert(g_settle.last_committed);
+		assert(g_settle.body_intact);
+	}
+
+	/* FAILED: once, uncommitted -- the session-mutation license is never
+	 * granted for a write that did not land. */
+	{
+		Fixture fixture;
+		init_fixture(&fixture);
+		AiusHttpAction action =
+			dispatch_buffered_put(&fixture, body, body_length);
+		size_t header_length = action.request->header_length;
+		AiusHttpApplicationResponse response =
+			buffered_upload_application(body_length);
+		response.sd_settle = settle_probe;
+		response.sd_settle_ctx = &fixture;
+		settle_arm(&fixture, header_length, body, body_length);
+		action = call_step(&fixture, 0,
+		                   application_result(&action, &response));
+		AiusHttpEvent started = sd_result(&action, AIUS_HTTP_SD_STARTED);
+		started.sd_capacity = 8;
+		action = call_step(&fixture, 0, started);
+		assert(action.sd_operation == AIUS_HTTP_SD_OP_ADVANCE);
+		AiusHttpEvent failed = sd_result(&action, AIUS_HTTP_SD_FAILED);
+		failed.sd_fault = AIUS_SD_FAULT_IO;
+		failed.sd_driver_fault = 7u;
+		action = call_step(&fixture, 0, failed);
+		assert(g_settle.calls == 1);
+		assert(!g_settle.last_committed);
+		/* The error response that follows fires nothing further. */
+		assert(action.kind == AIUS_HTTP_ACTION_WRITE);
+		action = finish_all_writes(&fixture, action);
+		finish_close(&fixture, action);
+		assert(g_settle.calls == 1);
+	}
+
+	/* An IMMEDIATE response has no job to settle: a hook on one is the
+	 * application's protocol error, refused like every other malformed
+	 * response. */
+	{
+		static const uint8_t ok[] = "{}";
+		Fixture fixture;
+		init_fixture(&fixture);
+		AiusHttpAction action = feed_request(
+			&fixture, "GET /api/status HTTP/1.0\r\n\r\n");
+		AiusHttpApplicationResponse response =
+			immediate(200, "application/json", ok, sizeof(ok) - 1u);
+		response.sd_settle = settle_probe;
+		response.sd_settle_ctx = &fixture;
+		settle_arm(&fixture, 0u, ok, sizeof(ok) - 1u);
+		action = call_step(&fixture, 0,
+		                   application_result(&action, &response));
+		assert(action.kind == AIUS_HTTP_ACTION_WRITE);
+		assert(fixture.transaction.last_fault == AIUS_HTTP_FAULT_PROTOCOL);
+		assert(fixture.transaction.last_status == 400);
+		assert(g_settle.calls == 0);
+	}
+}
+
 static void test_immediate_stream_body(void)
 {
 	static uint8_t model[AIUS_HTTP_MAX_BODY];
@@ -4573,6 +4692,7 @@ int main(void)
 		{ "upload.invalid-complete-cancel",
 		  test_upload_invalid_completion_cancels },
 		{ "upload.buffered-admission", test_buffered_upload_admission },
+	{ "upload.sd-settle-hook", test_sd_settle_hook_terminals },
 		{ "response.immediate-stream-body",
 		  test_immediate_stream_body },
 		{ "download.chunk-stability-ack",
@@ -4607,7 +4727,7 @@ int main(void)
 		{ "receive.large-body-chunk-boundaries",
 		  test_receive_large_body_chunk_boundaries },
 	};
-	assert(ARRAY_LENGTH(registry) == 41);
+	assert(ARRAY_LENGTH(registry) == 42);
 	for (size_t i = 0; i < ARRAY_LENGTH(registry); ++i) {
 		assert(registry[i].key[0] != '\0');
 		for (size_t j = 0; j < i; ++j)

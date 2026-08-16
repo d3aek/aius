@@ -476,8 +476,15 @@ static FLASHMEM bool is_transport_action(AiusHttpActionKind action)
 	       action == AIUS_HTTP_ACTION_CLOSE;
 }
 
+static FLASHMEM void settle_sd(AiusHttpTransaction *transaction, bool committed);
+
 static FLASHMEM void reset_client(AiusHttpTransaction *transaction, uint32_t now_ms)
 {
+	/* A hook still armed here means the job's terminal was never consumed
+	 * by THIS transaction (a recycled connection): settle uncommitted --
+	 * the storage drain owns the job from here and the composition's drain
+	 * arm owns any remaining cleanup. */
+	settle_sd(transaction, false);
 	transaction->state = AIUS_HTTP_TX_RECEIVE;
 	transaction->sd_phase = AIUS_HTTP_SD_PHASE_NONE;
 	transaction->request_length = 0u;
@@ -532,6 +539,7 @@ static FLASHMEM void reset_client(AiusHttpTransaction *transaction, uint32_t now
 
 static FLASHMEM void restart_idle(AiusHttpTransaction *transaction)
 {
+	settle_sd(transaction, false); /* same rule as reset_client */
 	transaction->state = AIUS_HTTP_TX_IDLE;
 	transaction->sd_phase = AIUS_HTTP_SD_PHASE_NONE;
 	transaction->request_length = 0u;
@@ -631,6 +639,19 @@ static FLASHMEM void request_cleanup(AiusHttpTransaction *transaction)
 {
 	transaction->cleanup_requested = true;
 	transaction->deadline_active = false;
+}
+
+/* Fires the accepted response's settle hook exactly once and forgets it.
+ * Nulled BEFORE the call so a hook that (wrongly) re-enters the transaction
+ * cannot fire itself twice. */
+static FLASHMEM void settle_sd(AiusHttpTransaction *transaction, bool committed)
+{
+	void (*hook)(void *, bool) = transaction->sd_settle;
+
+	transaction->sd_settle = NULL;
+	if (hook != NULL)
+		hook(transaction->sd_settle_ctx, committed);
+	transaction->sd_settle_ctx = NULL;
 }
 
 static FLASHMEM void record_fault(AiusHttpTransaction *transaction,
@@ -778,7 +799,8 @@ static FLASHMEM bool application_fields_valid(const AiusHttpApplicationResponse 
 	    (reply->body_length != 0u && reply->body == NULL))
 		return false;
 	if (reply->kind == AIUS_HTTP_APP_IMMEDIATE)
-		return zero_sd_request(&reply->sd_job);
+		return zero_sd_request(&reply->sd_job) &&
+		       reply->sd_settle == NULL && reply->sd_settle_ctx == NULL;
 	return true;
 }
 
@@ -826,6 +848,8 @@ static FLASHMEM bool accept_application(AiusHttpTransaction *transaction,
 	                 reply->content_type, true) ||
 	    !copy_sd_request(transaction, &reply->sd_job))
 		return false;
+	transaction->sd_settle = reply->sd_settle;
+	transaction->sd_settle_ctx = reply->sd_settle_ctx;
 	if (transaction->sd_request.kind == AIUS_SD_JOB_UPLOAD) {
 		if (transaction->sd_request.total != transaction->body_expected)
 			return false;
@@ -1099,6 +1123,10 @@ static FLASHMEM bool consume_sd_result(AiusHttpTransaction *transaction,
 	case AIUS_HTTP_SD_COMPLETE:
 		transaction->sd_terminal = true;
 		transaction->deadline_active = false;
+		/* COMMITTED, before anything can recycle the request: the
+		 * dispatcher's borrowed body slices are still intact here, even
+		 * on the cleanup-requested path. */
+		settle_sd(transaction, true);
 		if (transaction->cleanup_requested) {
 			break;
 		} else if (transaction->sd_request.kind == AIUS_SD_JOB_DOWNLOAD &&
@@ -1126,6 +1154,7 @@ static FLASHMEM bool consume_sd_result(AiusHttpTransaction *transaction,
 		break;
 	case AIUS_HTTP_SD_FAILED:
 		transaction->sd_terminal = true;
+		settle_sd(transaction, false);
 		if (transaction->cleanup_requested) {
 			transaction->last_sd_fault = event->sd_fault;
 			transaction->last_driver_fault =
@@ -1138,6 +1167,7 @@ static FLASHMEM bool consume_sd_result(AiusHttpTransaction *transaction,
 	case AIUS_HTTP_SD_CANCELLED:
 		transaction->sd_terminal = true;
 		transaction->deadline_active = false;
+		settle_sd(transaction, false);
 		if (event->sd_fault != AIUS_SD_FAULT_NONE) {
 			transaction->last_sd_fault = event->sd_fault;
 			transaction->last_driver_fault = event->sd_driver_fault;

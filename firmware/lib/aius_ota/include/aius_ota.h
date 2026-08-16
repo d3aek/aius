@@ -395,6 +395,24 @@ bool aius_ota_latch_is_armed(const AiusOtaSession *session);
 AiusOtaStatus aius_ota_offer(AiusOtaSession *session, const uint8_t *bytes,
 	                     size_t length);
 
+/* PURE preview of the transport's restart-shaped offer: every refusal the
+ * chunk route's offset-0 path (abort-if-offered, then offer) would earn,
+ * with the session untouched. Exists for the deferred-absorb staging contract
+ * (aius-ota-resilience.md Phase 4a): the route must be able to promise a
+ * chunk's acceptance BEFORE the SD write commits, and only a check that
+ * cannot mutate can be issued twice.
+ *
+ * The STATE rule is therefore the ROUTE's, not offer()'s own: any state
+ * except ACTIVATION_REQUESTED admits, because a re-sent offset 0 is a
+ * deliberate restart and abort() reaches IDLE from everything else. All the
+ * header rules are aius_ota_header_parse()'s; the target check is offer()'s.
+ * `parsed` (optional) receives the validated header so the caller can bound
+ * a same-chunk payload remainder against image_length without a second
+ * parse. */
+AiusOtaStatus aius_ota_offer_check(const AiusOtaSession *session,
+	                           const uint8_t *bytes, size_t length,
+	                           AiusOtaImageHeader *parsed);
+
 /* Absorbs one chunk of the payload at `offset`. OFFERED or STAGING only.
  *
  * The offset contract is STRICT MONOTONIC CONTIGUOUS, mirroring the
@@ -418,6 +436,15 @@ AiusOtaStatus aius_ota_offer(AiusOtaSession *session, const uint8_t *bytes,
  * The last chunk that completes image_length promotes the session to STAGED. */
 AiusOtaStatus aius_ota_absorb(AiusOtaSession *session, uint32_t offset,
 	                      const uint8_t *data, size_t length);
+
+/* PURE preview of aius_ota_absorb(): the exact refusal an absorb of `length`
+ * bytes at `offset` would earn right now, with the session untouched -- the
+ * bytes themselves are not needed because absorb() never judges content,
+ * only geometry and state. Same Phase 4a rationale as offer_check: OK here
+ * is the route's license to answer a durable-staging 200 whose absorb runs
+ * at the SD write's committed terminal. */
+AiusOtaStatus aius_ota_absorb_check(const AiusOtaSession *session,
+	                            uint32_t offset, size_t length);
 
 /* STAGED -> VERIFIED, in two independent steps.
  *

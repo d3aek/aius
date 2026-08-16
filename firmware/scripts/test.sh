@@ -1000,6 +1000,10 @@ ota)
 	# It builds its own native helpers on demand (tools/ota/*.c), so it is
 	# runnable by an operator without this script.
 	python3 "$fw_root/test/ota/test_ota_signer.py"
+	# The operator flash client (tools/ota/aius_ota_flash.py) against a
+	# state-machine fake: resumable chunk faults (landed and not), the
+	# verify -> arm order, and the --activate gate.
+	python3 "$fw_root/test/ota/test_ota_flash_client.py"
 	;;
 runtime-target)
 	# Composed Teensy runtime: the composition root, the three bounded target

@@ -499,9 +499,16 @@ static uint32_t g_cpu_temp_next_ms;
 static bool g_cpu_temp_valid;
 /* Media state and usage, published by slice S3b's root-initiated PROBE and
  * USAGE_REFRESH jobs (see §SD lifecycle below). g_sd_ready gates every SD route
+ * (g_sd_bringup_done, below it, is the once-per-boot latch that exempts the
+ * FIRST mount from the Phase C carrier deferral -- register 2026-08-16).
  * exactly as it did before the cutover; the usage pair reads zero whenever the
  * card is absent. */
 static bool g_sd_ready;
+/* Once-true latch: the first successful mount of this boot happened. Only its
+ * FALSE phase changes behaviour (the Phase C deferral stands down so bring-up
+ * cannot be starved by a carrier lit at boot); it never returns false, so a
+ * hot removal keeps steady-state semantics. */
+static bool g_sd_bringup_done;
 /* The volume type the last PROBE read off the mounted card, carried on that
  * job's AiusSdResult. UNKNOWN until a probe answers, and again whenever the card
  * goes away, so it can never outlive the media it describes. */
@@ -4124,6 +4131,45 @@ static FLASHMEM AiusOpticalAppOtaResult app_ota_chunk(void *, uint32_t offset,
 	return ota_map_result(status);
 }
 
+/* chunk_check: the PURE preview behind the route's deferred absorb
+ * (aius-ota-resilience.md Phase 4a) -- the exact refusal app_ota_chunk()
+ * would earn for the same call, with the session untouched. The file-offset
+ * arithmetic mirrors app_ota_chunk() line for line; the mutations it fronts
+ * (abort + offer, absorb) run later, at the SD write's committed terminal. */
+static FLASHMEM AiusOpticalAppOtaResult app_ota_chunk_check(void *,
+	uint32_t offset, const uint8_t *data, size_t length,
+	uint32_t *next_offset)
+{
+	AiusOtaStatus status;
+
+	if (offset == 0u) {
+		AiusOtaImageHeader parsed;
+		status = aius_ota_offer_check(&g_ota_session, data,
+		                              AIUS_OTA_HEADER_BYTES, &parsed);
+		if (status != AIUS_OTA_OK)
+			return ota_map_result(status);
+		if (length > AIUS_OTA_HEADER_BYTES) {
+			const size_t remainder = length - AIUS_OTA_HEADER_BYTES;
+			if (remainder > AIUS_OTA_MAX_CHUNK_BYTES)
+				return ota_map_result(AIUS_OTA_INVALID_ARG);
+			if (remainder > (size_t)parsed.image_length)
+				return ota_map_result(AIUS_OTA_OVERFLOW);
+		}
+		*next_offset = (uint32_t)length;
+		return AIUS_OPTICAL_APP_OTA_OK;
+	}
+	if (offset < AIUS_OTA_HEADER_BYTES) {
+		*next_offset = aius_ota_next_offset(&g_ota_session) +
+		               AIUS_OTA_HEADER_BYTES;
+		return AIUS_OPTICAL_APP_OTA_RANGE;
+	}
+	status = aius_ota_absorb_check(&g_ota_session,
+	                               offset - AIUS_OTA_HEADER_BYTES, length);
+	*next_offset = aius_ota_next_offset(&g_ota_session) +
+	               AIUS_OTA_HEADER_BYTES;
+	return ota_map_result(status);
+}
+
 /* arm: verified -> armed (aius_ota_arm_image), the "arm the image for
  * activation" step the SD upgrade page's POST /api/ota/arm drives. NOT the
  * feature latch, which the composition arms once at setup. */
@@ -4233,6 +4279,7 @@ static const AiusOpticalAppOta g_ota_seam = {
 	app_ota_present,
 	app_ota_status,
 	app_ota_chunk,
+	app_ota_chunk_check,
 	app_ota_arm,
 	app_ota_verify,
 	app_ota_abort,
@@ -5976,6 +6023,18 @@ static FLASHMEM void sd_settle_http_write(void)
 		return;
 	g_sd_http_job_seen = false;
 	committed = storage.job.state == AIUS_SD_DONE;
+#if AIUS_OTA
+	/* The OTA deferred-absorb backstop (aius-ota-resilience.md Phase 4a):
+	 * normally the transaction's sd_settle hook consumed this terminal and
+	 * the pending absorb is already applied or dropped. A job whose owning
+	 * connection was RELEASED reaches its terminal as an ownerless drain,
+	 * so the hook never fires -- drop the pending here rather than leave
+	 * the chunk route answering 503 forever. The session has not moved,
+	 * which is honest: a resuming client re-reads next_offset. */
+	if (storage.job.kind == AIUS_SD_JOB_UPLOAD &&
+	    strcmp(storage.job.target_path, "/aius/ota-staged.img") == 0)
+		aius_optical_app_ota_pending_clear(&g_runtime.app);
+#endif
 	/* A committed write or delete moves the usage figures; a download does
 	 * not. The legacy job armed the same refresh from the same two arms. */
 	if (committed && storage.job.kind != AIUS_SD_JOB_DOWNLOAD)
@@ -6094,6 +6153,7 @@ static FLASHMEM void sd_step_complete(uint32_t now_ms)
 			 * CONFIG_LOAD against a missing directory simply fails
 			 * its open, which is the missing-file case. */
 			g_sd_ready = true;
+			g_sd_bringup_done = true;
 			g_sd_step = SD_STEP_LOAD_CONFIG;
 		} else if (!present && g_sd_ready) {
 			g_sd_ready = false;
@@ -6204,8 +6264,19 @@ static FLASHMEM void sd_lifecycle_service(uint32_t now_ms)
 		 * while any probe primitive runs -- no program material is at
 		 * risk -- and once open, the gate latch defers all subsequent
 		 * probes. (Delivery-audit finding, aius-output-jitter.md
-		 * Phase C.) */
-		if (g_tx_gate_open || AudioInputSPDIF3::pllLocked())
+		 * Phase C.)
+		 *
+		 * FIRST BRING-UP IS EXEMPT (open-work register 2026-08-16,
+		 * fixed with aius-ota-resilience.md Phase 4): on a boot with the
+		 * source already emitting a carrier, pllLocked() is true before
+		 * the FIRST probe ever runs, so the deferral starved the mount
+		 * forever -- no card, no config, no SD-hosted dashboard until
+		 * the source went quiet, exactly when the owner was using the
+		 * system. Until g_sd_ready has been achieved once this boot the
+		 * probe runs regardless of the carrier; steady-state deferral
+		 * (hot swap detection, usage refresh) is unchanged. */
+		if (g_sd_bringup_done &&
+		    (g_tx_gate_open || AudioInputSPDIF3::pllLocked()))
 			return;
 		g_sd_step = SD_STEP_PROBE;
 	}
