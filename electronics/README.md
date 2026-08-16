@@ -119,3 +119,16 @@ The purchased optical modules (2026-07-27) are the RS PRO ORJ-5 / OTJ-5
 `aius:Cliff_OTJ5_TOSLINK` footprints were drawn from — pin-compatible, but
 validating the Gerber against the RS PRO layout drawings is a recorded H2 gate
 ([H1 plan §Milestones](../docs/plans/aius-h1-schematic.md#milestones)).
+
+## Board (H3b scaffold)
+
+`aius-carrier.kicad_pcb` is the 4-layer board, bootstrapped from the schematic
+netlist by [`scripts/scaffold_pcb.py`](scripts/scaffold_pcb.py) (run in the
+pinned container through the `pcbnew` Python API — see the script header for the
+two-step `kicad-cli sch export netlist` then `scaffold_pcb.py` invocation). It
+carries the L1/L2/L3/L4 stackup, the 96 × 95 mm outline, every component placed by
+functional zone, all nets, and the inner GND planes. This is an **initial
+placement + connectivity scaffold**, not a routed board: it is regenerable from
+the netlist up to H3b, after which H3c hand-routes it and it is no longer
+regenerated. Layer stackup, impedance geometry, and the 2-vs-4 verdict are in
+[`../docs/plans/aius-h2-h3-manufacturing.md`](../docs/plans/aius-h2-h3-manufacturing.md).

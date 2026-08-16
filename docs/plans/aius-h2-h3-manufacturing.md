@@ -273,6 +273,22 @@ targeted-proof: netlist imports with no unconnected/extra references; courtyard
 unit: parent-only
 ```
 
+**Progress (2026-08-16): board scaffolded.** `electronics/scripts/scaffold_pcb.py`
+(run in the pinned container via the `pcbnew` Python API) builds
+`electronics/aius-carrier.kicad_pcb` from the schematic netlist: 4 copper layers
+(L1 sig / L2 GND / L3 GND+power / L4 sig), the 96 × 95 mm Edge.Cuts outline
+(H2c; final Hammond-slot trim is a pre-order mechanical-review item), all 62
+footprints loaded and net-assigned (69 nets, 169 ratsnest), initial placement by
+functional zone (optical/USB-C/magjack on the rear edge, Teensy central with its
+Ethernet 2×3 + USB-host clusters, the eight expansion headers + Tag-Connect on the
+front edge, passives gridded), and the L2/L3 inner GND planes (H2b return plane;
+left unfilled — KiCad fills on open, H3c refills after routing). DRC: 0 shorts,
+169 expected ratsnest, 46 placement-refinement items (courtyard/hole clearance,
+silk) that resolve during H3c placement refinement + routing. The board is
+regenerable from the netlist; from H3c on it is hand-routed and no longer
+regenerated. **Remaining in H3b:** collision-free placement refinement (the 46
+items) is done together with routing in H3c.
+
 ### Phase H3c — impedance-controlled routing
 
 ```yaml
