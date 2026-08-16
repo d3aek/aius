@@ -22,18 +22,37 @@ standing requirement is remote upgrade with no physical-access failure mode.
 
 ## State — resume here
 
-**Status:** IN-PROGRESS 2026-08-16. Phases 1, 2 and 4 are IMPLEMENTED with
-every host proof green (commits of 2026-08-16; each phase's as-built note
-sits under its heading). The forensic thread is RESOLVED from source (below
-— no bench read needed or possible). The device still runs `d5dab0618f4c`;
-NOTHING NEW HAS BEEN FLASHED, so every on-device half — Phase 1's rehearsal
-stamp surviving a reboot, Phase 2's activation-with-recorder-armed + soak,
-Phase 4's lit-carrier bring-up row — rides the next flash/bench session.
+**Status:** IN-PROGRESS 2026-08-16. Phases 1, 2 and 4 are SHIPPED — host
+proofs green AND bench-validated the same day (the device came to the bench;
+owner directive: install asap, validate before it returns to network-only).
+Bench evidence, all on `a0969892a9d6` HalfKay-flashed at 14:37Z:
 
-**Next action:** Phase 3, which is BLOCKED on the owner's flash-map decision
-before 3a lands (the A/B split of the 8 MiB boot flash; a concrete proposal
-is queued in chat 2026-08-16). The interim no-remote-activation rule stands
-until Phase 3 ships.
+- **Phase 1 hardware proof PASSED.** Fault-injected rehearsal → reboot →
+  the retained stamp survived and named everything: `ota_dark` state 3
+  (FAULTED), fault 7 (VERIFY), rehearsal flag set, step_address
+  `0x60400000` (the scratch head), compare_offset 0 (the injector's flipped
+  first byte), the signed image's digest prefix, 5.81 s of dark-window
+  cycles matching the live `rehearsal_dark_us`; `od=3:5:7:60400000` on the
+  CDC ID line.
+- **Phase 2 hardware proof PASSED.** One full REAL activation with the
+  recorder previously armed (RECORDING, full 8 MiB ring): park ran, staging
+  read from pad-1, window completed 2,351/2,351 steps, 566,272 bytes
+  programmed+verified, 6.27 s dark window, COMPLETED stamp served after the
+  self-reset, `relocks` 0, board healthy. Plus a 3/3 rehearsal soak at the
+  new placement (~5.86 s windows, ~41 ms max step).
+- **Phase 4a proved itself organically:** a real `sd_failure` 500 hit the
+  chunk at offset 32,768 mid-staging — the exact incident shape — and the
+  client resumed from the device's `next_offset`; the session stayed
+  verifiable and the upgrade completed. 4b's client drove every staging
+  above. Scratch-sector self-test: pass.
+- **Still owed:** Phase 4c's lit-carrier boot row (the bench RX is dark;
+  needs an optical source plugged and one reboot — §ACTION for the owner)
+  and Phase 3's power-cut row.
+
+**Next action:** Phase 3 (owner approved the flash map 2026-08-16: 64 KiB
+head for the never-erased chooser + boot record, two equal 3,936 KiB slots;
+confirmed software-defined, no fuse burn). The interim no-remote-activation
+rule stands until Phase 3 ships and is bench-proven.
 
 **Evidence recovered from session scratch before the 7-day GC:** the working
 uploader was promoted as `firmware/tools/ota/aius_ota_flash.py` (Phase 4b,
