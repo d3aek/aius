@@ -166,6 +166,41 @@ ends left open:
 
 ## Open defects — runtime
 
+- **OTA activation dark window can brick: erase completed, no valid image
+  programmed (2026-08-16).** First field failure of the staged upgrade: the
+  `d5dab0618f4c` container staged clean (387 chunks, one transient 500 whose
+  poisoned session was aborted and restaged fresh), device-verified,
+  armed, activation acknowledged — then the board never returned. Forensics:
+  after a cold power cycle it enumerated as `1fc9:0135` "SE Blank RT
+  Family", the i.MX RT ROM serial downloader, i.e. flash held NO valid boot
+  image — the dark window erased and then failed to program (or programmed
+  garbage; the byte-compare stage evidently never passed/completed). The
+  image itself is innocent: the same hex flashed via HalfKay booted first
+  try, generation 1, zero early resets, `relocks` 0. Recovery used the
+  descoped-by-design boundary (Program button → HalfKay →
+  `teensy_loader_cli`), which required physical access — the recorded
+  descope ("a dual-image rollback scheme is not required", network-hardening
+  §Deferred, quoted in `aius-ota-upgrade.md`) held technically but its cost
+  landed on a deployed listening-room device. OPEN QUESTIONS for the chase:
+  what the dark window's program/compare path did (the health-mark cell may
+  have recorded a phase), whether PSRAM staging content was intact at
+  program time, and whether the in-window failure is reproducible on a
+  bench flash. OWNER DECISION QUEUED: whether the remote-upgrade
+  requirement now justifies the second-slot/boot-health-revert design the
+  descope rejected, or an operational rule (activate only with USB in
+  reach) suffices.
+- **Phase C probe guard starves SD bring-up when a carrier is lit at boot
+  (2026-08-16, found in post-incident re-review; fix owed).** The
+  output-jitter Phase C guard defers the SD probe on
+  `g_tx_gate_open || pllLocked()`; on a boot with the source already
+  emitting a carrier, `pllLocked()` is true before the FIRST probe ever
+  runs, so the SD lifecycle never mounts: no card, no config load, no
+  SD-hosted dashboard until the source goes quiet. Steady-state deferral
+  is correct; first bring-up must be exempt (e.g. defer only once
+  `g_sd_ready` has been achieved this boot). Not boot-lethal — network and
+  audio are unaffected — but the dashboard 404s exactly when the owner is
+  using the system.
+
 - **Boot-lottery epoch crawl (2026-08-01; FIXED 2026-08-02 — mechanism
   convicted, boot gate shipped, 28/28 flash-boots healthy on the
   reproducer lineage that failed 3/3 without it; conviction chain and
