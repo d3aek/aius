@@ -169,17 +169,25 @@ ends left open:
 - **OTA container verify is a one-epoch ~80 ms stall — an audible dropout
   when staged during playback (2026-08-16).** Measured live while staging
   the `fd9d35fd3f95` slot-B container with AC-3 playing:
-  `POST /api/ota/verify` (SHA-256 over the whole 1.6 MB staged container +
-  Ed25519) ran as one 79,952 µs HTTP-checkpoint epoch — `tx_underrun_frames`
-  +2,560 (53 ms dropout), epoch budget overrun counted, ingress high-water
-  jumped 5,376 → 7,680 words (input flowed while output starved: the
-  definitive loop-stall signature). Two smaller bursts (+512 at a staging
-  burst, +128 mid-stage) rode the same session. Staging CHUNKS are already
-  incremental; only the final verify re-digests everything in one go. Fix
-  shape: fold the payload digest into chunk arrival (the state machine
-  already sees every chunk exactly once) or slice the verify pass across
-  epochs with a bounded per-epoch byte budget. Until fixed: stage/verify
-  during silence, or accept one ~50 ms dropout per staged release.
+  `POST /api/ota/verify` ran as one 79,952 µs HTTP-checkpoint epoch —
+  `tx_underrun_frames` +2,560 (53 ms dropout), epoch budget overrun
+  counted, ingress high-water jumped 5,376 → 7,680 words (input flowed
+  while output starved: the definitive loop-stall signature). Two smaller
+  bursts (+512 at a staging burst, +128 mid-stage) rode the same session.
+  **The second staging pinned the dominant term: ~80 ms for BOTH the
+  1.6 MB and the 570 KB container, so the cost is the Ed25519 signature
+  check (TweetNaCl on the M7), not the payload SHA-256** — slicing the
+  digest alone will not fix it; the verify epoch needs its own strategy
+  (slice the scalar arithmetic, run verify under a gate-aware moment, or
+  accept and document the one dropout). Until fixed: stage/verify during
+  silence, or accept one ~50 ms dropout per staged release. Related
+  device-side improvement candidate from the same evening: the verify
+  accepts a payload whose slot IVT is garbage (the operator staged the
+  Intel-hex ASCII by mistake; it byte-verified and flashed, and only the
+  chooser's IVT-sanity refusal — now field-proven — kept the slot from a
+  dead trial boot). Cheap add: validate the staged payload's IVT bounds at
+  verify, refusing before the flash is spent. The signer now flattens
+  Intel-hex input (incident row in `test_ota_signer.py`).
 
 - **Flight recorder freezes on the boot bring-up underrun, spending its
   one-shot trigger before the session exists (2026-08-16).** Field

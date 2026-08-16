@@ -49,12 +49,18 @@ programme (21.8 s, loud program to the cut) lives in session scratch only
 `electronics/*` and `compose.yaml` belong to the H3a
 electronics session — foreign, untouched.
 
-**Next action:** deploy the instrumented image (governor compiled but HELD
-— `AIUS_TX_GOVERNOR_ENABLED=0` — by operator decision after the pop
-diagnosis; see the Phase E diagnosis note) over remote OTA to slot B, wait
-for the next pop, and read `input_diag` to attribute it. The attribution
-verdict decides the governor's target policy; only then is the governor
-enabled and Phase E's live verify run.
+**Next action:** the instrumented image (governor compiled but HELD —
+`AIUS_TX_GOVERNOR_ENABLED=0`) is LIVE on slot B as `fd9d35fd3f95`
+(healthy-committed seq 9, 2026-08-16 evening — after a first activation
+attempt that signed the Intel-hex TEXT as the payload; the chooser's
+IVT-sanity refusal saved the slot and the signer now flattens hex input).
+Wait for the next pop and read `input_diag` to attribute it: one
+`production_gap_over_count` increment pairs with either a same-window SIS
+error (input-side) or an ISR-cadence spike (firmware-side). That verdict
+decides the governor's target policy; only then is the governor enabled
+and Phase E's live verify run. The next image also carries `prev_boot` +
+`fault_record` (the core's retained crash record over HTTP), already
+built and committed.
 
 **Decisions taken this session (owner, in chat):**
 - Jitter is fixed by removing sources, never by widening the transmit

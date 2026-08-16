@@ -214,6 +214,55 @@ def resolve_build_utc(args) -> int | None:
     return int(parsed.timestamp())
 
 
+def flatten_intel_hex(path: Path) -> bytes | None:
+    """Flatten an Intel-hex text file into the raw image bytes the container
+    carries, or None when the file is not Intel hex. 0xFF fills alignment
+    gaps (erased-flash value); a span over 8 MiB is refused as a parse gone
+    wrong rather than padded into a monster.
+
+    This exists because of a real incident (2026-08-16): `sign --image
+    firmware.hex` signed the 1.6 MB ASCII TEXT of the hex file as the
+    payload, the device faithfully staged, verified and flashed it, and the
+    chooser's IVT sanity check was the only thing standing between the
+    operator and a dead slot. The signature machinery cannot tell text from
+    code -- this loader can."""
+    try:
+        with path.open("r", encoding="ascii") as handle:
+            first = handle.readline()
+            if not first.startswith(":"):
+                return None
+            regions: dict[int, bytes] = {}
+            upper = 0
+            handle.seek(0)
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                if not line.startswith(":"):
+                    return None
+                raw = bytes.fromhex(line[1:])
+                if (sum(raw) & 0xFF) != 0:
+                    return None
+                count, kind = raw[0], raw[3]
+                address = (raw[1] << 8) | raw[2]
+                if kind == 4:
+                    upper = ((raw[4] << 8) | raw[5]) << 16
+                elif kind == 0:
+                    regions[upper + address] = raw[4:4 + count]
+    except (OSError, UnicodeDecodeError, ValueError):
+        return None
+    if not regions:
+        return None
+    base = min(regions)
+    end = max(start + len(data) for start, data in regions.items())
+    if end - base > 8 * 1024 * 1024:
+        return None
+    image = bytearray(b"\xff" * (end - base))
+    for start, data in regions.items():
+        image[start - base:start - base + len(data)] = data
+    return bytes(image)
+
+
 def command_sign(args, cli: Path) -> int:
     if not args.image.is_file():
         return fail(f"no such image: {args.image}")
@@ -226,7 +275,16 @@ def command_sign(args, cli: Path) -> int:
     if build_utc is None:
         return fail("--build-utc must be Unix seconds or an ISO-8601 date")
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    argv = [str(cli), "sign", str(args.image), str(args.secret),
+    image_path = args.image
+    flattened = flatten_intel_hex(args.image)
+    if flattened is not None:
+        image_path = args.output.with_suffix(".flattened.bin")
+        if image_path.exists():
+            return fail(f"{image_path} exists; sign never overwrites an image",
+                        EXIT_REFUSED)
+        image_path.write_bytes(flattened)
+        print(f"intel_hex_flattened={len(flattened)} bytes -> {image_path}")
+    argv = [str(cli), "sign", str(image_path), str(args.secret),
             args.target_id, args.build_revision, str(build_utc),
             str(args.output)]
     if args.slot:

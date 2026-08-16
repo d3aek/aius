@@ -207,6 +207,51 @@ class SignTests(SignerTestCase):
         self.assertEqual(first_evidence["signature"],
                          second_evidence["signature"])
 
+    def test_an_intel_hex_image_is_flattened_not_signed_as_text(self):
+        """The 2026-08-16 incident row: `--image firmware.hex` used to sign
+        the hex file's ASCII as the payload; the device staged, verified and
+        flashed 1.6 MB of text and only the chooser's IVT sanity check kept
+        the slot bootable. Hex input must land as the flattened binary."""
+        payload = bytes((index * 7 + 3) % 256 for index in range(48))
+
+        def record(address, data):
+            raw = bytes([len(data), (address >> 8) & 0xFF, address & 0xFF, 0])
+            raw += data
+            checksum = (-sum(raw)) & 0xFF
+            return ":" + (raw + bytes([checksum])).hex().upper()
+
+        def ela(upper):
+            raw = bytes([2, 0, 0, 4, (upper >> 8) & 0xFF, upper & 0xFF])
+            checksum = (-sum(raw)) & 0xFF
+            return ":" + (raw + bytes([checksum])).hex().upper()
+
+        lines = [ela(0x6001)]
+        lines.append(record(0x0000, payload[:16]))
+        lines.append(record(0x0010, payload[16:32]))
+        # A 4-byte alignment gap, as the real slot images carry.
+        lines.append(record(0x0024, payload[32:48]))
+        lines.append(":00000001FF")
+        image = self.work / "image.hex"
+        image.write_text("\n".join(lines) + "\n")
+        expected = payload[:32] + b"\xff" * 4 + payload[32:48]
+
+        container = self.work / "image.aiuo"
+        code, evidence, stdout, stderr = run_signer(
+            "sign",
+            "--image", str(image),
+            "--secret", str(COMMITTED_SECRET),
+            "--target-id", TARGET_ID,
+            "--build-revision", REVISION,
+            "--build-utc", BUILD_UTC,
+            "--output", str(container),
+        )
+        self.assertEqual(code, EXIT_OK, f"sign failed:\n{stdout}\n{stderr}")
+        self.assertEqual(int(evidence["image_length"]), len(expected))
+        header_bytes = int(evidence["header_bytes"])
+        self.assertEqual(container.read_bytes()[header_bytes:], expected)
+        self.assertEqual(evidence["payload_sha256"],
+                         hashlib.sha256(expected).hexdigest())
+
     def test_sign_refuses_to_overwrite_a_container(self):
         image, container, _ = self.sign_sample()
         before = container.read_bytes()

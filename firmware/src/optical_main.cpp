@@ -806,6 +806,55 @@ static uint16_t g_prev_boot_checkpoint = 0xffffu;
  * this names the service whose `false` return started the starvation. `fa=`
  * on the USB ID line: 0-9 a checkpoint, 254 no abort, 255 latch invalid. */
 static uint8_t g_prev_first_abort = AIUS_ABORT_INVALID;
+
+/* The Teensy core's retained crash record (fault-record-over-HTTP,
+ * 2026-08-16). The core's fault handler writes an 11-word CRC'd record into
+ * the top 128 bytes of OCRAM at 0x2027FF80 (stacked return address, CFSR /
+ * HFSR / MMFAR / BFAR, xPSR, CPU temperature, uptime seconds) that survives
+ * every warm reset: the chooser links no RAM sections and the boot ROM's
+ * OCRAM scratch stops at 0x2027F800, both verified before this was built. It
+ * was previously readable only by printing CrashReport over USB; snapshotting
+ * it here and serving it as `fault_record` makes a slot-trial death readable
+ * from the couch. The struct mirrors the core's arm_fault_info_struct
+ * (CrashReport.cpp) field for field, and the CRC check mirrors its
+ * isvalid(); the record is deliberately NEVER cleared -- the next fault
+ * overwrites it, so it always describes the most recent fault, however many
+ * boots ago. */
+struct AiusCoreFaultRecord {
+	uint32_t len;
+	uint32_t ipsr;
+	uint32_t cfsr;
+	uint32_t hfsr;
+	uint32_t mmfar;
+	uint32_t bfar;
+	uint32_t ret;
+	uint32_t xpsr;
+	float temp;
+	uint32_t time;
+	uint32_t crc;
+};
+static AiusCoreFaultRecord g_fault_record;
+static bool g_fault_record_valid;
+
+static FLASHMEM void fault_record_capture(void)
+{
+	const AiusCoreFaultRecord *record =
+		(const AiusCoreFaultRecord *)0x2027FF80;
+	const uint32_t *data = (const uint32_t *)record;
+	uint32_t crc = 0xFFFFFFFFu;
+
+	if (record->len != sizeof(*record) / 4u)
+		return;
+	for (uint32_t word = 0u; word < sizeof(*record) / 4u - 1u; word++) {
+		crc ^= data[word];
+		for (uint32_t bit = 0u; bit < 32u; bit++)
+			crc = (crc >> 1) ^ (crc & 1u) * 0xEDB88320u;
+	}
+	if (crc != record->crc)
+		return;
+	memcpy(&g_fault_record, record, sizeof(g_fault_record));
+	g_fault_record_valid = true;
+}
 /* The dispatcher's mask mirror must equal the recorder's own bits -- the
  * measure probe-cap rule, applied to four constants. */
 static_assert(AIUS_OPTICAL_APP_RECORDER_MASK_OVERRUN ==
@@ -3019,6 +3068,56 @@ static FLASHMEM bool http_input_diag_json(char *output, size_t capacity,
 		(unsigned long)g_update_gap_max_us);
 }
 
+/* The previous boot's retained forensics, HTTP-readable (they were CDC-only
+ * as `pv=` / `fa=`, which needed a bench trip exactly when the board was
+ * deployed): the final persisted checkpoint of the boot that died, and its
+ * first aborting checkpoint. 65535 = retained ledger invalid; 254 = no
+ * abort; 255 = abort latch invalid. */
+static FLASHMEM bool http_prev_boot_json(char *output, size_t capacity,
+                                         size_t *length)
+{
+	return http_json_append(
+		output, capacity, length,
+		",\"prev_boot\":{"
+		"\"final_checkpoint\":%u,"
+		"\"first_abort\":%u}",
+		(unsigned)g_prev_boot_checkpoint,
+		(unsigned)g_prev_first_abort);
+}
+
+/* The core's retained crash record (capture rationale + layout at
+ * fault_record_capture()). Registers as hex strings to match the flash map
+ * and addr2line conventions; null when no valid record stands. */
+static FLASHMEM bool http_fault_record_json(char *output, size_t capacity,
+                                            size_t *length)
+{
+	if (!g_fault_record_valid) {
+		return http_json_append(output, capacity, length,
+		                        ",\"fault_record\":null");
+	}
+	return http_json_append(
+		output, capacity, length,
+		",\"fault_record\":{"
+		"\"ipsr\":%lu,"
+		"\"cfsr\":\"0x%08lX\","
+		"\"hfsr\":\"0x%08lX\","
+		"\"mmfar\":\"0x%08lX\","
+		"\"bfar\":\"0x%08lX\","
+		"\"return_address\":\"0x%08lX\","
+		"\"xpsr\":\"0x%08lX\","
+		"\"temp_c\":%.1f,"
+		"\"uptime_s\":%lu}",
+		(unsigned long)g_fault_record.ipsr,
+		(unsigned long)g_fault_record.cfsr,
+		(unsigned long)g_fault_record.hfsr,
+		(unsigned long)g_fault_record.mmfar,
+		(unsigned long)g_fault_record.bfar,
+		(unsigned long)g_fault_record.ret,
+		(unsigned long)g_fault_record.xpsr,
+		(double)g_fault_record.temp,
+		(unsigned long)g_fault_record.time);
+}
+
 /* The retained fnet_poll probe (lib/aius_boot/include/AiusPollProbe.h,
  * storage in the ldscript's `.aius_retained` window): the diagnostic
  * vector for the periodic DHCP-T1 watchdog wedge. `wedges`/`ctx`/`dhcp`/
@@ -4914,6 +5013,10 @@ static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
 	if (!http_clock_regs_json((char *)body, capacity, &length))
 		return false;
 	if (!http_input_diag_json((char *)body, capacity, &length))
+		return 0;
+	if (!http_prev_boot_json((char *)body, capacity, &length))
+		return 0;
+	if (!http_fault_record_json((char *)body, capacity, &length))
 		return 0;
 	if (!http_poll_probe_json((char *)body, capacity, &length))
 		return 0;
@@ -7836,6 +7939,9 @@ static FLASHMEM void capture_retained_boot_state(void)
 	/* Same capture-or-never window as `pv=`, same reader (`fa=`). Also
 	 * re-arms the latch for this boot, before the watchdog exists. */
 	g_prev_first_abort = aius_boot_teensy_abort_capture();
+	/* The core's retained crash record, same window: read it before any of
+	 * this boot's code could fault over it. */
+	fault_record_capture();
 	/* A zeroed or corrupt retained ledger fails validation inside
 	 * aius_boot_init(), which then starts a normal generation-1 boot. */
 	aius_boot_init(&g_boot_ledger, &retained, input);
