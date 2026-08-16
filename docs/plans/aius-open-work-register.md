@@ -166,6 +166,21 @@ ends left open:
 
 ## Open defects — runtime
 
+- **OTA container verify is a one-epoch ~80 ms stall — an audible dropout
+  when staged during playback (2026-08-16).** Measured live while staging
+  the `fd9d35fd3f95` slot-B container with AC-3 playing:
+  `POST /api/ota/verify` (SHA-256 over the whole 1.6 MB staged container +
+  Ed25519) ran as one 79,952 µs HTTP-checkpoint epoch — `tx_underrun_frames`
+  +2,560 (53 ms dropout), epoch budget overrun counted, ingress high-water
+  jumped 5,376 → 7,680 words (input flowed while output starved: the
+  definitive loop-stall signature). Two smaller bursts (+512 at a staging
+  burst, +128 mid-stage) rode the same session. Staging CHUNKS are already
+  incremental; only the final verify re-digests everything in one go. Fix
+  shape: fold the payload digest into chunk arrival (the state machine
+  already sees every chunk exactly once) or slice the verify pass across
+  epochs with a bounded per-epoch byte budget. Until fixed: stage/verify
+  during silence, or accept one ~50 ms dropout per staged release.
+
 - **Flight recorder freezes on the boot bring-up underrun, spending its
   one-shot trigger before the session exists (2026-08-16).** Field
   observation on `1dc7cbb80397` slot A: `/api/recorder` reported
