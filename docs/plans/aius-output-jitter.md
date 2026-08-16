@@ -196,6 +196,18 @@ the tuning to 128 even landed.
   expanded here). On-device: post-flash `/api/meters` body ≤ ~1.5 KB with no
   `analysis_window` key.
 - unit: parent-only
+- **2026-08-16, later: the editor half of this outcome was NOT delivered with
+  the firmware half, and is now done.** The firmware stopped serving the window
+  in `b4a3914ce`; the page kept its canvas, its FFT, its band mapping and a
+  status line reading *"history is paused"*, which describes a transient gap
+  rather than a feed no device has. The owner found it on the deployed board.
+  The spectrum underlay, the spectrogram, the client-side FFT and the ~20 rows
+  of analyser coverage are now deleted outright (owner decision: delete, not
+  hide), leaving three canvases on the page and 230 green editor rows. The
+  three DSP editor captures in
+  [`../reference/user-interface.md`](../reference/user-interface.md) still show
+  the removed feature and are owed a re-render; its hero recipe needs a new
+  lower anchor because `#spectrogram` was its old one.
 
 ### Phase B — interleave a second audio-service pass
 

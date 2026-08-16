@@ -15,18 +15,16 @@
  * pairs whose members DIFFER. `meters-*.json` are the settled
  * `GET /api/meters` shape that `http_meters_json()` emits as of Phase 14b --
  * six positional dBFS input entries floored at -120, `[L, R]` output arrays,
- * a per-mille integer replay waveform, and the optional analysis window --
- * authored to the contract rather than captured from a device, and covering
- * the live, all-at-the-floor, and never-published (`sequence == 0`) cases.
- * The `/api/status` stub carries the
+ * a per-mille integer replay waveform -- authored to the contract rather than
+ * captured from a device, and covering the live, all-at-the-floor, and
+ * never-published (`sequence == 0`) cases. The `/api/status` stub carries the
  * `carrier` flag and the latched `tx_gate` object the swagger `Status` schema
  * documents.
  *
- * The analyser's `analysis_window` is the one stimulus NOT carried as a JSON
- * fixture: it is synthesised per test as two bin-centred tones at stated
- * amplitudes, because 1024 checked-in integers would be an unverifiable wall of
- * numbers while `sin(2*pi*32*n/1024) / 2` says exactly what the expected bins
- * are and why.
+ * The analyser suite that used to live at the foot of this file was deleted on
+ * 2026-08-16 with the feature: output-jitter Phase A dropped `analysis_window`
+ * from /api/meters, so the FFT, the band mapping, the underlay and the
+ * spectrogram have no possible input on any device.
  */
 
 import { readFileSync } from 'node:fs';
@@ -127,8 +125,8 @@ function installCanvas() {
     context.closePath = record('closePath');
     context.moveTo = record('moveTo');
     context.lineTo = record('lineTo');
-    /* A rect carries its fill state the way a stroke does: the analyser underlay
-     * is identified by being FAINT, which is drawing state and not geometry. */
+    /* A rect carries its fill state the way a stroke does: a bar is identified
+     * by its colour and alpha, which is drawing state and not geometry. */
     context.fillRect = (...args) => ops.push(['fillRect', ...args, context.fillStyle, context.globalAlpha]);
     context.setLineDash = (segments) => {
       lineDash = segments;
@@ -1606,25 +1604,22 @@ describe('Aius SD DSP editor — meters', () => {
     expect(el('meter-sequence').textContent).toBe('1287');
   });
 
-  it('uses the spectrum history canvas instead of duplicating the replay waveform', async () => {
+  /* The live-processing card draws NOTHING now. It never duplicated the replay
+   * page's waveform, and the spectrogram it did carry was deleted on 2026-08-16
+   * with its feed: output-jitter Phase A dropped `analysis_window` from
+   * /api/meters, so no device can fill one and a canvas here could only ever be
+   * an empty box with a status line implying it was about to fill. */
+  it('carries no canvas in the live-processing card, and no analyser wiring', async () => {
     await boot();
     await vi.advanceTimersByTimeAsync(100);
 
     expect(el('waveform')).toBe(null);
-    expect(el('spectrogram').tagName).toBe('CANVAS');
-    expect(el('spectrogram-status').textContent).toContain('history');
-  });
-
-  it('bounds spectrum history at 256 newest columns', async () => {
-    await boot();
-    let history = [];
-    for (let sequence = 0; sequence < 300; sequence++) {
-      history = maths().appendSpectrogramColumn(history, [sequence]);
+    expect(el('spectrogram')).toBe(null);
+    expect(el('spectrogram-status')).toBe(null);
+    expect(document.getElementById('card-meters').querySelector('canvas')).toBe(null);
+    for (const gone of ['spectrumBins', 'spectrumBandsOf', 'spectrogramLevel', 'appendSpectrogramColumn']) {
+      expect(maths()[gone]).toBeUndefined();
     }
-
-    expect(history).toHaveLength(256);
-    expect(history[0]).toEqual([44]);
-    expect(history[255]).toEqual([299]);
   });
 
   /* The per-channel table became grouped cards (2026-07-27 feedback, item 9):
@@ -3982,177 +3977,6 @@ describe('Aius SD DSP editor — meter ballistics', () => {
     expect(el('bar-in-fl-fill').style.width).toBe('0.0%');
     expect(el('bar-in-fl-fill').dataset.zone).toBe('idle');
     expect(el('gr-fill').style.width).toBe('0.0%');
-  });
-});
-
-/* The analyser: a radix-2 FFT over a raw sample window the meter snapshot
- * carries, drawn as log-spaced bands under the EQ curves. The firmware change
- * that publishes that window lands separately, so the page has to be correct
- * both before and after it arrives. */
-describe('Aius SD DSP editor — the analyser', () => {
-  /* A SYNTHETIC window, not a captured one: two bin-centred tones at known
-   * amplitudes are the only stimulus whose spectrum can be asserted exactly.
-   * 1024 samples at 48 kHz put a bin every 46.875 Hz, so tone bins 32 and 128
-   * are 1500 Hz and 6000 Hz -- exactly on a bin, which is what makes the
-   * Hann-windowed answer exact instead of approximate. Samples are int16-scale
-   * integers, the raw PCM the pipeline carries. */
-  const FULL_SCALE = 32768;
-  const WINDOW_SIZE = 1024;
-  const RATE_HZ = 48000;
-  const LOUD_DBFS = 20 * Math.log10(0.5); /* -6.0206 */
-  const QUIET_DBFS = 20 * Math.log10(0.125); /* -18.0618 */
-  const TONES = [
-    { bin: 32, amplitude: 0.5 },
-    { bin: 128, amplitude: 0.125 },
-  ];
-  const twoToneWindow = () =>
-    Array.from({ length: WINDOW_SIZE }, (unused, sample) =>
-      Math.round(
-        TONES.reduce(
-          (total, tone) =>
-            total + tone.amplitude * FULL_SCALE * Math.sin((2 * Math.PI * tone.bin * sample) / WINDOW_SIZE),
-          0,
-        ),
-      ),
-    );
-  const analyserMeters = (over = {}) => ({
-    ...fixture('meters-snapshot.json'),
-    analysis_window: twoToneWindow(),
-    ...over,
-  });
-  const SPECTRUM_BANDS = 48;
-  const bandOf = (hz) => {
-    let index = 0;
-    while (index < SPECTRUM_BANDS - 1 && maths().bandEdgeHz(index + 1) <= hz) index++;
-    return index;
-  };
-  const underlay = () => lastFrame('curve').filter((op) => op[0] === 'fillRect');
-  const tallest = () => underlay().reduce((best, op) => (op[4] > best[4] ? op : best), underlay()[0]);
-  const redraws = () => opsOf('curve').filter((op) => op[0] === 'clearRect').length;
-
-  it('reads both tones back out of the window at their own amplitudes', async () => {
-    await boot();
-    const bins = maths().spectrumBins(twoToneWindow(), FULL_SCALE);
-
-    expect(bins).toHaveLength(WINDOW_SIZE / 2);
-    expect(bins[32]).toBeCloseTo(LOUD_DBFS, 2);
-    expect(bins[128]).toBeCloseTo(QUIET_DBFS, 2);
-    // Hann spreads a bin-centred tone over its two immediate neighbours at half
-    // the amplitude and nowhere else ...
-    expect(bins[31]).toBeCloseTo(LOUD_DBFS - 6.0206, 2);
-    expect(bins[129]).toBeCloseTo(QUIET_DBFS - 6.0206, 2);
-    // ... so two bins out is the 16-bit quantisation floor, not the tone.
-    expect(bins[34]).toBeLessThan(-80);
-    expect(bins[300]).toBeLessThan(-80);
-  });
-
-  it('refuses a window too short to say anything about 20 Hz to 20 kHz', async () => {
-    await boot();
-    expect(maths().spectrumBins(Array.from({ length: 64 }, () => 1000), FULL_SCALE)).toEqual([]);
-    expect(maths().spectrumBins([], FULL_SCALE)).toEqual([]);
-  });
-
-  it('maps the bins onto the log-spaced bands the plot shares its axis with', async () => {
-    await boot();
-    const bands = maths().spectrumBandsOf(maths().spectrumBins(twoToneWindow(), FULL_SCALE), RATE_HZ);
-
-    expect(bands).toHaveLength(SPECTRUM_BANDS);
-    // The loudest bin in a band is the band: a spectrum answers "how much is
-    // there at this frequency", not "how much across this width".
-    expect(bands[bandOf(1500)]).toBeCloseTo(LOUD_DBFS, 2);
-    expect(bands[bandOf(6000)]).toBeCloseTo(QUIET_DBFS, 2);
-    // A band the window cannot resolve is EMPTY rather than a level invented
-    // for it: the first bin of a 1024-point window at 48 kHz is 46.9 Hz, and a
-    // band stays narrower than that spacing until ~300 Hz -- so the bottom of
-    // the underlay is deliberately gappy and its top is continuous.
-    expect(bands[0]).toBe(null);
-    expect(bands[bandOf(25)]).toBe(null);
-    expect(bands.slice(bandOf(400)).every((band) => band !== null)).toBe(true);
-  });
-
-  it('draws nothing, and costs nothing, until a snapshot carries a window', async () => {
-    await boot({ meters: { ...fixture('meters-snapshot.json'), analysis_window: [1, 2, 3] } });
-    await vi.advanceTimersByTimeAsync(300);
-
-    expect(underlay()).toHaveLength(0);
-    expect(el('meter-state').textContent).toBe('live');
-
-    // And the plot is not redrawing per frame either: a page whose firmware
-    // never publishes a window pays nothing for the analyser.
-    const before = redraws();
-    await vi.advanceTimersByTimeAsync(500);
-    expect(redraws()).toBe(before);
-  });
-
-  it('lights the underlay up on the first snapshot that carries one', async () => {
-    await boot({ meters: analyserMeters() });
-    await vi.advanceTimersByTimeAsync(100);
-
-    const frame = lastFrame('curve');
-    const bars = underlay();
-    expect(bars.length).toBeGreaterThan(0);
-
-    // BENEATH the curves: every bar is drawn before the frame's first path.
-    expect(frame.indexOf(bars[bars.length - 1])).toBeLessThan(frame.findIndex((op) => op[0] === 'beginPath'));
-    // Faded, one colour, never competing with a cascade.
-    expect(bars.every((op) => op[6] < 0.25)).toBe(true);
-    // The tallest band sits under 1500 Hz on the plot's OWN frequency axis ...
-    const loud = tallest();
-    expect(loud[1]).toBeLessThanOrEqual(atHz(1500));
-    expect(loud[1] + loud[3]).toBeGreaterThanOrEqual(atHz(1500));
-    // ... and its height is its own dBFS scale (-96 dBFS to 0 over the canvas),
-    // growing up from the bottom, not the +-12 dB the curves are drawn against.
-    expect(loud[4]).toBeCloseTo(((LOUD_DBFS + 96) / 96) * 240, 3);
-    expect(loud[2] + loud[4]).toBeCloseTo(240, 6);
-    // The plot still works: the curves and their handles are drawn over it.
-    expect(cascadePaths()).toHaveLength(5);
-    expect(lastFrame('spectrogram').some((op) => op[0] === 'fillRect')).toBe(true);
-    expect(el('spectrogram-status').textContent).toContain('21.3 ms sampled per 100 ms poll');
-    expect(el('spectrogram-status').textContent).toContain('strobed, not gapless');
-    expect(el('spectrogram-status').textContent).toContain('newest right');
-  });
-
-  it('does not transform or append the same meter sequence twice', async () => {
-    await boot({ meters: analyserMeters() });
-    await vi.advanceTimersByTimeAsync(100);
-    const before = opsOf('spectrogram').filter((op) => op[0] === 'clearRect').length;
-
-    await vi.advanceTimersByTimeAsync(300);
-    expect(opsOf('spectrogram').filter((op) => op[0] === 'clearRect')).toHaveLength(before);
-    expect(underlay()).toHaveLength(0);
-    expect(el('spectrogram-status').textContent).toContain('No new analysis sequence');
-    expect(el('spectrogram-status').textContent).toContain('history is paused');
-
-    device.meters = analyserMeters({ sequence: 1288 });
-    await vi.advanceTimersByTimeAsync(100);
-    expect(opsOf('spectrogram').filter((op) => op[0] === 'clearRect')).toHaveLength(before + 1);
-    expect(underlay().length).toBeGreaterThan(0);
-    expect(el('spectrogram-status').textContent).toContain('21.3 ms sampled per 100 ms poll');
-  });
-
-  it('smooths the bands between windows and puts the underlay away when it stops', async () => {
-    await boot({ meters: analyserMeters() });
-    await vi.advanceTimersByTimeAsync(100);
-    const loud = tallest()[4];
-
-    // The signal stops: the bands FALL rather than collapsing in one snapshot.
-    device.meters = analyserMeters({
-      sequence: 1288,
-      analysis_window: Array.from({ length: WINDOW_SIZE }, () => 0),
-    });
-    await vi.advanceTimersByTimeAsync(100);
-    const falling = tallest()[4];
-    expect(falling).toBeLessThan(loud);
-    expect(falling).toBeGreaterThan(0);
-
-    // The field itself disappears: the underlay goes with it, and the plot
-    // stops redrawing per frame.
-    device.meters = { ...fixture('meters-snapshot.json'), sequence: 1289 };
-    await vi.advanceTimersByTimeAsync(100);
-    expect(underlay()).toHaveLength(0);
-    const before = redraws();
-    await vi.advanceTimersByTimeAsync(500);
-    expect(redraws()).toBe(before);
   });
 });
 

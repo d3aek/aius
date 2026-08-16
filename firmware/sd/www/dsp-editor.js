@@ -6,10 +6,18 @@
  * optimistic-concurrency token, polling GET /api/meters at 10 Hz and
  * GET /api/status at 1 Hz -- one serialised request at a time per endpoint,
  * never a timer stack -- and drawing the signal-flow strip: ONE stacked EQ plot
- * carrying every cascade (with the analyser's spectrum underneath it when the
- * snapshot carries a sample window), the downmix routing diagram, the level
- * bars under peak-hold ballistics, the DSP load and the limiter's gain
- * reduction, all from that same model and those same snapshots.
+ * carrying every cascade, the downmix routing diagram, the level bars under
+ * peak-hold ballistics, the DSP load and the limiter's gain reduction, all from
+ * that same model and those same snapshots.
+ *
+ * The spectrum underlay and the strobed spectrogram were DELETED on 2026-08-16
+ * with the feed that drove them: output-jitter Phase A dropped `analysis_window`
+ * from /api/meters (~9.3 kB of JSON in one HTTP epoch at 10 Hz, the loop's
+ * dominant recurring cost), so no device serves one. The page had gone on
+ * shipping the canvas and a status line reading "history is paused", which
+ * describes a transient gap rather than a feature that no longer exists. The
+ * FFT and band-mapping helpers went with it; `git show b4a3914ce^` has them if a
+ * future device ever publishes a window again.
  *
  * DOES NOT OWN: the replay manager (replays.js), the device status page
  * (status.js), the shared chrome behaviours (sd-shared.js -- pills, fetch
@@ -136,24 +144,6 @@
   const METER_FALL_DB_PER_S = 26; /* slower than a studio PPM: the source is already 100 ms peaks */
   const LIMITER_HOLD_MS = 400; /* gain reduction is news -- hold it, then let it recover */
   const LIMITER_FALL_DB_PER_S = 36;
-
-  /* The analyser underlay under the stacked EQ plot. Bands are LOG-spaced over
-   * the plot's own 20 Hz..20 kHz axis, so a band sits under the frequency it
-   * describes; 48 of them is a fifth of an octave each, dense enough to show a
-   * spectrum's shape and coarse enough that one 1024-point window fills it.
-   * The vertical scale is its OWN dBFS -- it has no relationship to the +-12 dB
-   * the curves are drawn against, which is why the underlay is faint, unlabelled
-   * and never carries a handle. */
-  const SPECTRUM_BANDS = 48;
-  const SPECTRUM_FLOOR_DBFS = -96; /* the underlay's own floor, not the meters' -120 */
-  const SPECTRUM_MIN_SAMPLES = 256; /* below this a window says nothing about 20 Hz..20 kHz */
-  const SPECTRUM_MAX_SAMPLES = 4096; /* a longer window is truncated, not refused */
-  const SPECTRUM_HOLD_MS = 0; /* a spectrum is read as motion; a hold reads as a freeze */
-  const SPECTRUM_FALL_DB_PER_S = 48;
-  const SPECTRUM_ALPHA = 0.18; /* context under the curves, never competing with them */
-  const SPECTRUM_COLOUR = '#74d7ff';
-  const SPECTRUM_GAP_PX = 1; /* a hairline between bands, so 48 bars read as bars */
-  const SPECTROGRAM_HISTORY_MAX = 256;
 
   /* Firmware facts mirrored here the way MODEL_MAX_BYTES mirrors
    * AIUS_DSP_MODEL_MAX_JSON_BYTES: the snapshot carries raw DWT cycle counts
@@ -347,15 +337,6 @@
     needles: new Map(),
     levelTargets: new Map(), /* bar id -> published dBFS, or null for no data */
     limiterTarget: 0, /* published gain REDUCTION, 0..LIMITER_SPAN_DB */
-    /* The analyser's per-band dBFS from the last window, and where each band's
-     * needle actually is. BOTH empty means the snapshot carries no window --
-     * the underlay is not drawn and the plot does not redraw per frame. */
-    spectrumTargets: [],
-    spectrumBands: [],
-    /* One column per accepted, previously unseen meter sequence. The same
-     * spectrumBins() result feeds this and spectrumTargets. */
-    spectrogramHistory: [],
-    lastAnalysisSequence: null,
     /* Date.now() of the last ballistic frame; 0 until the first one. */
     frameAt: 0,
     /* The handle currently under a captured pointer, or null -- one per canvas,
@@ -2261,7 +2242,6 @@
     renderDspLoad(meters);
     renderStripLevels(meters);
     pushLimiter(meters.limiter_gain_reduction_db);
-    driveSpectrum(meters);
     /* The needles move on the snapshot's own arrival too, not only on the next
      * frame: a peak has to be on screen the instant it is published. */
     ballisticFrame();
@@ -2741,11 +2721,10 @@
    * One needle is {value, holdLeft}; one step is a function of the milliseconds
    * that have passed. The frame ticker owns the clock, so the decay is provable
    * without one. A `ballistic` is the three tunables that describe an
-   * instrument -- {floor, fall, hold} -- because a level bar, the gain-reduction
-   * bar and an analyser band are the same needle with different numbers. */
+   * instrument -- {floor, fall, hold} -- because a level bar and the
+   * gain-reduction bar are the same needle with different numbers. */
   const METER_BALLISTIC = { floor: BAR_FLOOR_DBFS, fall: METER_FALL_DB_PER_S, hold: METER_HOLD_MS };
   const LIMITER_BALLISTIC = { floor: 0, fall: LIMITER_FALL_DB_PER_S, hold: LIMITER_HOLD_MS };
-  const SPECTRUM_BALLISTIC = { floor: SPECTRUM_FLOOR_DBFS, fall: SPECTRUM_FALL_DB_PER_S, hold: SPECTRUM_HOLD_MS };
 
   const newNeedle = (ballistic) => ({ value: ballistic.floor, holdLeft: 0 });
 
@@ -2765,129 +2744,6 @@
     needle.holdLeft = Math.max(0, needle.holdLeft - spent);
     needle.value = Math.max(wanted, needle.value - (ballistic.fall * falling) / 1000);
     return needle.value;
-  }
-
-  /* ---- the analyser: a radix-2 FFT over the published sample window -------
-   * The snapshot's `waveform` is a 128-point per-mille ENVELOPE -- enough to see
-   * that audio is moving, far too coarse to say what is in it. The analyser
-   * reads a raw sample window instead and shows its spectrum under the EQ plot,
-   * so an operator can see the band a section is about to move.
-   *
-   * The transform is the textbook iterative Cooley-Tukey over a real input with
-   * a zeroed imaginary array. Packing the real signal into N/2 complex points
-   * and unpacking the spectrum afterwards halves the work and doubles the code;
-   * 1024 points every 100 ms is nothing in a browser, and this way the maths on
-   * the page is the maths in the book. */
-
-  /* Bit-reversal permutation, then log2(n) butterfly passes with the twiddle
-   * advanced by rotation rather than a fresh cos/sin per point. `real` and
-   * `imaginary` are transformed IN PLACE and `n` MUST be a power of two --
-   * spectrumBins() is the only caller and truncates to one. */
-  function fftInPlace(real, imaginary) {
-    const n = real.length;
-    for (let index = 1, mirror = 0; index < n; index++) {
-      let bit = n >> 1;
-      for (; mirror & bit; bit >>= 1) mirror ^= bit;
-      mirror ^= bit;
-      if (index < mirror) {
-        const swapReal = real[index];
-        const swapImaginary = imaginary[index];
-        real[index] = real[mirror];
-        imaginary[index] = imaginary[mirror];
-        real[mirror] = swapReal;
-        imaginary[mirror] = swapImaginary;
-      }
-    }
-    for (let span = 2; span <= n; span <<= 1) {
-      const angle = (-2 * Math.PI) / span;
-      const stepReal = Math.cos(angle);
-      const stepImaginary = Math.sin(angle);
-      const half = span >> 1;
-      for (let start = 0; start < n; start += span) {
-        let twiddleReal = 1;
-        let twiddleImaginary = 0;
-        for (let offset = 0; offset < half; offset++) {
-          const low = start + offset;
-          const high = low + half;
-          const oddReal = real[high] * twiddleReal - imaginary[high] * twiddleImaginary;
-          const oddImaginary = real[high] * twiddleImaginary + imaginary[high] * twiddleReal;
-          real[high] = real[low] - oddReal;
-          imaginary[high] = imaginary[low] - oddImaginary;
-          real[low] += oddReal;
-          imaginary[low] += oddImaginary;
-          const nextReal = twiddleReal * stepReal - twiddleImaginary * stepImaginary;
-          twiddleImaginary = twiddleReal * stepImaginary + twiddleImaginary * stepReal;
-          twiddleReal = nextReal;
-        }
-      }
-    }
-  }
-
-  /* The largest power of two the window can fill, capped: a 1024-sample window
-   * transforms whole, a 1500-sample one uses its last 1024. */
-  function fftSize(length) {
-    let size = 1;
-    while (size * 2 <= Math.min(length, SPECTRUM_MAX_SAMPLES)) size *= 2;
-    return size >= SPECTRUM_MIN_SAMPLES ? size : 0;
-  }
-
-  /* (window, full scale) -> one dBFS per bin, 0 dBFS being a full-scale sine.
-   * Hann-windowed, which spreads a tone over three bins in a known way: a
-   * bin-centred sinusoid of amplitude A leaves exactly A*N/4 in its own bin (the
-   * window's 0.5 coherent gain, halved again because a real signal splits into
-   * two conjugate halves), so 4/N turns a magnitude back into the amplitude that
-   * produced it. The LAST `size` samples are used -- the newest audio. */
-  function spectrumBins(samples, fullScale) {
-    const source = Array.isArray(samples) ? samples : [];
-    const size = fftSize(source.length);
-    const scale = Number.isFinite(fullScale) && fullScale > 0 ? fullScale : 1;
-    if (size === 0) return [];
-    const first = source.length - size;
-    const real = new Array(size);
-    const imaginary = new Array(size).fill(0);
-    for (let index = 0; index < size; index++) {
-      const sample = Number(source[first + index]);
-      const hann = 0.5 - 0.5 * Math.cos((2 * Math.PI * index) / size);
-      real[index] = (Number.isFinite(sample) ? sample / scale : 0) * hann;
-    }
-    fftInPlace(real, imaginary);
-    const bins = [];
-    for (let bin = 0; bin < size / 2; bin++) {
-      const amplitude = (4 * Math.hypot(real[bin], imaginary[bin])) / size;
-      bins.push(amplitude > 0 ? Math.max(SPECTRUM_FLOOR_DBFS, 20 * Math.log10(amplitude)) : SPECTRUM_FLOOR_DBFS);
-    }
-    return bins;
-  }
-
-  /* Band edges on the PLOT's axis, so hzToX() places a band under exactly the
-   * frequencies it describes. */
-  const bandEdgeHz = (index) => CURVE_MIN_HZ * Math.pow(CURVE_MAX_HZ / CURVE_MIN_HZ, index / SPECTRUM_BANDS);
-
-  /* (bins, rate) -> one dBFS per band, or null for a band no bin lands in. The
-   * LOUDEST bin in the band wins: a spectrum display answers "how much is there
-   * at this frequency", not "how much is there in total across this width".
-   *
-   * null rather than a floor value is deliberate. A 1024-point window at 48 kHz
-   * puts a bin every 46.9 Hz while a band down there is only a few Hz wide, so
-   * the bottom of the underlay is genuinely gappy (continuous from ~300 Hz, where
-   * a band first outgrows the bin spacing). A bar drawn in a band no bin lands in
-   * would be an invention; the underlay simply stops instead. */
-  function spectrumBandsOf(bins, sampleRateHz) {
-    const bands = [];
-    if (bins.length === 0 || !(sampleRateHz > 0)) return bands;
-    const spacing = sampleRateHz / (bins.length * 2);
-    for (let band = 0; band < SPECTRUM_BANDS; band++) {
-      const low = bandEdgeHz(band);
-      const high = bandEdgeHz(band + 1);
-      /* Bin 0 is DC: never a band's answer, whatever the low edge says. */
-      const from = Math.max(1, Math.ceil(low / spacing));
-      let loudest = null;
-      for (let bin = from; bin < bins.length && bin * spacing < high; bin++) {
-        if (loudest === null || bins[bin] > loudest) loudest = bins[bin];
-      }
-      bands.push(loudest);
-    }
-    return bands;
   }
 
   /* ---- visual surface: DOM ----------------------------------------------- */
@@ -2928,7 +2784,6 @@
     drawCurveSurface();
     drawMatrixSurface();
     drawLimiterHistory();
-    drawSpectrogram();
   }
 
   function applyDashboardLayout() {
@@ -3011,7 +2866,6 @@
       drawCurveSurface();
       drawMatrixSurface();
       drawLimiterHistory();
-      drawSpectrogram();
     });
 
     fitCanvases();
@@ -3067,7 +2921,7 @@
    * maths keeps working against the CLIENT rect. A zero clientWidth (no layout
    * engine, or a hidden card) keeps the authored attributes. */
 
-  const CANVAS_IDS = ['curve', 'matrix-diagram', 'gr-history', 'spectrogram'];
+  const CANVAS_IDS = ['curve', 'matrix-diagram', 'gr-history'];
   const dprOf = (canvas) => Number(canvas.dataset.dpr) || 1;
 
   function fitCanvas(canvas) {
@@ -3098,7 +2952,6 @@
     const scale = dprOf(canvas);
     const rect = { left: 0, top: 0, width: canvas.width, height: canvas.height };
     context.clearRect(0, 0, rect.width, rect.height);
-    drawSpectrumUnderlay(context, rect, scale);
     drawCurveGrid(context, rect, scale);
 
     const rate = curveSampleRate();
@@ -3170,35 +3023,6 @@
     if (!Number.isFinite(value)) return;
     beginSurfaceEdit(entity);
     surfaceWrite(entity, slot, 'q', value);
-  }
-
-  /* The analyser underlay. Drawn FIRST, so the grid, all five cascades, every
-   * handle and every label land on top of it: it is context for the curves and
-   * never a target -- there is nothing here for a gesture to grab, and the
-   * gesture code does not know it exists.
-   *
-   * It shares the plot's log-frequency axis EXACTLY (hzToX, same rect) and
-   * nothing else: the height of a band is its own dBFS scale, floored at
-   * SPECTRUM_FLOOR_DBFS, which is why it is faint and unlabelled rather than
-   * pretending to read against the +-12 dB rails beside it. A band no bin lands
-   * in is not drawn at all. */
-  function drawSpectrumUnderlay(context, rect, scale) {
-    const bands = state.spectrumBands;
-    if (bands.length === 0) return;
-    const gap = SPECTRUM_GAP_PX * scale;
-    context.globalAlpha = SPECTRUM_ALPHA;
-    context.fillStyle = SPECTRUM_COLOUR;
-    bands.forEach((db, band) => {
-      if (db === null) return;
-      const level = clamp((db - SPECTRUM_FLOOR_DBFS) / -SPECTRUM_FLOOR_DBFS, 0, 1);
-      const height = level * rect.height;
-      if (!(height > 0)) return;
-      const left = hzToX(bandEdgeHz(band), rect);
-      const width = hzToX(bandEdgeHz(band + 1), rect) - left - gap;
-      if (!(width > 0)) return;
-      context.fillRect(left, rect.top + rect.height - height, width, height);
-    });
-    context.globalAlpha = 1;
   }
 
   function drawCurveGrid(context, rect, scale) {
@@ -3991,7 +3815,6 @@
      * data is GONE, and a bar gliding down from a level nothing is publishing
      * any more would be a fiction. */
     state.needles.clear();
-    driveSpectrum(null);
     ballisticFrame();
   }
 
@@ -4023,10 +3846,9 @@
     paintLimiterBar(
       stepNeedle(needleFor('limiter', LIMITER_BALLISTIC), state.limiterTarget, elapsed, LIMITER_BALLISTIC),
     );
-    /* The plot redraws per frame ONLY while the analyser has something to say.
-     * Until the firmware publishes a window -- and on any device that never
-     * does -- the curves redraw exactly when the FORM changes, as before. */
-    if (stepSpectrum(elapsed)) drawCurveSurface();
+    /* The curves are not on this clock: they redraw when the FORM changes.
+     * Nothing published at meter cadence reaches the plot any more -- the
+     * analyser underlay that once did was deleted with its feed. */
   }
 
   /* The next frame is scheduled BEFORE the current one is drawn: a defect in one
@@ -4039,137 +3861,6 @@
       ballisticFrame();
     };
     setTimeout(tick, BALLISTIC_FRAME_MS);
-  }
-
-  /* ---- the analyser: feeding it ------------------------------------------
-   * FEATURE DETECTION, not configuration. The firmware change that publishes a
-   * raw sample window is landing separately, so this page has to be correct
-   * both before and after it arrives: with no window in the snapshot the
-   * underlay is simply not drawn -- no placeholder, no error, no transform run
-   * -- and the first snapshot that carries one lights it up on the next frame
-   * with no page change at all.
-   *
-   * The names are tried in order and the first that carries a long enough
-   * numeric array wins; `analysis_window` is the canonical one this page asks
-   * the firmware for, and the aliases exist only so a name settled on the
-   * device side does not need a matching SD-card write to be visible.
-   *
-   * The scale is the OTHER half of the contract: the window is raw integer
-   * samples, so the page needs to know what full scale is to call anything
-   * "0 dBFS". It reads `analysis_full_scale` when the snapshot states it and
-   * assumes int16 otherwise -- and because the underlay has its own vertical
-   * axis, a wrong assumption slides the whole picture rather than breaking it. */
-  const ANALYSIS_WINDOW_KEYS = ['analysis_window', 'sample_window', 'spectrum_window'];
-  const ANALYSIS_DEFAULT_FULL_SCALE = 32768; /* int16, the raw PCM the pipeline carries */
-
-  function analysisWindowOf(meters) {
-    for (const key of ANALYSIS_WINDOW_KEYS) {
-      const value = meters[key];
-      if (Array.isArray(value) && value.length >= SPECTRUM_MIN_SAMPLES) return value;
-    }
-    return null;
-  }
-
-  const analysisFullScaleOf = (meters) =>
-    Number.isFinite(meters.analysis_full_scale) && meters.analysis_full_scale > 0
-      ? meters.analysis_full_scale
-      : ANALYSIS_DEFAULT_FULL_SCALE;
-
-  const appendSpectrogramColumn = (history, bands) =>
-    [...history, bands.slice(0, SPECTRUM_BANDS)].slice(-SPECTROGRAM_HISTORY_MAX);
-
-  const spectrogramLevel = (db) =>
-    Number.isFinite(db) ? clamp((db - SPECTRUM_FLOOR_DBFS) / -SPECTRUM_FLOOR_DBFS, 0, 1) : 0;
-
-  function pauseSpectrum(message) {
-    const hadUnderlay = state.spectrumTargets.length > 0 || state.spectrumBands.length > 0;
-    state.spectrumTargets = [];
-    state.spectrumBands = [];
-    $('spectrogram-status').textContent = message;
-    if (hadUnderlay) drawCurveSurface();
-  }
-
-  /* One NEW snapshot -- or null, for no snapshot at all -- becomes both the
-   * underlay target and one history column. The transform is performed here
-   * exactly once and its bands fan out; redraw paths consume stored bands. */
-  function driveSpectrum(meters) {
-    if (meters === null) {
-      pauseSpectrum(
-        'Analysis unavailable; retained history is strobed, not gapless · 20 Hz–20 kHz · -96–0 dBFS.',
-      );
-      return;
-    }
-
-    const sequence = Number(meters.sequence);
-    if (!Number.isFinite(sequence)) {
-      pauseSpectrum('Latest snapshot has no finite sequence; history is paused · strobed, not gapless.');
-      return;
-    }
-    if (sequence === state.lastAnalysisSequence) {
-      pauseSpectrum('No new analysis sequence; history is paused · strobed, not gapless · newest retained.');
-      return;
-    }
-    state.lastAnalysisSequence = sequence;
-    const samples = analysisWindowOf(meters);
-    const sampleRateHz = meters.sample_rate_hz;
-    if (samples === null || !(sampleRateHz > 0)) {
-      pauseSpectrum(
-        'Latest snapshot has no analysis window; history is paused · strobed, not gapless · 20 Hz–20 kHz.',
-      );
-      return;
-    }
-    const bins = spectrumBins(samples, analysisFullScaleOf(meters));
-    const bands = spectrumBandsOf(bins, sampleRateHz);
-    state.spectrumTargets = bands;
-    state.spectrogramHistory = appendSpectrogramColumn(state.spectrogramHistory, bands);
-    const sampledMs = (samples.length * 1000) / sampleRateHz;
-    $('spectrogram-status').textContent =
-      `${sampledMs.toFixed(1)} ms sampled per ${METER_POLL_MS} ms poll — strobed, not gapless · ` +
-      '20 Hz–20 kHz · -96–0 dBFS · newest right.';
-    drawSpectrogram();
-  }
-
-  /* True when a band moved, which is what makes the plot redraw. */
-  function stepSpectrum(elapsedMs) {
-    if (state.spectrumTargets.length === 0) return false;
-    state.spectrumBands = state.spectrumTargets.map((target, band) =>
-      target === null
-        ? null
-        : stepNeedle(needleFor(`spectrum:${band}`, SPECTRUM_BALLISTIC), target, elapsedMs, SPECTRUM_BALLISTIC),
-    );
-    return true;
-  }
-
-  function drawSpectrogram() {
-    const canvas = $('spectrogram');
-    const context = canvas.getContext('2d');
-    if (!context) return;
-    const { width, height } = canvas;
-    const scale = dprOf(canvas);
-    context.clearRect(0, 0, width, height);
-    const history = state.spectrogramHistory;
-    if (history.length > 0) {
-      const columnWidth = width / SPECTROGRAM_HISTORY_MAX;
-      const bandHeight = height / SPECTRUM_BANDS;
-      history.forEach((bands, column) => {
-        const x = width - (history.length - column) * columnWidth;
-        bands.forEach((db, band) => {
-          if (db === null) return;
-          const level = spectrogramLevel(db);
-          if (!(level > 0)) return;
-          context.fillStyle = `rgba(116,215,255,${(0.08 + level * 0.92).toFixed(3)})`;
-          context.fillRect(x, height - (band + 1) * bandHeight, Math.max(scale, columnWidth), bandHeight + scale);
-        });
-      });
-    }
-    context.fillStyle = '#9aa8b5';
-    context.font = `${Math.round(11 * scale)}px ui-monospace,monospace`;
-    context.textAlign = 'left';
-    context.fillText('20k', 4 * scale, 13 * scale);
-    context.fillText('20', 4 * scale, height - 5 * scale);
-    context.textAlign = 'right';
-    context.fillText('newest', width - 4 * scale, height - 5 * scale);
-    context.textAlign = 'left';
   }
 
   function drawLimiterHistory() {
@@ -4268,8 +3959,6 @@
    * and the curve maths is to call them with literal rects. Nothing on the page
    * reads this back -- it is an export, not a channel. */
   window.aiusDspEditorMath = Object.freeze({
-    appendSpectrogramColumn,
-    bandEdgeHz,
     cascadeMagnitudeDb,
     cascadeSignature,
     curvePoints,
@@ -4302,9 +3991,6 @@
     qFromDrag,
     resolveCascade,
     sectionMagnitudeDb,
-    spectrumBandsOf,
-    spectrumBins,
-    spectrogramLevel,
     stepMatrixValue,
     stepNeedle,
     stepQ,

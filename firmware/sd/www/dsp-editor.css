@@ -136,13 +136,10 @@ code{color:var(--aius-accent-info)}
 /* A canvas has no content of its own to be as tall as, so each picture states
    the height it stays legible at rather than inheriting an aspect ratio from
    its authored backing store -- at phone width that ratio drew a 100 px plot.
-   The narrow breakpoint below trims all four so one band cannot own a screen.
-   These beat replays.css's `.meters canvas{height:auto}` on the spectrogram by
-   carrying the card's class, not by load order. */
+   The narrow breakpoint below trims all three so one band cannot own a screen. */
 .visual .curve{height:260px}
 .visual .matrix-diagram{height:300px}
 .visual .gr__history{height:72px}
-.visual .spectrogram{height:220px}
 
 /* Dashboard is a VIEW over the existing blocks: same nodes, form inputs and
    Apply buttons, with only their framing changed. ONE full-width band per
@@ -249,6 +246,6 @@ code{color:var(--aius-accent-info)}
 /* The single column is the same one at every width; what a phone gets instead
    is shorter pictures and tighter padding, so scrolling past a band takes a
    flick rather than a screenful. */
-@media(max-width:650px){.bar{grid-template-columns:88px 1fr 48px}.gr{grid-template-columns:minmax(70px,auto) 1fr auto}.gr__value{grid-column:2/4}.eq-table--channels{grid-template-columns:minmax(72px,auto) 84px auto minmax(96px,1.2fr) minmax(60px,1fr) minmax(52px,.8fr) minmax(60px,1fr) auto}.dashboard-surface[data-view="dashboard"] .dashboard-cell{padding:10px 12px 14px}.visual .curve{height:180px}.visual .matrix-diagram{height:210px}.visual .gr__history{height:56px}.visual .spectrogram{height:150px}}
+@media(max-width:650px){.bar{grid-template-columns:88px 1fr 48px}.gr{grid-template-columns:minmax(70px,auto) 1fr auto}.gr__value{grid-column:2/4}.eq-table--channels{grid-template-columns:minmax(72px,auto) 84px auto minmax(96px,1.2fr) minmax(60px,1fr) minmax(52px,.8fr) minmax(60px,1fr) auto}.dashboard-surface[data-view="dashboard"] .dashboard-cell{padding:10px 12px 14px}.visual .curve{height:180px}.visual .matrix-diagram{height:210px}.visual .gr__history{height:56px}}
 
 @media(forced-colors:active){.dashboard-toolbar button:focus-visible{outline:3px solid Highlight}}

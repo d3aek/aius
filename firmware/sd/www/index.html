@@ -185,9 +185,7 @@
            and Apply mount in the head below. -->
       <section id="card-meters" class="visual-block dashboard-cell meters" data-dashboard-cell="live">
       <div class="section-title"><h3>Live processing</h3><span id="meter-state" class="pill">waiting</span></div>
-      <p class="hint">The 10 Hz <a href="/api/meters">meter snapshot</a> the surface reads, with a strobed spectrogram and the per-block DSP cost.</p>
-      <canvas id="spectrogram" class="spectrogram" width="960" height="240" aria-label="Strobed log-frequency spectrogram, newest sample window at the right"></canvas>
-      <p id="spectrogram-status" class="visual-block__note" role="status">Waiting for an analysis window — strobed, not gapless.</p>
+      <p class="hint">The 10 Hz <a href="/api/meters">meter snapshot</a> the surface reads, and the per-block DSP cost.</p>
       <div class="status-grid">
         <div><span>Snapshot</span><strong id="meter-sequence">--</strong></div>
         <div><span>Queue</span><strong id="meter-queue">--</strong></div>

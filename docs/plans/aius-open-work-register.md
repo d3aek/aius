@@ -1068,6 +1068,26 @@ ends left open:
   "(modified)" state live. Still outstanding: the replay upload form sits
   below the full library (R-N5). Sweep the B/D lists against the shipped
   pages before assuming any other item's state.
+- ~~**The DSP editor shipped a spectrogram no device can feed (2026-08-16).**~~
+  **CLOSED the same day.** Output-jitter Phase A dropped `analysis_window` from
+  `/api/meters` in `b4a3914ce` and its own recorded outcome said "the dsp-editor
+  renders without the spectrum underlay and spectrogram" — but only the firmware
+  half shipped. The page kept the canvas, the client-side FFT, the band mapping
+  and a status line reading *"history is paused"*, which describes a transient
+  gap rather than a feed that no longer exists; the owner found it on the
+  deployed board. Owner decision: **delete, not hide.** Gone: the spectrogram
+  canvas and its status line, the spectrum underlay, `fftInPlace` /
+  `spectrumBins` / `spectrumBandsOf` / `bandEdgeHz` /
+  `appendSpectrogramColumn` / `spectrogramLevel`, the ten `SPECTRUM_*` tunables,
+  three pieces of page state, the per-frame plot redraw they justified, their
+  CSS rows and ~170 lines of analyser coverage. 230 editor rows green, verified
+  in a browser against the live board (three canvases left, no spectrogram
+  nodes, meters live, no console errors). Owed: the three DSP editor captures in
+  [`../reference/user-interface.md`](../reference/user-interface.md) still show
+  the removed feature, and the hero's clip recipe needs a new lower anchor now
+  that `#spectrogram` is gone (`#gr-history` keeps its "opens and closes on a
+  live graphic" property). Deliberately NOT re-rendered from the deployed board:
+  every capture run costs audio dropouts, and the recipe wants a stub anyway.
 - **Cost-model rows carry the old Cliff quotes** for the optical jacks
   (`aius-cost-model.md`); the purchased parts are RS PRO 805-1671/805-1680.
   Update when the cost model is next touched.

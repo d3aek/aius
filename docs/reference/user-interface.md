@@ -57,6 +57,13 @@ one column of full-width bands — input levels, the stacked EQ plot with a
 spectrum underlay, the downmix routing diagram, limiter gain reduction, output
 levels and a live spectrogram.](images/dsp-editor.png)
 
+**The three captures in this section are stale as of 2026-08-16** and are the
+one thing here that still shows the spectrum underlay and the spectrogram. Both
+were deleted that day with their feed (see the analyser bullet below); the
+capture recipe's own lower anchor, `#spectrogram`, no longer exists either.
+Regenerating them is an open item in the
+[work register](../plans/aius-open-work-register.md).
+
 `index.html` + `dsp-editor.js` + `dsp-editor.css`. The main page: it edits the
 single effective DSP configuration — per-channel input trim and EQ, the downmix
 matrix, output EQ, the true-peak limiter, and the per-stage bypass flags — while
@@ -65,8 +72,8 @@ showing the live signal path around it.
 Reads:
 
 - `GET /api/dsp/config` on load and on *Reload from device*.
-- `GET /api/meters` at 10 Hz for the level bars, limiter gain reduction, DSP
-  cost and the spectrogram.
+- `GET /api/meters` at 10 Hz for the level bars, limiter gain reduction and DSP
+  cost.
 - `GET /api/status` at 1 Hz for the two ends of the signal-flow strip: what the
   device is hearing, and what the transmit gate did with it.
 - `GET /sd/www/presets/` — the firmware's own HTML directory index, parsed for
@@ -90,10 +97,17 @@ Non-obvious:
   61937 framing and decoding cannot be bypassed.
 - The EQ plot is a preview. The device designs the real biquads when a config is
   applied, so the curve is the page's own model of the cascade.
-- The spectrogram and the faint underlay behind the EQ curves are driven by
-  `analysis_window` in the meter snapshot — 1024 raw 24-bit samples with
-  `analysis_full_scale` alongside. It is strobed, not gapless (one window per
-  100 ms poll), and when a snapshot carries no window the underlay is not drawn.
+- **The spectrogram and the faint spectrum underlay behind the EQ curves were
+  deleted on 2026-08-16, along with the client-side FFT that drove them.** Their
+  feed was `analysis_window` in the meter snapshot, which output-jitter Phase A
+  dropped from `/api/meters`: 1024 raw samples were ~9.3 kB of JSON formatted
+  and sent inside a single HTTP epoch at the editor's 10 Hz poll, the loop's
+  dominant recurring single-epoch cost. The page went on shipping the canvas for
+  the rest of that day, feature-detecting the missing key and reporting
+  *"history is paused"* — which describes a transient gap rather than a feed no
+  device has. Nothing on the page consumes a sample window now. `git show
+  b4a3914ce^` carries the FFT and band-mapping helpers if a future device ever
+  publishes one again.
 - `sequence == 0` in a meter snapshot is the documented "never published"
   sentinel and renders as *no data*, not as a silent signal.
 - Preset names are capped at 27 characters (the SD path grammar's 32-byte
@@ -312,15 +326,23 @@ serializers. The captures were taken only after each page's data had populated.
 The two **status** captures were re-rendered the same way on 2026-08-16 for the
 configuration and board rework above, from `status.test.js`'s `SNAPSHOT`
 verbatim (the replay one additionally overriding the carrier, gate, boot-config
-and A/B fields named beside it). The other five captures predate that session
-and are unaffected by it — the rework touched no other page.
+and A/B fields named beside it).
+
+**The three DSP editor captures are stale from the same day** and are owed a
+re-render: the spectrum underlay and spectrogram they show were deleted with
+their feed. They are the only images here that picture something the page no
+longer has. The replay and upgrade captures predate that session and are
+unaffected — the rework touched neither page.
 
 `images/dsp-editor-hero.png` is not one of the seven page captures: it is the
 README's hero, the same dashboard captured the same way and clipped in the
 browser between two measured element edges — flush with the top of the `#curve`
 canvas, down to just past `#spectrogram`. It therefore opens and closes on the
 two live graphics and carries everything between them. The *Signal flow* header
-and the input level meters sit above the cut and are absent.
+and the input level meters sit above the cut and are absent. **That recipe no
+longer resolves**: `#spectrogram` was deleted, so the re-render needs a new
+lower anchor — `#gr-history`, the limiter gain-reduction canvas, keeps the
+"opens and closes on a live graphic" property.
 
 Four things in the images are authored rather than fixture-derived, because no
 fixture states them:
@@ -328,10 +350,10 @@ fixture states them:
 - The replay IDs, sizes and playback counters, and the preset names. These are
   operator-chosen values on the card; `replays.test.js` builds its rows from
   helpers rather than a checked-in fixture, so these follow that shape.
-- The meter `analysis_window` and `waveform` arrays, which are synthesised —
-  `dsp-editor.test.js` synthesises its analysis window too, rather than checking
-  in 1024 integers. The window length (1024), the full scale (8388607) and the
-  128-point per-mille envelope are the firmware's own constants.
+- The meter `analysis_window` and `waveform` arrays, which are synthesised. The
+  window is what the deleted analyser consumed, so it survives only inside these
+  stale captures; the 128-point per-mille envelope is the firmware's own
+  constant and still real.
 - `matrix.surround_delay_ms: 0`, added to `dsp-config-sd.json`. That fixture
   predates the field, and the editor collects it, so a config omitting it loads
   as *unsaved changes* on arrival.
