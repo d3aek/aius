@@ -16,6 +16,103 @@ explicit: the current 13 ms 5.1 residence is below the perception floor and
 must not grow; the fix is to remove the loop-jitter sources, not to widen the
 transmit cushion.
 
+## State — resume here
+
+**Status:** Phases A, B, C, D SHIPPED and RUNNING ON THE DEVICE
+(`d5dab0618f4c+teensy41-optical`, flashed 2026-08-16 via HalfKay after the
+OTA dark-window brick — see
+[`aius-ota-resilience.md`](aius-ota-resilience.md) for that incident and its
+plan). Phase E BLOCKED on a live PCM measurement. The acceptance run (one
+5.1 evening, dashboard open, gate-open underrun delta 0) has NOT happened
+yet. One shipped-phase defect is open: the Phase C guard starves first SD
+bring-up when a carrier is lit at boot (register entry 2026-08-16; fix
+shape in resilience Phase 4c).
+
+| Commit | Contents | Proof |
+|---|---|---|
+| `b4a3914ce` | A (meters window drop) + C (probe gating incl. `pllLocked()` edge fix) + D (gate-open underrun counter) + this plan | native dsp/recorder/tx-gate/audio-service/pipeline; vitest dsp-editor 238 + swagger 11; optical build; adversarial delivery audit to exhaustion |
+| `f7e770cf0` | B (second AUDIO pass per epoch) | native runtime oracle re-pinned (24-event traces); same audit |
+| `d5dab0618` | E finding: 512 PCM quantum is retype containment; frame-budget test row | pipeline suite green at 512 |
+| `2c67244b0` | register: OTA brick incident + Phase C bring-up gap | docs only |
+| `6d6962c1b` | `aius-ota-resilience.md` scoped (A/B slots, forensics, staging off pad-2) | docs only |
+
+**On-device state (post-flash checks, all passed):** generation-1 boot,
+zero early resets, `relocks` 0, SD mounted, `/api/meters` 470 B with no
+`analysis_window`, `tx_underrun_frames` 0 (fresh gate-open-only baseline),
+flight recorder armed. The pulled dropout capture from the earlier
+programme (21.8 s, loud program to the cut) lives in session scratch only
+(7-day GC) — its numbers are in this plan's Evidence section.
+
+**Uncommitted tree state:** nothing owned by this thread. Dirty
+`electronics/*` and `compose.yaml` belong to the H3a
+electronics session — foreign, untouched.
+
+**Next action:** implement the Phase C bring-up exemption — in
+`sd_lifecycle_service()` (`firmware/src/optical_main.cpp`), latch a
+`g_sd_ready`-style "first bring-up completed" bool and apply the
+`g_tx_gate_open || pllLocked()` deferral only after it; host row per
+resilience Phase 4c; then flash together with the next image (device needs
+USB or a fixed OTA for that — see the interim rule in the resilience plan).
+
+**Decisions taken this session (owner, in chat):**
+- Jitter is fixed by removing sources, never by widening the transmit
+  cushion: added latency is unacceptable; 13 ms is below the perception
+  floor and stays.
+- The analysis window is dropped entirely (not decimated, not opt-in);
+  meter bars and GR stay; EQ curve is client-side and free.
+- PCM 512→128 was approved "with live check first"; the attempt exposed the
+  retype-containment coupling and was reverted (my call, recorded in the
+  Phase E section) — the live decomposition now gates any quantum change.
+- "Flash it": the OTA activation bricked the board (dark-window failure,
+  NOT the image); recovered via Program button + HalfKay. Remote activation
+  is now interim-ruled in the resilience plan.
+
+**Traps:**
+- The deployed image's `gate_open_target_frames` is 128 from a
+  `platformio.ini` override; the source default reads 256. Do not "fix"
+  either to match the other.
+- `tx_underrun_frames` is now gate-open-only: any tool comparing lifetime
+  counts across images sees a semantic step; the rate-bench
+  `allow_dark_tx_underrun` waiver is vestigial (harmless).
+- A FROZEN recorder counts nothing, `suppressed_triggers` included — do not
+  read zeros on a frozen boot as "no dropouts".
+- The dsp suite still carries "meter analysis window JSON fits the body"
+  rows: they pin lib-level arithmetic for a surface the route no longer
+  serves (deliberate: capture core retained).
+- The device SD auth token is deliberately NOT in the repo; ask the owner
+  (derivation: `firmware/tools/aius_token.py` from fused MAC words).
+
+### Findings and loose ends
+
+- `firmware/tools/net/aius_rate_bench.py`
+  `allow_dark_tx_underrun` waiver is dead under gate-open-only counting —
+  proposed: remove on next touch (not agreed).
+- The meters route stays outside the swagger format-string extractor gate
+  (its two array loops need extractor shapes it lacks) — recorded in Phase
+  A's targeted-proof; proposed: extend the extractor someday (not agreed).
+- `test_dsp.c` analysis-window rows pin an unserved surface — proposed:
+  keep (they guard the retained capture core) (not agreed).
+- The OTA health record's pre-window mark may have survived the incident
+  and could name the failed phase — one bench read before resilience
+  Phase 1 locks (recorded there too).
+
+### Pending decisions
+
+- **A/B flash map** (resilience Phase 3): "Approve the two-slot flash
+  layout direction — never-erased first-stage chooser at the boot address,
+  dual-linked images per release, trial-boot commit — before 3a lands?"
+  Options: approve (Phase 3 can start after 1–2) / modify / reject (stays
+  on the interim physical-access rule). Recommendation: approve — it is
+  the only shape that removes the physical-access failure mode this cycle
+  demonstrated. Blocked until answered: Phase 3 only.
+- **Acceptance evening scheduling**: "Run the jitter acceptance (one 5.1
+  evening, dashboard open, counter delta 0) on the current image before
+  the Phase C bring-up fix flashes, or fold both into one image first?"
+  Recommendation: run acceptance now — the bring-up bug only bites boots
+  under a lit carrier and does not touch the counters being proven.
+- **PCM decomposition** needs ~2 min of genuine PCM playing (owner
+  action); the poll itself is scripted in this plan's Phase E.
+
 ## Evidence (2026-08-16 session)
 
 Deployed image `197523cbab76+teensy41-optical` (built 2026-08-15 00:26), boot
