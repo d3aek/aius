@@ -12,7 +12,7 @@
 #         capability, pipeline, dsp, dsp-vectors, downmix-identity, measure, net, net-runner,
 #         rate-runner, latency-runner,
 #         recovery-runner, flash, http,
-#         usb-control, replay, replay-samples, tx-gate, tx-governor, recorder, boot, boot-target, fault-target, ota,
+#         usb-control, replay, replay-samples, tx-gate, tx-governor, input-liveness, recorder, boot, boot-target, fault-target, ota,
 #         build-metadata, runtime, network-transport, sd, sd-target, optical-app,
 #         optical-cutover, runtime-target, memory, itcm-placement, fake-fidelity,
 #         registry.
@@ -781,6 +781,17 @@ tx-governor)
 		"$fw_root/test/tx-governor/test_tx_governor.c" \
 		-o "$tx_governor_out"
 	"$tx_governor_out"
+	;;
+input-liveness)
+	# Header-only decision rule: why nothing is reaching the transmit sink and
+	# for how long, over the gate-closed region the production-gap watermark
+	# discards by design (aius-input-recovery Phase 1). Pure stdint header, no
+	# implementation linked.
+	input_liveness_out="$build_dir/input-liveness"
+	"$cc" "${cflags[@]}" "-I$fw_root/lib/aius_audio/src" \
+		"$fw_root/test/input-liveness/test_input_liveness.c" \
+		-o "$input_liveness_out"
+	"$input_liveness_out"
 	;;
 recorder)
 	# The flight recorder's portable core (state machine, triggers, staging
