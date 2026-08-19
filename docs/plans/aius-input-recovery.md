@@ -3,9 +3,9 @@ title: Aius input recovery ladder
 type: plans
 scope: component
 component: aius
-status: draft
+status: in-progress
 tags: [aius, firmware, audio, spdif, recovery]
-updated: 2026-08-18
+updated: 2026-08-19
 ---
 
 # Aius input recovery ladder
@@ -18,13 +18,160 @@ a healthy carrier stays stuck until the carrier drops again.
 
 ## State — resume here
 
-**Status:** planned, nothing built. Design decisions below are taken (owner, in
-chat, 2026-08-18). One decision remains open (§Open decision). No firmware
-change exists yet, and by owner instruction none reaches the device until it is
-host-proven and adversarially reviewed.
+**Status:** Phase 1 IN-PROGRESS. Its first half is SHIPPED (the pure rule plus
+its suite, `70009a13f`); its second half — wiring the rule into the epoch, the
+`input_diag` surface, swagger, and the event-ring depth/page split — is
+UNTOUCHED. Phases 2, 3 and 4 are unstarted. Nothing calls the rule, no firmware
+has been built for the target this thread, and nothing has been flashed.
 
-The device currently runs slot A of `ceffc20dae6c+teensy41-optical-slot-a`
-(built 2026-08-16T19:31:13Z), `ab.sequence` 11, boot generation 4.
+The device runs slot A of `ceffc20dae6c+teensy41-optical-slot-a` (built
+2026-08-16T19:31:13Z), `ab.sequence` 11, boot generation 4.
+
+| Commit | Contents | Proof |
+|---|---|---|
+| `2658efcff` | This plan: stuck-state inventory, decisions, phases | docs only; `doc-index --validate-only` clean |
+| `70009a13f` | `aius_input_liveness.h` pure rule + `input-liveness` suite + registration in all four registry places | `input-liveness` suite green via the firmware runner (`-Werror`, ASan, UBSan); `registry` guard PASS at 58 arms; 3 mutations each caught at the row that owns the behaviour |
+
+**Uncommitted tree state:** nothing owned by this thread.
+`git status --porcelain src/hardware/aius` is clean. Dirty paths elsewhere in
+the repo belong to other sessions and are foreign.
+
+**Next action:** wire the rule in. Call `aius_input_liveness_step()` once per
+epoch beside `input_fault_service()` (`firmware/src/optical_main.cpp:7746`,
+called from `platform_replay` at checkpoint `AIUS_BOOT_CHECKPOINT_REPLAY`),
+feeding it `committed_blocks` and `sink_attempts` from
+`aius_pipeline_get_service_diag`, `bursts_ok` from `aius_pipeline_get_parser_diag`
+(`AiusIecDiag`, `aius_iec61937.h:141`), `input_words_consumed` from
+`aius_audio_service_get_diag` (`aius_audio_service.h:22`), and
+`AudioInputSPDIF3::pllLocked()`. Latch per-class max duration, over-count, last
+duration and last-at into new `input_diag` fields at
+`firmware/src/optical_main.cpp:3041`, then update
+`swagger.json`.
+
+**Decisions taken this session (owner, in chat, 2026-08-18):**
+
+- **The fault test is input-referenced.** Silence is suspect only when input
+  words arrive and are consumed while nothing reaches the sink. Completed burst
+  outcomes and a confirmed PCM run both count as healthy framing and mean
+  source intent, so a deliberately quiet source is never fought. Chosen because
+  pause and null bursts complete by design and a rule that cannot tell them
+  from a fault would fire during every quiet passage.
+- **Automatic escalation is capped at a pipeline reset.** Rung 0 reclassify,
+  rung 1 full pipeline plus parser plus codec-slot reset. Clock re-accept, PLL
+  replan, receiver re-init and reboot are all out of scope for automatic
+  action. Chosen because a reboot mid-film is worse than the fault.
+- **Settling mode.** Recovery is rate-limited and partly suppressed for a
+  bounded window after a carrier acquisition and tightens once one decoder has
+  been producing. Chosen to avoid reset storms while the source thrashes
+  through the OSD.
+- **No firmware reaches the device until host proof is green and an adversarial
+  review has been exhausted** (owner instruction, 2026-08-18). This is a hard
+  gate on Phase 4, not a preference.
+- **The plan was committed on its own**, against the usual "commit a plan with
+  its first useful delivery boundary" preference, because the firmware gate
+  above made a docs-only boundary the natural one.
+
+**Traps:**
+
+- **`bash-guard.deprecated-test-shim` fires on `scripts/test.sh` at a statement
+  boundary**, and `command_anchor: statement_wide` prefixes
+  `(?:^|[;&|({\`])\s*` (`src/tools/hook/src/handlers/bash-policy/PrimitiveEvaluator.cs:134`).
+  A `bash -c 'cd … && scripts/test.sh …'` invocation therefore matches on the
+  `&&` and is denied. Run the firmware suites by their full repo-relative path
+  from the repo root instead, which has no boundary before `scripts/`:
+  `firmware/scripts/test.sh --environment native --suite <name>`.
+  This is not a false positive and needs no hook change.
+- **A repository-layer allow-rule can never unblock a denied shape.**
+  `RuleEvaluator.Evaluate` is first-match-wins *with deny shadow*
+  (`src/tools/hook/src/handlers/bash-policy/RuleEvaluator.cs:24-37`): it keeps
+  scanning past the first match and any deny that matches at all wins,
+  regardless of layer or position. Do not reach for `.claude/hook.json`
+  `policy.rules` to clear a denial; only tightening or disabling the deny works.
+- **The suite's counters must only ever go up, and that is enforced by shape.**
+  Rows advance a cursor by deltas and may not name absolute values. The first
+  draft used fixed baselines, so a row after one that advanced a counter drove
+  it backwards; the rule's wrap-correct unsigned subtraction read that as a
+  ~4-billion delta and the de-escalation row passed while exercising nothing. A
+  mutation permitting de-escalation passed the whole suite. Only the two wrap
+  scenarios may name absolute values.
+- **The flight recorder was found FROZEN from boot bring-up** (trigger
+  `underrun` at `at_ms` 2942, boot generation 4) and captured none of the
+  2026-08-18 event. It has been thawed and is recording. After any reboot it
+  must be thawed again (`POST /api/recorder/thaw`, SD auth); boot bring-up
+  spends its one-shot freeze. A frozen recorder counts nothing,
+  `suppressed_triggers` included.
+- **`production_gap_*` is blind to every stuck state this plan targets.** The
+  watermark resets its sentinel whenever the transmit gate is closed
+  (`firmware/src/optical_main.cpp:1751`), by design, so an unchanged
+  `production_gap_over_count` is not evidence of continuity across a
+  gate-closed interval.
+- The deployed image's `gate_open_target_frames` is 128 from a
+  `platformio.ini` override; the source default reads 256. Do not reconcile
+  either to the other.
+- `tx_underrun_frames` is gate-open-only, so lifetime comparisons across images
+  see a semantic step.
+
+### Findings and loose ends
+
+Each is a proposal, none agreed.
+
+- **`http_events_json` conflates ring depth with page size**
+  (`firmware/src/optical_main.cpp:5103-5105`): it starts the walk at
+  `g_event_sequence - 7`, caps at 8, and the ring is `g_events[8]`
+  (`:959`) with the `% 8u` modulus written as a literal in three places
+  (`:1209`, `:5105`, `:5902`). The route already takes a `cursor`, so the two
+  concerns can separate cleanly. Proposed: fix as part of Phase 1's second
+  half, paging via cursor rather than growing the response body.
+- **Deepening the event ring has a placement cost.** `record_event` is
+  reachable from the AUDIO checkpoint (`firmware/src/optical_main.cpp:1661`),
+  and DTCM is the scarce bank on this build. Moving the ring to `DMAMEM`
+  (OCRAM) frees DTCM but Teensy leaves DMAMEM uninitialised, and the reader's
+  staleness check is `event.sequence != sequence` — garbage could coincidentally
+  match. Proposed: if the ring moves, zero it explicitly at setup; decide depth
+  against the `memory` suite rather than by feel.
+- **The live board reports `config_valid: 0`, `config_error_code: 10`,
+  `config_error: "not loaded"` with `model_origin: "put"`.** It is running a
+  PUT DSP model and has never loaded one off the card. Pre-existing, unrelated
+  to this thread, not investigated. Proposed: investigate separately.
+- **`allow_dark_tx_underrun` in
+  `firmware/tools/net/aius_rate_bench.py` is dead** under gate-open-only
+  counting. Carried over from the jitter plan, still not agreed. Proposed:
+  remove on next touch.
+
+### Pending decisions
+
+**1. Does the automatic ceiling get an exception for the tracker-never-accepted
+case?** Exact words to re-ask: *"The cap you set, pipeline reset as the
+automatic ceiling, does not cover the stuck state most likely in your pattern.
+A pipeline reset re-enters `enqueue()` and can re-arm `g_clock_live_ready`, but
+only when the plan is applied and the block rate matches. When the blocker is
+the rate tracker never accepting, a pipeline reset cannot help at all. Observe
+first, or carve one exception?"*
+
+- **Observe first (recommended).** Ship the Phase 1 instrumentation, leave the
+  clock rung unbuilt, and let the field record say whether the case occurs.
+  Respects the cap and matches this project's evidence-first habit.
+- **Carve one exception.** Allow a clock re-accept rung for this clause only,
+  pipeline reset stays the ceiling everywhere else. Fixes the likely case now,
+  at the cost of a transmit-ring disturbance on a false positive.
+
+Blocked until answered: Phase 3's rung table only. Phases 1 and 2 proceed
+either way.
+
+**2. Should the recorder's `carrier_loss` trigger be disabled before the next
+deliberate pause?** Exact words to re-ask: *"The recorder's `carrier_loss`
+trigger is armed, and a pause kills the carrier, so your next deliberate pause
+will burn the one-shot freeze and leave it frozen through the resume you want
+captured. Disable that trigger, or leave it armed to capture the pause edge?"*
+
+- **Disable `carrier_loss`, keep overrun and underrun.** Keeps the freeze
+  available for the resume, which is where the symptom is.
+- **Leave it armed.** Captures the pause edge instead.
+
+The exact `PUT /api/recorder/config` body is in the swagger
+(`swagger.json`), every key required; do not hand-roll a partial
+body. Blocked until answered: nothing in this plan; it only affects what the
+next live event captures.
 
 ## Why the existing machinery does not cover this
 
