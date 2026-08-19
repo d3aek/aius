@@ -5,7 +5,7 @@ scope: component
 component: aius
 status: in-progress
 tags: [aius, firmware, audio, latency, jitter, monitoring]
-updated: 2026-08-16
+updated: 2026-08-19
 ---
 
 # Aius output jitter elimination
@@ -61,6 +61,30 @@ decides the governor's target policy; only then is the governor enabled
 and Phase E's live verify run. The next image also carries `prev_boot` +
 `fault_record` (the core's retained crash record over HTTP), already
 built and committed.
+
+**Update 2026-08-19 — the pop verdict is still owed, and two things above
+are stale.** An owner-reported dropout was investigated live and turned out
+NOT to be the awaited pop: the 36 min 18 s dark window (device uptime
+174,682,408 → 176,859,984 ms) was a deliberate operator pause. Over the
+whole boot the box showed 283 ms of lifetime `tx_underrun_frames` and 1.35 s
+of lifetime `squelched_frames`, so no aius mechanism had accumulated enough
+to produce a multi-second drop; the decoded 5.1 read −105 dBFS on all six
+channels at the resume, meaning the AC-3 payload itself carried silence.
+`production_gap_over_count` did not move and could not have: the watermark
+resets its sentinel whenever the transmit gate is closed
+(`firmware/src/optical_main.cpp:1751`), so **the attribution recipe above
+only works for a pop that happens with the gate OPEN.** A locked-but-dark
+interval is invisible to it, and that failure class now has its own plan,
+[`aius-input-recovery.md`](aius-input-recovery.md).
+
+Also stale: the running image is `ceffc20dae6c+teensy41-optical-slot-a`
+(built 2026-08-16T19:31:13Z, `ab.sequence` 11, boot generation 4), not the
+`fd9d35fd3f95` this section names. And the flight recorder was found FROZEN
+from boot bring-up (trigger `underrun` at `at_ms` 2942), so it had captured
+nothing for the whole boot; it has been thawed and is recording. Its
+`carrier_loss` trigger is still armed, which means the next deliberate pause
+will burn the one-shot freeze — an open question in the input-recovery plan's
+§Pending decisions.
 
 **Decisions taken this session (owner, in chat):**
 - Jitter is fixed by removing sources, never by widening the transmit
