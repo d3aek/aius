@@ -51,9 +51,18 @@ addresses — is fixed (`arm_dcache_delete` after the restore). The only
 remaining unknowns are inherently hardware: FlexSPI AHB prefetch/RX-buffer and
 SWRESET/remap timing, settled only by the bench A→B→A + power-cut cycle.
 
-Not started: Phase 5 (release build/signer glue — mostly already supported, see
-the phase), Phase 6 (recovery.hex package + bench acceptance). No USB access to
-the board, so nothing here is runtime- or bench-validated yet.
+- **Phase 5** — no new code needed: the canonical release image is the
+  slot-A build signed WITHOUT `--slot` (a `slot_id = NONE` container the signer
+  already produces), and the device accepts it via Phase 3's gate. The
+  operator-rule change in `aius/CLAUDE.md` §Device access and OTA ships in the
+  cutover commit, not before, so the current "always `--slot`" rule stays
+  operative until the chooser is flashed.
+- **Phase 6** — `recovery.hex` builds end-to-end today (`scripts/build_ab.sh`);
+  the bench acceptance cycle is captured in the runbook below.
+
+Everything above is compile-proven only. No USB access to the board, so nothing
+is runtime- or bench-validated; the register/timing unknowns are settled solely
+by the bench runbook.
 
 ## Why it is per-slot today
 
@@ -297,6 +306,36 @@ is between schemes with firmware that only understands one.
 - targeted-proof: the bench acceptance cycle above.
 - unit: parent-only
 - dependencies: Phases 1–5.
+
+## Bench cutover runbook (next USB session)
+
+Everything below needs the board on USB; none of it is validated yet. Order
+matters — the chooser is HalfKay-recover-only, so prove on a SPARE board first.
+
+1. **Build the release set.** `scripts/build_ab.sh` produces
+   `.pio/build/aius-ab/recovery.hex` = the new chooser + the canonical slot-A
+   image. This is the one-shot cutover artifact (already builds clean today).
+2. **HalfKay-flash `recovery.hex`** (physical Program button). The board boots
+   slot A; the new chooser stamps `booted_slot = A` into the retained ledger.
+3. **Confirm the new chooser is live.** `GET /api/status` → `ab.slot` now
+   reflects the ledger's `booted_slot` (Phase 3), and the board accepts an
+   untagged container. If `booted_slot` reads NONE, the old chooser is still
+   installed — stop.
+4. **Sign the canonical image WITHOUT `--slot`** (`aius_ota_sign.py sign`
+   without `--slot` → `slot_id = NONE`), one binary, one signature. Push it with
+   `aius_ota_flash.py`; the device programs slot B, the chooser remaps and boots
+   B, and it self-commits. Then repeat A-signed-agnostic back into A.
+5. **Acceptance gates (the hardware unknowns the register review flagged):**
+   - full A→B→A cycle completes and commits unaided;
+   - a deliberately corrupted offer is refused at verify with nothing armed;
+   - a mid-window power cut recovers to the still-active slot;
+   - the B→A leg exercises the Phase-2 remap-flip verify read (verify passes
+     reading physical slot A while running B) — if B→A verifies and commits, the
+     flip and its D-cache handling are proven;
+   - booting slot B proves the chooser hand-off has no stale canonical prefetch.
+
+Only after all gates pass on a spare board is the deployed board a candidate, at
+its next physical visit.
 
 ## Rejected alternative: position-independent code
 
