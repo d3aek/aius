@@ -44,6 +44,13 @@ board until a remap chooser is HalfKay-flashed:
 - **Phase 4** — chooser programs the remap + always stamps `booted_slot`,
   authored + compiled freestanding; BENCH-REQUIRED.
 
+Phases 2 & 4 passed an adversarial register review (no brick risk, no
+false-verify; addresses/bits confirmed against `imxrt.h`). Its one substantive
+finding — the flip left D-cache lines holding slot-A bytes aliased to canonical
+addresses — is fixed (`arm_dcache_delete` after the restore). The only
+remaining unknowns are inherently hardware: FlexSPI AHB prefetch/RX-buffer and
+SWRESET/remap timing, settled only by the bench A→B→A + power-cut cycle.
+
 Not started: Phase 5 (release build/signer glue — mostly already supported, see
 the phase), Phase 6 (recovery.hex package + bench acceptance). No USB access to
 the board, so nothing here is runtime- or bench-validated yet.

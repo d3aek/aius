@@ -3999,6 +3999,11 @@ FASTRUN static int ota_flash_read(void *ctx, uint32_t address, uint8_t *dest,
 			volatile const uint8_t *src =
 				(volatile const uint8_t *)(uintptr_t)address;
 			uint32_t i;
+			/* GPR32 (IOMUXC) and MCR0 (FlexSPI) are different Device-memory
+			 * peripherals, so their writes are unordered w.r.t. each other --
+			 * intentional: nothing fetches flash between them (ITCM code, the
+			 * poll only reads MCR0), and the dsb;isb below orders the remap
+			 * before the demand read. Do not "fix" by inserting a barrier. */
 			IOMUXC_GPR_GPR32 = 0u; /* identity: canonical -> physical A */
 			FLEXSPI_MCR0 |= FLEXSPI_MCR0_SWRESET;
 			while (FLEXSPI_MCR0 & FLEXSPI_MCR0_SWRESET)
@@ -4011,6 +4016,13 @@ FASTRUN static int ota_flash_read(void *ctx, uint32_t address, uint8_t *dest,
 			while (FLEXSPI_MCR0 & FLEXSPI_MCR0_SWRESET)
 				;
 			__asm__ volatile("dsb\n\tisb\n\t" : : : "memory");
+			/* The identity-window copy allocated D-cache lines holding
+			 * physical slot-A bytes at CANONICAL addresses; with the remap
+			 * restored those addresses belong to the RUNNING image, so drop
+			 * the aliased lines (SWRESET clears the FlexSPI, not the M7
+			 * D-cache). Without this the running image could later read its
+			 * own .rodata as the other slot's bytes. */
+			arm_dcache_delete((void *)(uintptr_t)address, length);
 			__asm__ volatile("msr primask, %0"
 			                 : : "r"(primask) : "memory");
 			return 0;
