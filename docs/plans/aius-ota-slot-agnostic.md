@@ -139,6 +139,24 @@ the app. The carrier is the retained ledger, gaining a `booted_slot` field, whic
 the chooser writes on **every** boot (not only trials). Without this the app can
 mistake the running slot for the inactive one and erase the live image.
 
+### `booted_slot` presence gates the scheme — a safe migration path
+
+The same channel doubles as the cutover selector: the **new** chooser stamps
+`booted_slot`; the **old** chooser never does, so the app reads `NONE`. The app
+therefore keys every scheme-dependent decision on it:
+
+- `booted_slot == NONE` (old chooser) → legacy behaviour: physical slot from the
+  compile-time `AIUS_AB_SLOT`, and enforce the container's slot tag against the
+  inactive slot exactly as today.
+- `booted_slot` set (new chooser) → slot-agnostic behaviour: physical slot from
+  the ledger, and accept the untagged (`slot_id == NONE`) canonical container.
+
+This makes one firmware correct under **both** choosers, so the cutover image can
+ship to the deployed board over the existing dual-linked OTA path *first*
+(behaving legacy), and only when the new chooser is HalfKay-flashed does the same
+firmware flip to slot-agnostic. The change never has a flag day where the board
+is between schemes with firmware that only understands one.
+
 ### Remap re-established every boot; hand-off needs an RX-buffer flush (invariant)
 
 - **Every reset clears GPR30/31/32**, and the ROM re-enters the chooser, which
@@ -191,11 +209,12 @@ mistake the running slot for the inactive one and erase the live image.
 ### Phase 3 — runtime slot identity from the chooser (app)
 
 - outcome: the app reads `booted_slot` from the retained ledger as physical
-  ground truth, replacing every `AIUS_AB_SLOT`-derived active/inactive decision
-  in `ab_compose`; `INSANE_OTHER` fallback is detected by the record disagreeing
-  with the physically-booted slot. Fail-closed when `booted_slot = NONE` (no
-  chooser stamp): treat the record's `active_slot` as running and refuse to arm
-  an activation until identity is known.
+  ground truth for the inactive/active decision in `ab_compose` and the
+  `INSANE_OTHER` detection. When `booted_slot == NONE` (old chooser) it falls
+  back to the compile-time `AIUS_AB_SLOT` exactly as today, so the current board
+  is unaffected; when set, it overrides. The dual behaviour is what makes the
+  cutover firmware safe under both choosers (see §`booted_slot` presence gates
+  the scheme).
 - seams: `src/optical_main.cpp` `ab_compose` and the expected-slot/inactive-slot
   wiring, `firmware/test/optical-app` or a focused host row.
 - targeted-proof: `scripts/test.sh --environment native --suite ab` + the
@@ -222,14 +241,17 @@ mistake the running slot for the inactive one and erase the live image.
 
 ### Phase 5 — collapse the build, signer, and container to one image
 
-- outcome: releases build one canonical image and sign it once; the dual-slot
-  envs and per-slot ldscript generation retire; the container `slot_id` tag and
-  the device's expected-slot enforcement retire. A legacy tagged container is
-  **rejected by default** — reverting byte 13 to "reserved must be zero" makes
-  header rule 10 (`aius_ota.h:190`, `:233`) reject `slot_id=1/2` as `MALFORMED`
-  automatically; accepting-and-ignoring would require deliberately relaxing that
-  rule, decided in review. `--slot` becomes an optional no-op with a deprecation
-  note.
+- outcome: the canonical release image is the existing slot-A-linked build
+  (`teensy41-optical-slot-a` links at `0x60010000` = `AIUS_AB_CANONICAL_BASE`)
+  signed WITHOUT `--slot`, i.e. the already-supported `slot_id == NONE` container
+  — so "one build, one signature" needs almost no new build machinery, just
+  choosing the slot-A image + agnostic signature for a release. The device's
+  acceptance of an untagged container is gated on `booted_slot` (Phase 3's
+  channel): the new-chooser firmware accepts it, the old-chooser firmware keeps
+  refusing it. The dual-slot-B env and per-slot ldscript generation retire only
+  at the cutover, once the new chooser is proven; until then both paths coexist
+  so pre-cutover dual-linked releases keep working. `--slot` becomes optional
+  with a deprecation note.
 - seams: `platformio.ini` slot envs, `scripts/gen_slot_ldscript.py`,
   `scripts/build_ab.sh`, `tools/ota/aius_ota_sign.py`, `tools/ota/aius_ota_cli.c`,
   `aius_ota.h` slot tag, `src/optical_main.cpp` expected-slot wiring,

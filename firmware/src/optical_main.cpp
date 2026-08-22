@@ -3684,6 +3684,14 @@ static AiusAbLedger g_ab_ledger; /* the chooser's ledger, as booted */
 static bool g_ab_ledger_valid;
 static bool g_ab_rollback_observed; /* this boot persisted a failed trial */
 static bool g_ab_committed_this_boot;
+/* The PHYSICAL slot this boot is actually running. Under the old (non-remap)
+ * chooser it always equals the compile-time AIUS_AB_SLOT, because the image can
+ * only run from the slot it was linked for. Under the new remap chooser the
+ * image is slot-agnostic and learns its slot only from the chooser's ledger
+ * stamp (aius-ota-slot-agnostic.md); ab_compose() sets this from booted_slot.
+ * Defaulting to AIUS_AB_SLOT keeps every consumer legacy-correct before the
+ * chooser cutover. */
+static uint8_t g_ab_running_slot = AIUS_AB_SLOT;
 
 /* Writes `record` into the ping-pong sector the current winner does NOT
  * occupy, through the same bounds-checked RAM-resident primitives the
@@ -3742,16 +3750,32 @@ static FLASHMEM void ab_compose(void)
 	g_ab_record_valid = g_ab_record_sector >= 0;
 	g_ab_ledger_valid = aius_ab_ledger_decode(
 		&g_ab_ledger, g_ab_ledger_retained, AIUS_AB_LEDGER_BYTES);
-	(void)aius_ota_set_expected_slot(&g_ota_session,
-	                                 AIUS_AB_INACTIVE_SLOT);
+
+	/* The new remap chooser stamps the physical slot it booted; the old
+	 * chooser (and a fresh or invalid ledger) leaves it NONE, so the
+	 * compile-time slot is the truth exactly as before. This is the single
+	 * gate that keeps one firmware correct under both choosers. */
+	const bool new_chooser =
+		g_ab_ledger_valid &&
+		g_ab_ledger.booted_slot != AIUS_AB_SLOT_NONE;
+	g_ab_running_slot =
+		new_chooser ? g_ab_ledger.booted_slot : (uint8_t)AIUS_AB_SLOT;
+
+	/* Container acceptance follows the same gate: under the new chooser one
+	 * untagged canonical image serves every slot, so accept slot_id NONE;
+	 * under the old chooser keep the per-slot tag against the inactive slot. */
+	(void)aius_ota_set_expected_slot(
+		&g_ota_session,
+		new_chooser ? (uint8_t)AIUS_OTA_SLOT_NONE
+		            : (uint8_t)AIUS_AB_INACTIVE_SLOT);
 
 	if (!g_ab_record_valid)
 		return;
 	if (g_ab_record.pending_slot != AIUS_AB_SLOT_NONE &&
-	    g_ab_record.pending_slot != AIUS_AB_SLOT) {
+	    g_ab_record.pending_slot != g_ab_running_slot) {
 		AiusAbRecord next = g_ab_record;
 		next.sequence++;
-		next.active_slot = AIUS_AB_SLOT;
+		next.active_slot = g_ab_running_slot;
 		next.pending_slot = AIUS_AB_SLOT_NONE;
 		next.trial_budget = 0u;
 		if (ab_record_write(&next))
@@ -3759,10 +3783,10 @@ static FLASHMEM void ab_compose(void)
 		return;
 	}
 	if (g_ab_record.pending_slot == AIUS_AB_SLOT_NONE &&
-	    g_ab_record.active_slot != AIUS_AB_SLOT) {
+	    g_ab_record.active_slot != g_ab_running_slot) {
 		AiusAbRecord next = g_ab_record;
 		next.sequence++;
-		next.active_slot = AIUS_AB_SLOT;
+		next.active_slot = g_ab_running_slot;
 		(void)ab_record_write(&next);
 	}
 }
@@ -3780,16 +3804,16 @@ static FLASHMEM void ab_mark_healthy(void)
 		AiusAbRecord initial;
 		memset(&initial, 0, sizeof(initial));
 		initial.sequence = 1u;
-		initial.active_slot = AIUS_AB_SLOT;
+		initial.active_slot = g_ab_running_slot;
 		initial.pending_slot = AIUS_AB_SLOT_NONE;
 		initial.trial_budget = 0u;
 		(void)ab_record_write(&initial);
 		return;
 	}
-	if (g_ab_record.pending_slot == AIUS_AB_SLOT) {
+	if (g_ab_record.pending_slot == g_ab_running_slot) {
 		AiusAbRecord committed = g_ab_record;
 		committed.sequence++;
-		committed.active_slot = AIUS_AB_SLOT;
+		committed.active_slot = g_ab_running_slot;
 		committed.pending_slot = AIUS_AB_SLOT_NONE;
 		committed.trial_budget = 0u;
 		(void)ab_record_write(&committed);
@@ -3812,11 +3836,11 @@ static FLASHMEM bool ab_activation_mark_pending(void)
 	} else {
 		memset(&next, 0, sizeof(next));
 		next.sequence = 0u;
-		next.active_slot = AIUS_AB_SLOT;
+		next.active_slot = g_ab_running_slot;
 	}
 	next.sequence++;
-	next.active_slot = AIUS_AB_SLOT;
-	next.pending_slot = AIUS_AB_INACTIVE_SLOT;
+	next.active_slot = g_ab_running_slot;
+	next.pending_slot = aius_ab_other_slot(g_ab_running_slot);
 	next.trial_budget = AIUS_AB_DEFAULT_TRIAL_BOOTS;
 	return ab_record_write(&next);
 }
@@ -4348,6 +4372,14 @@ FASTRUN static OtaSelfTestResult ota_run_self_test_flash(void)
 	uint8_t pattern[AIUS_OTA_ACTIVATE_CHUNK_BYTES];
 	uint8_t readback[AIUS_OTA_ACTIVATE_CHUNK_BYTES];
 
+#if AIUS_AB_SLOT
+	/* The scratch is the COMPILE-TIME inactive slot's last sector. Under the
+	 * new remap chooser the running slot can differ from the compile-time one,
+	 * which would make that sector part of the RUNNING image -- refuse rather
+	 * than risk erasing it. A runtime-derived scratch is future work. */
+	if (g_ab_running_slot != AIUS_AB_SLOT)
+		return OTA_SELF_TEST_FAIL;
+#endif
 	if ((uint32_t)(uintptr_t)&_flashimagelen >= AIUS_OTA_SELF_TEST_OFFSET)
 		return OTA_SELF_TEST_FAIL; /* the image reaches the scratch sector */
 	if (aius_ota_activate_check_erase(AIUS_OTA_SELF_TEST_ADDRESS) != AIUS_OTA_OK ||
@@ -4562,7 +4594,7 @@ static FLASHMEM bool http_ab_json(char *output, size_t capacity,
 			"\"sequence\":%lu,\"trial_budget\":%u,"
 			"\"ledger_valid\":%s,\"ledger_boots\":%lu,"
 			"\"ledger_fell_back\":%s,\"rollback_observed\":%s}",
-			(unsigned)AIUS_AB_SLOT,
+			(unsigned)g_ab_running_slot,
 			g_ab_record_valid ? "true" : "false",
 			(unsigned)g_ab_record.active_slot,
 			(unsigned)g_ab_record.pending_slot,
@@ -8402,7 +8434,10 @@ static FLASHMEM void service_ota_activation(uint32_t now_ms)
 	 * leaves the board bootable and the chooser boots the active slot. */
 #if AIUS_AB_SLOT
 	AiusOtaActivateWindow ab_window;
-	ab_window.base = AIUS_AB_INACTIVE_BASE;
+	/* The inactive slot to program, derived from the PHYSICAL running slot so
+	 * the new chooser never lets OTA erase the live image (the compile-time
+	 * inactive base is only correct when running == compile-time slot). */
+	ab_window.base = aius_ab_slot_base(aius_ab_other_slot(g_ab_running_slot));
 	ab_window.usable_bytes = AIUS_AB_SLOT_BYTES;
 	const AiusOtaActivateWindow *activation_window = &ab_window;
 	/* Re-bound the RAM-resident primitive wrappers to the slot window too
@@ -8488,7 +8523,8 @@ static FLASHMEM void service_ota_rehearsal(uint32_t now_ms)
 	 * must never erase is the RUNNING image -- which the inactive slot
 	 * structurally is not. Any staged-but-unactivated content there is
 	 * expendable rehearsal fuel; the next activation erases it anyway. */
-	g_ota_rehearsal_window.base = AIUS_AB_INACTIVE_BASE;
+	g_ota_rehearsal_window.base =
+		aius_ab_slot_base(aius_ab_other_slot(g_ab_running_slot));
 	g_ota_rehearsal_window.usable_bytes = AIUS_AB_SLOT_BYTES;
 #else
 	/* The scratch window: the self-test's offset to the top of the usable
