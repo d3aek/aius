@@ -166,6 +166,7 @@ FLASHMEM bool aius_ab_ledger_encode(const AiusAbLedger *ledger,
 	put_u32(&bytes[AIUS_AB_LEDGER_OFFSET_BOOTS], ledger->boots_attempted);
 	put_u32(&bytes[AIUS_AB_LEDGER_OFFSET_FELL_BACK],
 	        ledger->fell_back != 0u ? 1u : 0u);
+	bytes[AIUS_AB_LEDGER_OFFSET_BOOTED_SLOT] = ledger->booted_slot;
 	put_u32(&bytes[AIUS_AB_LEDGER_OFFSET_CRC32],
 	        crc32_bitwise(bytes, AIUS_AB_LEDGER_OFFSET_CRC32));
 	return true;
@@ -174,11 +175,14 @@ FLASHMEM bool aius_ab_ledger_encode(const AiusAbLedger *ledger,
 FLASHMEM bool aius_ab_ledger_decode(AiusAbLedger *ledger,
 	                            const uint8_t *bytes, size_t length)
 {
+	uint8_t booted_slot;
+
 	if (ledger == NULL)
 		return false;
 	ledger->record_sequence = 0u;
 	ledger->boots_attempted = 0u;
 	ledger->fell_back = 0u;
+	ledger->booted_slot = AIUS_AB_SLOT_NONE;
 
 	if (bytes == NULL || length != AIUS_AB_LEDGER_BYTES)
 		return false;
@@ -190,10 +194,16 @@ FLASHMEM bool aius_ab_ledger_decode(AiusAbLedger *ledger,
 		return false;
 	if (get_u32(&bytes[AIUS_AB_LEDGER_OFFSET_FELL_BACK]) > 1u)
 		return false;
+	/* booted_slot domain: NONE (a pre-slot-agnostic ledger) or a real slot;
+	 * anything else is a layout drift or garbage and fails closed. */
+	booted_slot = bytes[AIUS_AB_LEDGER_OFFSET_BOOTED_SLOT];
+	if (booted_slot != AIUS_AB_SLOT_NONE && !slot_valid(booted_slot))
+		return false;
 	ledger->record_sequence =
 		get_u32(&bytes[AIUS_AB_LEDGER_OFFSET_SEQUENCE]);
 	ledger->boots_attempted = get_u32(&bytes[AIUS_AB_LEDGER_OFFSET_BOOTS]);
 	ledger->fell_back = get_u32(&bytes[AIUS_AB_LEDGER_OFFSET_FELL_BACK]);
+	ledger->booted_slot = booted_slot;
 	return true;
 }
 
@@ -245,6 +255,10 @@ FLASHMEM void aius_ab_choose(const AiusAbRecord *record,
 	choice->ledger.record_sequence = 0u;
 	choice->ledger.boots_attempted = 0u;
 	choice->ledger.fell_back = 0u;
+	/* booted_slot always tracks the slot actually chosen: the chooser
+	 * persists it as the app's only channel to its physical slot under a
+	 * single canonical build (aius-ota-slot-agnostic.md). */
+	choice->ledger.booted_slot = AIUS_AB_SLOT_A;
 
 	if (record == NULL)
 		return; /* fresh board / recovery flash: slot A, fail-closed */
@@ -252,6 +266,7 @@ FLASHMEM void aius_ab_choose(const AiusAbRecord *record,
 	if (record->pending_slot == AIUS_AB_SLOT_NONE) {
 		choice->boot_slot = record->active_slot;
 		choice->reason = (uint8_t)AIUS_AB_REASON_ACTIVE;
+		choice->ledger.booted_slot = record->active_slot;
 		return;
 	}
 
@@ -269,6 +284,7 @@ FLASHMEM void aius_ab_choose(const AiusAbRecord *record,
 	if (boots > record->trial_budget) {
 		choice->boot_slot = record->active_slot;
 		choice->reason = (uint8_t)AIUS_AB_REASON_FELL_BACK;
+		choice->ledger.booted_slot = record->active_slot;
 		/* The count stops moving once the fall-back is recorded: the
 		 * ledger now carries the verdict for the application to
 		 * persist, not a live counter. */
@@ -281,6 +297,7 @@ FLASHMEM void aius_ab_choose(const AiusAbRecord *record,
 	choice->reason = (uint8_t)AIUS_AB_REASON_TRIAL;
 	choice->ledger.boots_attempted = boots;
 	choice->ledger.fell_back = 0u;
+	choice->ledger.booted_slot = record->pending_slot;
 }
 
 FLASHMEM uint8_t aius_ab_other_slot(uint8_t slot)
@@ -301,12 +318,31 @@ FLASHMEM uint32_t aius_ab_slot_base(uint8_t slot)
 	return 0u;
 }
 
+FLASHMEM bool aius_ab_remap_for_slot(uint8_t slot, AiusAbRemap *out)
+{
+	uint32_t base;
+
+	if (out == NULL)
+		return false;
+	out->start = 0u;
+	out->end = 0u;
+	out->offset = 0u;
+	base = aius_ab_slot_base(slot);
+	if (base == 0u)
+		return false;
+	/* The window is always the canonical link window; the offset carries an
+	 * in-window (canonical) address to the slot's physical flash -- 0 for
+	 * slot A (the canonical window IS slot A's), +AIUS_AB_SLOT_BYTES for B. */
+	out->start = AIUS_AB_CANONICAL_BASE;
+	out->end = AIUS_AB_CANONICAL_BASE + AIUS_AB_CANONICAL_BYTES;
+	out->offset = base - AIUS_AB_CANONICAL_BASE;
+	return true;
+}
+
 FLASHMEM bool aius_ab_slot_ivt_sane(uint8_t slot, uint32_t ivt_word0,
 	                            uint32_t entry_word)
 {
-	uint32_t base = aius_ab_slot_base(slot);
-
-	if (base == 0u)
+	if (aius_ab_slot_base(slot) == 0u)
 		return false;
 	/* The i.MX RT IVT header tag is 0xD1 in the word's low byte on this
 	 * little-endian part; an erased sector reads 0xFFFFFFFF and a torn
@@ -314,7 +350,11 @@ FLASHMEM bool aius_ab_slot_ivt_sane(uint8_t slot, uint32_t ivt_word0,
 	 * takes the other slot instead of jumping into garbage. */
 	if ((ivt_word0 & 0xffu) != 0xd1u)
 		return false;
-	/* The entry pointer (the slot image's ResetHandler, which runs XIP
-	 * from the slot's own flash) must lie inside the slot. */
-	return entry_word > base && entry_word < base + AIUS_AB_SLOT_BYTES;
+	/* Every slot-agnostic image is LINKED at the canonical window, so its
+	 * entry pointer lies there whichever physical slot it occupies -- the
+	 * chooser's remap makes the canonical window resolve to that slot. An
+	 * entry outside the canonical window is an unlinked/torn/cross-scheme
+	 * image the chooser must refuse. */
+	return entry_word > AIUS_AB_CANONICAL_BASE &&
+	       entry_word < AIUS_AB_CANONICAL_BASE + AIUS_AB_CANONICAL_BYTES;
 }

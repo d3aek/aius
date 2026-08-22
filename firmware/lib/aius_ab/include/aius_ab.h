@@ -81,7 +81,11 @@ typedef struct {
  *    8   4  boots_attempted (trial boots the chooser has launched)
  *   12   4  fell_back (0/1: the chooser exhausted the budget and booted
  *              the active slot; the application persists the rollback)
- *   16  12  reserved = 0
+ *   16   1  booted_slot (AIUS_AB_SLOT_*; the PHYSICAL slot the chooser
+ *              actually booted -- the app's only way to learn it under a
+ *              single canonical build whose address space cannot reveal it.
+ *              A pre-slot-agnostic ledger reads 0 = NONE here.)
+ *   17  11  reserved = 0
  *   28   4  CRC-32 over bytes [0, 28)
  */
 #define AIUS_AB_LEDGER_MAGIC UINT32_C(0x54414941) /* "AIAT" */
@@ -89,12 +93,14 @@ typedef struct {
 #define AIUS_AB_LEDGER_OFFSET_SEQUENCE 4u
 #define AIUS_AB_LEDGER_OFFSET_BOOTS 8u
 #define AIUS_AB_LEDGER_OFFSET_FELL_BACK 12u
+#define AIUS_AB_LEDGER_OFFSET_BOOTED_SLOT 16u
 #define AIUS_AB_LEDGER_OFFSET_CRC32 28u
 
 typedef struct {
 	uint32_t record_sequence;
 	uint32_t boots_attempted;
 	uint32_t fell_back;
+	uint8_t booted_slot; /* AIUS_AB_SLOT_*; the physical slot booted */
 } AiusAbLedger;
 
 /* Why the boot happened, for the application's status surface (and for the
@@ -149,10 +155,30 @@ uint8_t aius_ab_other_slot(uint8_t slot);
 
 uint32_t aius_ab_slot_base(uint8_t slot); /* 0 for an invalid slot */
 
-/* The slot IVT sanity rule over the two words a caller fetches from
- * slot_base + AIUS_AB_SLOT_IVT_OFFSET: word0 is the IVT header (tag 0xD1 in
- * its low byte on this part's byte order) and word1 the entry pointer,
- * which must lie inside the slot. Pure so the host suite pins it. */
+/* The FlexSPI AHB remap inputs (aius-ota-slot-agnostic.md) that make the
+ * CANONICAL link window resolve to the chosen PHYSICAL slot: window
+ * [AIUS_AB_CANONICAL_BASE, +AIUS_AB_CANONICAL_BYTES) and an offset added to an
+ * in-window address to reach the slot's physical flash -- 0 for slot A
+ * (identity), +AIUS_AB_SLOT_BYTES for slot B. The chooser writes these to
+ * IOMUXC_GPR_GPR30/31/32 before jumping to the canonical entry. Pure and
+ * target-agnostic so the host suite pins the arithmetic; the register poke is a
+ * tiny target-only shim over this. All fields are 4 KiB-aligned (the remap's
+ * granularity). Returns false for an invalid slot (out zeroed). */
+typedef struct {
+	uint32_t start;  /* GPR30: window start, canonical base */
+	uint32_t end;    /* GPR31: window end, EXCLUSIVE */
+	uint32_t offset; /* GPR32: added to an in-window address */
+} AiusAbRemap;
+
+bool aius_ab_remap_for_slot(uint8_t slot, AiusAbRemap *out);
+
+/* The slot IVT sanity rule over the two words a caller fetches from a slot's
+ * PHYSICAL base + AIUS_AB_SLOT_IVT_OFFSET: word0 is the IVT header (tag 0xD1 in
+ * its low byte on this part's byte order) and word1 the entry pointer. Under
+ * the slot-agnostic scheme every image is linked at the CANONICAL window, so
+ * the entry must lie inside that window regardless of which physical slot the
+ * caller read it from (the chooser's remap makes the canonical window resolve
+ * to that physical slot). Pure so the host suite pins it. */
 bool aius_ab_slot_ivt_sane(uint8_t slot, uint32_t ivt_word0,
 	                   uint32_t entry_word);
 

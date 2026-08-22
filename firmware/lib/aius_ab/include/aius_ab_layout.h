@@ -46,6 +46,18 @@
 #define AIUS_AB_SLOT_A_BASE (AIUS_AB_FLASH_BASE + AIUS_AB_HEAD_BYTES)
 #define AIUS_AB_SLOT_B_BASE (AIUS_AB_SLOT_A_BASE + AIUS_AB_SLOT_BYTES)
 
+/* THE CANONICAL LINK WINDOW (aius-ota-slot-agnostic.md). A slot-agnostic image
+ * is linked ONCE at this window -- slot A's window -- and the first-stage
+ * chooser's FlexSPI AHB remap makes the window resolve to whichever PHYSICAL
+ * slot holds the running image (offset 0 for slot A, +AIUS_AB_SLOT_BYTES for
+ * slot B). Because every image links here, a slot's IVT entry pointer is
+ * validated against THIS window, not the slot's own physical base
+ * (aius_ab_slot_ivt_sane), and the release builds and signs one binary.
+ * The window is exactly slot A's, so HalfKay recovery (chooser + slot A at the
+ * canonical base) needs no remap. */
+#define AIUS_AB_CANONICAL_BASE AIUS_AB_SLOT_A_BASE
+#define AIUS_AB_CANONICAL_BYTES AIUS_AB_SLOT_BYTES
+
 /* Slot identities, as they appear in the boot record, the retained trial
  * ledger, the container header's slot tag and the AIUS_AB_SLOT build flag.
  * 0 is "no slot" -- the single-image build and the untagged container. */

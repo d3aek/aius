@@ -58,6 +58,10 @@ static void test_layout_arithmetic(void)
 	CHECK(AIUS_AB_SLOT_B_BASE == 0x603E8000u);
 	CHECK(AIUS_AB_SLOT_BYTES == 0x3D8000u);
 	CHECK(AIUS_AB_SLOT_B_BASE + AIUS_AB_SLOT_BYTES == 0x607C0000u);
+	/* The canonical link window is exactly slot A's window: one binary links
+	 * here and the chooser remaps it onto whichever physical slot runs. */
+	CHECK(AIUS_AB_CANONICAL_BASE == AIUS_AB_SLOT_A_BASE);
+	CHECK(AIUS_AB_CANONICAL_BYTES == AIUS_AB_SLOT_BYTES);
 	CHECK(AIUS_AB_RECORD_SECTOR_0 == 0x6000E000u);
 	CHECK(AIUS_AB_RECORD_SECTOR_1 == 0x6000F000u);
 	CHECK(aius_ab_slot_base(AIUS_AB_SLOT_A) == AIUS_AB_SLOT_A_BASE);
@@ -137,13 +141,35 @@ static void test_ledger_codec_fail_closed(void)
 	ledger.record_sequence = 9u;
 	ledger.boots_attempted = 2u;
 	ledger.fell_back = 1u;
+	ledger.booted_slot = AIUS_AB_SLOT_B;
 	CHECK(aius_ab_ledger_encode(&ledger, bytes, sizeof(bytes)));
 	CHECK(aius_ab_ledger_decode(&decoded, bytes, sizeof(bytes)));
 	CHECK(decoded.record_sequence == 9u);
 	CHECK(decoded.boots_attempted == 2u);
 	CHECK(decoded.fell_back == 1u);
+	CHECK(decoded.booted_slot == AIUS_AB_SLOT_B);
+
+	current_key = "ledger.legacy-booted-slot";
+	/* A pre-slot-agnostic ledger has byte 16 = 0: it decodes (valid CRC over
+	 * the whole record) with booted_slot NONE -- the app then falls back to
+	 * the record's active slot. Encode carries the field, so a NONE value
+	 * round-trips honestly. */
+	ledger.booted_slot = AIUS_AB_SLOT_NONE;
+	CHECK(aius_ab_ledger_encode(&ledger, bytes, sizeof(bytes)));
+	CHECK(aius_ab_ledger_decode(&decoded, bytes, sizeof(bytes)));
+	CHECK(decoded.booted_slot == AIUS_AB_SLOT_NONE);
+
+	current_key = "ledger.booted-slot-domain";
+	/* A garbage booted_slot (valid CRC, out-of-domain value) fails closed:
+	 * encode writes the byte raw, so the value is CRC-valid but rejected. */
+	ledger.booted_slot = 3u;
+	CHECK(aius_ab_ledger_encode(&ledger, bytes, sizeof(bytes)));
+	CHECK(!aius_ab_ledger_decode(&decoded, bytes, sizeof(bytes)));
+	CHECK(decoded.booted_slot == AIUS_AB_SLOT_NONE);
 
 	current_key = "ledger.fail-closed";
+	ledger.booted_slot = AIUS_AB_SLOT_B;
+	CHECK(aius_ab_ledger_encode(&ledger, bytes, sizeof(bytes)));
 	for (index = 0u; index < AIUS_AB_LEDGER_BYTES; index++) {
 		memcpy(mutated, bytes, sizeof(mutated));
 		mutated[index] ^= 0x01u;
@@ -229,12 +255,18 @@ static void test_choose_rules(void)
 	CHECK(choice.reason == AIUS_AB_REASON_NO_RECORD);
 	CHECK(!choice.ledger_write);
 
+	current_key = "choose.no-record.booted-slot";
+	/* booted_slot always tracks the chosen slot: the app's channel to its
+	 * physical slot under a single canonical build. */
+	CHECK(choice.ledger.booted_slot == AIUS_AB_SLOT_A);
+
 	current_key = "choose.active";
 	record = committed(3u, AIUS_AB_SLOT_B);
 	choice = boot_once(&record, retained);
 	CHECK(choice.boot_slot == AIUS_AB_SLOT_B);
 	CHECK(choice.reason == AIUS_AB_REASON_ACTIVE);
 	CHECK(!choice.ledger_write);
+	CHECK(choice.ledger.booted_slot == AIUS_AB_SLOT_B);
 
 	current_key = "choose.trial-budget-sequence";
 	/* THE ROLLBACK SEQUENCE, boot by boot: a 2-boot trial of slot B gets
@@ -246,6 +278,7 @@ static void test_choose_rules(void)
 	CHECK(choice.boot_slot == AIUS_AB_SLOT_B);
 	CHECK(choice.reason == AIUS_AB_REASON_TRIAL);
 	CHECK(choice.ledger.boots_attempted == 1u);
+	CHECK(choice.ledger.booted_slot == AIUS_AB_SLOT_B); /* the trial slot */
 	choice = boot_once(&record, retained); /* trial crashed: WDOG reset */
 	CHECK(choice.boot_slot == AIUS_AB_SLOT_B);
 	CHECK(choice.ledger.boots_attempted == 2u);
@@ -253,6 +286,7 @@ static void test_choose_rules(void)
 	CHECK(choice.boot_slot == AIUS_AB_SLOT_A);
 	CHECK(choice.reason == AIUS_AB_REASON_FELL_BACK);
 	CHECK(choice.ledger.fell_back == 1u);
+	CHECK(choice.ledger.booted_slot == AIUS_AB_SLOT_A); /* fell back to active */
 	/* The fallback booting again (the app has not yet persisted the
 	 * rollback): still the active slot, verdict still latched. */
 	choice = boot_once(&record, retained);
@@ -282,27 +316,73 @@ static void test_choose_rules(void)
 static void test_slot_ivt_sanity(void)
 {
 	current_key = "ivt.sane";
-	/* The Teensy IVT header word carries tag 0xD1 in its low byte, and the
-	 * slot's ResetHandler lives inside the slot's own flash. */
+	/* The Teensy IVT header word carries tag 0xD1 in its low byte. Under the
+	 * slot-agnostic scheme BOTH slots' images are linked at the canonical
+	 * window, so a sane entry lies there whichever slot the caller read it
+	 * from -- the chooser's remap resolves the canonical window to that
+	 * physical slot. */
 	CHECK(aius_ab_slot_ivt_sane(AIUS_AB_SLOT_A, 0x432000D1u,
-	                            AIUS_AB_SLOT_A_BASE + 0x1200u));
+	                            AIUS_AB_CANONICAL_BASE + 0x1200u));
 	CHECK(aius_ab_slot_ivt_sane(AIUS_AB_SLOT_B, 0x432000D1u,
-	                            AIUS_AB_SLOT_B_BASE + 0x1200u));
+	                            AIUS_AB_CANONICAL_BASE + 0x1200u));
 
 	current_key = "ivt.insane";
 	/* An erased slot (0xFFFFFFFF), a torn header, an entry outside the
-	 * slot (including the OTHER slot's entry -- a cross-linked image), and
+	 * canonical window, an entry exactly at the window base (must be >), and
 	 * an invalid slot id all refuse. */
 	CHECK(!aius_ab_slot_ivt_sane(AIUS_AB_SLOT_A, 0xFFFFFFFFu,
 	                             0xFFFFFFFFu));
 	CHECK(!aius_ab_slot_ivt_sane(AIUS_AB_SLOT_A, 0x432000D0u,
-	                             AIUS_AB_SLOT_A_BASE + 0x1200u));
+	                             AIUS_AB_CANONICAL_BASE + 0x1200u));
 	CHECK(!aius_ab_slot_ivt_sane(AIUS_AB_SLOT_A, 0x432000D1u,
-	                             AIUS_AB_SLOT_B_BASE + 0x1200u));
-	CHECK(!aius_ab_slot_ivt_sane(AIUS_AB_SLOT_A, 0x432000D1u,
-	                             AIUS_AB_SLOT_A_BASE));
+	                             AIUS_AB_CANONICAL_BASE));
 	CHECK(!aius_ab_slot_ivt_sane(AIUS_AB_SLOT_NONE, 0x432000D1u,
-	                             AIUS_AB_SLOT_A_BASE + 0x1200u));
+	                             AIUS_AB_CANONICAL_BASE + 0x1200u));
+
+	current_key = "ivt.atomic-cutover-guard";
+	/* An OLD dual-linked slot-B image -- entry inside slot B's PHYSICAL
+	 * window, outside the canonical window -- is refused by the new check.
+	 * This is why the chooser, the canonical images and this rule must cut
+	 * over together in one HalfKay recovery flash: a new chooser facing an
+	 * old B image would (correctly) find it insane. */
+	CHECK(!aius_ab_slot_ivt_sane(AIUS_AB_SLOT_B, 0x432000D1u,
+	                             AIUS_AB_SLOT_B_BASE + 0x1200u));
+}
+
+static void test_remap_primitive(void)
+{
+	AiusAbRemap remap;
+
+	current_key = "remap.slot-a-identity";
+	/* Slot A: the canonical window IS slot A's, so the offset is zero
+	 * (identity) -- HalfKay recovery boots slot A with the remap regs at
+	 * their reset value. */
+	CHECK(aius_ab_remap_for_slot(AIUS_AB_SLOT_A, &remap));
+	CHECK(remap.start == AIUS_AB_CANONICAL_BASE);
+	CHECK(remap.end == AIUS_AB_CANONICAL_BASE + AIUS_AB_CANONICAL_BYTES);
+	CHECK(remap.offset == 0u);
+
+	current_key = "remap.slot-b-offset";
+	/* Slot B: the canonical window is redirected forward by one slot span,
+	 * so a canonical fetch lands in slot B's physical flash. */
+	CHECK(aius_ab_remap_for_slot(AIUS_AB_SLOT_B, &remap));
+	CHECK(remap.start == AIUS_AB_CANONICAL_BASE);
+	CHECK(remap.end == AIUS_AB_CANONICAL_BASE + AIUS_AB_CANONICAL_BYTES);
+	CHECK(remap.offset == AIUS_AB_SLOT_BYTES);
+	/* The end-to-end invariant: a canonical in-window address plus the
+	 * offset reaches the slot's physical base. */
+	CHECK(remap.start + remap.offset == AIUS_AB_SLOT_B_BASE);
+	/* 4 KiB alignment, the remap's hardware granularity, on every field. */
+	CHECK((remap.start & 0xFFFu) == 0u);
+	CHECK((remap.end & 0xFFFu) == 0u);
+	CHECK((remap.offset & 0xFFFu) == 0u);
+
+	current_key = "remap.invalid-slot";
+	/* An invalid slot yields no window and a false return: the chooser must
+	 * never program a remap for a slot it cannot name. */
+	CHECK(!aius_ab_remap_for_slot(AIUS_AB_SLOT_NONE, &remap));
+	CHECK(remap.start == 0u && remap.end == 0u && remap.offset == 0u);
+	CHECK(!aius_ab_remap_for_slot(AIUS_AB_SLOT_A, NULL));
 }
 
 int main(void)
@@ -313,6 +393,7 @@ int main(void)
 	test_record_pick();
 	test_choose_rules();
 	test_slot_ivt_sanity();
+	test_remap_primitive();
 	puts("ab tests passed");
 	return 0;
 }
