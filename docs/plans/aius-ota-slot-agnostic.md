@@ -31,6 +31,23 @@ Because the chooser is HalfKay-recover-only, the whole change lands host-proven
 and bench-proven on a spare board, and reaches the deployed device only at the
 next physical visit.
 
+## Status
+
+Landed and cross-build-proven (Teensy toolchain), all inert on the deployed
+board until a remap chooser is HalfKay-flashed:
+
+- **Phase 1** — shared `lib/aius_ab` primitives, host suite green.
+- **Phase 3** — runtime physical-slot identity + container acceptance gate in
+  `ab_compose`, gated on `booted_slot`; all three envs build.
+- **Phase 2** — remap-aware verify read (`ota_flash_read`), authored + compiled;
+  BENCH-REQUIRED (register/SWRESET timing unvalidated off hardware; fail-safe).
+- **Phase 4** — chooser programs the remap + always stamps `booted_slot`,
+  authored + compiled freestanding; BENCH-REQUIRED.
+
+Not started: Phase 5 (release build/signer glue — mostly already supported, see
+the phase), Phase 6 (recovery.hex package + bench acceptance). No USB access to
+the board, so nothing here is runtime- or bench-validated yet.
+
 ## Why it is per-slot today
 
 The root cause is **XIP address-binding, not the signature**. The Teensy 4.1 /

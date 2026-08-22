@@ -38,6 +38,17 @@
 
 #define CHOOSER_STACK_TOP 0x20280000u /* top of OCRAM, mapped at reset */
 
+/* FlexSPI1 AHB address-remap registers (aius-ota-slot-agnostic.md). The chooser
+ * is freestanding -- no imxrt.h -- so the addresses are inlined here; they are
+ * IOMUXC_GPR_GPR30/31/32 (FLEXSPI_REMAP_ADDR_START / END / OFFSET) at the
+ * IOMUXC_GPR base 0x400AC000. Programming them makes the canonical link window
+ * resolve to the chosen physical slot; they are cleared by every reset, which
+ * is why the chooser -- run by the ROM on every boot, and living OUTSIDE the
+ * window -- must re-establish them each time. */
+#define AIUS_IOMUXC_GPR_REMAP_START 0x400AC078u
+#define AIUS_IOMUXC_GPR_REMAP_END 0x400AC07Cu
+#define AIUS_IOMUXC_GPR_REMAP_OFFSET 0x400AC080u
+
 /* The ROM-parsed structures, hand-rolled: hdr tag 0xD1, and boot data
  * declaring the XIP image (start == flash base, so the ROM jumps in place). */
 struct chooser_ivt {
@@ -108,13 +119,51 @@ static bool slot_sane(uint8_t slot)
 		flash_word(base + AIUS_AB_SLOT_IVT_OFFSET + 4u));
 }
 
+/* Program the FlexSPI remap so the canonical link window resolves to `slot`'s
+ * physical flash, then barrier before the jump. A slot-agnostic image is linked
+ * ONCE at the canonical window and the remap (offset 0 for slot A, +one slot
+ * span for slot B) redirects it to the physical slot the chooser picked.
+ *
+ * NO FlexSPI RX-buffer flush (MCR0 SWRESET) is issued, deliberately. The
+ * documented flush guards against a pre-remap prefetch line being served for a
+ * canonical address after the window moves -- but the chooser executes ONLY in
+ * the head region and never fetches a canonical-window address before this
+ * point, so the AHB RX buffer holds no such line: the first post-jump canonical
+ * fetch is a compulsory miss served under the new mapping. Issuing SWRESET here
+ * would reset the very FlexSPI the chooser is executing XIP from, risking the
+ * next instruction fetch in the un-recoverable first stage. DSB+ISB orders the
+ * GPR writes and flushes the pipeline before the computed branch, which is what
+ * this needs. BENCH-REQUIRED: confirm no stale canonical line survives; if one
+ * ever does, do the flush from a RAM trampoline, never from flash. */
+static void program_remap(uint8_t slot)
+{
+	AiusAbRemap remap;
+
+	if (!aius_ab_remap_for_slot(slot, &remap))
+		return;
+	*(volatile uint32_t *)AIUS_IOMUXC_GPR_REMAP_START = remap.start;
+	*(volatile uint32_t *)AIUS_IOMUXC_GPR_REMAP_END = remap.end;
+	*(volatile uint32_t *)AIUS_IOMUXC_GPR_REMAP_OFFSET = remap.offset;
+	__asm volatile("dsb\n\t"
+	               "isb\n\t"
+	               :
+	               :
+	               : "memory");
+}
+
+/* Program the remap for `slot`, then jump to its entry point. The entry pointer
+ * is read from the slot's PHYSICAL IVT while the remap is still at its reset
+ * (identity) value, and it is a CANONICAL address (every image links at the
+ * canonical window), so after program_remap() the branch lands in the chosen
+ * physical slot. Never returns. */
 __attribute__((noreturn))
-static void jump_to_slot(uint8_t slot)
+static void boot_slot_with_remap(uint8_t slot)
 {
 	uint32_t base = aius_ab_slot_base(slot);
 	uint32_t entry =
 		flash_word(base + AIUS_AB_SLOT_IVT_OFFSET + 4u);
 
+	program_remap(slot);
 	((void (*)(void))entry)();
 	for (;;)
 		__asm volatile("wfi");
@@ -128,7 +177,7 @@ void chooser_main(void)
 	uint8_t *retained = (uint8_t *)AIUS_AB_LEDGER_ADDRESS;
 	const AiusAbRecord *record_ref = NULL;
 	const AiusAbLedger *ledger_ref = NULL;
-	uint8_t fallback;
+	uint8_t boot_slot;
 
 	if (aius_ab_record_pick((const uint8_t *)AIUS_AB_RECORD_SECTOR_0,
 	                        (const uint8_t *)AIUS_AB_RECORD_SECTOR_1,
@@ -138,19 +187,30 @@ void chooser_main(void)
 		ledger_ref = &ledger;
 
 	aius_ab_choose(record_ref, ledger_ref, &choice);
-	if (choice.ledger_write)
-		(void)aius_ab_ledger_encode(&choice.ledger, retained,
-		                            AIUS_AB_LEDGER_BYTES);
 
+	/* The slot actually booted: the chosen one if its IVT is sane, else the
+	 * other if IT is sane (the insane-fallback path, reachable only from a
+	 * hand-mangled flash since activation never marks a slot pending before
+	 * its bytes verify). AIUS_AB_SLOT_NONE means neither is bootable. */
+	boot_slot = AIUS_AB_SLOT_NONE;
 	if (slot_sane(choice.boot_slot))
-		jump_to_slot(choice.boot_slot);
-	/* The chosen slot's IVT is garbage: take the other if IT is sane. No
-	 * ledger amendment -- the application sees the mismatch between the
-	 * record and the slot it finds itself running from and persists the
-	 * honest state. */
-	fallback = aius_ab_other_slot(choice.boot_slot);
-	if (slot_sane(fallback))
-		jump_to_slot(fallback);
+		boot_slot = choice.boot_slot;
+	else if (slot_sane(aius_ab_other_slot(choice.boot_slot)))
+		boot_slot = aius_ab_other_slot(choice.boot_slot);
+
+	/* Persist the ledger with booted_slot ALWAYS -- not only when the trial
+	 * count changed -- because it is the application's SOLE channel to its
+	 * physical slot under a single canonical build (aius-ota-slot-agnostic.md):
+	 * the image's own address space is canonical whichever slot runs. On the
+	 * insane-fallback path booted_slot names the slot truly taken, so the app
+	 * reconciles against reality rather than the record. */
+	if (boot_slot != AIUS_AB_SLOT_NONE)
+		choice.ledger.booted_slot = boot_slot;
+	(void)aius_ab_ledger_encode(&choice.ledger, retained,
+	                            AIUS_AB_LEDGER_BYTES);
+
+	if (boot_slot != AIUS_AB_SLOT_NONE)
+		boot_slot_with_remap(boot_slot);
 	/* Both slots unbootable: park for the Program button (HalfKay is a
 	 * separate chip and always reachable). The WFI loop is in
 	 * chooser_reset's tail. */

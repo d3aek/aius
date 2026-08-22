@@ -3977,6 +3977,46 @@ FASTRUN static int ota_flash_read(void *ctx, uint32_t address, uint8_t *dest,
 	 * from flash rather than the D-cache, so the compare sees flash, not a
 	 * cached line. */
 	arm_dcache_delete((void *)(uintptr_t)address, length);
+#if AIUS_AB_SLOT
+	/* Under the new remap chooser, running slot B redirects the canonical
+	 * window (slot A's physical range) to slot B, so a plain AHB read of the
+	 * INACTIVE slot A returns the RUNNING image's bytes -- a false verify. Read
+	 * the true physical bytes under a momentary identity mapping, flushing the
+	 * FlexSPI AHB RX buffer around the flip so no shadowed line is served. This
+	 * engages ONLY when a nonzero remap actually shadows the address being read
+	 * -- i.e. the dark-window verify while running slot B; head-region reads
+	 * (ab_record_write) and slot-A-running reads fall through to the plain path.
+	 * It runs FASTRUN with IRQs off (the context eepromemu's SWRESET uses) and
+	 * inside the dark window, which ends in a reset that re-programs the remap.
+	 * BENCH-REQUIRED: the remap/SWRESET timing is unvalidated off hardware; a
+	 * wrong read fails the verify (fail-safe), never bricks. */
+	{
+		AiusAbRemap remap;
+		if (aius_ab_remap_for_slot(g_ab_running_slot, &remap) &&
+		    remap.offset != 0u && address >= remap.start &&
+		    address < remap.end) {
+			const uint32_t saved = IOMUXC_GPR_GPR32;
+			volatile const uint8_t *src =
+				(volatile const uint8_t *)(uintptr_t)address;
+			uint32_t i;
+			IOMUXC_GPR_GPR32 = 0u; /* identity: canonical -> physical A */
+			FLEXSPI_MCR0 |= FLEXSPI_MCR0_SWRESET;
+			while (FLEXSPI_MCR0 & FLEXSPI_MCR0_SWRESET)
+				;
+			__asm__ volatile("dsb\n\tisb\n\t" : : : "memory");
+			for (i = 0u; i < length; i++)
+				dest[i] = src[i];
+			IOMUXC_GPR_GPR32 = saved; /* restore the running slot's remap */
+			FLEXSPI_MCR0 |= FLEXSPI_MCR0_SWRESET;
+			while (FLEXSPI_MCR0 & FLEXSPI_MCR0_SWRESET)
+				;
+			__asm__ volatile("dsb\n\tisb\n\t" : : : "memory");
+			__asm__ volatile("msr primask, %0"
+			                 : : "r"(primask) : "memory");
+			return 0;
+		}
+	}
+#endif
 	memcpy(dest, (const void *)(uintptr_t)address, length);
 	/* flash_wait() re-enabled IRQ unconditionally inside the driver; restore the
 	 * caller's real PRIMASK from our saved copy rather than trusting that. */
