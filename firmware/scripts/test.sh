@@ -805,6 +805,18 @@ recorder)
 		-lm -o "$recorder_out"
 	"$recorder_out"
 	python3 "$fw_root/test/recorder/test_no_extmem_heap.py" "$fw_root"
+	# The rolling multi-slot bank wrapper (aius-recorder-rolling-buffer.md
+	# Phase B): auto-advance on freeze, recycle counting, the read-lease
+	# deferral, park() reaching every slot, the config clamp. Links the
+	# same portable core unmodified.
+	recorder_bank_out="$build_dir/recorder-bank"
+	"$cc" "${cflags[@]}" "-I$fw_root/lib/aius_recorder/include" \
+		"-I$fw_root/lib/aius_codec_api/include" \
+		"$fw_root/test/recorder/test_recorder_bank.c" \
+		"$fw_root/lib/aius_recorder/src/aius_recorder_bank.c" \
+		"$fw_root/lib/aius_recorder/src/aius_recorder.c" \
+		-lm -o "$recorder_bank_out"
+	"$recorder_bank_out"
 	;;
 ab)
 	# The A/B boot state (lib/aius_ab): flash map arithmetic, the boot-record

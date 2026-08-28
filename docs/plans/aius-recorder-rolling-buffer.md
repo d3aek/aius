@@ -19,11 +19,14 @@ trigger still blinds the rest of the session on its first genuine fire.
 Replace the single ~21.8 s ring with a debounced, auto-advancing rolling bank
 of shorter captures, at unchanged total PSRAM footprint.
 
-**No implementation until Phase D's adversarial review + bench proof is
+**No device flash until Phase D's adversarial review + bench proof is
 clean.** The owner's explicit constraint: prove the audio path is not
 interfered with and stability is not harmed before any of this touches the
-device. Two live risk factors sharpen that bar further — see
-§Deployment constraints.
+*device*. Host-only implementation and host-tested proof are not gated by
+this — Phases A-C build and test on the host as they land; what's gated is
+flashing a build to hardware, which Phase D's bench-proof step is the first
+point any of this does. Two live risk factors sharpen that bar further —
+see §Deployment constraints.
 
 ## Problem statement
 
@@ -232,7 +235,7 @@ overlapping ones.
   `end_frame` assertion does. Native `recorder` suite green, 27 rows
   (23 existing + 2 new), ASan/UBSan, `-Werror`.
 
-### Phase B — N-slot rolling bank at unchanged PSRAM footprint
+### Phase B — N-slot rolling bank at unchanged PSRAM footprint IN-PROGRESS (bank library shipped 2026-08-28; optical_main.cpp wiring owed)
 
 - outcome: the recorder maintains `N` (default 4) independently-addressable
   captures instead of one; the active slot auto-advances to the next on
@@ -242,34 +245,52 @@ overlapping ones.
   (`slots_recycled`, not a claim about whether it was pulled). Total PSRAM
   footprint identical to today's single ring at every fitment (16/8/0 MB) —
   verified, not assumed.
-- seams: `firmware/lib/aius_recorder/include/aius_recorder.h` +
-  `aius_recorder.c` (bank wrapper owning N `AiusRecorder`-shaped slot
-  contexts plus the new per-slot `reads_in_flight` lease count; producer/
-  epoch/drain keep their existing signatures and transition logic, called
-  only against the active slot; the reinit-next-slot step lives in the
-  epoch/replay-checkpoint caller, immediately after `aius_recorder_drain()`
-  returns FROZEN, never in the producer); the two direct
+- seams: **built as a new, separate module** —
+  `firmware/lib/aius_recorder/include/aius_recorder_bank.h` +
+  `firmware/lib/aius_recorder/src/aius_recorder_bank.c` — rather than the
+  originally-planned in-place rework of `aius_recorder.h`/`.c` themselves.
+  This is a stronger form of "reused unmodified": the existing single-ring
+  core (27 host rows, Phase A's debounce included) is untouched byte-for-
+  byte, and `AiusRecorderBank` owns `N` `AiusRecorder` slot contexts plus
+  the new per-slot `reads_in_flight` lease count and `slots_recycled`,
+  forwarding producer/epoch/drain to `bank->slots[bank->active]` unchanged.
+  The reinit-next-slot step lives in `aius_recorder_bank_drain()`, called
+  only from the epoch/replay-checkpoint context, immediately after the
+  active slot's `aius_recorder_drain()` returns FROZEN — never from the
+  producer. **Still owed, not yet done:** the two direct
   `g_recorder.state`/`.freeze_generation` field accesses in
   `firmware/src/optical_main.cpp` that bypass the library API today —
   `ota_psram_staging()`'s park-ordering assert (~line 4263) and
-  `app_recorder_read()`'s 400/409 split (~lines 6510-6511) — both become
-  bank-aware accessors (e.g. "all N slots ABSENT", "the addressed slot is
-  FROZEN at this generation"), not compile-broken struct reads; the `park()`
-  call sites and the pad-1 capacity static assert (~line 4242) — confirm the
-  bank's total extent still satisfies it unchanged.
-- targeted-proof: host suite — slot advance on freeze including a full
-  N-cycle wrap with recycling counted; a row proving recycling defers while
-  `reads_in_flight` is nonzero on the target slot and completes once it
-  drops to zero; the existing 23 per-ring transition rows re-run
-  parametrized over "the active slot" (reuse, not duplicate); power-of-two
-  slot-size assertions at init for every fitment; a new row proving
-  `N * slot_bytes == aius_recorder_ring_bytes_after_staging(...)` at each
-  fitment; park()-mid-POSTROLL and park()-mid-DRAINING rows; a
-  partially-parked-bank row (park() applied as N sequential single-state
-  stores, not one atomic op — prove `ota_psram_staging()`'s ordering check
-  cannot observe a window with some slots parked and others not).
-  `firmware/test/memory/verify_target.py` still pins zero OCRAM recorder
-  staging. Host-only — no device flash in this phase.
+  `app_recorder_read()`'s 400/409 split (~lines 6510-6511) — becoming
+  bank-aware (`aius_recorder_bank_present()`, a bank-aware read); the
+  `park()` call sites (~8453, ~8607) swapping to
+  `aius_recorder_bank_park()`; and the pad-1 capacity static assert
+  (~line 4242) re-confirmed against the bank's total extent. This is real
+  production-source wiring (not the new isolated library), scoped as the
+  rest of Phase B rather than folded into this same commit, so it gets its
+  own diff review at the point it lands.
+- targeted-proof: host suite (`recorder-bank` binary within the `recorder`
+  suite case, `firmware/scripts/test.sh`) — slot advance on freeze,
+  including a full N-cycle wrap with recycling counted; a row proving
+  recycling defers while `reads_in_flight` is nonzero on the target slot
+  and completes once it drops to zero (during which nothing records — the
+  correctness-over-liveness trade the Residual risks section documents);
+  power-of-two slot-size assertions at init for every fitment (16/8/0 MB),
+  plus confirming each fitment's total ring extent matches
+  `aius_recorder_ring_bytes_after_staging()`'s single-ring output exactly;
+  park() reaching every slot including one FROZEN and one mid-POSTROLL
+  simultaneously, and park() mid-DRAINING; the config clamp against slot
+  capacity. **Scoped down from "re-run the 23 existing per-ring rows
+  parametrized over the active slot"**: the underlying per-ring state
+  machine is unmodified code reached only through an unmodified API, so its
+  27 existing host rows (Phase A included) already prove it: the deletion
+  test says re-running them here would prove the bank's *forwarding*, which
+  one lifecycle smoke test already covers, not re-prove the state machine
+  itself. 11 new rows, all green, `-Wall -Wextra -Werror`, ASan/UBSan.
+  `firmware/test/memory/verify_target.py`'s zero-OCRAM-recorder-staging
+  pin is unaffected by this phase — nothing in the real `teensy41-optical`
+  target build references the new module yet; that check becomes relevant
+  once the wiring above lands. Host-only — no device flash in this phase.
 - unit: parent-only
 
 ### Phase C — HTTP surface + egress tool for multi-slot addressing
