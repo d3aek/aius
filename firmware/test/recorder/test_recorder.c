@@ -415,15 +415,55 @@ static void test_underrun_gate_qualification(void)
 	feed_block(&f, 8u, 0, 0u, 0u);
 	feed_block(&f, 8u, 0, 0u, 500u);
 	assert(f.r.state == AIUS_RECORDER_RECORDING);
-	/* Gate opens: the transition re-adopts baselines, so the dark-era
-	 * growth (0 -> 620) is NOT an edge... */
+	/* Gate opens: the transition re-adopts baselines and resets the settle
+	 * counter, so the dark-era growth (0 -> 620) is NOT an edge... */
 	aius_recorder_epoch(&f.r, false, true, 500u, 0u);
 	feed_block(&f, 8u, 0, 0u, 620u);
 	assert(f.r.state == AIUS_RECORDER_RECORDING);
-	/* ...and growth under the open gate is. */
+	/* ...and growth under the open gate would be, but the trigger stays
+	 * suppressed until AIUS_RECORDER_SETTLE_BLOCKS clean blocks have
+	 * staged since the edge (one already has, above). */
+	for (uint32_t i = 1u; i < AIUS_RECORDER_SETTLE_BLOCKS; i++)
+		feed_block(&f, 8u, 0, 0u, 620u);
+	assert(f.r.state == AIUS_RECORDER_RECORDING);
+	/* Now settled: the next underrun growth fires. */
 	feed_block(&f, 8u, 0, 0u, 740u);
 	assert(f.r.state == AIUS_RECORDER_POSTROLL);
 	assert(f.r.trigger == AIUS_RECORDER_TRIGGER_UNDERRUN);
+}
+
+/* The debounce this settle counter exists for: field evidence shows the
+ * spurious boot bring-up trigger firing at block 1, well after the gate's
+ * own closed->open edge (a replay session opens the gate almost
+ * immediately; an unrelated stall lands a couple of seconds later). Prove
+ * a large underrun delta right after the edge does NOT fire, on both the
+ * block-evaluable path and the epoch fallback -- an edge-only latch would
+ * have missed this case entirely. */
+static void test_underrun_suppressed_before_settled(void)
+{
+	Fixture f;
+	fixture_init(&f);
+	aius_recorder_epoch(&f.r, false, true, 0u, 0u);
+	feed_block(&f, 8u, 0, 0u, 0u);
+	/* One clean block staged (settled_blocks == 1); a large delta on the
+	 * very next block must not fire despite the gate having been open
+	 * since the first block. */
+	feed_block(&f, 8u, 0, 0u, 5000u);
+	assert(f.r.state == AIUS_RECORDER_RECORDING);
+}
+
+static void test_underrun_epoch_fallback_suppressed_before_settled(void)
+{
+	Fixture f;
+	fixture_init(&f);
+	aius_recorder_epoch(&f.r, false, true, 0u, 0u);
+	feed_block(&f, 8u, 0, 0u, 0u);
+	/* Gate has been open across two epochs (both ends of the fallback's
+	 * qualification are satisfied) but only one block has staged. */
+	aius_recorder_epoch(&f.r, false, true, 0u, 1u);
+	aius_recorder_epoch(&f.r, false, true, 5000u, 2u);
+	assert(f.r.freeze_token == 0u);
+	assert(f.r.state == AIUS_RECORDER_RECORDING);
 }
 
 static void test_underrun_epoch_fallback_and_reclaim(void)
@@ -431,19 +471,31 @@ static void test_underrun_epoch_fallback_and_reclaim(void)
 	Fixture f;
 	fixture_init(&f);
 	feed_block(&f, 8u, 0, 0u, 0u);
+	/* Gate opens; settle with clean blocks before the fallback may arm
+	 * (the field-observed boot-bring-up trigger fired well before any
+	 * session had staged this many). */
+	aius_recorder_epoch(&f.r, false, true, 0u, 100u);
+	/* Drained after each block: the fixture's 4-slot staging would
+	 * otherwise gap most of the settle run, which the settle counter
+	 * itself doesn't care about (it counts evaluated blocks, not staged
+	 * ones) but end_frame below does. */
+	for (uint32_t i = 0; i < AIUS_RECORDER_SETTLE_BLOCKS; i++) {
+		feed_block(&f, 8u, 0, 0u, 0u);
+		drain_all(&f);
+	}
 	/* Producer stall: no more blocks, underruns advance, gate open.
 	 * The epoch sets the token... */
-	aius_recorder_epoch(&f.r, false, true, 0u, 100u);
-	aius_recorder_epoch(&f.r, false, true, 4096u, 101u);
+	aius_recorder_epoch(&f.r, false, true, 0u, 150u);
+	aius_recorder_epoch(&f.r, false, true, 4096u, 151u);
 	assert(f.r.freeze_token == AIUS_RECORDER_TRIGGER_UNDERRUN);
 	assert(f.r.state == AIUS_RECORDER_RECORDING);
 	/* ...and with the block counter unchanged, reclaims after the bound:
 	 * the transition happens epoch-side with the token's identity. */
 	for (uint32_t i = 0; i < AIUS_RECORDER_RECLAIM_EPOCHS; i++)
-		aius_recorder_epoch(&f.r, false, true, 4096u, 102u + i);
+		aius_recorder_epoch(&f.r, false, true, 4096u, 152u + i);
 	assert(f.r.state == AIUS_RECORDER_DRAINING);
 	assert(f.r.trigger == AIUS_RECORDER_TRIGGER_UNDERRUN);
-	assert(f.r.end_frame == 8u);
+	assert(f.r.end_frame == 8u * (1u + AIUS_RECORDER_SETTLE_BLOCKS));
 	drain_all(&f);
 	assert(f.r.state == AIUS_RECORDER_FROZEN);
 }
@@ -524,10 +576,12 @@ static void test_second_trigger_first_wins(void)
 	fixture_init(&f);
 	assert(aius_recorder_set_config(&f.r, AIUS_RECORDER_MASK_DEFAULT, 0.0f,
 	                                1u, 4u) == AIUS_OK);
-	/* Open the gate first so the later underrun edge is qualified without
-	 * a transition re-adoption eating it. */
+	/* Open the gate first and settle so the later underrun edge is
+	 * qualified without a transition re-adoption or the settle window
+	 * eating it. */
 	aius_recorder_epoch(&f.r, false, true, 0u, 0u);
-	feed_block(&f, 8u, 0, 0u, 0u);
+	for (uint32_t i = 0; i < AIUS_RECORDER_SETTLE_BLOCKS; i++)
+		feed_block(&f, 8u, 0, 0u, 0u);
 	feed_block(&f, 8u, 0, 1u, 0u); /* overrun edge -> POSTROLL */
 	assert(f.r.state == AIUS_RECORDER_POSTROLL);
 	assert(f.r.trigger == AIUS_RECORDER_TRIGGER_OVERRUN);
@@ -764,6 +818,8 @@ int main(void)
 	test_overrun_edge_and_resync();
 	test_masked_trigger_tracks_baseline();
 	test_underrun_gate_qualification();
+	test_underrun_suppressed_before_settled();
+	test_underrun_epoch_fallback_suppressed_before_settled();
 	test_underrun_epoch_fallback_and_reclaim();
 	test_replay_stop_transient_suppressed();
 	test_carrier_falling_edge();

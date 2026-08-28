@@ -88,6 +88,16 @@ extern "C" {
  * stream stops in whole-block units). */
 #define AIUS_RECORDER_RECLAIM_EPOCHS 32u
 
+/* Underrun-trigger settle window, in cleanly-staged 512-frame blocks under an
+ * open gate (~85 ms): a boot bring-up or post-thaw session that hasn't
+ * demonstrated this many clean blocks yet cannot arm the underrun trigger.
+ * Field evidence (aius-open-work-register.md) shows the spurious trigger
+ * firing at block 1 -- the gate is often already well past its own
+ * closed->open edge by the time an unrelated stall (SD mount class) lands,
+ * so gating on the edge alone does not suppress it; gating on N clean
+ * blocks since the edge does, regardless of how much time separates them. */
+#define AIUS_RECORDER_SETTLE_BLOCKS 8u
+
 typedef enum {
 	AIUS_RECORDER_ABSENT = 0,
 	AIUS_RECORDER_RECORDING,
@@ -196,6 +206,13 @@ typedef struct {
 	 * baselines on its first block instead of edge-detecting against stale
 	 * ones (counters keep advancing while FROZEN). */
 	volatile uint32_t baseline_sync;
+	/* Underrun-trigger settle counter: cleanly-staged blocks under an open
+	 * gate since the last closed->open edge (or init/thaw), capped at
+	 * AIUS_RECORDER_SETTLE_BLOCKS. Two writers by design (producer
+	 * increments, epoch resets on the edge) -- the same accepted shape as
+	 * freeze_token/suppressed_triggers: a collision costs at most one
+	 * block's delay in arming, never a corrupt transition. */
+	volatile uint32_t settled_blocks;
 	uint32_t gr_hold_count;
 	/* Trigger metadata: stored before the POSTROLL state store. */
 	volatile uint32_t trigger;

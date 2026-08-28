@@ -172,25 +172,65 @@ overlapping ones.
 
 ## Phases
 
-### Phase A — trigger settle window (debounce)
+### Phase A — trigger settle window (debounce) ✓ SHIPPED 2026-08-28
 
 - outcome: the underrun trigger (both the block-evaluable producer path and
-  the epoch fallback) does not arm until the TX gate has completed its
-  first closed→open edge since init/thaw. A bring-up or post-thaw underrun
-  before any real session starts no longer freezes the recorder; a genuine
-  underrun after the settle edge still triggers exactly as today.
-- seams: `aius_recorder_epoch()` and `aius_recorder_producer_block()` in
-  `firmware/lib/aius_recorder/src/aius_recorder.c` — add a `settled` latch
-  set on the first `gate_open && !prev_gate` edge (the same edge the
-  baseline-resync code already detects), gate both underrun branches on it.
+  the epoch fallback) does not arm until `AIUS_RECORDER_SETTLE_BLOCKS`
+  (8, ≈85 ms at 512-frame blocks) have staged cleanly under an open gate
+  since the last closed→open edge (or init/thaw) — not a bare edge-latch.
+  **Revised from the original edge-only design (2026-08-28, caught during
+  implementation, before commit):** the register entry's field data shows
+  the boot bring-up trigger firing at `at_block 1` — the very first
+  committed block — which means the gate can already be well past its
+  "first edge" when the stall hits (a replay session opens the gate almost
+  immediately at boot; the SD mount-class stall that causes the underrun
+  follows a couple of seconds later). An edge-only latch would not have
+  suppressed that. Requiring N clean blocks since the edge does, regardless
+  of how much time separates the edge from the stall. A bring-up or
+  post-thaw underrun before the session has demonstrated N clean blocks no
+  longer freezes the recorder; a genuine underrun after settling still
+  triggers exactly as today.
+- seams: `aius_recorder.h` — new `volatile uint32_t settled_blocks` field
+  and `AIUS_RECORDER_SETTLE_BLOCKS` constant. `aius_recorder_epoch()` in
+  `firmware/lib/aius_recorder/src/aius_recorder.c` — reset
+  `settled_blocks` to 0 on the same `gate_open && !prev_gate` edge that
+  already resets `baseline_sync`; gate the epoch-fallback underrun branch
+  on `settled_blocks >= AIUS_RECORDER_SETTLE_BLOCKS`.
+  `aius_recorder_producer_block()` — gate the block-evaluable underrun
+  branch the same way, and increment `settled_blocks` (capped) on any
+  block that evaluates with no trigger firing while the gate is open.
+  `reset_capture()` — zero `settled_blocks` on init/thaw, same as
+  `baseline_sync`. This is a two-writer field (producer increments, epoch
+  resets on the edge) — same "KNOWN, ACCEPTED interleaving" shape the
+  header already documents for `freeze_token`/`suppressed_triggers`: a
+  collision costs at most one block's delay in arming, never a corrupt
+  transition, because the state word each writer touches has exactly one
+  writer per edge.
 - targeted-proof: new host rows in `firmware/test/recorder/test_recorder.c`
-  — underrun before any gate-open edge does not trigger, on both paths;
-  `test_underrun_gate_qualification` and
-  `test_underrun_epoch_fallback_and_reclaim` stay green unchanged (a
-  post-settle underrun is untouched). On-device (bench, not listening-room):
-  `/api/recorder` reports `trigger.which: none` through the bring-up window
-  instead of freezing at ~3 s.
+  — underrun before N clean blocks does not trigger, on both paths, even
+  when the gate has been open for a while first (the case the edge-only
+  design missed): `test_underrun_suppressed_before_settled` and
+  `test_underrun_epoch_fallback_suppressed_before_settled`, new. On-device
+  (bench, not listening-room): `/api/recorder` reports `trigger.which: none`
+  through the bring-up window instead of freezing at ~3 s — **still owed**,
+  no device touched yet per this plan's no-implementation-before-Phase-D
+  gate on the flash step specifically (host-only work is unblocked).
 - unit: parent-only
+- **shipped 2026-08-28, host-only:** implemented as designed above.
+  Correction against the pre-implementation assumption in the previous
+  paragraph: `test_underrun_gate_qualification`,
+  `test_underrun_epoch_fallback_and_reclaim` and
+  `test_second_trigger_first_wins` did **not** already exercise enough
+  clean blocks post-edge — each fed only 1-2 blocks after the gate opened,
+  well under the 8-block threshold — so implementing this phase required
+  updating all three to settle first, not leaving them untouched as
+  assumed. `test_underrun_epoch_fallback_and_reclaim`'s small 4-slot test
+  fixture also needed draining inside the new settle loop (unrelated to
+  the debounce logic itself): without it, the fixture's own staging
+  capacity gaps most of an 8-block burst, which the settle counter doesn't
+  care about (it counts evaluated blocks, not staged ones) but the test's
+  `end_frame` assertion does. Native `recorder` suite green, 27 rows
+  (23 existing + 2 new), ASan/UBSan, `-Werror`.
 
 ### Phase B — N-slot rolling bank at unchanged PSRAM footprint
 

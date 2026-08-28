@@ -62,6 +62,7 @@ static void reset_capture(AiusRecorder *r)
 	r->postroll_captured = 0u;
 	r->end_frame = 0u;
 	r->baseline_sync = 0u;
+	r->settled_blocks = 0u;
 	r->gr_hold_count = 0u;
 	r->trigger = AIUS_RECORDER_TRIGGER_NONE;
 	r->trigger_at_frame = 0u;
@@ -173,7 +174,9 @@ void aius_recorder_producer_block(AiusRecorder *r, const int32_t *l,
 		    overruns > r->overrun_base)
 			fired = AIUS_RECORDER_TRIGGER_OVERRUN;
 		else if ((mask & AIUS_RECORDER_MASK_UNDERRUN) != 0u &&
-		         r->gate_open && underruns > r->underrun_base)
+		         r->gate_open &&
+		         r->settled_blocks >= AIUS_RECORDER_SETTLE_BLOCKS &&
+		         underruns > r->underrun_base)
 			fired = AIUS_RECORDER_TRIGGER_UNDERRUN;
 		else if ((mask & AIUS_RECORDER_MASK_LIMITER_GR) != 0u &&
 		         limiter_gain_valid && r->gr_threshold_gain > 0.0f) {
@@ -186,6 +189,14 @@ void aius_recorder_producer_block(AiusRecorder *r, const int32_t *l,
 			}
 		}
 	}
+	/* Settle counter: advances on any block that evaluated with no trigger
+	 * firing while the gate is open, capped -- a fired block needs no
+	 * further settling (the capture is already underway), and a
+	 * closed-gate block never counts (epoch resets this to 0 on the next
+	 * open edge regardless). */
+	if (fired == AIUS_RECORDER_TRIGGER_NONE && r->gate_open &&
+	    r->settled_blocks < AIUS_RECORDER_SETTLE_BLOCKS)
+		r->settled_blocks++;
 	/* The fired edge consumed the baseline delta either way. */
 	r->overrun_base = overruns;
 	r->underrun_base = underruns;
@@ -281,8 +292,12 @@ void aius_recorder_epoch(AiusRecorder *r, bool carrier_locked, bool gate_open,
 	 * caller feeds it. */
 	uint32_t prev_gate = r->gate_open;
 	r->gate_open = gate_open ? 1u : 0u;
-	if (gate_open && !prev_gate)
+	if (gate_open && !prev_gate) {
 		r->baseline_sync = 0u;
+		/* Fresh settle window: this session (or this reopen after a stop)
+		 * has demonstrated no clean blocks yet under the new open gate. */
+		r->settled_blocks = 0u;
+	}
 
 	/* Controller underrun tracking, resync on decrease as the producer does. */
 	if (underruns < r->underrun_base_epoch)
@@ -304,6 +319,7 @@ void aius_recorder_epoch(AiusRecorder *r, bool carrier_locked, bool gate_open,
 		 * been taken under an open gate to mean anything). */
 		else if ((mask & AIUS_RECORDER_MASK_UNDERRUN) != 0u &&
 		         gate_open && prev_gate &&
+		         r->settled_blocks >= AIUS_RECORDER_SETTLE_BLOCKS &&
 		         underruns > r->underrun_base_epoch)
 			r->freeze_token = AIUS_RECORDER_TRIGGER_UNDERRUN;
 	}
