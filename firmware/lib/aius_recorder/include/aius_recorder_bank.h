@@ -128,6 +128,15 @@ uint32_t aius_recorder_bank_drain(AiusRecorderBank *bank, uint32_t max_bytes);
  * aius_recorder_freeze. */
 AiusStatus aius_recorder_bank_freeze(AiusRecorderBank *bank);
 
+/* Epoch (operator): thaw the active slot IN PLACE (no round-robin advance)
+ * -- the same slot re-arms rather than the next one taking over. Preserves
+ * the pre-bank `POST /api/recorder/thaw` contract for the case auto-advance
+ * doesn't cover: forcing a FROZEN active slot back to RECORDING immediately
+ * rather than waiting for the next slot's read lease to clear (or simply an
+ * operator who wants the current slot back, not the next one). AIUS_OK only
+ * if the active slot was FROZEN, same as aius_recorder_thaw. */
+AiusStatus aius_recorder_bank_thaw(AiusRecorderBank *bank);
+
 /* Cold, ONE-WAY: park every slot (any state -> ABSENT), same one-way
  * contract as aius_recorder_park, applied N times. Refuses only a null
  * argument. */

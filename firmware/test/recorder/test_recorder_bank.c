@@ -199,6 +199,34 @@ static void test_bank_full_wrap_recycles_and_counts(void)
 	assert(f.bank.slots[0].freeze_generation == slot0_generation_before + 1u);
 }
 
+static void test_bank_thaw_in_place_does_not_advance(void)
+{
+	BankFixture f;
+	bank_fixture_init(&f);
+	assert(aius_recorder_bank_set_config(&f.bank, AIUS_RECORDER_MASK_ALL,
+	                                     0.0f, 1u, 0u) == AIUS_OK);
+	/* Hold a lease on slot 1 so auto-advance defers, leaving slot 0
+	 * genuinely FROZEN (not already moved on) for the operator thaw to
+	 * act on. */
+	aius_recorder_bank_read_acquire(&f.bank, 1u);
+	assert(aius_recorder_bank_freeze(&f.bank) == AIUS_OK);
+	bank_feed_block(&f, 8u, 0, 0u, 0u);
+	bank_drain_all(&f);
+	assert(f.bank.slots[0].state == AIUS_RECORDER_FROZEN);
+	assert(f.bank.active == 0u);
+	uint32_t generation_before = f.bank.slots[0].freeze_generation;
+	/* Operator thaw: the SAME slot re-arms, not the next one -- unlike
+	 * auto-advance, this never moves `active`. */
+	assert(aius_recorder_bank_thaw(&f.bank) == AIUS_OK);
+	assert(f.bank.active == 0u);
+	assert(f.bank.slots[0].state == AIUS_RECORDER_RECORDING);
+	assert(f.bank.slots[0].freeze_generation == generation_before + 1u);
+	/* Not FROZEN (already thawed): a second call refuses, same contract
+	 * as the single-ring core. */
+	assert(aius_recorder_bank_thaw(&f.bank) == AIUS_INVALID_ARG);
+	aius_recorder_bank_read_release(&f.bank, 1u);
+}
+
 static void test_bank_recycle_deferred_while_read_leased(void)
 {
 	BankFixture f;
@@ -326,6 +354,7 @@ int main(void)
 	test_bank_forwards_full_lifecycle();
 	test_bank_auto_advance_on_freeze();
 	test_bank_full_wrap_recycles_and_counts();
+	test_bank_thaw_in_place_does_not_advance();
 	test_bank_recycle_deferred_while_read_leased();
 	test_bank_park_reaches_every_slot();
 	test_bank_park_mid_draining();

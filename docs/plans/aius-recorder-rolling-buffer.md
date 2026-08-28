@@ -235,7 +235,7 @@ overlapping ones.
   `end_frame` assertion does. Native `recorder` suite green, 27 rows
   (23 existing + 2 new), ASan/UBSan, `-Werror`.
 
-### Phase B — N-slot rolling bank at unchanged PSRAM footprint IN-PROGRESS (bank library shipped 2026-08-28; optical_main.cpp wiring owed)
+### Phase B — N-slot rolling bank at unchanged PSRAM footprint ✓ SHIPPED 2026-08-28
 
 - outcome: the recorder maintains `N` (default 4) independently-addressable
   captures instead of one; the active slot auto-advances to the next on
@@ -257,18 +257,32 @@ overlapping ones.
   The reinit-next-slot step lives in `aius_recorder_bank_drain()`, called
   only from the epoch/replay-checkpoint context, immediately after the
   active slot's `aius_recorder_drain()` returns FROZEN — never from the
-  producer. **Still owed, not yet done:** the two direct
-  `g_recorder.state`/`.freeze_generation` field accesses in
-  `firmware/src/optical_main.cpp` that bypass the library API today —
-  `ota_psram_staging()`'s park-ordering assert (~line 4263) and
-  `app_recorder_read()`'s 400/409 split (~lines 6510-6511) — becoming
-  bank-aware (`aius_recorder_bank_present()`, a bank-aware read); the
-  `park()` call sites (~8453, ~8607) swapping to
-  `aius_recorder_bank_park()`; and the pad-1 capacity static assert
-  (~line 4242) re-confirmed against the bank's total extent. This is real
-  production-source wiring (not the new isolated library), scoped as the
-  rest of Phase B rather than folded into this same commit, so it gets its
-  own diff review at the point it lands.
+  producer. **`firmware/src/optical_main.cpp` wiring, done in a follow-up
+  commit the same day:** `g_recorder` (single `AiusRecorder`) replaced by
+  `g_recorder_bank` (`AiusRecorderBank`) at every call site — the AUDIO
+  checkpoint's producer tap, the REPLAY checkpoint's epoch+drain, both
+  `park()` sites (`service_ota_activation`, `service_ota_rehearsal`),
+  `ota_psram_staging()`'s park-ordering assert (now
+  `aius_recorder_bank_present()`, representative across all N slots since
+  park()/init() only ever run from this single epoch/controller context,
+  never interleaved with a producer), and all four `app_recorder_*` HTTP
+  handlers. The pad-1 capacity static assert (~line 4253) needed no
+  change — it keys on the flat `RECORDER_STAGING_BYTES`, independent of
+  `N`, exactly as the adversarial review's "holds up" finding predicted.
+  **One addition beyond the original seam list:** `aius_recorder_bank_thaw()`
+  (thaws the active slot in place, no round-robin advance) — `POST
+  /api/recorder/thaw` is a live operator-facing endpoint (used mid-session
+  this same day, before this plan existed) and auto-advance alone would
+  have silently orphaned its contract; this preserves it as the explicit
+  override for the case auto-advance defers (a held read lease) or an
+  operator simply wants the current slot back. **HTTP JSON shape
+  unchanged, deliberately:** every handler now reads through the ACTIVE
+  slot only (`g_recorder_bank.slots[g_recorder_bank.active]` /
+  `aius_recorder_bank_snapshot_slot(..., g_recorder_bank.active, ...)`),
+  so today's single-slot response contract is byte-identical — exposing
+  the other N-1 slots (bank status document, `slot`-addressed data reads)
+  is Phase C's still-owed HTTP reshaping, kept out of this wiring
+  commit's blast radius on purpose.
 - targeted-proof: host suite (`recorder-bank` binary within the `recorder`
   suite case, `firmware/scripts/test.sh`) — slot advance on freeze,
   including a full N-cycle wrap with recycling counted; a row proving
@@ -286,11 +300,23 @@ overlapping ones.
   27 existing host rows (Phase A included) already prove it: the deletion
   test says re-running them here would prove the bank's *forwarding*, which
   one lifecycle smoke test already covers, not re-prove the state machine
-  itself. 11 new rows, all green, `-Wall -Wextra -Werror`, ASan/UBSan.
-  `firmware/test/memory/verify_target.py`'s zero-OCRAM-recorder-staging
-  pin is unaffected by this phase — nothing in the real `teensy41-optical`
-  target build references the new module yet; that check becomes relevant
-  once the wiring above lands. Host-only — no device flash in this phase.
+  itself. 12 host rows (the wiring commit added `aius_recorder_bank_thaw()`'s
+  own row), all green, `-Wall -Wextra -Werror`, ASan/UBSan. **Real
+  cross-build, not just host tests:** `scripts/build.sh teensy41-optical`
+  — `[SUCCESS]`, every post-link guard green including the
+  recorder-specific ones (`recorder OCRAM staging=0 B`, `recorder-object
+  ITCM placement: PASS`) — the zero-OCRAM-recorder-staging pin this bullet
+  originally deferred to "once the wiring lands" is now directly proven,
+  not assumed. `itcm-placement` (29 rows), `memory` (2 rows) and
+  `optical-app` (35 rows including `test_recorder_routes`, which pins the
+  dispatcher's callback-table shape unchanged) re-run against the fresh
+  cross-build, all green; `ota` (host-portable staging-placement suite,
+  20 rows) green, though `ota_psram_staging()`'s own park-ordering assert
+  is target-only code no host suite reaches directly — its correctness
+  rests on the single-threaded-epoch-context argument in the source
+  comment plus this successful link, with real verification (an activation
+  rehearsal against the bank) belonging to Phase D's bench proof, not
+  here. Host-only — no device flash in this phase.
 - unit: parent-only
 
 ### Phase C — HTTP surface + egress tool for multi-slot addressing

@@ -98,6 +98,13 @@ AiusStatus aius_recorder_bank_freeze(AiusRecorderBank *bank)
 	return aius_recorder_freeze(&bank->slots[bank->active]);
 }
 
+AiusStatus aius_recorder_bank_thaw(AiusRecorderBank *bank)
+{
+	if (bank == NULL)
+		return AIUS_INVALID_ARG;
+	return aius_recorder_thaw(&bank->slots[bank->active]);
+}
+
 AiusStatus aius_recorder_bank_park(AiusRecorderBank *bank)
 {
 	if (bank == NULL)

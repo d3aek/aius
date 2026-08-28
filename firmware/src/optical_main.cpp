@@ -29,6 +29,7 @@ extern "C" {
 	#include "aius_dsp_runtime_config.h"
 	#include "aius_measure.h"
 	#include "aius_recorder.h"
+	#include "aius_recorder_bank.h"
 	#include "aius_audio_ingress.h"
 	#include "aius_audio_service.h"
 	#include "aius_audio_clock.h"
@@ -714,7 +715,12 @@ static AiusMeasureCapture g_measure_capture;
 static_assert(RECORDER_STAGING_BYTES == 32768u,
 	"eight planar 512-frame recorder slots must occupy 32 KiB");
 static uint32_t g_recorder_staging_frames[RECORDER_STAGING_SLOTS];
-static AiusRecorder g_recorder;
+/* Rolling multi-slot bank (aius-recorder-rolling-buffer.md Phase B): N=4
+ * independent slots sharing this one staging carve, round-robin, auto-
+ * advancing on FROZEN. Total ring bytes across the bank is unchanged from
+ * the single-ring era -- aius_recorder_ring_bytes_after_staging() below
+ * still names the whole extent; the bank only partitions it. */
+static AiusRecorderBank g_recorder_bank;
 static bool g_recorder_present = false;
 /* The boot probe's result (startup.c configure_external_ram), in MB. */
 extern "C" uint8_t external_psram_size;
@@ -1862,8 +1868,8 @@ private:
 		 * applied plan above, so what is stamped is what the wire carried.
 		 * Cost when no PSRAM is fitted: this one bool test. */
 		if (g_recorder_present)
-			aius_recorder_producer_block(
-				&g_recorder, processed_left, processed_right,
+			aius_recorder_bank_producer_block(
+				&g_recorder_bank, processed_left, processed_right,
 				block->frames, block->sample_rate_hz,
 				dropped_chunks,
 				g_aius_spdif_tx24.underruns,
@@ -1961,19 +1967,25 @@ FLASHMEM void AiusAudioProcessor::begin_pipeline(void)
 		aius_recorder_ring_bytes_after_staging(
 			psram_bytes, RECORDER_STAGING_BYTES);
 	/* The build's nominal is the rate the capture reports until a block
-	 * stamps its own; both arms pass it so a bare board still echoes it. */
-	g_recorder_present = recorder_ring_bytes >= AIUS_RECORDER_FRAME_BYTES &&
-		aius_recorder_init(
-			&g_recorder, psram + RECORDER_STAGING_BYTES,
+	 * stamps its own; both arms pass it so a bare board still echoes it.
+	 * The minimum viable extent is now one frame PER SLOT, not one frame
+	 * total -- aius_recorder_bank_init refuses anything smaller (and
+	 * refuses a total not evenly divisible by AIUS_RECORDER_BANK_SLOTS,
+	 * which every real fitment's power-of-two byte extent always is). */
+	g_recorder_present =
+		recorder_ring_bytes >=
+			AIUS_RECORDER_FRAME_BYTES * AIUS_RECORDER_BANK_SLOTS &&
+		aius_recorder_bank_init(
+			&g_recorder_bank, psram + RECORDER_STAGING_BYTES,
 			recorder_ring_bytes, external_psram_size,
 			reinterpret_cast<int32_t *>(psram),
 			g_recorder_staging_frames, RECORDER_STAGING_SLOTS,
 			RECORDER_SLOT_FRAMES,
 			AIUS_OPTICAL_SAMPLE_RATE_HZ) == AIUS_OK;
 	if (!g_recorder_present)
-		(void)aius_recorder_init(&g_recorder, nullptr, 0u, 0u,
-		                         nullptr, nullptr, 0u, 0u,
-		                         AIUS_OPTICAL_SAMPLE_RATE_HZ);
+		(void)aius_recorder_bank_init(&g_recorder_bank, nullptr, 0u, 0u,
+		                              nullptr, nullptr, 0u, 0u,
+		                              AIUS_OPTICAL_SAMPLE_RATE_HZ);
 	/* Take the S/PDIF transmit DMA interrupt from the retained snapshot's
 	 * 16-bit filler. After this the wire carries our 24-bit ring verbatim;
 	 * before it, the vendor ISR transmits block_silent, which is the same
@@ -4234,10 +4246,11 @@ FASTRUN static int ota_flash_read_inject_head_fault(void *ctx, uint32_t address,
  * on_pad2 so the evidence names the chip.
  *
  * ALIAS, DO NOT PARTITION -- SAFE BY ORDERING, NOT BY DISJOINTNESS: the
- * caller PARKS the recorder (aius_recorder_park(), one-way to ABSENT, same
- * epoch context as the producer) BEFORE the SD->PSRAM copy, so nothing
- * touches the ring while staging owns it. ota_psram_staging() asserts the
- * park happened rather than trusting the call order. */
+ * caller PARKS the recorder bank (aius_recorder_bank_park(), one-way to
+ * ABSENT for every slot, same epoch context as the producer) BEFORE the
+ * SD->PSRAM copy, so nothing touches the ring while staging owns it.
+ * ota_psram_staging() asserts the park happened rather than trusting the
+ * call order. */
 static_assert(RECORDER_STAGING_BYTES < AIUS_OTA_STAGING_PAD_BYTES,
               "the recorder staging carve must leave room in an 8 MiB pad");
 /* A max-length image must fit the pad-1 placement, or the marginal-chip fix
@@ -4255,12 +4268,15 @@ static FLASHMEM bool ota_psram_staging(uint8_t **base, uint32_t *capacity)
 	                            (uint32_t)g_psram_pad2_mb * 1048576u,
 	                            RECORDER_STAGING_BYTES, &placement))
 		return false; /* no PSRAM fitted anywhere: ota_no_psram */
-	/* The ordering assert: pad-1 staging aliases the ring, so the recorder
-	 * must already be parked (or never have had a ring at all). Refusing
-	 * here turns a mis-ordered caller into an ota_no_psram refusal instead
-	 * of a copy racing a live producer. */
-	if (!placement.on_pad2 &&
-	    g_recorder.state != AIUS_RECORDER_ABSENT)
+	/* The ordering assert: pad-1 staging aliases the ring, so EVERY slot of
+	 * the recorder bank must already be parked (or never have had a ring
+	 * at all) -- aius_recorder_bank_present() is representative across all
+	 * N slots because park()/init() only ever run from this same epoch/
+	 * controller context, never interleaved with a producer call, so the
+	 * bank is never observed here mid-transition (aius-recorder-rolling-
+	 * buffer.md Phase B). Refusing here turns a mis-ordered caller into an
+	 * ota_no_psram refusal instead of a copy racing a live producer. */
+	if (!placement.on_pad2 && aius_recorder_bank_present(&g_recorder_bank))
 		return false;
 	*base = psram + placement.offset;
 	*capacity = placement.capacity;
@@ -6430,8 +6446,13 @@ static FLASHMEM const char *recorder_trigger_name(uint32_t trigger)
 static FLASHMEM size_t app_write_recorder(void *, uint8_t *body,
                                           size_t capacity)
 {
+	/* Reports the ACTIVE slot only, matching the pre-bank single-slot
+	 * contract verbatim -- exposing the other N-1 slots through this route
+	 * is aius-recorder-rolling-buffer.md Phase C's still-owed HTTP
+	 * reshaping, not this wiring. */
 	AiusRecorderSnapshot s;
-	aius_recorder_snapshot(&g_recorder, &s);
+	(void)aius_recorder_bank_snapshot_slot(&g_recorder_bank,
+	                                       g_recorder_bank.active, &s);
 	int length = snprintf((char *)body, capacity,
 		"{\"state\":\"%s\",\"fitted_mb\":%lu,"
 		"\"sample_rate_hz\":%lu,\"rate_changes\":%lu,"
@@ -6478,12 +6499,18 @@ static FLASHMEM size_t app_write_recorder(void *, uint8_t *body,
 
 static FLASHMEM bool app_recorder_freeze(void *)
 {
-	return g_recorder_present && aius_recorder_freeze(&g_recorder) == AIUS_OK;
+	return g_recorder_present &&
+	       aius_recorder_bank_freeze(&g_recorder_bank) == AIUS_OK;
 }
 
 static FLASHMEM bool app_recorder_thaw(void *)
 {
-	return g_recorder_present && aius_recorder_thaw(&g_recorder) == AIUS_OK;
+	/* Thaws the active slot IN PLACE (no round-robin advance) -- the
+	 * pre-bank contract this route already had. Auto-advance now covers
+	 * the routine case; this stays as the operator's explicit override
+	 * (aius_recorder_bank_thaw()'s own doc comment). */
+	return g_recorder_present &&
+	       aius_recorder_bank_thaw(&g_recorder_bank) == AIUS_OK;
 }
 
 static FLASHMEM bool app_recorder_config(void *, uint32_t mask,
@@ -6494,24 +6521,29 @@ static FLASHMEM bool app_recorder_config(void *, uint32_t mask,
 	/* The contract's absent rule: every route but the status read refuses
 	 * cleanly on a bare board, config included. */
 	return g_recorder_present &&
-	       aius_recorder_set_config(&g_recorder, mask, gr_threshold_db,
-	                                gr_hold_blocks,
-	                                postroll_blocks) == AIUS_OK;
+	       aius_recorder_bank_set_config(&g_recorder_bank, mask,
+	                                    gr_threshold_db, gr_hold_blocks,
+	                                    postroll_blocks) == AIUS_OK;
 }
 
 static FLASHMEM AiusOpticalAppRecorderReadResult app_recorder_read(
 	void *, uint32_t offset_bytes, uint32_t length_bytes,
 	uint32_t generation, const uint8_t **data, uint32_t *length)
 {
-	/* The 400/409 split the dispatcher serves: state and generation are
-	 * REFUSED (retry after freeze / re-read the header), argument shape is
-	 * INVALID (fix the request). The lib folds both into INVALID_ARG, so
-	 * the split lives here where both facts are readable. */
-	if (!g_recorder_present || g_recorder.state != AIUS_RECORDER_FROZEN ||
-	    generation != g_recorder.freeze_generation)
+	/* Reads the ACTIVE slot only, matching the pre-bank single-slot
+	 * contract verbatim -- a `slot` parameter addressing any of the N
+	 * frozen slots is Phase C's still-owed HTTP reshaping. The 400/409
+	 * split the dispatcher serves: state and generation are REFUSED (retry
+	 * after freeze / re-read the header), argument shape is INVALID (fix
+	 * the request). The lib folds both into INVALID_ARG, so the split
+	 * lives here where both facts are readable. */
+	const AiusRecorder *active = &g_recorder_bank.slots[g_recorder_bank.active];
+	if (!g_recorder_present || active->state != AIUS_RECORDER_FROZEN ||
+	    generation != active->freeze_generation)
 		return AIUS_OPTICAL_APP_RECORDER_READ_REFUSED;
-	return aius_recorder_read(&g_recorder, offset_bytes, length_bytes,
-	                          generation, data, length) == AIUS_OK
+	return aius_recorder_bank_read(&g_recorder_bank, g_recorder_bank.active,
+	                               offset_bytes, length_bytes, generation,
+	                               data, length) == AIUS_OK
 		? AIUS_OPTICAL_APP_RECORDER_READ_OK
 		: AIUS_OPTICAL_APP_RECORDER_READ_INVALID;
 }
@@ -7878,11 +7910,11 @@ static FLASHMEM bool platform_replay(void *, const AiusRuntimeBudget *budget,
 	 * EXTMEM: nothing DMAs the PSRAM, so there is deliberately NO cache
 	 * maintenance here. */
 	if (g_recorder_present) {
-		aius_recorder_epoch(&g_recorder, g_tx_gate_carrier,
-		                    g_tx_gate_open,
-		                    g_aius_spdif_tx24.underruns, now_ms);
-		(void)aius_recorder_drain(&g_recorder,
-		                          RECORDER_DRAIN_BYTES_PER_EPOCH);
+		aius_recorder_bank_epoch(&g_recorder_bank, g_tx_gate_carrier,
+		                         g_tx_gate_open,
+		                         g_aius_spdif_tx24.underruns, now_ms);
+		(void)aius_recorder_bank_drain(&g_recorder_bank,
+		                               RECORDER_DRAIN_BYTES_PER_EPOCH);
 	}
 	return true;
 }
@@ -8450,7 +8482,7 @@ static FLASHMEM void service_ota_activation(uint32_t now_ms)
 	 * chip out of the dark window. No PSRAM -> ota_no_psram (the same
 	 * gate app_ota_activate() applies synchronously; re-checked here so
 	 * this path never touches flash without it). */
-	(void)aius_recorder_park(&g_recorder);
+	(void)aius_recorder_bank_park(&g_recorder_bank);
 	g_recorder_present = false;
 	if (!ota_psram_staging(&psram_base, &psram_capacity)) {
 		g_ota_activation_fault = OTA_ACTIVATION_FAULT_NO_PSRAM;
@@ -8604,7 +8636,7 @@ static FLASHMEM void service_ota_rehearsal(uint32_t now_ms)
 	 * activation -- the rehearsal proves the real pre-window path, park
 	 * included, not a stand-in. The recorder stays parked until the
 	 * reboot the rehearsal already owes for audio. */
-	(void)aius_recorder_park(&g_recorder);
+	(void)aius_recorder_bank_park(&g_recorder_bank);
 	g_recorder_present = false;
 	if (!ota_psram_staging(&psram_base, &psram_capacity)) {
 		g_ota_activation_fault = OTA_ACTIVATION_FAULT_NO_PSRAM;
