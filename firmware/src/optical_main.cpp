@@ -6427,74 +6427,114 @@ static FLASHMEM const char *recorder_trigger_name(uint32_t trigger)
 	}
 }
 
-/* GET /api/recorder: status + the frozen header in one document -- the
- * contract's WAV-sufficient field list (encoding, geometry, valid extent and
- * oldest position, trigger metadata, gaps, generations, the armed config and
- * the chunk cap). Served from a coherent epoch-context snapshot, never
- * re-derived mid-serialize.
+/* The `slots` array within GET /api/recorder (aius-recorder-rolling-buffer.md
+ * Phase C): the per-capture fields that genuinely vary slot to slot --
+ * geometry, valid extent, generation, gaps and trigger metadata. Bank-wide
+ * facts (encoding, fitted_mb, config, ...) are emitted once by the caller,
+ * never duplicated per slot. Mirrors http_dsp_eq_array's shape (one static
+ * call site inside the loop is what the swagger format-string extractor
+ * needs to see, not N of them -- it validates the item shape once, not the
+ * loop's runtime iteration count). */
+static FLASHMEM bool recorder_slot_array(char *output, size_t capacity,
+                                         size_t *length,
+                                         const AiusRecorderBank *bank)
+{
+	if (!http_json_append(output, capacity, length, "["))
+		return false;
+	for (uint32_t slot = 0; slot < AIUS_RECORDER_BANK_SLOTS; slot++) {
+		AiusRecorderSnapshot s;
+		(void)aius_recorder_bank_snapshot_slot(bank, slot, &s);
+		if (!http_json_append(output, capacity, length,
+			"%s{\"slot\":%lu,\"state\":\"%s\","
+			"\"sample_rate_hz\":%lu,\"rate_changes\":%lu,"
+			"\"ring_frames\":%lu,\"valid_frames\":%lu,"
+			"\"oldest_frame\":%lu,\"freeze_generation\":%lu,"
+			"\"gap_count\":%lu,\"last_gap_frame\":%lu,"
+			"\"suppressed_triggers\":%lu,\"postroll_captured\":%lu,"
+			"\"trigger\":{\"which\":\"%s\",\"at_frame\":%lu,"
+			"\"at_block\":%lu,\"at_ms\":%lu}}",
+			slot == 0u ? "" : ",",
+			(unsigned long)slot, recorder_state_name(s.state),
+			(unsigned long)s.sample_rate_hz,
+			(unsigned long)s.rate_changes,
+			(unsigned long)s.ring_frames,
+			(unsigned long)s.valid_frames,
+			(unsigned long)s.oldest_frame,
+			(unsigned long)s.freeze_generation,
+			(unsigned long)s.gap_count,
+			(unsigned long)s.last_gap_frame,
+			(unsigned long)s.suppressed_triggers,
+			(unsigned long)s.postroll_captured,
+			recorder_trigger_name(s.trigger.trigger),
+			(unsigned long)s.trigger.at_frame,
+			(unsigned long)s.trigger.at_block,
+			(unsigned long)s.trigger.at_ms))
+			return false;
+	}
+	return http_json_append(output, capacity, length, "]");
+}
+
+/* GET /api/recorder: the bank status document (aius-recorder-rolling-buffer.md
+ * Phase C) -- board/constant facts and the uniform config once, then the
+ * per-slot array. Served from coherent per-slot epoch-context snapshots,
+ * never re-derived mid-serialize.
  *
- * sample_rate_hz is the SNAPSHOT's rate -- the rate of the frames actually in
- * the ring -- and not AIUS_OPTICAL_SAMPLE_RATE_HZ, which this route used to
- * serve. The constant is the build's nominal, so on an accepted 44.1 kHz live
- * stream it stated 48000 and every pulled WAV played ~8.8% fast. rate_changes
- * joins it because one scalar cannot describe a ring that spans a transition:
- * nonzero means the header is true of only the newest frames, which is a
- * capture a downloader should reject rather than mislabel. The pair adds at
- * most 31 bytes ("rate_changes" plus a u32) to a body that already fits
- * AIUS_RUNTIME_TEENSY_APP_BODY with kilobytes to spare, and the snprintf
- * capacity check below still turns any overflow into a deterministic 0. */
+ * `config` is read from the active slot as representative: aius_recorder_
+ * bank_set_config() applies one config to every slot, so all N agree except
+ * during the narrow window a config PUT lands while the active slot alone is
+ * mid-capture (that slot keeps its old config until its next capture, the
+ * same "capture in flight keeps its config" contract the single-ring core
+ * always had). sample_rate_hz is each snapshot's OWN rate -- the rate of the
+ * frames actually in that slot's ring, not the build's nominal constant --
+ * for the same reason the single-slot document used to state this: an
+ * accepted 44.1 kHz stream would otherwise read 48000 and every pulled WAV
+ * would play about 8.8% fast. */
 static FLASHMEM size_t app_write_recorder(void *, uint8_t *body,
                                           size_t capacity)
 {
-	/* Reports the ACTIVE slot only, matching the pre-bank single-slot
-	 * contract verbatim -- exposing the other N-1 slots through this route
-	 * is aius-recorder-rolling-buffer.md Phase C's still-owed HTTP
-	 * reshaping, not this wiring. */
-	AiusRecorderSnapshot s;
+	AiusRecorderSnapshot active;
 	(void)aius_recorder_bank_snapshot_slot(&g_recorder_bank,
-	                                       g_recorder_bank.active, &s);
-	int length = snprintf((char *)body, capacity,
-		"{\"state\":\"%s\",\"fitted_mb\":%lu,"
-		"\"sample_rate_hz\":%lu,\"rate_changes\":%lu,"
-		"\"encoding\":\"s32le\",\"significant_bits\":24,"
-		"\"interleave\":\"lr\",\"frame_bytes\":%u,"
-		"\"ring_frames\":%lu,\"valid_frames\":%lu,"
-		"\"oldest_frame\":%lu,\"freeze_generation\":%lu,"
-		"\"boot_generation\":%lu,"
-		"\"gap_count\":%lu,\"last_gap_frame\":%lu,"
-		"\"suppressed_triggers\":%lu,"
-		"\"postroll_captured\":%lu,"
-		"\"chunk_max_bytes\":%lu,"
-		"\"trigger\":{\"which\":\"%s\",\"at_frame\":%lu,"
-		"\"at_block\":%lu,\"at_ms\":%lu},"
+	                                       g_recorder_bank.active, &active);
+	char *output = (char *)body;
+	size_t length = 0;
+	if (!http_json_append(output, capacity, &length,
+		"{\"fitted_mb\":%lu,\"encoding\":\"s32le\","
+		"\"significant_bits\":24,\"interleave\":\"lr\","
+		"\"frame_bytes\":%u,\"boot_generation\":%lu,"
+		"\"chunk_max_bytes\":%lu,\"active_slot\":%lu,"
+		"\"slot_count\":%u,\"slots_recycled\":%lu,",
+		(unsigned long)active.fitted_mb,
+		(unsigned)AIUS_RECORDER_FRAME_BYTES,
+		(unsigned long)g_boot_ledger.boot_generation,
+		(unsigned long)AIUS_RECORDER_READ_MAX_BYTES,
+		(unsigned long)g_recorder_bank.active,
+		(unsigned)AIUS_RECORDER_BANK_SLOTS,
+		(unsigned long)g_recorder_bank.slots_recycled))
+		return 0;
+	if (!http_json_append(output, capacity, &length,
 		"\"config\":{\"overrun\":%s,\"underrun\":%s,"
 		"\"carrier_loss\":%s,\"limiter_gr\":%s,"
 		"\"gr_threshold_db\":%.1f,\"gr_hold_blocks\":%lu,"
-		"\"postroll_blocks\":%lu}}",
-		recorder_state_name(s.state), (unsigned long)s.fitted_mb,
-		(unsigned long)s.sample_rate_hz, (unsigned long)s.rate_changes,
-		(unsigned)AIUS_RECORDER_FRAME_BYTES,
-		(unsigned long)s.ring_frames, (unsigned long)s.valid_frames,
-		(unsigned long)s.oldest_frame,
-		(unsigned long)s.freeze_generation,
-		(unsigned long)g_boot_ledger.boot_generation,
-		(unsigned long)s.gap_count, (unsigned long)s.last_gap_frame,
-		(unsigned long)s.suppressed_triggers,
-		(unsigned long)s.postroll_captured,
-		(unsigned long)AIUS_RECORDER_READ_MAX_BYTES,
-		recorder_trigger_name(s.trigger.trigger),
-		(unsigned long)s.trigger.at_frame,
-		(unsigned long)s.trigger.at_block,
-		(unsigned long)s.trigger.at_ms,
-		(s.trigger_mask & AIUS_RECORDER_MASK_OVERRUN) ? "true" : "false",
-		(s.trigger_mask & AIUS_RECORDER_MASK_UNDERRUN) ? "true" : "false",
-		(s.trigger_mask & AIUS_RECORDER_MASK_CARRIER_LOSS) ? "true"
+		"\"postroll_blocks\":%lu},",
+		(active.trigger_mask & AIUS_RECORDER_MASK_OVERRUN) ? "true"
 		                                                   : "false",
-		(s.trigger_mask & AIUS_RECORDER_MASK_LIMITER_GR) ? "true"
-		                                                 : "false",
-		(double)s.gr_threshold_db, (unsigned long)s.gr_hold_blocks,
-		(unsigned long)s.postroll_blocks);
-	return length > 0 && (size_t)length < capacity ? (size_t)length : 0u;
+		(active.trigger_mask & AIUS_RECORDER_MASK_UNDERRUN) ? "true"
+		                                                    : "false",
+		(active.trigger_mask & AIUS_RECORDER_MASK_CARRIER_LOSS)
+			? "true" : "false",
+		(active.trigger_mask & AIUS_RECORDER_MASK_LIMITER_GR)
+			? "true" : "false",
+		(double)active.gr_threshold_db,
+		(unsigned long)active.gr_hold_blocks,
+		(unsigned long)active.postroll_blocks))
+		return 0;
+	if (!http_json_append(output, capacity, &length, "\"slots\":"))
+		return 0;
+	if (!recorder_slot_array(output, capacity, &length, &g_recorder_bank))
+		return 0;
+	if (!http_json_append(output, capacity, &length, "}"))
+		return 0;
+	return length;
 }
 
 static FLASHMEM bool app_recorder_freeze(void *)

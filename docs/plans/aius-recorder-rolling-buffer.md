@@ -319,7 +319,7 @@ overlapping ones.
   here. Host-only — no device flash in this phase.
 - unit: parent-only
 
-### Phase C — HTTP surface + egress tool for multi-slot addressing
+### Phase C — HTTP surface + egress tool for multi-slot addressing IN-PROGRESS (status document shipped 2026-08-28; data-route slot addressing owed)
 
 - outcome: `GET /api/recorder` reports the bank (active slot index +
   per-slot summaries: state, trigger, generation, valid/gap counts,
@@ -332,18 +332,50 @@ overlapping ones.
   its drift gate stay pinned to the new shape.
 - seams: `app_write_recorder` / `app_recorder_read` and the `Recorder`
   swagger schema in `firmware/src/optical_main.cpp`;
-  `firmware/tools/aius-recorder-pull.py`; check `firmware/sd/www/` for a
-  recorder-aware dashboard surface before scoping — believed JSON-only
-  today, confirm rather than assume.
-- targeted-proof: swagger schema-pinning row for the new bank shape;
-  on-device (bench): induce 2 real triggers across one boot, pull both
-  frozen slots, confirm two distinct complete WAVs and that the *next*
-  active slot is correctly reported as RECORDING throughout; a rapid
-  back-to-back multi-slot pull (several slots pulled in immediate
-  succession after one trigger burst) against the already-registered
-  finding that rapid recorder-data reads can wedge HTTP for a few seconds
-  (`aius-output-jitter.md` Phase E) — confirm this shape doesn't worsen it
-  and that a wedge, if it recurs, still leaves audio unaffected.
+  `firmware/tools/aius-recorder-pull.py`; checked `firmware/sd/www/` for a
+  recorder-aware dashboard surface — confirmed absent, not just assumed.
+  **`GET /api/recorder/data`'s `slot` parameter is real plumbing depth, not
+  found until implementation:** `offset`/`length`/`generation` are parsed in
+  `lib/aius_http/src/aius_http.c` into fixed `AiusHttpRequest` fields, threaded
+  through `src/aius_optical_app.cpp`'s dispatcher, into the
+  `AiusOpticalApp::recorder_read` function-pointer interface
+  (`src/aius_optical_app.h`) — a `slot` parameter touches all four of those
+  plus their own host suites (`http`, `http-transaction`, `optical-app`), not
+  just `optical_main.cpp`. Scoped as its own remaining increment of this
+  phase rather than rushed alongside the status-document reshape.
+- targeted-proof (status document, done): the swagger drift gate
+  (`compareWithSchema` against the freshly-extracted `app_write_recorder`
+  format literals) is genuine structural proof, not a hand-checked
+  assertion — it re-derives the served key tree from the C source and
+  fails on any drift in either direction; 11/11 vitest rows green,
+  including the new `RecorderSlot` required-field and array-shape checks.
+  **Found and fixed en route:** all four drift-gate tests (`status`,
+  `recorder`, `replayStatus`, `dspConfig`) were failing identically before
+  this change, unrelated to it — `swagger.test.js`'s `firmwareRoot`
+  pointed at `firmware`, a stale untracked pre-migration
+  leftover with no `firmware/src/` at all, instead of the real submodule
+  at `firmware`. Fixed as part of landing this phase
+  since the drift gate had to actually run to verify the new schema.
+  Real cross-build (`teensy41-optical`) `[SUCCESS]`; `itcm-placement` (29
+  rows) and `optical-app` (35 rows, `test_recorder_routes` included) green
+  against it. `aius-recorder-pull.py`'s new `--slot` logic (default-to-
+  active, matching-slot success, mismatched-slot refusal, out-of-range
+  refusal) verified against a mocked bank response shaped exactly like the
+  C emitter's actual output — no existing test harness to extend, so this
+  was direct functional verification, not a committed regression (the
+  puller has no prior test coverage either). Host/bench-only — no device
+  flash.
+- **Still owed:** the `GET /api/recorder/data` `slot` parameter through
+  `aius_http.c`/`aius_optical_app.{h,cpp}`/`optical_main.cpp` plus their
+  suites; the read-lease acquire/release around that route's response
+  lifetime (the correctness fix the adversarial review's must-fix #3
+  actually needs — Phase B built the lease primitives, but nothing calls
+  them yet since the data route doesn't address non-active slots); the
+  rapid back-to-back multi-slot pull proof against the already-registered
+  HTTP-wedge finding (`aius-output-jitter.md` Phase E); on-device (bench):
+  induce 2 real triggers across one boot, pull both frozen slots, confirm
+  two distinct complete WAVs and that the *next* active slot is correctly
+  reported as RECORDING throughout.
 - unit: parent-only
 
 ### Phase D — adversarial review + bench proof, before any flash

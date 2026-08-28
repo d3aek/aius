@@ -2,15 +2,18 @@
 """Pull a frozen flight-recorder capture and reassemble it as a WAV.
 
 The committed host half of the recorder contract
-(docs/plans/aius-optical-prototype.md §PSRAM flight recorder): reads the
-header from GET /api/recorder, refuses anything but a FROZEN capture, pulls
-the valid extent in bounded offset-addressed chunks keyed by
-freeze_generation, unwraps the physical ring order using oldest_frame, and
-writes s24le WAV (the ring is s32le with 24 significant bits, LSB-aligned).
+(docs/plans/aius-optical-prototype.md §PSRAM flight recorder, and the
+rolling multi-slot bank of aius-recorder-rolling-buffer.md Phase C): reads
+the bank header from GET /api/recorder, refuses anything but a FROZEN slot,
+pulls the valid extent in bounded offset-addressed chunks keyed by that
+slot's freeze_generation, unwraps the physical ring order using
+oldest_frame, and writes s24le WAV (the ring is s32le with 24 significant
+bits, LSB-aligned).
 
 Usage:
   aius-recorder-pull.py --device http://192.0.2.66 --auth <token> out.wav
   AIUS_SD_AUTH=<token> aius-recorder-pull.py --device http://192.0.2.66 out.wav
+  aius-recorder-pull.py --device http://192.0.2.66 --slot 2 out.wav
 
 Env vars:
   AIUS_SD_AUTH   auth token when --auth is absent
@@ -18,10 +21,17 @@ Env vars:
 Exit codes: 0 ok; 1 transfer/protocol failure; 2 not frozen or empty;
             4 usage error.
 
-The pull must complete within one boot session: a reboot destroys the
-capture, and a thaw between chunks bumps freeze_generation, which every
-chunk request carries -- the device answers 409 and this script stops
-rather than splicing two captures into one file.
+--slot addresses one of the bank's slots (default: active_slot from the
+header). GET /api/recorder/data is not yet slot-addressed on the device
+(Phase C's still-owed remainder) -- it always reads the ACTIVE slot, so
+--slot for anything other than the currently-active one is refused here
+rather than silently pulling the wrong slot's bytes.
+
+The pull must complete within one boot session: a reboot destroys every
+capture, and a thaw or auto-advance between chunks bumps the addressed
+slot's freeze_generation, which every chunk request carries -- the device
+answers 409 and this script stops rather than splicing two captures into
+one file.
 """
 
 from __future__ import annotations
@@ -98,6 +108,8 @@ def main() -> int:
                         help="X-Aius-SD-Auth token (default: $AIUS_SD_AUTH)")
     parser.add_argument("--header-json", default=None,
                         help="also write the header document to this path")
+    parser.add_argument("--slot", type=int, default=None,
+                        help="bank slot to pull (default: active_slot)")
     parser.add_argument("output", help="output WAV path")
     args = parser.parse_args()
     if not args.auth:
@@ -106,25 +118,38 @@ def main() -> int:
         return 4
     base = args.device.rstrip("/")
 
-    header = json.loads(fetch(f"{base}/api/recorder", args.auth))
+    bank = json.loads(fetch(f"{base}/api/recorder", args.auth))
     if args.header_json:
         with open(args.header_json, "w", encoding="utf-8") as out:
-            json.dump(header, out, indent=2)
+            json.dump(bank, out, indent=2)
+    active_slot = int(bank["active_slot"])
+    slot = active_slot if args.slot is None else args.slot
+    if not 0 <= slot < int(bank["slot_count"]):
+        print(f"slot {slot} out of range (0..{bank['slot_count'] - 1})",
+              file=sys.stderr)
+        return 4
+    if slot != active_slot:
+        print(f"slot {slot} requested, but GET /api/recorder/data only "
+              f"reads the active slot ({active_slot}) -- multi-slot data "
+              "addressing is not wired on the device yet", file=sys.stderr)
+        return 4
+    header = bank["slots"][slot]
     if header["state"] != "frozen":
-        print(f"capture is {header['state']}, not frozen -- freeze first "
-              "(POST /api/recorder/freeze) and wait for state=frozen",
+        print(f"slot {slot} is {header['state']}, not frozen -- freeze "
+              "first (POST /api/recorder/freeze) and wait for state=frozen",
               file=sys.stderr)
         return 2
     valid_frames = int(header["valid_frames"])
     if valid_frames == 0:
-        print("frozen capture holds zero frames", file=sys.stderr)
+        print(f"slot {slot}'s frozen capture holds zero frames",
+              file=sys.stderr)
         return 2
-    if header["encoding"] != "s32le" or int(header["frame_bytes"]) != 8:
+    if bank["encoding"] != "s32le" or int(bank["frame_bytes"]) != 8:
         print("unrecognised encoding; refusing to guess", file=sys.stderr)
         return 1
 
     generation = int(header["freeze_generation"])
-    chunk_max = int(header["chunk_max_bytes"])
+    chunk_max = int(bank["chunk_max_bytes"])
     valid_bytes = valid_frames * FRAME_BYTES
     ring = bytearray()
     while len(ring) < valid_bytes:
@@ -145,8 +170,9 @@ def main() -> int:
     seconds = valid_frames / float(header["sample_rate_hz"])
     trigger = header["trigger"]["which"]
     gaps = header["gap_count"]
-    print(f"wrote {args.output}: {valid_frames} frames ({seconds:.1f} s), "
-          f"trigger={trigger}, gaps={gaps}, generation={generation}")
+    print(f"wrote {args.output}: slot={slot} {valid_frames} frames "
+          f"({seconds:.1f} s), trigger={trigger}, gaps={gaps}, "
+          f"generation={generation}")
     return 0
 
 
