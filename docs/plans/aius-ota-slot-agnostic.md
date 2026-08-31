@@ -3,10 +3,10 @@ title: Aius OTA slot-agnostic images — one build, one signature
 type: plans
 scope: component
 component: aius
-status: draft
+status: in-progress
 subtype: design
 tags: [aius, firmware, ota, flash, flexspi, boot]
-updated: 2026-08-22
+updated: 2026-08-31
 toc: true
 ---
 
@@ -33,36 +33,54 @@ next physical visit.
 
 ## Status
 
-Landed and cross-build-proven (Teensy toolchain), all inert on the deployed
-board until a remap chooser is HalfKay-flashed:
+Cut over and bench-proven on the deployed board (`192.0.2.66`) on 2026-08-31.
+The board now runs the new chooser and one canonical, slot-agnostically-linked
+image: `ab.ledger_valid` flipped false→true and the device accepts untagged
+(`slot_id = NONE`) containers over OTA.
 
 - **Phase 1** — shared `lib/aius_ab` primitives, host suite green.
-- **Phase 3** — runtime physical-slot identity + container acceptance gate in
-  `ab_compose`, gated on `booted_slot`; all three envs build.
-- **Phase 2** — remap-aware verify read (`ota_flash_read`), authored + compiled;
-  BENCH-REQUIRED (register/SWRESET timing unvalidated off hardware; fail-safe).
-- **Phase 4** — chooser programs the remap + always stamps `booted_slot`,
-  authored + compiled freestanding; BENCH-REQUIRED.
+- **Phase 2** — remap-aware verify read (`ota_flash_read`): **bench-proven**.
+  The B→A leg verified a byte-distinct image against physical slot A while
+  running slot B; a shadowed verify would have read the running slot and
+  mismatched, so a passing verify + commit proves the FlexSPI IP-read bypass and
+  the `arm_dcache_delete` flip.
+- **Phase 3** — runtime physical-slot identity + untagged-container acceptance
+  gate in `ab_compose`, keyed on `booted_slot`: **bench-proven** (ledger stamped
+  every boot; `/api/status ab.slot` reflects it).
+- **Phase 4** — chooser programs the remap + stamps `booted_slot`:
+  **bench-proven**. HalfKay-flashed via `flash_optical.sh` (CDC); the chooser
+  booted physical slot B via `OFFSET = 0x3D8000` and physical slot A via
+  identity, re-establishing the remap on every reset (`relocks: 0` across the
+  full cycle).
+- **Phase 5** — one build / one signature: **proven on the device**. The
+  canonical slot-A image signed WITHOUT `--slot` was accepted, programmed,
+  remapped and committed both A→B and B→A; operator rule updated in
+  `aius/CLAUDE.md` §Device access and OTA. STILL OWED: retire the dual slot-B
+  env, `gen_slot_ldscript.py`, and make `--slot` optional/deprecated in the
+  signer + CLI (code cleanup; the dual-linked path still coexists).
+- **Phase 6** — atomic HalfKay cutover: **performed**. `recovery.hex` (new
+  chooser + canonical slot A) built from `78cb738` — deliberately EXCLUDING the
+  unflashed recorder Phase A/B/C work — HalfKay-flashed and identity-verified.
 
-Phases 2 & 4 passed an adversarial register review (no brick risk, no
-false-verify; addresses/bits confirmed against `imxrt.h`). Its one substantive
-finding — the flip left D-cache lines holding slot-A bytes aliased to canonical
-addresses — is fixed (`arm_dcache_delete` after the restore). The only
-remaining unknowns are inherently hardware: FlexSPI AHB prefetch/RX-buffer and
-SWRESET/remap timing, settled only by the bench A→B→A + power-cut cycle.
+Phases 2 & 4 had passed an adversarial register review (no brick risk, no
+false-verify; addresses/bits confirmed against `imxrt.h`; the D-cache aliasing
+finding fixed with `arm_dcache_delete`). The bench cycle settled the remaining
+hardware unknowns (FlexSPI AHB prefetch/RX-buffer, SWRESET/remap timing).
 
-- **Phase 5** — no new code needed: the canonical release image is the
-  slot-A build signed WITHOUT `--slot` (a `slot_id = NONE` container the signer
-  already produces), and the device accepts it via Phase 3's gate. The
-  operator-rule change in `aius/CLAUDE.md` §Device access and OTA ships in the
-  cutover commit, not before, so the current "always `--slot`" rule stays
-  operative until the chooser is flashed.
-- **Phase 6** — `recovery.hex` builds end-to-end today (`scripts/build_ab.sh`);
-  the bench acceptance cycle is captured in the runbook below.
+**Bench acceptance (2026-08-31), owner-directed deviations noted:**
 
-Everything above is compile-proven only. No USB access to the board, so nothing
-is runtime- or bench-validated; the register/timing unknowns are settled solely
-by the bench runbook.
+- New chooser live (`ledger_valid` false→true).
+- A→B→A completes and self-commits unaided; `rollback_observed: false`,
+  `relocks: 0`, no new `tx_underrun` beyond the boot gate-open trim.
+- B→A remap-flip verify read + D-cache handling (Phase 2), via a byte-distinct
+  image built with a fresh `AIUS_BUILD_UTC`.
+- Chooser hand-off clean (booted physical B with no stale canonical prefetch).
+- Corrupted offer refused at verify (`409 ota_digest`), nothing armed.
+- **Mid-window power-cut gate: owner-skipped**, not proven. Safe to defer (OTA
+  never writes the active slot); formally still owed if a stricter proof is
+  wanted.
+- **Proven on the deployed board directly, not a spare** (none exists). Recovery
+  net was the Program button + a `cee8b46` rollback `recovery.hex`; never needed.
 
 ## Why it is per-slot today
 
