@@ -5,7 +5,7 @@ external-observation JSON that aius_rate_bench.py's sample-rate gates read.
 Three acceptance gates assert properties of the board's actual optical
 output that HTTP /api/status cannot self-report:
 
-    pcm-120s   -> {"channel_status_rate_hz", "continuous_output"}
+    pcm-120s   -> {"audio_rate_hz", "continuous_output"}
     transitions-> {"old_rate_output_frames"}
     waveform   -> {"capture_frame_gaps", "discontinuities_outside_invalid",
                    "invalid_intervals_frames", "correlated_trim_updates",
@@ -25,11 +25,12 @@ summary.json.
 Two design choices are pinned by the current bench hardware and recorded
 in docs/plans/aius-rate-gate-capture-tool.md:
 
-  - channel_status_rate_hz is INFERRED from the captured tone frequency.
-    The U24 XL exposes no IEC958 capture-status control (verified via
-    `amixer -c0 controls`), so a true channel-status decode is not
-    available on this interface. The field carries a
-    channel_status_rate_hz_source: "inferred" marker.
+  - Gate 2's rate is reported as audio_rate_hz, INFERRED from the captured
+    tone frequency. The U24 XL exposes no IEC958 capture-status control
+    (verified via `amixer -c0 controls`), so a true channel-status decode is
+    not available on this interface; the honest name for a tone inference is
+    an audio rate, so the field is audio_rate_hz (design decision 2026-09-01),
+    with audio_rate_hz_source: "inferred-from-tone" in the evidence.
 
   - Capture<->status time correlation uses BOUNDED LOCAL ALIGNMENT around
     each status-reported counter increment, not a global frame->wall-time
@@ -251,16 +252,16 @@ def reduce_pcm(active: np.ndarray, capture_rate: int, expected_rate: int
     """Gate 2 (pcm-120s) fields plus supporting evidence."""
     runs = zero_runs(active)
     inferred = estimate_hz(active, capture_rate)
-    channel_status_rate = None
+    audio_rate = None
     if inferred is not None:
-        channel_status_rate = int(round(expected_rate * inferred / TONE_HZ))
+        audio_rate = int(round(expected_rate * inferred / TONE_HZ))
     return {
         "external": {
-            "channel_status_rate_hz": channel_status_rate,
+            "audio_rate_hz": audio_rate,
             "continuous_output": bool(len(runs) == 0),
-            "channel_status_rate_hz_source": "inferred",
         },
         "evidence": {
+            "audio_rate_hz_source": "inferred-from-tone",
             "measured_tone_hz": inferred,
             "reference_tone_hz": TONE_HZ,
             "zero_run_count": len(runs),

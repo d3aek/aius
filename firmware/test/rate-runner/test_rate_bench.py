@@ -312,7 +312,7 @@ class AnalyzerTests(unittest.TestCase):
             "rate_hz": 44100,
             "max_follow_error_millihz": 1000,
         }, {
-            "channel_status_rate_hz": 44100,
+            "audio_rate_hz": 44100,
             "continuous_output": True,
         })
         self.assertEqual(pcm["verdict"], "pass")
@@ -568,7 +568,7 @@ class ExitSemanticsTests(unittest.TestCase):
                     "phase_samples": 2,
                 },
                 external={
-                    "channel_status_rate_hz": 44100,
+                    "audio_rate_hz": 44100,
                     "continuous_output": True,
                 })
             code, stdout, stderr = self.run_main([

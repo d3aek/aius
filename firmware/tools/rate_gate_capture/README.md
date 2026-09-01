@@ -17,19 +17,21 @@ the gate reducers and their JSON schema are new.
 
 | Gate | Scenario | external-observation.json |
 |---|---|---|
-| 2 | `pcm-120s` | `channel_status_rate_hz`, `continuous_output` |
+| 2 | `pcm-120s` | `audio_rate_hz`, `continuous_output` |
 | 4 | `transitions` | `old_rate_output_frames` |
 | 7 | `waveform` | `capture_frame_gaps`, `discontinuities_outside_invalid`, `invalid_intervals_frames`, `correlated_trim_updates`, `correlated_invalid_windows` |
 
 ## Two pinned design choices
 
-- **`channel_status_rate_hz` is inferred, not decoded.** The U24 XL exposes
-  no IEC958 capture-status control (`amixer -c0 controls` — none present), so
-  the incoming S/PDIF channel-status word is not readable via ALSA on this
-  interface. The rate is inferred from the captured tone frequency
-  (`rate ≈ expected_rate × f_measured / 997`) and the field carries a
-  `channel_status_rate_hz_source: "inferred"` marker. A true decode needs a
-  dedicated S/PDIF protocol analyzer.
+- **Gate 2's rate is `audio_rate_hz`, inferred not decoded.** The U24 XL
+  exposes no IEC958 capture-status control (`amixer -c0 controls` — none
+  present), so the incoming S/PDIF channel-status word is not readable via
+  ALSA on this interface. The rate is inferred from the captured tone
+  frequency (`rate ≈ expected_rate × f_measured / 997`); since that is an
+  audio-rate inference and not a channel-status decode, the field is named
+  `audio_rate_hz` (design decision 2026-09-01), with
+  `audio_rate_hz_source: "inferred-from-tone"` in the evidence. A true decode
+  needs a dedicated S/PDIF protocol analyzer.
 
 - **Capture↔status correlation uses bounded local alignment.** Each status
   counter increment (`trim_updates`, `invalid_windows`) is matched to the

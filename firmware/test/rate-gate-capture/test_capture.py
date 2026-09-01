@@ -83,9 +83,9 @@ class PcmReducerTests(unittest.TestCase):
         result = CAP.reduce_pcm(active, 44100, 44100)
         self.assertTrue(result["external"]["continuous_output"])
         self.assertEqual(
-            result["external"]["channel_status_rate_hz_source"], "inferred")
+            result["evidence"]["audio_rate_hz_source"], "inferred-from-tone")
         self.assertLess(
-            abs(result["external"]["channel_status_rate_hz"] - 44100), 50)
+            abs(result["external"]["audio_rate_hz"] - 44100), 50)
 
     def test_dropout_breaks_continuity(self):
         active = tone(48000, 44100)

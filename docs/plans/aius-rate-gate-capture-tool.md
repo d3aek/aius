@@ -80,20 +80,21 @@ The off-board build is done and unit-tested; only the live-board integration
   (`continuous_output`, `capture_frame_gaps`, `invalid_intervals_frames`,
   discontinuity detection), bounded-local-alignment correlation
   (`correlated_trim_updates`, `correlated_invalid_windows`,
-  `discontinuities_outside_invalid`), inferred `channel_status_rate_hz`, and a
+  `discontinuities_outside_invalid`), the inferred gate-2 rate, and a
   provisional `old_rate_output_frames`. Build-sequence steps 1–5 are done.
-- **Hard part 2 resolved empirically.** `amixer -c0 controls` on the U24 XL
-  shows no IEC958 capture-status control, so a true channel-status decode is
-  not available on this interface. The tool infers the rate from the tone and
-  marks it `channel_status_rate_hz_source: "inferred"`. The open gate-2
-  question is therefore narrowed: accept the inferred rate, redefine the field
-  to `audio_rate_hz`, or add a dedicated S/PDIF protocol analyzer.
-- **Hard part 1 decision.** Bounded local alignment is implemented as the
-  correlation fiducial (the plan's "try this first"). Confirm it is acceptable
-  for gate 7 before the live run, or swap in the flight-recorder fiducial.
+- **Hard part 2 resolved (design decision 2026-09-01).** `amixer -c0 controls` on
+  the U24 XL shows no IEC958 capture-status control, so a true channel-status
+  decode is not available on this interface. Owner ruling: **redefine the
+  gate-2 external field to `audio_rate_hz`** — the honest name for a
+  tone-frequency inference. The bench gate, the tool, and their tests now use
+  `audio_rate_hz` (with `audio_rate_hz_source: "inferred-from-tone"` in the
+  capture evidence).
+- **Hard part 1 resolved (design decision 2026-09-01).** Bounded local alignment
+  is the gate-7 correlation fiducial (implemented, unit-tested).
 - **Remaining: step 6 live integration** — run each gate end-to-end on the
-  live board and confirm the bench reaches a real verdict. Needs the board,
-  the fibre confirmation, and USB-deauth permission approvals; operator-gated.
+  live board and confirm the bench reaches a real verdict. Owner authorised
+  running all gates; needs the board, the fibre confirmation, and USB-deauth
+  permission approvals for gate 4's replay leg.
   `old_rate_output_frames`'s detection model also needs live calibration.
 
 ## The tool's job
@@ -105,7 +106,7 @@ pinned):
 
 | Gate | Scenario | Required JSON | Asserts about the output |
 |---|---|---|---|
-| 2 | `pcm-120s` | `{"channel_status_rate_hz": 44100, "continuous_output": true}` | Output declares the right S/PDIF rate; no dropouts |
+| 2 | `pcm-120s` | `{"audio_rate_hz": 44100, "continuous_output": true}` | Output runs at the right rate (inferred from the tone; see hard part 2); no dropouts |
 | 4 | `transitions` | `{"old_rate_output_frames": 0}` | No stale-rate frames emitted across a 48→44.1→48 transition |
 | 7 | `waveform` | `{"capture_frame_gaps": 0, "discontinuities_outside_invalid": 0, "invalid_intervals_frames": [512], "correlated_trim_updates": N, "correlated_invalid_windows": N}` | Gap-free output; every discontinuity is a declared trim/invalid window, each exactly one 512-frame PCM block |
 
@@ -236,14 +237,17 @@ transitions via stop/start, loss→replay via USB deauth then
 analyzer combines it with the status series for the verdict. The tool's only job
 is producing that JSON faithfully.
 
-## Open questions for the operator
+## Operator rulings (2026-09-01)
 
-- Gate 2 `channel_status_rate_hz`: accept an inferred audio rate (marked), or
-  require a true channel-status decode? (Blocks gate 2's exact field.)
-- Time-correlation fiducial: is the flight recorder the intended reference, or is
-  bounded local alignment around reported event times acceptable for gate 7?
-- Confirm the board→U24 return fibre is on the same U24 optical input the capture
-  device reads (`hw:0,0` IEC958 In), not a second interface.
+- **Gate 2 field: RESOLVED — redefine to `audio_rate_hz`.** A true
+  channel-status decode is unavailable on this U24 (no IEC958 capture-status
+  control), so the field honestly names the tone-frequency inference.
+- **Time-correlation fiducial: RESOLVED — bounded local alignment** around
+  reported event times for gate 7 (not the flight recorder).
+- **Live run: AUTHORISED — run all gates.** Still requires confirming the
+  board→U24 return fibre is on the same U24 optical input the capture device
+  reads (`hw:0,0` IEC958 In), and per-write USB-deauth approval for gate 4's
+  loss→replay leg.
 
 ## Acceptance for this tool
 

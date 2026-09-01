@@ -543,9 +543,9 @@ def check_external_pcm(external, rate_hz, failures):
         add_failure(failures, "external-observation",
                     "pcm-120s requires external observation JSON")
         return
-    if external.get("channel_status_rate_hz") != rate_hz:
-        add_failure(failures, "channel-status",
-                    f"external channel-status rate is not {rate_hz} Hz")
+    if external.get("audio_rate_hz") != rate_hz:
+        add_failure(failures, "audio-rate",
+                    f"external audio rate is not {rate_hz} Hz")
     if external.get("continuous_output") is not True:
         add_failure(failures, "continuous-output",
                     "external observation does not confirm continuous output")
