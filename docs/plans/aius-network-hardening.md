@@ -802,9 +802,16 @@ table.
     is a plausible contributor to accept-path stalls and should be checked against
     §Phase 12's poll-priority work (defect 12) rather than in isolation.
 
-    **Fake and test row FIXED 2026-07-26; the vendor half is confirmed and
-    deliberately NOT patched yet.** Three things were established rather than
-    assumed:
+    **RESOLVED 2026-09-01 — the vendor patch is applied.** Confirmed against the
+    tree: `firmware/vendor/NativeEthernet/NOTICE.md` documents "the FNET service
+    callback that accepts inbound connections initialises `fromlen` to
+    `sizeof(from)` ... the one patch here that fixes an upstream defect", and
+    `fromlen = sizeof(_from)` is initialised at the peer/recv sites
+    (`NativeEthernet.h:360`, `NativeEthernetClient.cpp:215`). This settles the
+    contradiction with defect 24, which correctly stated the patch was applied;
+    defect 20's "not patched yet" was stale. Original disposition, now
+    superseded: **Fake and test row FIXED 2026-07-26; the vendor half confirmed.**
+    Three things were established rather than assumed:
 
     - **The `else` is real.** `_fnet_socket_addr_check_len()` ends
       `else { result = FNET_ERR_INVAL; }` at `fnet_socket.c:1887-1890`, so a zero
@@ -831,10 +838,11 @@ table.
       `fnet_size_t fromlen = sizeof(from);` is a gated edit rather than a new
       precedent.
 
-    **Not applied yet purely for sequencing**: the bring-up/accept timing was being
-    measured on the board at the time, and changing the accept path underneath a
-    running experiment invalidates its results. Apply it after those measurements
-    land, and re-measure, since the fix may itself move the `http`-behind-`udp` gap.
+    **Applied.** It was deferred at the time purely for sequencing (the
+    bring-up/accept timing was being measured on the board, and changing the
+    accept path underneath a running experiment invalidates its results); the
+    patch has since landed in the vendored tree per NOTICE.md above. Any residual
+    `http`-behind-`udp` gap is now measured against the patched accept path.
 21. **B6 gate 2's four "never became ready" lines were the ledger defect, not a
     second failure — but there is still a real timing gap, and it is on the board.**
     `observe_ready()` counts a channel ready only once `_is_new_boot()` is true
