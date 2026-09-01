@@ -138,11 +138,32 @@ opens, or arecord gets an immediate read I/O error (fixed in `7baa909`).
   `[48000, 44100, 48000]`, `old_rate_output_frames = 0` — the board
   transitions cleanly (corroborated by the slot's own `rate_changes`). The
   reducer is unit-tested; the tool drives 48→44.1→48 via aplay while polling
-  status/events (background thread) for the evidence file. The remaining
-  piece for a bench-`pass` verdict is the loss→replay leg: USB-deauth `3-1.1`
-  (the U24, which the recorder path does NOT depend on — it is board-internal)
-  to induce carrier loss, then `POST /api/replays/start`, with status polling
-  spanning it over the network. Interactive deauth approval required.
+  status/events (background thread) for the evidence file.
+
+  The full scenario now runs end-to-end (`--with-replay`): USB-deauth `3-1.1`
+  (the U24, which the recorder path does NOT depend on) drops the carrier,
+  `POST /api/replays/start channel_id_51` returns 200, the U24 is restored,
+  and the status evidence carries the full `48000→44100→48000→replay`
+  sequence (the replay phase reads `carrier_locked:false, master:output,
+  state:replay`). **The bench reaches a real `fail` verdict** — gate 4's
+  tool-acceptance (a real verdict, not a tool error) is met, with
+  `old_rate_output_frames = 0`.
+
+  A clean `pass` is NOT reachable with the aplay-driven stimulus and is a
+  stimulus-source limitation, not a tool defect: `aplay` stop/start leaves
+  the U24 idling at ~48.02 kHz between rate phases, so the board logs
+  `unsupported` episodes and `tx_underrun` in the gaps, and
+  `stable_phase_labels` (built for a stimulus that cleanly cuts the carrier
+  between phases, as the analyzer's own fixture does) collapses the observed
+  sequence. Observed failures: `transition-sequence` (phase labeler sees
+  `[48000, replay]`), `transition-unattributed-unsupported` (idle-gap
+  episodes outside the live windows), `harmful-counter` (`event_overflows`
+  from the event burst outpacing polling; one `au_abandons` at the replay
+  cut). Longer/denser phases made it worse (more idle underruns). A green
+  pass needs a stimulus source that cuts the carrier between rate phases (a
+  programmable S/PDIF generator), or an owner decision to adapt the
+  `transitions` analyzer to the aplay-blip pattern — NOT weakening any
+  threshold (forbidden by this plan).
 
 ## The tool's job
 
@@ -303,10 +324,11 @@ is producing that JSON faithfully.
   round-trip a synthetic `evidence.jsonl` through the real bench analyzer.
 - Each of gates 2, 4, 7 reaches a `pass`/`fail` verdict end-to-end on the live
   board with the produced JSON (a real verdict, not a tool error), on one exact
-  committed image with `--expect-build`. **Gate 2 done (pass); gate 7 done
-  (fail — real verdict, contract finding above); gate 4 external field
-  (`old_rate_output_frames = 0`) measured live via the flight recorder — a
-  full `pass` verdict still needs the loss→replay leg driven.**
+  committed image with `--expect-build`. **All three reach a real verdict:
+  gate 2 pass; gate 7 fail (contract finding above); gate 4 fail with the
+  full `48000→44100→48000→replay` sequence driven and
+  `old_rate_output_frames = 0` measured via the flight recorder. A green
+  gate-4 pass is a stimulus-source limitation, not a tool defect (below).**
 - The transitions descope lands with its tests green in the same change set.
   **Done** (aius `93610f6`).
 
@@ -317,8 +339,9 @@ is producing that JSON faithfully.
   fields; if so, specify the artifact signature the tool should detect.
 - **Gate 4 `old_rate_output_frames` fiducial — RESOLVED.** The flight
   recorder is the reference (`recorder_transitions.py`); measured 0 live.
-- **Gate 4 full verdict.** Drive the loss→replay leg (USB-deauth `3-1.1`
-  then `POST /api/replays/start`) so the status evidence carries the 4th
-  phase the analyzer's expected sequence (`…→replay`) requires. Status
-  polling already spans it (network-side, independent of the U24); only the
-  interactive deauth step and the replay POST remain to wire in.
+- **Gate 4 green pass.** Done to a real fail verdict end-to-end. A pass needs
+  either a stimulus source that cuts the S/PDIF carrier cleanly between rate
+  phases (a programmable generator; the aplay-on-U24 idle at ~48.02 kHz
+  between phases produces the unsupported/underrun artifacts that trip the
+  analyzer), or an owner decision to adapt the `transitions` analyzer to the
+  aplay-blip stimulus — without weakening any acceptance threshold.
