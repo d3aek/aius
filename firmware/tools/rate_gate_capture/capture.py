@@ -391,27 +391,45 @@ def reduce_scenario(scenario: str, active: np.ndarray, capture_rate: int,
     raise RuntimeError(f"unknown scenario {scenario!r}")
 
 
-def poll_status(status_url: str, auth: str | None) -> dict:
+def http_get(url: str, auth: str | None, attempts: int = 3
+             ) -> tuple[str, dict]:
+    """GET a JSON endpoint, retrying the board's transient one-client-at-a-
+    time transport drops (not HTTP or JSON errors, which are real)."""
+    import urllib.error
     import urllib.request
 
-    request = urllib.request.Request(status_url)
-    if auth:
-        request.add_header("X-Aius-SD-Auth", auth)
-    with urllib.request.urlopen(request, timeout=5.0) as response:
-        return json.loads(response.read().decode("utf-8"))
+    last = None
+    for attempt in range(attempts):
+        try:
+            request = urllib.request.Request(url)
+            if auth:
+                request.add_header("X-Aius-SD-Auth", auth)
+            with urllib.request.urlopen(request, timeout=5.0) as response:
+                raw = response.read().decode("utf-8")
+            return raw, json.loads(raw)
+        except (urllib.error.URLError, ConnectionError, TimeoutError) as error:
+            last = error
+            time.sleep(0.2 * (attempt + 1))
+    raise RuntimeError(f"status poll failed after {attempts} attempts: {last}")
+
+
+def events_url(status_url: str) -> str:
+    return status_url.rsplit("/api/status", 1)[0] + "/api/events"
 
 
 def capture_and_poll(args) -> tuple[Path, list[dict]]:
+    """Drive arecord + the scenario stimulus, and poll /api/status and
+    /api/events in lockstep. Each poll keeps the raw JSON text so the run
+    can be written back as a bench-format evidence file."""
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
     capture_path = output / "capture.wav"
-    capture_log_path = output / "arecord.log"
-    playback_log_path = output / "aplay.log"
-    capture_log = capture_log_path.open("wb")
-    playback_log = playback_log_path.open("wb")
+    capture_log = (output / "arecord.log").open("wb")
+    playback_log = (output / "aplay.log").open("wb")
     capture = None
     playback = None
     polls: list[dict] = []
+    events_base = events_url(args.status_url)
     started = time.monotonic()
     try:
         capture = subprocess.Popen([
@@ -425,10 +443,19 @@ def capture_and_poll(args) -> tuple[Path, list[dict]]:
                 "aplay", "-D", args.device, "-d", str(args.seconds),
                 str(args.tone),
             ], stdout=playback_log, stderr=subprocess.STDOUT)
+        first_raw, first = http_get(args.status_url, args.auth)
+        cursor = int(first["event_sequence"])
         while capture.poll() is None:
+            elapsed = time.monotonic() - started
+            status_raw, status = http_get(args.status_url, args.auth)
+            events_raw, events = http_get(
+                f"{events_base}?cursor={cursor}", args.auth)
+            cursor = int(events["next"])
             polls.append({
-                "elapsed_s": time.monotonic() - started,
-                "status": poll_status(args.status_url, args.auth),
+                "elapsed_s": elapsed,
+                "status": status,
+                "raw_status_json": status_raw,
+                "raw_events_json": events_raw,
             })
             time.sleep(1.0)
         capture.wait(timeout=15)
@@ -439,8 +466,50 @@ def capture_and_poll(args) -> tuple[Path, list[dict]]:
         stop_process(playback)
         capture_log.close()
         playback_log.close()
-    write_json(output / "status-polls.json", {"polls": polls})
     return capture_path, polls
+
+
+def scenario_analysis_options(scenario: str, rate: int, expected_rate: int,
+                              expect_build: str | None) -> dict:
+    """The analysis_options a `run` would embed, so `analyze` reaches the
+    same verdict from this tool's evidence file without extra CLI flags."""
+    options = {
+        "settle_s": 10.0,
+        "max_follow_error_millihz": 1000,
+        "max_slope_words_per_s": 0.25,
+        "phase_samples": 2,
+    }
+    if scenario == "pcm-120s":
+        options["rate_hz"] = expected_rate
+    if expect_build:
+        options["expect_build"] = expect_build
+    return options
+
+
+def write_evidence(path: Path, scenario: str, polls: list[dict],
+                   analysis_options: dict, external_raw: str) -> None:
+    """Bench-format evidence JSONL (schema 1): one metadata record then one
+    sample record per poll, with the external observation embedded."""
+    identity = {
+        "build_revision": polls[0]["status"]["build_revision"],
+        "build_utc": polls[0]["status"]["build_utc"],
+    }
+    lines = [json.dumps({
+        "kind": "metadata",
+        "schema_version": 1,
+        "scenario": scenario,
+        "build_identity": identity,
+        "analysis_options": analysis_options,
+        "raw_external_observation_json": external_raw,
+    })]
+    for poll in polls:
+        lines.append(json.dumps({
+            "kind": "sample",
+            "elapsed_s": poll["elapsed_s"],
+            "raw_status_json": poll["raw_status_json"],
+            "raw_events_json": poll["raw_events_json"],
+        }))
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -455,6 +524,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--seconds", type=int, default=130)
     parser.add_argument("--status-url", default="http://192.0.2.66/api/status")
     parser.add_argument("--auth")
+    parser.add_argument("--expect-build",
+                        help="pin the gate to this exact build_revision")
     parser.add_argument("--tone", type=Path,
                         help="WAV stimulus to aplay; omitted for a passive "
                              "capture where the board is already sourcing")
@@ -472,6 +543,7 @@ def main(argv: list[str] | None = None) -> int:
         args.scenario, active, args.rate, status_series, args.expected_rate)
 
     output = Path(args.output)
+    external_raw = json.dumps(reduced["external"])
     write_json(output / "external-observation.json", reduced["external"])
     write_json(output / "capture-analysis.json", {
         "scenario": args.scenario,
@@ -484,6 +556,11 @@ def main(argv: list[str] | None = None) -> int:
         "external": reduced["external"],
         "evidence": reduced["evidence"],
     })
+    if polls:
+        options = scenario_analysis_options(
+            args.scenario, args.rate, args.expected_rate, args.expect_build)
+        write_evidence(output / "evidence.jsonl", args.scenario, polls,
+                       options, external_raw)
     print(json.dumps(reduced["external"], indent=2, sort_keys=True))
     return 0
 

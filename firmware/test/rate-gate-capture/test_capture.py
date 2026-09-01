@@ -6,9 +6,13 @@ capture.py against synthetic waveforms and status series: gap-injected,
 capture so the field reductions are provable off-board.
 """
 
+import contextlib
 import importlib.util
+import io
+import json
 import math
 import pathlib
+import tempfile
 import unittest
 
 import numpy as np
@@ -19,6 +23,14 @@ MODULE = ROOT / "tools" / "rate_gate_capture" / "capture.py"
 SPEC = importlib.util.spec_from_file_location("rate_gate_capture", MODULE)
 CAP = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(CAP)
+
+# Load the rate-bench test module (which itself loads aius_rate_bench) so the
+# evidence-format integration test drives the real bench analyzer.
+BENCH_TEST_PATH = ROOT / "test" / "rate-runner" / "test_rate_bench.py"
+BENCH_SPEC = importlib.util.spec_from_file_location(
+    "test_rate_bench", BENCH_TEST_PATH)
+BENCH_TEST = importlib.util.module_from_spec(BENCH_SPEC)
+BENCH_SPEC.loader.exec_module(BENCH_TEST)
 
 
 def tone(frames, capture_rate, hz=CAP.TONE_HZ, amp=8000):
@@ -184,6 +196,61 @@ class CorrelationTests(unittest.TestCase):
             intervals, events, 48000, 9 * 48000)
         self.assertEqual(correlated, 2)
         self.assertEqual(sorted(matched), [0, 1])
+
+
+class EvidenceIntegrationTests(unittest.TestCase):
+    """write_evidence must produce a file the bench's own load_evidence and
+    analyze path accept, with the embedded external observation driving a real
+    verdict -- the offline proxy for step-6 live integration."""
+
+    def _polls(self, rate, seconds):
+        empty_events = json.dumps({"cursor": 0, "next": 0, "events": []})
+        polls = []
+        for index, elapsed in enumerate(seconds):
+            status = BENCH_TEST.make_status(rate=rate, output_blocks=index + 1)
+            polls.append({
+                "elapsed_s": float(elapsed),
+                "status": status,
+                "raw_status_json": json.dumps(status),
+                "raw_events_json": empty_events,
+            })
+        return polls
+
+    def _analyze(self, scenario, path):
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout), \
+                contextlib.redirect_stderr(io.StringIO()):
+            code = BENCH_TEST.BENCH.main(
+                ["analyze", scenario, "--evidence", str(path)])
+        return code, json.loads(stdout.getvalue())
+
+    def test_pcm_evidence_reaches_pass_verdict(self):
+        polls = self._polls(44100, [0, 60, 120])
+        external = json.dumps(
+            {"audio_rate_hz": 44100, "continuous_output": True})
+        options = CAP.scenario_analysis_options("pcm-120s", 44100, 44100, None)
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "evidence.jsonl"
+            CAP.write_evidence(path, "pcm-120s", polls, options, external)
+            metadata, samples, events = BENCH_TEST.BENCH.load_evidence(path)
+            self.assertEqual(len(samples), 3)
+            self.assertEqual(metadata["scenario"], "pcm-120s")
+            code, result = self._analyze("pcm-120s", path)
+        self.assertEqual(code, 0, result.get("failures"))
+        self.assertEqual(result["verdict"], "pass")
+
+    def test_pcm_evidence_fails_on_wrong_audio_rate(self):
+        polls = self._polls(44100, [0, 60, 120])
+        external = json.dumps(
+            {"audio_rate_hz": 32000, "continuous_output": True})
+        options = CAP.scenario_analysis_options("pcm-120s", 44100, 44100, None)
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "evidence.jsonl"
+            CAP.write_evidence(path, "pcm-120s", polls, options, external)
+            code, result = self._analyze("pcm-120s", path)
+        self.assertEqual(code, 1)
+        self.assertIn("audio-rate",
+                      {failure["code"] for failure in result["failures"]})
 
 
 if __name__ == "__main__":

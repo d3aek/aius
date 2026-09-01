@@ -60,18 +60,30 @@ amixer -c 0 cset numid=8 1        # PCM Capture Source = IEC958 In
 amixer -c 0 cset numid=5 110,110  # PCM Playback Volume = 0 dB
 ```
 
-Run a gate capture, then feed the JSON to the bench:
+Run a gate capture, then hand the verdict to the bench's offline analyzer:
 
 ```bash
 python3 capture.py --scenario pcm-120s --rate 44100 --seconds 130 \
     --tone /tmp/tone-997-44100.wav --output <outdir> \
-    --status-url http://192.0.2.66/api/status
-aius_rate_bench.py run pcm-120s --external-observation <outdir>/external-observation.json
+    --status-url http://192.0.2.66/api/status \
+    --expect-build fc674c60f06c+teensy41-optical
+python3 ../net/aius_rate_bench.py analyze pcm-120s --evidence <outdir>/evidence.jsonl
 ```
 
-`external-observation.json` carries the exact gate fields;
-`capture-analysis.json` carries the full supporting evidence (zero-run
-lengths, discontinuity frames, correlation counts).
+A single capture run owns the board: it drives the stimulus, records the
+waveform, and polls `/api/status` and `/api/events` in lockstep. It writes
+three artifacts to `<outdir>`:
+
+- `external-observation.json` — the exact per-gate fields.
+- `evidence.jsonl` — a bench-format evidence file (schema 1) of the same
+  run's status/events samples with the external observation embedded, so
+  `aius_rate_bench.py analyze` reaches a verdict offline. This avoids two
+  processes polling the one-client-at-a-time board concurrently and the
+  read-external-at-start race of `run`.
+- `capture-analysis.json` — the full supporting evidence (zero-run lengths,
+  discontinuity frames, correlation counts).
+
+`--expect-build` pins the gate to the exact deployed `build_revision`.
 
 ## Tests
 
