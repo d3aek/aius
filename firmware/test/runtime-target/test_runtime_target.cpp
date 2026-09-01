@@ -1060,16 +1060,25 @@ static bool app_recorder_config(void *context, uint32_t mask,
 }
 
 static AiusOpticalAppRecorderReadResult app_recorder_read(
-	void *context, uint32_t offset_bytes, uint32_t length_bytes,
-	uint32_t generation, const uint8_t **data, uint32_t *length)
+	void *context, bool has_slot, uint32_t slot, uint32_t offset_bytes,
+	uint32_t length_bytes, uint32_t generation, const uint8_t **data,
+	uint32_t *length, uint32_t *resolved_slot)
 {
 	(void)context;
+	(void)has_slot;
 	(void)offset_bytes;
 	(void)length_bytes;
 	(void)generation;
 	(void)data;
 	(void)length;
+	*resolved_slot = slot;
 	return AIUS_OPTICAL_APP_RECORDER_READ_REFUSED;
+}
+
+static void app_recorder_read_release(void *context, uint32_t slot)
+{
+	(void)context;
+	(void)slot;
 }
 
 static AiusOpticalApp app_table(void)
@@ -1105,6 +1114,7 @@ static AiusOpticalApp app_table(void)
 	app.recorder_thaw = app_recorder_thaw;
 	app.recorder_config = app_recorder_config;
 	app.recorder_read = app_recorder_read;
+	app.recorder_read_release = app_recorder_read_release;
 	return app;
 }
 

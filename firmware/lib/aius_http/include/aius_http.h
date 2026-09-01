@@ -148,6 +148,11 @@ typedef struct {
 	uint32_t recorder_offset;
 	uint32_t recorder_length;
 	uint32_t recorder_generation;
+	/* Optional trailing &slot=<n> selecting one bank slot to read. Absent
+	 * (recorder_has_slot == false) means the handler reads the active slot,
+	 * preserving the pre-bank single-shot request shape byte-for-byte. */
+	bool recorder_has_slot;
+	uint32_t recorder_slot;
 } AiusHttpRequest;
 
 AiusHttpResult aius_http_parse(const uint8_t *data, size_t length,

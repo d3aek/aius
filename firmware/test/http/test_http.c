@@ -706,6 +706,50 @@ int main(void)
 		assert(request.recorder_offset == 65536u);
 		assert(request.recorder_length == 4096u);
 		assert(request.recorder_generation == 3u);
+		/* No &slot= -- the read defaults to the active slot, so the flag is
+		 * clear and the handler owns the default resolution. */
+		assert(!request.recorder_has_slot);
+	}
+	{
+		/* The optional trailing &slot=<n>: present, it parses into
+		 * recorder_slot with the flag set, generation still bounded at the
+		 * '&' before it. The parser range-checks nothing (that is the
+		 * handler's 400), so a slot beyond the bank still parses. */
+		const char *slot_line =
+			"GET /api/recorder/data?offset=0&length=8&generation=4&slot=2"
+			" HTTP/1.0\r\n\r\n";
+		assert(aius_http_parse((const uint8_t *)slot_line,
+		                       strlen(slot_line), &request) == AIUS_HTTP_OK);
+		assert(request.route == AIUS_HTTP_ROUTE_RECORDER_DATA);
+		assert(request.recorder_generation == 4u);
+		assert(request.recorder_has_slot);
+		assert(request.recorder_slot == 2u);
+		const char *slot_oob =
+			"GET /api/recorder/data?offset=0&length=8&generation=0&slot=99"
+			" HTTP/1.0\r\n\r\n";
+		assert(aius_http_parse((const uint8_t *)slot_oob, strlen(slot_oob),
+		                       &request) == AIUS_HTTP_OK);
+		assert(request.recorder_has_slot);
+		assert(request.recorder_slot == 99u);
+		/* A non-numeric slot, an empty slot, and an unknown trailing param
+		 * are all unknown routes -- the fixed grammar admits only &slot=. */
+		const char *slot_bad =
+			"GET /api/recorder/data?offset=0&length=8&generation=0&slot=x"
+			" HTTP/1.0\r\n\r\n";
+		assert(aius_http_parse((const uint8_t *)slot_bad, strlen(slot_bad),
+		                       &request) == AIUS_HTTP_ERR_ROUTE);
+		const char *slot_empty =
+			"GET /api/recorder/data?offset=0&length=8&generation=0&slot="
+			" HTTP/1.0\r\n\r\n";
+		assert(aius_http_parse((const uint8_t *)slot_empty,
+		                       strlen(slot_empty), &request) ==
+		       AIUS_HTTP_ERR_ROUTE);
+		const char *slot_unknown =
+			"GET /api/recorder/data?offset=0&length=8&generation=0&other=1"
+			" HTTP/1.0\r\n\r\n";
+		assert(aius_http_parse((const uint8_t *)slot_unknown,
+		                       strlen(slot_unknown), &request) ==
+		       AIUS_HTTP_ERR_ROUTE);
 	}
 	{
 		/* Missing generation, reordered params, bare data path, non-GET

@@ -1638,9 +1638,11 @@ static size_t drain_writes_to_close(Fixture *fixture, AiusHttpAction action)
 }
 
 /* The sd_settle hook (aius-ota-resilience.md Phase 4a): fired EXACTLY ONCE at
- * the job's terminal -- committed only at COMPLETE, with the request body
- * still readable at the hook (the deferred-absorb contract) -- uncommitted at
- * FAILED, and forbidden on an IMMEDIATE response. */
+ * the response's terminal -- committed only at an SD job's COMPLETE, with the
+ * request body still readable at the hook (the deferred-absorb contract),
+ * uncommitted at FAILED, and (aius-recorder-rolling-buffer.md Phase C) also
+ * carried by an IMMEDIATE response as its borrow-release completion hook, where
+ * it fires once at send-completion/close with committed=false. */
 static struct {
 	int calls;
 	bool last_committed;
@@ -1733,9 +1735,12 @@ static void test_sd_settle_hook_terminals(void)
 		assert(g_settle.calls == 1);
 	}
 
-	/* An IMMEDIATE response has no job to settle: a hook on one is the
-	 * application's protocol error, refused like every other malformed
-	 * response. */
+	/* An IMMEDIATE response MAY carry the hook as a borrow-release: it is
+	 * accepted (not a protocol fault), and fires EXACTLY ONCE, uncommitted,
+	 * when the response has drained and the connection closes -- with NO
+	 * follow-up request. This is the recorder read-lease's true-completion
+	 * path (aius-recorder-rolling-buffer.md Phase C): a one-shot client that
+	 * GETs its 200 and closes still releases the slot. */
 	{
 		static const uint8_t ok[] = "{}";
 		Fixture fixture;
@@ -1750,9 +1755,43 @@ static void test_sd_settle_hook_terminals(void)
 		action = call_step(&fixture, 0,
 		                   application_result(&action, &response));
 		assert(action.kind == AIUS_HTTP_ACTION_WRITE);
-		assert(fixture.transaction.last_fault == AIUS_HTTP_FAULT_PROTOCOL);
-		assert(fixture.transaction.last_status == 400);
+		/* Not yet: the borrow is live while the body streams. */
 		assert(g_settle.calls == 0);
+		action = finish_all_writes(&fixture, action);
+		/* Fires once at completion/close, uncommitted -- no next dispatch. */
+		finish_close(&fixture, action);
+		assert(g_settle.calls == 1);
+		assert(!g_settle.last_committed);
+		assert(fixture.transaction.last_fault == AIUS_HTTP_FAULT_NONE);
+	}
+
+	/* Client abort mid-stream still fires the release exactly once: the
+	 * borrow ends when the connection is torn down, lease or no lease. */
+	{
+		static const uint8_t ok[] = "{}";
+		Fixture fixture;
+		init_fixture(&fixture);
+		AiusHttpAction action = feed_request(
+			&fixture, "GET /api/status HTTP/1.0\r\n\r\n");
+		AiusHttpApplicationResponse response =
+			immediate(200, "application/json", ok, sizeof(ok) - 1u);
+		response.sd_settle = settle_probe;
+		response.sd_settle_ctx = &fixture;
+		settle_arm(&fixture, 0u, ok, sizeof(ok) - 1u);
+		action = call_step(&fixture, 0,
+		                   application_result(&action, &response));
+		assert(action.kind == AIUS_HTTP_ACTION_WRITE);
+		/* The peer drops the connection mid-write: request_cleanup runs, the
+		 * transaction tears the connection down (CLOSE), and the borrow's
+		 * release fires once at the recycle. Bounded drive to the terminal. */
+		action = call_step(&fixture, 0,
+		                   io_result(&action, AIUS_IO_CLOSED, 0, 0));
+		for (int i = 0; i < 8 && action.kind != AIUS_HTTP_ACTION_NONE &&
+		                action.kind != AIUS_HTTP_ACTION_ACCEPT; ++i)
+			action = call_step(&fixture, 0,
+			                   io_result(&action, AIUS_IO_PROGRESS, 0, 0));
+		assert(g_settle.calls == 1);
+		assert(!g_settle.last_committed);
 	}
 }
 
@@ -4651,6 +4690,43 @@ static void test_receive_large_body_chunk_boundaries(void)
 	assert(rows == 4);
 }
 
+/* The recorder-data slot param survives the whole transaction path: the parser
+ * threads &slot= into the request the DISPATCH action carries, and the immediate
+ * response it produces drains and closes like any other. A read with no &slot=
+ * arrives with the flag clear (the handler's default-to-active). */
+static void test_recorder_data_slot_parses_through_dispatch(void)
+{
+	Fixture fixture;
+	init_fixture(&fixture);
+	AiusHttpAction action = feed_request(
+		&fixture,
+		"GET /api/recorder/data?offset=0&length=8&generation=2&slot=3"
+		" HTTP/1.0\r\nX-Aius-SD-Auth: token\r\n\r\n");
+	assert(action.kind == AIUS_HTTP_ACTION_DISPATCH);
+	assert(action.request->route == AIUS_HTTP_ROUTE_RECORDER_DATA);
+	assert(action.request->recorder_has_slot);
+	assert(action.request->recorder_slot == 3u);
+	assert(action.request->recorder_generation == 2u);
+
+	static const uint8_t body[16] = { 0 };
+	AiusHttpApplicationResponse response =
+		immediate(200, "application/octet-stream", body, sizeof(body));
+	action = call_step(&fixture, 20, application_result(&action, &response));
+	action = finish_all_writes(&fixture, action);
+	finish_close(&fixture, action);
+	assert(fixture.dispatches == 1);
+
+	/* A defaulted read (no &slot=) reaches dispatch with the flag clear. */
+	init_fixture(&fixture);
+	action = feed_request(
+		&fixture,
+		"GET /api/recorder/data?offset=0&length=8&generation=2"
+		" HTTP/1.0\r\nX-Aius-SD-Auth: token\r\n\r\n");
+	assert(action.kind == AIUS_HTTP_ACTION_DISPATCH);
+	assert(action.request->route == AIUS_HTTP_ROUTE_RECORDER_DATA);
+	assert(!action.request->recorder_has_slot);
+}
+
 int main(void)
 {
 	struct RegistryRow {
@@ -4726,8 +4802,10 @@ int main(void)
 		  test_receive_chunk_boundary_equivalence },
 		{ "receive.large-body-chunk-boundaries",
 		  test_receive_large_body_chunk_boundaries },
+		{ "recorder.data-slot-parses-through-dispatch",
+		  test_recorder_data_slot_parses_through_dispatch },
 	};
-	assert(ARRAY_LENGTH(registry) == 42);
+	assert(ARRAY_LENGTH(registry) == 43);
 	for (size_t i = 0; i < ARRAY_LENGTH(registry); ++i) {
 		assert(registry[i].key[0] != '\0');
 		for (size_t j = 0; j < i; ++j)

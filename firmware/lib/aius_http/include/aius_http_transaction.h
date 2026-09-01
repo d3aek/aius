@@ -61,17 +61,27 @@ typedef struct {
 	 * transaction formats itself never carry it. The value is dispatcher-
 	 * authored, never wire input. */
 	uint32_t cache_max_age_s;
-	/* Optional settle hook for an SD-JOB response (aius-ota-resilience.md
-	 * Phase 4a), the seam that lets a route defer a session mutation to
-	 * the moment its durable write actually lands. Called EXACTLY ONCE:
-	 * committed=true when the job's terminal is COMPLETE (the write is on
-	 * the card; the request body the dispatcher borrowed is still intact,
-	 * because the transaction has not yet recycled the request), false at
-	 * FAILED or CANCELLED, and false if the transaction recycles with the
-	 * job's terminal unseen (a released connection -- the storage drain
-	 * then owns the job's fate and the composition's drain arm owns any
-	 * remaining cleanup). NULL for every response that needs none, and
-	 * forbidden on an IMMEDIATE response, which has no job to settle. */
+	/* Optional completion hook (aius-ota-resilience.md Phase 4a), fired
+	 * EXACTLY ONCE at the response's terminal. Two uses:
+	 *
+	 * On an SD-JOB response it defers a session mutation to the moment its
+	 * durable write actually lands: committed=true when the job's terminal
+	 * is COMPLETE (the write is on the card; the request body the dispatcher
+	 * borrowed is still intact, because the transaction has not yet recycled
+	 * the request), false at FAILED or CANCELLED, and false if the
+	 * transaction recycles with the job's terminal unseen (a released
+	 * connection -- the storage drain then owns the job's fate and the
+	 * composition's drain arm owns any remaining cleanup).
+	 *
+	 * On an IMMEDIATE response it releases a borrow the response handed the
+	 * transport (the recorder data read's pointer into a PSRAM slot, held
+	 * for the streamed body's lifetime): committed is always false (there is
+	 * no durable write), and the single call arrives when the response has
+	 * been sent and the transaction recycles (reset_client/restart_idle),
+	 * or when a mid-send abort/timeout tears the connection down -- either
+	 * way the genuine end of the borrow, with no follow-up request required.
+	 *
+	 * NULL for every response that needs neither. */
 	void (*sd_settle)(void *ctx, bool committed);
 	void *sd_settle_ctx;
 } AiusHttpApplicationResponse;

@@ -5869,8 +5869,10 @@ static bool app_recorder_config(void *, uint32_t mask, float gr_threshold_db,
                                 uint32_t gr_hold_blocks,
                                 uint32_t postroll_blocks);
 static AiusOpticalAppRecorderReadResult app_recorder_read(
-	void *, uint32_t offset_bytes, uint32_t length_bytes,
-	uint32_t generation, const uint8_t **data, uint32_t *length);
+	void *, bool has_slot, uint32_t slot, uint32_t offset_bytes,
+	uint32_t length_bytes, uint32_t generation, const uint8_t **data,
+	uint32_t *length, uint32_t *resolved_slot);
+static void app_recorder_read_release(void *, uint32_t slot);
 
 /* Handed to aius_optical_app_init() by slice S2a. Deliberately external
  * linkage: an internal-linkage table nothing references yet is exactly the
@@ -5908,7 +5910,8 @@ const AiusOpticalApp g_aius_optical_app = {
 	app_recorder_freeze,
 	app_recorder_thaw,
 	app_recorder_config,
-	app_recorder_read
+	app_recorder_read,
+	app_recorder_read_release
 };
 
 /* ------------------------------------------------------------------ */
@@ -6567,25 +6570,51 @@ static FLASHMEM bool app_recorder_config(void *, uint32_t mask,
 }
 
 static FLASHMEM AiusOpticalAppRecorderReadResult app_recorder_read(
-	void *, uint32_t offset_bytes, uint32_t length_bytes,
-	uint32_t generation, const uint8_t **data, uint32_t *length)
+	void *, bool has_slot, uint32_t slot, uint32_t offset_bytes,
+	uint32_t length_bytes, uint32_t generation, const uint8_t **data,
+	uint32_t *length, uint32_t *resolved_slot)
 {
-	/* Reads the ACTIVE slot only, matching the pre-bank single-slot
-	 * contract verbatim -- a `slot` parameter addressing any of the N
-	 * frozen slots is Phase C's still-owed HTTP reshaping. The 400/409
-	 * split the dispatcher serves: state and generation are REFUSED (retry
-	 * after freeze / re-read the header), argument shape is INVALID (fix
-	 * the request). The lib folds both into INVALID_ARG, so the split
-	 * lives here where both facts are readable. */
-	const AiusRecorder *active = &g_recorder_bank.slots[g_recorder_bank.active];
-	if (!g_recorder_present || active->state != AIUS_RECORDER_FROZEN ||
-	    generation != active->freeze_generation)
+	/* Addresses one bank slot: no slot param reads the ACTIVE slot (the
+	 * pre-bank single-slot contract, byte-identical), an explicit slot reads
+	 * that one. The 400/409 split the dispatcher serves: an out-of-range
+	 * slot or a bad offset/length shape is INVALID (fix the request); a slot
+	 * that is not FROZEN or whose generation has moved on is REFUSED (retry
+	 * after freeze / re-read the header). The lib folds an out-of-range slot
+	 * and a bad window both into INVALID_ARG, so the state/generation split
+	 * lives here where both facts are readable.
+	 *
+	 * On READ_OK the response borrows a pointer into slots[slot]'s ring for
+	 * its whole lifetime, so take that slot's read lease now; the dispatcher
+	 * drops it via app_recorder_read_release at the next dispatch (the
+	 * borrow invariant's end-of-life). */
+	const uint32_t target = has_slot ? slot : g_recorder_bank.active;
+	*resolved_slot = target;
+	/* An explicit slot outside the bank is a malformed request (400),
+	 * independent of board state; the default (active) slot is always in
+	 * range by the bank invariant. */
+	if (has_slot && slot >= AIUS_RECORDER_BANK_SLOTS)
+		return AIUS_OPTICAL_APP_RECORDER_READ_INVALID;
+	if (!g_recorder_present)
 		return AIUS_OPTICAL_APP_RECORDER_READ_REFUSED;
-	return aius_recorder_bank_read(&g_recorder_bank, g_recorder_bank.active,
-	                               offset_bytes, length_bytes, generation,
-	                               data, length) == AIUS_OK
-		? AIUS_OPTICAL_APP_RECORDER_READ_OK
-		: AIUS_OPTICAL_APP_RECORDER_READ_INVALID;
+	const AiusRecorder *addressed = &g_recorder_bank.slots[target];
+	if (addressed->state != AIUS_RECORDER_FROZEN ||
+	    generation != addressed->freeze_generation)
+		return AIUS_OPTICAL_APP_RECORDER_READ_REFUSED;
+	if (aius_recorder_bank_read(&g_recorder_bank, target, offset_bytes,
+	                            length_bytes, generation, data,
+	                            length) != AIUS_OK)
+		return AIUS_OPTICAL_APP_RECORDER_READ_INVALID;
+	aius_recorder_bank_read_acquire(&g_recorder_bank, target);
+	return AIUS_OPTICAL_APP_RECORDER_READ_OK;
+}
+
+/* Drops the read lease app_recorder_read took on a READ_OK. Called by the
+ * dispatcher on the dispatch that follows the borrowed response, once its bytes
+ * have certainly drained -- the point a recycled slot is safe again. */
+static FLASHMEM void app_recorder_read_release(void *, uint32_t slot)
+{
+	if (g_recorder_present && slot < AIUS_RECORDER_BANK_SLOTS)
+		aius_recorder_bank_read_release(&g_recorder_bank, slot);
 }
 
 /* Checkpoint 3. service_hw_metrics() is already its own one-sample-per-second

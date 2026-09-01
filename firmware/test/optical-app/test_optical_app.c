@@ -87,6 +87,19 @@ typedef struct {
 	uint32_t last_recorder_offset;
 	uint32_t last_recorder_length;
 	uint32_t last_recorder_generation;
+	/* Slot addressing + read-lease bookkeeping (Phase C). The read records
+	 * what the dispatcher asked for and which slot it resolved to (the fake
+	 * echoes an explicit slot and falls back to recorder_active_slot for a
+	 * defaulted read), and the lease acquire/release land in these counters
+	 * so a test can prove the borrow's lease is taken then dropped. */
+	bool last_recorder_has_slot;
+	uint32_t last_recorder_slot;
+	uint32_t recorder_active_slot;
+	uint32_t recorder_lease_slot;
+	uint32_t recorder_lease_acquires;
+	uint32_t recorder_lease_releases;
+	int32_t recorder_lease_balance;
+	uint32_t last_recorder_release_slot;
 	uint8_t recorder_data[16];
 	uint32_t recorder_data_length;
 
@@ -387,19 +400,38 @@ static bool fake_recorder_config(void *context, uint32_t mask,
 }
 
 static AiusOpticalAppRecorderReadResult fake_recorder_read(
-	void *context, uint32_t offset_bytes, uint32_t length_bytes,
-	uint32_t generation, const uint8_t **data, uint32_t *length)
+	void *context, bool has_slot, uint32_t slot, uint32_t offset_bytes,
+	uint32_t length_bytes, uint32_t generation, const uint8_t **data,
+	uint32_t *length, uint32_t *resolved_slot)
 {
 	Fake *fake = (Fake *)context;
+	uint32_t target = has_slot ? slot : fake->recorder_active_slot;
 	record(fake, "recorder_read");
+	fake->last_recorder_has_slot = has_slot;
+	fake->last_recorder_slot = slot;
 	fake->last_recorder_offset = offset_bytes;
 	fake->last_recorder_length = length_bytes;
 	fake->last_recorder_generation = generation;
+	*resolved_slot = target;
 	if (fake->recorder_read_result == AIUS_OPTICAL_APP_RECORDER_READ_OK) {
 		*data = fake->recorder_data;
 		*length = fake->recorder_data_length;
+		/* The real handler takes the addressed slot's read lease on OK; the
+		 * fake mirrors that so a test can watch acquire/release balance. */
+		fake->recorder_lease_slot = target;
+		fake->recorder_lease_acquires++;
+		fake->recorder_lease_balance++;
 	}
 	return fake->recorder_read_result;
+}
+
+static void fake_recorder_read_release(void *context, uint32_t slot)
+{
+	Fake *fake = (Fake *)context;
+	record(fake, "recorder_read_release");
+	fake->last_recorder_release_slot = slot;
+	fake->recorder_lease_releases++;
+	fake->recorder_lease_balance--;
 }
 
 static bool fake_ota_present(void *context)
@@ -559,6 +591,7 @@ static AiusOpticalApp fake_app(Fake *fake)
 	app.recorder_thaw = fake_recorder_thaw;
 	app.recorder_config = fake_recorder_config;
 	app.recorder_read = fake_recorder_read;
+	app.recorder_read_release = fake_recorder_read_release;
 	return app;
 }
 
@@ -820,7 +853,7 @@ static void test_init_validation(void)
 
 	/* Every callback is required; a hole must be refused at init, never
 	 * discovered as a null call during dispatch. */
-	for (size_t i = 0; i < 27u; ++i) {
+	for (size_t i = 0; i < 28u; ++i) {
 		AiusOpticalApp holed = fake_app(&fake);
 		void **slots[] = {
 			(void **)&holed.sd_ready, (void **)&holed.sd_busy,
@@ -837,9 +870,10 @@ static void test_init_validation(void)
 			(void **)&holed.upload_id, (void **)&holed.write_measure,
 			(void **)&holed.measure_start, (void **)&holed.write_recorder,
 			(void **)&holed.recorder_freeze, (void **)&holed.recorder_thaw,
-			(void **)&holed.recorder_config, (void **)&holed.recorder_read
+			(void **)&holed.recorder_config, (void **)&holed.recorder_read,
+			(void **)&holed.recorder_read_release
 		};
-		assert(ARRAY_LENGTH(slots) == 27u);
+		assert(ARRAY_LENGTH(slots) == 28u);
 		*slots[i] = NULL;
 		assert(!aius_optical_app_init(&dispatcher, &holed, body, sizeof(body)));
 		assert(aius_optical_app_http_dispatch(&dispatcher, &request) == NULL);
@@ -2532,6 +2566,9 @@ static void test_recorder_routes(void)
 		assert(fixture.fake.last_recorder_offset == 4096u);
 		assert(fixture.fake.last_recorder_length == 512u);
 		assert(fixture.fake.last_recorder_generation == 7u);
+		/* No &slot= -- the default read addresses the active slot, so the
+		 * handler is told has_slot is false (its own default resolution). */
+		assert(!fixture.fake.last_recorder_has_slot);
 	}
 	fixture.fake.recorder_read_result =
 		AIUS_OPTICAL_APP_RECORDER_READ_INVALID;
@@ -2545,6 +2582,123 @@ static void test_recorder_routes(void)
 	                                  "GET /api/recorder/data?offset=0&length=8&generation=1",
 	                                  auth, NULL, -1),
 	                 409, "{\"ok\":false,\"error\":\"recorder_state\"}");
+}
+
+/* GET /api/recorder/data slot addressing + read lease (Phase C). The parser
+ * threads an optional &slot=; the dispatcher passes it through, takes the
+ * addressed slot's read lease on a 200, and releases it on the next dispatch --
+ * the borrow invariant's end-of-life for the immediate response. */
+static void test_recorder_slot_addressing_and_lease(void)
+{
+	Fixture fixture;
+	static const char *const auth = "X-Aius-SD-Auth: token\r\n";
+	fixture_init(&fixture);
+	fixture.fake.recorder_active_slot = 1u;
+
+	/* An explicit slot is threaded verbatim: has_slot set, slot echoed. The
+	 * 200 borrows the ring, the addressed slot's lease is taken, and the
+	 * response carries its own completion hook (sd_settle) pointing at the
+	 * dispatcher -- the release path, NOT a next-dispatch. */
+	{
+		const AiusHttpApplicationResponse *response = dispatch_request(
+			&fixture,
+			"GET /api/recorder/data?offset=0&length=8&generation=2&slot=3",
+			auth, NULL, -1);
+		assert(response != NULL);
+		assert(response->kind == AIUS_HTTP_APP_IMMEDIATE);
+		assert(response->status == 200u);
+		assert(strcmp(response->content_type,
+		              "application/octet-stream") == 0);
+		assert(response->body == fixture.fake.recorder_data);
+		assert(fixture.fake.last_recorder_has_slot);
+		assert(fixture.fake.last_recorder_slot == 3u);
+		assert(fixture.fake.recorder_lease_acquires == 1u);
+		assert(fixture.fake.recorder_lease_slot == 3u);
+		assert(fixture.fake.recorder_lease_releases == 0u);
+		assert(fixture.fake.recorder_lease_balance == 1);
+		/* The completion hook is registered on the response itself. */
+		assert(response->sd_settle != NULL);
+		assert(response->sd_settle_ctx == &fixture.dispatcher);
+
+		/* THE GAP-CLOSED PROOF: firing the response's completion hook --
+		 * what the transaction does at send-completion/close -- drops the
+		 * lease to zero WITHOUT any subsequent dispatch. A one-shot client
+		 * that GETs and closes no longer wedges the slot's recycle. */
+		unsigned dispatches_before = fixture.dispatcher.http_dispatches;
+		response->sd_settle(response->sd_settle_ctx, false);
+		assert(fixture.fake.recorder_lease_releases == 1u);
+		assert(fixture.fake.last_recorder_release_slot == 3u);
+		assert(fixture.fake.recorder_lease_balance == 0);
+		assert(fixture.dispatcher.http_dispatches == dispatches_before);
+		/* Exactly once: a second fire (a hook the transaction would have
+		 * nulled) releases nothing further -- no underflow. */
+		response->sd_settle(response->sd_settle_ctx, false);
+		assert(fixture.fake.recorder_lease_releases == 1u);
+		assert(fixture.fake.recorder_lease_balance == 0);
+	}
+
+	/* Rapid back-to-back multi-slot pull (aius-output-jitter.md Phase E):
+	 * each read's lease is released by ITS OWN completion hook before the
+	 * next read's is taken, so the balance never climbs past one and two
+	 * leases never wedge open. */
+	{
+		const AiusHttpApplicationResponse *first = dispatch_request(
+			&fixture,
+			"GET /api/recorder/data?offset=0&length=8&generation=5&slot=0",
+			auth, NULL, -1);
+		assert(first->status == 200u);
+		assert(fixture.fake.recorder_lease_slot == 0u);
+		assert(fixture.fake.recorder_lease_balance == 1);
+		first->sd_settle(first->sd_settle_ctx, false);
+		assert(fixture.fake.last_recorder_release_slot == 0u);
+		assert(fixture.fake.recorder_lease_balance == 0);
+
+		const AiusHttpApplicationResponse *second = dispatch_request(
+			&fixture,
+			"GET /api/recorder/data?offset=0&length=8&generation=6&slot=2",
+			auth, NULL, -1);
+		assert(second->status == 200u);
+		assert(fixture.fake.recorder_lease_slot == 2u);
+		assert(fixture.fake.recorder_lease_balance == 1);
+		second->sd_settle(second->sd_settle_ctx, false);
+		assert(fixture.fake.last_recorder_release_slot == 2u);
+		assert(fixture.fake.recorder_lease_balance == 0);
+		assert(fixture.fake.recorder_lease_acquires == 3u);
+		assert(fixture.fake.recorder_lease_releases == 3u);
+	}
+
+	/* A defaulted read (no &slot=) resolves to the active slot in the handler:
+	 * has_slot is false and the fake echoes recorder_active_slot into the
+	 * lease; its own hook releases it. */
+	{
+		const AiusHttpApplicationResponse *response = dispatch_request(
+			&fixture,
+			"GET /api/recorder/data?offset=0&length=8&generation=9",
+			auth, NULL, -1);
+		assert(response->status == 200u);
+		assert(!fixture.fake.last_recorder_has_slot);
+		assert(fixture.fake.recorder_lease_slot == 1u);
+		assert(fixture.fake.recorder_lease_acquires == 4u);
+		response->sd_settle(response->sd_settle_ctx, false);
+		assert(fixture.fake.last_recorder_release_slot == 1u);
+		assert(fixture.fake.recorder_lease_balance == 0);
+	}
+
+	/* A refused read (stale/evicted generation) is 409, takes NO lease, and
+	 * carries NO completion hook -- so nothing is released and nothing leaks. */
+	fixture.fake.recorder_read_result = AIUS_OPTICAL_APP_RECORDER_READ_REFUSED;
+	{
+		const AiusHttpApplicationResponse *response = dispatch_request(
+			&fixture,
+			"GET /api/recorder/data?offset=0&length=8&generation=1&slot=2",
+			auth, NULL, -1);
+		expect_immediate(response, 409,
+		                 "{\"ok\":false,\"error\":\"recorder_state\"}");
+		assert(response->sd_settle == NULL);
+	}
+	assert(fixture.fake.recorder_lease_acquires == 4u);
+	assert(fixture.fake.recorder_lease_releases == 4u);
+	assert(fixture.fake.recorder_lease_balance == 0);
 }
 
 /* ------------------------------------------------------------------ */
@@ -3486,6 +3640,7 @@ int main(void)
 	RUN_TEST(test_usb_commands);
 	RUN_TEST(test_unreachable_method_defaults);
 	RUN_TEST(test_recorder_routes);
+	RUN_TEST(test_recorder_slot_addressing_and_lease);
 	RUN_TEST(test_ota_absent_gate);
 	RUN_TEST(test_ota_table_registration);
 	RUN_TEST(test_ota_routes_are_authenticated);

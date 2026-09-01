@@ -799,8 +799,13 @@ static FLASHMEM bool application_fields_valid(const AiusHttpApplicationResponse 
 	    (reply->body_length != 0u && reply->body == NULL))
 		return false;
 	if (reply->kind == AIUS_HTTP_APP_IMMEDIATE)
-		return zero_sd_request(&reply->sd_job) &&
-		       reply->sd_settle == NULL && reply->sd_settle_ctx == NULL;
+		/* An immediate response carries no SD job, but it MAY carry a
+		 * completion hook: a borrow it hands out (the recorder data read's
+		 * pointer into a PSRAM slot) is released when the response reaches
+		 * its terminal, exactly the once-at-completion contract the hook
+		 * already gives an SD job. `committed` is always false for one --
+		 * there is no durable write to have landed. */
+		return zero_sd_request(&reply->sd_job);
 	return true;
 }
 
@@ -824,6 +829,12 @@ static FLASHMEM bool accept_application(AiusHttpTransaction *transaction,
 	if (!application_fields_valid(reply))
 		return false;
 	if (reply->kind == AIUS_HTTP_APP_IMMEDIATE) {
+		/* Copied before the cleanup-requested early return so a borrow the
+		 * response handed out is still released when a client that aborted
+		 * mid-dispatch recycles the transaction (settle_sd fires from
+		 * reset_client/restart_idle either way). */
+		transaction->sd_settle = reply->sd_settle;
+		transaction->sd_settle_ctx = reply->sd_settle_ctx;
 		if (transaction->cleanup_requested) {
 			discard_request_slices(transaction);
 			return true;

@@ -319,7 +319,7 @@ overlapping ones.
   here. Host-only — no device flash in this phase.
 - unit: parent-only
 
-### Phase C — HTTP surface + egress tool for multi-slot addressing IN-PROGRESS (status document shipped 2026-08-28; data-route slot addressing owed)
+### Phase C — HTTP surface + egress tool for multi-slot addressing IN-PROGRESS (status document + data-route slot addressing shipped host-only; on-device bench proof gated under Phase D)
 
 - outcome: `GET /api/recorder` reports the bank (active slot index +
   per-slot summaries: state, trigger, generation, valid/gap counts,
@@ -365,17 +365,24 @@ overlapping ones.
   was direct functional verification, not a committed regression (the
   puller has no prior test coverage either). Host/bench-only — no device
   flash.
-- **Still owed:** the `GET /api/recorder/data` `slot` parameter through
-  `aius_http.c`/`aius_optical_app.{h,cpp}`/`optical_main.cpp` plus their
-  suites; the read-lease acquire/release around that route's response
-  lifetime (the correctness fix the adversarial review's must-fix #3
-  actually needs — Phase B built the lease primitives, but nothing calls
-  them yet since the data route doesn't address non-active slots); the
-  rapid back-to-back multi-slot pull proof against the already-registered
-  HTTP-wedge finding (`aius-output-jitter.md` Phase E); on-device (bench):
-  induce 2 real triggers across one boot, pull both frozen slots, confirm
-  two distinct complete WAVs and that the *next* active slot is correctly
-  reported as RECORDING throughout.
+- **Shipped host-only (2026-09-01):** the `GET /api/recorder/data` `slot`
+  parameter through `aius_http.c` / `aius_optical_app.{h,cpp}` /
+  `optical_main.cpp` (default = active slot, response byte-identical);
+  out-of-range slot → 400, stale/evicted generation of the *addressed* slot
+  → 409; `aius-recorder-pull.py --slot` (earlier). The read-lease
+  acquire/release rides the transaction's true completion hook
+  (`http_response.sd_settle`, generalized to immediate responses — a
+  contained `aius_http_transaction.{c,h}` change), releasing exactly once at
+  send-completion / recycle / abort. A Phase-D adversarial review caught the
+  first implementation's next-dispatch release as a silent-recording-stall
+  bug — a one-shot pull that closes without a follow-up request pinned the
+  slot forever once the ring wrapped onto it; the `sd_settle` release fixes
+  it and matches this plan's "release on completion" contract. Host proof:
+  `http`, `http-transaction` (43 rows), `optical-app` (37 rows), `recorder`
+  (27+12), `runtime-target` green; `teensy41-optical` cross-build green.
+- **Still owed (bench, gated under Phase D):** induce 2 real triggers across
+  one boot, pull both frozen slots, confirm two distinct complete WAVs and
+  that the *next* active slot is reported as RECORDING throughout.
 - unit: parent-only
 
 ### Phase D — adversarial review + bench proof, before any flash

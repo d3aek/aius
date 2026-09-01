@@ -177,8 +177,11 @@ static FLASHMEM AiusHttpRoute route_for(const uint8_t *path, size_t length,
 	if (token_equals(path, length, "/api/recorder/config"))
 		return AIUS_HTTP_ROUTE_RECORDER_CONFIG;
 	if (has_prefix(path, length, "/api/recorder/data?offset=")) {
-		/* Fixed parameter order, all three required -- the events
-		 * cursor's rigidity: a bounded parser, not a query engine. */
+		/* Fixed parameter order: offset, length, generation all required,
+		 * an optional &slot=<n> last -- the events cursor's rigidity: a
+		 * bounded parser, not a query engine. Absent slot resolves to the
+		 * active slot in the handler, so an unmodified single-shot client's
+		 * request shape is byte-for-byte unchanged. */
 		const uint8_t *value = path + strlen("/api/recorder/data?offset=");
 		size_t remaining = length - strlen("/api/recorder/data?offset=");
 		const uint8_t *amp = memchr(value, '&', remaining);
@@ -201,9 +204,25 @@ static FLASHMEM AiusHttpRoute route_for(const uint8_t *path, size_t length,
 			return AIUS_HTTP_ROUTE_UNKNOWN;
 		value = amp + strlen("&generation=");
 		remaining -= strlen("&generation=");
-		return decimal_u32(value, remaining,
-		                   &request->recorder_generation) ?
-			AIUS_HTTP_ROUTE_RECORDER_DATA : AIUS_HTTP_ROUTE_UNKNOWN;
+		/* generation runs to the next '&' (a slot param follows) or to the
+		 * end (no slot -- default to the active slot). */
+		amp = memchr(value, '&', remaining);
+		if (amp == NULL)
+			return decimal_u32(value, remaining,
+			                   &request->recorder_generation) ?
+				AIUS_HTTP_ROUTE_RECORDER_DATA : AIUS_HTTP_ROUTE_UNKNOWN;
+		if (!decimal_u32(value, (size_t)(amp - value),
+		                 &request->recorder_generation))
+			return AIUS_HTTP_ROUTE_UNKNOWN;
+		remaining -= (size_t)(amp - value);
+		if (!has_prefix(amp, remaining, "&slot="))
+			return AIUS_HTTP_ROUTE_UNKNOWN;
+		value = amp + strlen("&slot=");
+		remaining -= strlen("&slot=");
+		if (!decimal_u32(value, remaining, &request->recorder_slot))
+			return AIUS_HTTP_ROUTE_UNKNOWN;
+		request->recorder_has_slot = true;
+		return AIUS_HTTP_ROUTE_RECORDER_DATA;
 	}
 	if (token_equals(path, length, "/api/sd"))
 		return AIUS_HTTP_ROUTE_SD_STATUS;

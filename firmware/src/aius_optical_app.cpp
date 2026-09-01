@@ -732,6 +732,26 @@ static FLASHMEM bool recorder_config_body(const AiusHttpRequest *request,
 	return true;
 }
 
+/* The transaction's completion hook for a recorder-data read (registered on the
+ * READ_OK immediate response). The 200 borrows a pointer into one bank slot's
+ * PSRAM ring for the streamed body's lifetime; this fires EXACTLY ONCE when the
+ * response has drained and the transaction recycles -- or when a mid-stream
+ * abort tears the connection down -- and drops that slot's read lease. That is
+ * the true end of the borrow, reached with no follow-up request, which is what a
+ * one-shot client (a single curl / pull-tool GET that closes after its 200)
+ * needs: the round-robin must be able to recycle the slot again. `committed` is
+ * meaningless for an immediate response and ignored. */
+static FLASHMEM void recorder_read_settle(void *ctx, bool committed)
+{
+	AiusOpticalAppDispatcher *dispatcher = (AiusOpticalAppDispatcher *)ctx;
+	(void)committed;
+	if (dispatcher == NULL || !dispatcher->recorder_lease_active)
+		return;
+	dispatcher->recorder_lease_active = false;
+	dispatcher->app.recorder_read_release(dispatcher->app.context,
+	                                      dispatcher->recorder_lease_slot);
+}
+
 static FLASHMEM const AiusHttpApplicationResponse *dispatch_recorder(
 	AiusOpticalAppDispatcher *dispatcher, const AiusHttpRequest *request)
 {
@@ -773,19 +793,33 @@ static FLASHMEM const AiusHttpApplicationResponse *dispatch_recorder(
 	case AIUS_HTTP_ROUTE_RECORDER_DATA: {
 		const uint8_t *data = NULL;
 		uint32_t length = 0u;
+		uint32_t resolved_slot = 0u;
 		/* The 200 borrows PSRAM directly: stable because data resolves
 		 * only in FROZEN and a thaw is necessarily a later transaction
 		 * (single-transaction model) -- no copy, no SD job, and
 		 * deliberately NO app_sd_busy test (the refill owns ~61 % of
 		 * epochs during replay; an sd_busy gate would make the
-		 * recorder unusable exactly when it matters). */
-		switch (app->recorder_read(app->context, request->recorder_offset,
+		 * recorder unusable exactly when it matters). READ_OK takes the
+		 * addressed slot's read lease (in recorder_read); the response's
+		 * completion hook (recorder_read_settle) drops it when the borrow
+		 * ends -- at genuine completion/close, no follow-up request
+		 * required. */
+		switch (app->recorder_read(app->context, request->recorder_has_slot,
+		                           request->recorder_slot,
+		                           request->recorder_offset,
 		                           request->recorder_length,
 		                           request->recorder_generation, &data,
-		                           &length)) {
-		case AIUS_OPTICAL_APP_RECORDER_READ_OK:
-			return http_immediate(dispatcher, 200, kContentBinary,
-			                      data, length);
+		                           &length, &resolved_slot)) {
+		case AIUS_OPTICAL_APP_RECORDER_READ_OK: {
+			const AiusHttpApplicationResponse *response =
+				http_immediate(dispatcher, 200, kContentBinary, data,
+				               length);
+			dispatcher->recorder_lease_active = true;
+			dispatcher->recorder_lease_slot = resolved_slot;
+			dispatcher->http_response.sd_settle = recorder_read_settle;
+			dispatcher->http_response.sd_settle_ctx = dispatcher;
+			return response;
+		}
 		case AIUS_OPTICAL_APP_RECORDER_READ_INVALID:
 			return http_error(dispatcher, 400, "recorder_read");
 		case AIUS_OPTICAL_APP_RECORDER_READ_REFUSED:
@@ -1879,7 +1913,7 @@ static FLASHMEM bool app_complete(const AiusOpticalApp *app)
 	       app->write_measure != NULL && app->measure_start != NULL &&
 	       app->write_recorder != NULL && app->recorder_freeze != NULL &&
 	       app->recorder_thaw != NULL && app->recorder_config != NULL &&
-	       app->recorder_read != NULL;
+	       app->recorder_read != NULL && app->recorder_read_release != NULL;
 }
 
 FLASHMEM bool aius_optical_app_init(AiusOpticalAppDispatcher *dispatcher,

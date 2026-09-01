@@ -269,7 +269,7 @@ typedef struct {
 	                      const uint32_t *probes_hz, size_t probe_count);
 
 	/* The PSRAM flight recorder, appended per the append-only rule; all
-	 * five are REQUIRED (app_complete refuses a table without them).
+	 * six are REQUIRED (app_complete refuses a table without them).
 	 * write_recorder serializes status + the frozen header.
 	 * recorder_freeze / recorder_thaw / recorder_config return false when
 	 * the state machine refuses (absent board, wrong state, capture in
@@ -278,7 +278,20 @@ typedef struct {
 	 * chunk into a pointer whose storage (the PSRAM ring) outlives the
 	 * response borrow: the ring is only readable FROZEN, and a thaw is
 	 * necessarily a later transaction under the single-transaction HTTP
-	 * model. */
+	 * model.
+	 *
+	 * recorder_read addresses one bank slot: has_slot false reads the
+	 * active slot (the pre-bank single-shot contract), true reads
+	 * slots[slot] (out-of-range slot -> READ_INVALID -> 400). On READ_OK it
+	 * writes the resolved slot index to *resolved_slot AND takes that
+	 * slot's read lease (aius_recorder_bank_read_acquire), so the FROZEN
+	 * slot cannot be recycled out from under the borrowed pointer while the
+	 * response streams. The lease is dropped by recorder_read_release,
+	 * which the dispatcher calls on the NEXT dispatch -- the borrow
+	 * invariant's end-of-life for every immediate response (see the
+	 * dispatcher struct's borrow note). resolved_slot / the acquire are set
+	 * only on READ_OK; the other two verdicts borrow nothing and take no
+	 * lease. */
 	size_t (*write_recorder)(void *context, uint8_t *body, size_t capacity);
 	bool (*recorder_freeze)(void *context);
 	bool (*recorder_thaw)(void *context);
@@ -286,8 +299,11 @@ typedef struct {
 	                        float gr_threshold_db, uint32_t gr_hold_blocks,
 	                        uint32_t postroll_blocks);
 	AiusOpticalAppRecorderReadResult (*recorder_read)(
-		void *context, uint32_t offset_bytes, uint32_t length_bytes,
-		uint32_t generation, const uint8_t **data, uint32_t *length);
+		void *context, bool has_slot, uint32_t slot,
+		uint32_t offset_bytes, uint32_t length_bytes,
+		uint32_t generation, const uint8_t **data, uint32_t *length,
+		uint32_t *resolved_slot);
+	void (*recorder_read_release)(void *context, uint32_t slot);
 } AiusOpticalApp;
 
 /* --------------------------------------------------------------------------
@@ -634,6 +650,19 @@ typedef struct {
 	uint32_t ota_pending_offset;
 	const uint8_t *ota_pending_data;
 	size_t ota_pending_length;
+	/* Read lease outstanding on a recorder-data response. Set on a READ_OK
+	 * from recorder_read, whose 200 borrows a pointer into slots[slot]'s
+	 * PSRAM ring for the streamed body's lifetime. The response carries a
+	 * completion hook (sd_settle = recorder_read_settle, ctx = this
+	 * dispatcher) that the transaction fires EXACTLY ONCE when the borrow
+	 * ends -- the response has drained and the connection recycled, or a
+	 * mid-stream abort tore it down -- at which point recorder_read_release
+	 * drops the lease. `recorder_lease_slot` carries the borrowed slot to
+	 * that hook (only one read is ever in flight -- the transaction is
+	 * single-shot per request); `recorder_lease_active` guards it so the
+	 * hook releases at most once and never when no borrow is live. */
+	bool recorder_lease_active;
+	uint32_t recorder_lease_slot;
 	bool valid;
 } AiusOpticalAppDispatcher;
 
