@@ -32,6 +32,26 @@ BENCH_SPEC = importlib.util.spec_from_file_location(
 BENCH_TEST = importlib.util.module_from_spec(BENCH_SPEC)
 BENCH_SPEC.loader.exec_module(BENCH_TEST)
 
+REC_MODULE = ROOT / "tools" / "rate_gate_capture" / "recorder_transitions.py"
+REC_SPEC = importlib.util.spec_from_file_location(
+    "recorder_transitions", REC_MODULE)
+REC = importlib.util.module_from_spec(REC_SPEC)
+REC_SPEC.loader.exec_module(REC)
+
+
+def output_segment(rate, frames, freq=997.0, amp=8000):
+    """A 997 Hz tone as the board would OUTPUT it at `rate` -- i.e. sampled
+    at `rate`. Read later at the reference rate, a non-48k segment shows the
+    pitch-shifted frequency the recorder-based detector keys on."""
+    n = np.arange(frames, dtype=np.float64)
+    mono = np.rint(amp * np.sin(2 * math.pi * freq * n / rate))
+    return np.repeat(mono.astype(np.int32)[:, None], 2, axis=1)
+
+
+def output_stream(segments):
+    return np.concatenate([output_segment(rate, frames)
+                           for rate, frames in segments], axis=0)
+
 
 def tone(frames, capture_rate, hz=CAP.TONE_HZ, amp=8000):
     n = np.arange(frames, dtype=np.float64)
@@ -251,6 +271,40 @@ class EvidenceIntegrationTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("audio-rate",
                       {failure["code"] for failure in result["failures"]})
+
+
+class RecorderTransitionsReducerTests(unittest.TestCase):
+    def test_clean_round_trip_has_no_stale_frames(self):
+        stream = output_stream([(48000, 40000), (44100, 40000), (48000, 40000)])
+        runs = REC.output_rate_runs(REC.classify_output_rates(stream[:, 0]))
+        rates = [rate for rate, _frames in runs]
+        self.assertEqual(rates, [48000, 44100, 48000])
+        self.assertEqual(REC.stale_old_rate_frames(runs), 0)
+
+    def test_single_transition_slot_is_clean(self):
+        # Mirrors the live slot-0 capture: 44.1 kHz then 48 kHz, one boundary.
+        stream = output_stream([(44100, 36864), (48000, 40960)])
+        result = REC.reduce_recorder_transitions([stream])
+        self.assertEqual(result["external"]["old_rate_output_frames"], 0)
+
+    def test_old_rate_blip_inside_a_phase_is_counted(self):
+        # A 48 kHz (old-rate) blip leaking into the 44.1 kHz phase.
+        stream = output_stream([
+            (48000, 40000), (44100, 20000), (48000, 3072),
+            (44100, 20000), (48000, 40000)])
+        runs = REC.output_rate_runs(REC.classify_output_rates(stream[:, 0]))
+        self.assertGreater(REC.stale_old_rate_frames(runs), 0)
+
+    def test_stale_metric_ignores_first_and_last_runs(self):
+        # Endpoints are legitimate phases regardless of length.
+        runs = [(48000, 512), (44100, 40000), (48000, 512)]
+        self.assertEqual(REC.stale_old_rate_frames(runs), 0)
+
+    def test_reduce_sums_across_slots(self):
+        clean = output_stream([(44100, 36864), (48000, 40960)])
+        result = REC.reduce_recorder_transitions([clean, clean])
+        self.assertEqual(result["external"]["old_rate_output_frames"], 0)
+        self.assertEqual(len(result["evidence"]["slots"]), 2)
 
 
 if __name__ == "__main__":

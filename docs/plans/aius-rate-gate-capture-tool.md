@@ -125,25 +125,24 @@ opens, or arecord gets an immediate read I/O error (fixed in `7baa909`).
   genuinely not meant to disturb the output (then gate 7's external fields
   should be redefined or dropped), or a subtler artifact signature must be
   specified for the tool to look for.
-- **Gate 4 (`transitions`): blocked on redesign, not run.** Three
-  structural issues surfaced, each needing an owner decision:
-  1. **`old_rate_output_frames` detection is incompatible with the U24
-     capture path.** The tone-frequency-shift model assumes the captured
-     tone briefly holds the old effective frequency; but the U24 capture
-     clock locks to the incoming carrier (fixed-rate `hw:0,0` arecord
-     errors when the carrier rate changes) and `plughw` resampling would
-     preserve 997 Hz throughout, erasing the signature. Gate 7 also showed
-     the board follows rate changes cleanly, so stale-rate output likely
-     produces no tone artifact at all. This needs a different fiducial —
-     most likely the board flight recorder (`/api/recorder`), the option
-     deferred at hard part 1.
-  2. **The loss→replay leg deauthorizes `3-1.1` — the U24 itself**, i.e.
-     the capture device. A single arecord cannot span the replay leg; the
-     status-evidence stream (HTTP, board-side) must outlive the audio
-     capture, so the tool's current arecord-lifetime == poll-lifetime
-     coupling must be split for gate 4.
-  3. **Mid-run carrier-rate changes** (48→44.1→48) need multi-rate stimulus
-     orchestration (aplay stop/start) the tool does not yet drive.
+- **Gate 4 (`transitions`): `old_rate_output_frames` SOLVED via the flight
+  recorder; full bench PASS pending the loss→replay leg.** The U24 ALSA path
+  cannot measure it (capture clock locks to the incoming carrier — fixed-rate
+  arecord errors on a rate change; `plughw` resampling erases the tone
+  signature). `recorder_transitions.py` instead reads the board's own OUTPUT
+  frames from `/api/recorder` (staged without resampling, per-slot rate
+  stamp): read at a 48 kHz reference, a 44.1 kHz-output segment shows 1085 Hz
+  (997 × 48000/44100, calibrated live) and a 48 kHz segment 997 Hz, so the
+  output-rate timeline is recoverable and stale old-rate frames show as an
+  out-of-place segment. **Live result 2026-09-01:** output-rate runs
+  `[48000, 44100, 48000]`, `old_rate_output_frames = 0` — the board
+  transitions cleanly (corroborated by the slot's own `rate_changes`). The
+  reducer is unit-tested; the tool drives 48→44.1→48 via aplay while polling
+  status/events (background thread) for the evidence file. The remaining
+  piece for a bench-`pass` verdict is the loss→replay leg: USB-deauth `3-1.1`
+  (the U24, which the recorder path does NOT depend on — it is board-internal)
+  to induce carrier loss, then `POST /api/replays/start`, with status polling
+  spanning it over the network. Interactive deauth approval required.
 
 ## The tool's job
 
@@ -305,8 +304,9 @@ is producing that JSON faithfully.
 - Each of gates 2, 4, 7 reaches a `pass`/`fail` verdict end-to-end on the live
   board with the produced JSON (a real verdict, not a tool error), on one exact
   committed image with `--expect-build`. **Gate 2 done (pass); gate 7 done
-  (fail — real verdict, contract finding above); gate 4 blocked on the
-  redesign items above.**
+  (fail — real verdict, contract finding above); gate 4 external field
+  (`old_rate_output_frames = 0`) measured live via the flight recorder — a
+  full `pass` verdict still needs the loss→replay leg driven.**
 - The transitions descope lands with its tests green in the same change set.
   **Done** (aius `93610f6`).
 
@@ -315,9 +315,10 @@ is producing that JSON faithfully.
 - **Gate 7 contract.** Decide whether the board's invalid windows are meant to
   be externally observable at all. If not, redefine or drop gate 7's external
   fields; if so, specify the artifact signature the tool should detect.
-- **Gate 4 `old_rate_output_frames` fiducial.** Choose the detection reference
-  given the U24 capture path erases the tone-frequency signature — the flight
-  recorder (`/api/recorder`) is the leading candidate.
-- **Gate 4 capture staging.** Split status polling from audio capture so the
-  evidence stream spans the U24-down replay leg, and add multi-rate stimulus
-  orchestration for the 48→44.1→48 transitions.
+- **Gate 4 `old_rate_output_frames` fiducial — RESOLVED.** The flight
+  recorder is the reference (`recorder_transitions.py`); measured 0 live.
+- **Gate 4 full verdict.** Drive the loss→replay leg (USB-deauth `3-1.1`
+  then `POST /api/replays/start`) so the status evidence carries the 4th
+  phase the analyzer's expected sequence (`…→replay`) requires. Status
+  polling already spans it (network-side, independent of the U24); only the
+  interactive deauth step and the replay POST remain to wire in.

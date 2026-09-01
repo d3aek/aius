@@ -40,10 +40,33 @@ the gate reducers and their JSON schema are new.
   output-vs-capture clock-drift error over a 600 s run). `ALIGNMENT_MARGIN_S`
   bounds the padding.
 
-`old_rate_output_frames` uses a provisional tone-frequency-shift detection
-model that needs live calibration against the board to confirm the stale-rate
-signature (the U24 capture path's rate-lock behaviour is not yet characterised
-off-board).
+## Gate 4 — flight-recorder capture
+
+`old_rate_output_frames` cannot be measured through the U24 ALSA path: the
+capture clock locks to the incoming carrier (a fixed-rate `hw:0,0` arecord
+errors when the carrier rate changes) and `plughw` resampling would preserve
+997 Hz across every rate, erasing the signature. `recorder_transitions.py`
+uses the board's flight recorder (`/api/recorder`) instead — it stages the
+board's own OUTPUT frames (s32le/24-bit) into a PSRAM ring WITHOUT
+resampling, so reading that flat stream at a fixed 48 kHz reference makes the
+output rate visible as the tone frequency: a 997 Hz tone output at 44.1 kHz
+reads 997 × 48000/44100 = 1085 Hz (calibrated live), at 48 kHz reads 997 Hz.
+The reducer classifies each block's output rate and counts stale old-rate
+frames trailing a switch; a clean board yields 0.
+
+```bash
+python3 recorder_transitions.py \
+    --tone-48 /tmp/tone-997-48000.wav --tone-44 /tmp/tone-997-44100.wav \
+    --output <outdir> --expect-build fc674c60f06c+teensy41-optical
+```
+
+It drives 48→44.1→48 via aplay while polling `/api/status` and `/api/events`
+in a background thread (for `evidence.jsonl`), operator-freezes the recorder
+(the captured slot is the one just behind the advanced active pointer), reads
+it, and reduces. Live result 2026-09-01: output-rate runs
+`[48000, 44100, 48000]`, `old_rate_output_frames = 0` — the board transitions
+cleanly. A full bench PASS additionally needs the loss→replay leg (USB
+deauth), which the status poller spans over the network.
 
 ## Usage
 
