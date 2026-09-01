@@ -417,10 +417,34 @@ def events_url(status_url: str) -> str:
     return status_url.rsplit("/api/status", 1)[0] + "/api/events"
 
 
+def wait_for_rate(status_url: str, auth: str | None, rate: int,
+                  timeout_s: float) -> bool:
+    """Poll until the board's carrier is locked at `rate` (its output S/PDIF
+    then matches the arecord rate, so the U24 capture clock can lock). The
+    board follows the U24 TX with latency, so opening arecord before this
+    holds gives an immediate read I/O error."""
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        try:
+            _raw, status = http_get(status_url, auth)
+        except RuntimeError:
+            time.sleep(0.5)
+            continue
+        clock = status["clock"]
+        if clock.get("carrier_locked") and clock.get("stream_rate_hz") == rate:
+            return True
+        time.sleep(0.5)
+    return False
+
+
 def capture_and_poll(args) -> tuple[Path, list[dict]]:
-    """Drive arecord + the scenario stimulus, and poll /api/status and
+    """Drive the scenario stimulus + arecord and poll /api/status and
     /api/events in lockstep. Each poll keeps the raw JSON text so the run
-    can be written back as a bench-format evidence file."""
+    can be written back as a bench-format evidence file.
+
+    Order matters for the board->U24 loop: start aplay first so the board
+    follows to the target rate, wait for its carrier to lock there, and only
+    then open arecord (whose capture clock locks to the board's output)."""
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
     capture_path = output / "capture.wav"
@@ -430,19 +454,25 @@ def capture_and_poll(args) -> tuple[Path, list[dict]]:
     playback = None
     polls: list[dict] = []
     events_base = events_url(args.status_url)
+    lock_budget_s = 20.0
     started = time.monotonic()
     try:
+        if args.tone:
+            playback = subprocess.Popen([
+                "aplay", "-D", args.device,
+                "-d", str(int(args.seconds + lock_budget_s + 5)),
+                str(args.tone),
+            ], stdout=playback_log, stderr=subprocess.STDOUT)
+            if not wait_for_rate(args.status_url, args.auth,
+                                 args.follow_rate, lock_budget_s):
+                raise RuntimeError(
+                    f"board did not lock to {args.follow_rate} Hz within "
+                    f"{lock_budget_s:.0f}s of stimulus start")
         capture = subprocess.Popen([
             "arecord", "-D", args.device, "-f", "S16_LE",
             "-r", str(args.rate), "-c", str(CHANNELS),
             "-d", str(args.seconds), str(capture_path),
         ], stdout=capture_log, stderr=subprocess.STDOUT)
-        time.sleep(0.1)
-        if args.tone:
-            playback = subprocess.Popen([
-                "aplay", "-D", args.device, "-d", str(args.seconds),
-                str(args.tone),
-            ], stdout=playback_log, stderr=subprocess.STDOUT)
         first_raw, first = http_get(args.status_url, args.auth)
         cursor = int(first["event_sequence"])
         while capture.poll() is None:
@@ -459,8 +489,8 @@ def capture_and_poll(args) -> tuple[Path, list[dict]]:
             })
             time.sleep(1.0)
         capture.wait(timeout=15)
-        if playback is not None:
-            playback.wait(timeout=15)
+        # aplay is sized to outlast the capture; stop it in finally rather
+        # than waiting out its remaining stimulus tail.
     finally:
         stop_process(capture)
         stop_process(playback)
@@ -521,6 +551,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="arecord capture rate")
     parser.add_argument("--expected-rate", type=int,
                         help="gate 2 declared S/PDIF rate (default: --rate)")
+    parser.add_argument("--follow-rate", type=int,
+                        help="rate the board must lock to before arecord "
+                             "opens (default: --rate)")
     parser.add_argument("--seconds", type=int, default=130)
     parser.add_argument("--status-url", default="http://192.0.2.66/api/status")
     parser.add_argument("--auth")
@@ -533,6 +566,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.expected_rate is None:
         args.expected_rate = args.rate
+    if args.follow_rate is None:
+        args.follow_rate = args.rate
 
     capture_path, polls = capture_and_poll(args)
     samples, geometry = read_wav(capture_path)
