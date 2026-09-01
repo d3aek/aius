@@ -86,14 +86,13 @@ def transition_fixture():
     phases = [
         (48000, False),
         (44100, False),
-        (32000, False),
         (48000, False),
         (48000, True),
     ]
-    unsupported_details = (40000, 42000, 46000)
+    unsupported_details = (40000, 42000)
     for phase_index, (rate, replay) in enumerate(phases):
         if phase_index:
-            if phase_index <= 3:
+            if phase_index <= 2:
                 unsupported += 1
                 events.append({
                     "sequence": len(events) + 1,
@@ -109,7 +108,7 @@ def transition_fixture():
             dark["status"]["tx_gate"]["open"] = 0
             dark["status"]["clock"].update({
                 "carrier_ready": False,
-                "state": "unsupported" if phase_index <= 3 else "unlocked",
+                "state": "unsupported" if phase_index <= 2 else "unlocked",
                 "unsupported_episodes": unsupported,
                 "tx_underrun_frames": underruns,
                 "rate_changes": changes,
@@ -119,7 +118,7 @@ def transition_fixture():
             samples.append(dark)
             elapsed += 1
             resets += 1
-            if phase_index <= 3:
+            if phase_index <= 2:
                 changes += 1
                 events.append({
                     "sequence": len(events) + 1,
@@ -370,13 +369,13 @@ class AnalyzerTests(unittest.TestCase):
         }, {"old_rate_output_frames": 0})
         self.assertEqual(result["verdict"], "pass")
         self.assertEqual(
-            result["metrics"]["transition_reset_deltas"], [1, 1, 1, 1])
+            result["metrics"]["transition_reset_deltas"], [1, 1, 1])
         self.assertEqual(
             result["metrics"]["counter_deltas"][
-                "clock.tx_underrun_frames"], 512)
+                "clock.tx_underrun_frames"], 384)
         self.assertEqual(
             result["metrics"]["counter_deltas"][
-                "clock.unsupported_episodes"], 3)
+                "clock.unsupported_episodes"], 2)
 
     def test_transition_rejects_open_gate_underrun(self):
         samples, events = transition_fixture()

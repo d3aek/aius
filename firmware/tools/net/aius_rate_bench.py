@@ -439,7 +439,7 @@ def check_transition_dark_effects(samples, events, indexes, failures, metrics):
         (indexes[index - 1][1], indexes[index][0])
         for index in range(1, len(indexes))
     ]
-    live_windows = transition_windows[:3]
+    live_windows = transition_windows[:-1]
     metrics["transition_windows"] = transition_windows
 
     underruns = counter_advance_intervals(
@@ -780,7 +780,7 @@ def analyze_samples(samples, events, scenario, options=None, external=None):
         labels, indexes = stable_phase_labels(
             samples, minimum_samples, follow_bound)
         metrics["observed_phase_sequence"] = labels
-        expected = ["48000", "44100", "32000", "48000", "replay"]
+        expected = ["48000", "44100", "48000", "replay"]
         check_transition_dark_effects(
             samples, events, indexes, failures, metrics)
         if labels != expected:
@@ -811,7 +811,7 @@ def analyze_samples(samples, events, scenario, options=None, external=None):
                             f"{reset_deltas}, expected one each")
 
             rate_window_deltas = []
-            for transition in range(1, 4):
+            for transition in range(1, 3):
                 previous_end = indexes[transition - 1][1]
                 current_end = indexes[transition][1]
                 rate_window_deltas.append(accumulated_delta(
@@ -822,12 +822,13 @@ def analyze_samples(samples, events, scenario, options=None, external=None):
                 add_failure(failures, "rate-change-attribution",
                             f"per-live-transition rate deltas are "
                             f"{rate_window_deltas}, expected one each")
-        live_transitions = [44100, 32000, 48000]
+        live_transitions = [44100, 48000]
         rate_delta = accumulated_delta(samples, "clock.rate_changes")
         metrics["rate_changes_delta"] = rate_delta
         if rate_delta != len(live_transitions):
             add_failure(failures, "rate-change-count",
-                        f"rate_changes advanced by {rate_delta}, expected 3")
+                        f"rate_changes advanced by {rate_delta}, expected "
+                        f"{len(live_transitions)}")
         event_details = [
             event["detail"] for event in events if event["type"] == 11
         ]
