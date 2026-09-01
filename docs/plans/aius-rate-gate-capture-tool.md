@@ -91,11 +91,59 @@ The off-board build is done and unit-tested; only the live-board integration
   capture evidence).
 - **Hard part 1 resolved (design decision 2026-09-01).** Bounded local alignment
   is the gate-7 correlation fiducial (implemented, unit-tested).
-- **Remaining: step 6 live integration** — run each gate end-to-end on the
-  live board and confirm the bench reaches a real verdict. Owner authorised
-  running all gates; needs the board, the fibre confirmation, and USB-deauth
-  permission approvals for gate 4's replay leg.
-  `old_rate_output_frames`'s detection model also needs live calibration.
+- **Live integration (step 6) — gate 2 PASS, gate 7 FAIL (real verdict),
+  gate 4 blocked on redesign.** Owner authorised running all gates.
+
+## Live-run results — 2026-09-01
+
+Full end-to-end runs on image `fc674c60f06c+teensy41-optical` via
+`capture.py … --expect-build fc674c60f06c+teensy41-optical` then
+`aius_rate_bench.py analyze <scenario> --evidence <dir>/evidence.jsonl`
+(the tool emits a bench-format `evidence.jsonl`, so one capture owns the
+board and `analyze` is offline). A loop-order fix was required first: for
+the board→U24 loop the capture clock locks to the board's output, so aplay
+must start and the board must lock to the target rate **before** arecord
+opens, or arecord gets an immediate read I/O error (fixed in `7baa909`).
+
+- **Gate 2 (`pcm-120s`, 44.1 kHz): PASS.** `audio_rate_hz` 44100,
+  `continuous_output` true; measured tone 997.0003 Hz, zero dropouts over
+  129.4 s / 129 samples, all counter deltas 0, follow error 444 mHz. Real
+  pass on the exact committed image — gate-2 acceptance met.
+- **Gate 7 (`waveform`, 48 kHz): FAIL (real verdict, not a tool error).**
+  The board reported **12 trim updates and 12 invalid windows** in status,
+  but the U24 capture observed **no** zero-runs, discontinuities, or
+  correlations (`invalid_intervals_frames: []`), so the gate tripped
+  `external-observation` ("must be a non-empty integer array"). This is a
+  genuine finding: **the board absorbs its invalid/trim events cleanly and
+  emits no externally observable output artifact.** Gate 7's external
+  contract assumes each invalid window manifests as a muted 512-frame PCM
+  block; that premise does not hold for this board's clean rate-following.
+  The discontinuity detector is amplitude-adaptive and would catch a
+  512-frame held/muted block (two large edge jumps) — it saw none, so the
+  output really is continuous through the invalid windows. **Needs an owner
+  ruling on the gate-7 contract**: either the board's invalid windows are
+  genuinely not meant to disturb the output (then gate 7's external fields
+  should be redefined or dropped), or a subtler artifact signature must be
+  specified for the tool to look for.
+- **Gate 4 (`transitions`): blocked on redesign, not run.** Three
+  structural issues surfaced, each needing an owner decision:
+  1. **`old_rate_output_frames` detection is incompatible with the U24
+     capture path.** The tone-frequency-shift model assumes the captured
+     tone briefly holds the old effective frequency; but the U24 capture
+     clock locks to the incoming carrier (fixed-rate `hw:0,0` arecord
+     errors when the carrier rate changes) and `plughw` resampling would
+     preserve 997 Hz throughout, erasing the signature. Gate 7 also showed
+     the board follows rate changes cleanly, so stale-rate output likely
+     produces no tone artifact at all. This needs a different fiducial —
+     most likely the board flight recorder (`/api/recorder`), the option
+     deferred at hard part 1.
+  2. **The loss→replay leg deauthorizes `3-1.1` — the U24 itself**, i.e.
+     the capture device. A single arecord cannot span the replay leg; the
+     status-evidence stream (HTTP, board-side) must outlive the audio
+     capture, so the tool's current arecord-lifetime == poll-lifetime
+     coupling must be split for gate 4.
+  3. **Mid-run carrier-rate changes** (48→44.1→48) need multi-rate stimulus
+     orchestration (aplay stop/start) the tool does not yet drive.
 
 ## The tool's job
 
@@ -252,7 +300,24 @@ is producing that JSON faithfully.
 ## Acceptance for this tool
 
 - The three reducer field-groups are unit-tested against synthetic WAVs.
+  **Done** — 14 tests in `firmware/test/rate-gate-capture/`, plus two that
+  round-trip a synthetic `evidence.jsonl` through the real bench analyzer.
 - Each of gates 2, 4, 7 reaches a `pass`/`fail` verdict end-to-end on the live
   board with the produced JSON (a real verdict, not a tool error), on one exact
-  committed image with `--expect-build`.
+  committed image with `--expect-build`. **Gate 2 done (pass); gate 7 done
+  (fail — real verdict, contract finding above); gate 4 blocked on the
+  redesign items above.**
 - The transitions descope lands with its tests green in the same change set.
+  **Done** (aius `93610f6`).
+
+## Follow-on work (owner input needed)
+
+- **Gate 7 contract.** Decide whether the board's invalid windows are meant to
+  be externally observable at all. If not, redefine or drop gate 7's external
+  fields; if so, specify the artifact signature the tool should detect.
+- **Gate 4 `old_rate_output_frames` fiducial.** Choose the detection reference
+  given the U24 capture path erases the tone-frequency signature — the flight
+  recorder (`/api/recorder`) is the leading candidate.
+- **Gate 4 capture staging.** Split status polling from audio capture so the
+  evidence stream spans the U24-down replay leg, and add multi-rate stimulus
+  orchestration for the 48→44.1→48 transitions.
