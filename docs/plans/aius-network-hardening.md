@@ -930,11 +930,16 @@ table.
     would race that writer, so it stays the applied value. The staged fields are
     written only by the HTTP thread and fully populated before the volatile flag
     is armed, so the reporter's read takes no ISR race. Builds clean (+32 B
-    OCRAM). NOTE: the carrier-less condition could not be reproduced on the bench
-    (the U24 free-runs the optical carrier and USB-deauth needs root), so the
-    pending branch is verified by construction and a no-regression check on the
-    carrier-present path, not by live carrier-less reproduction. `/api/status`'s
-    own `source`/`model_origin` fields still report the applied origin only; give
+    OCRAM); flashed to the board as `fc674c6`. **VERIFIED LIVE carrier-less
+    2026-09-01**: with the U24 USB-deauthorised (carrier dropped) and the board
+    soft-rebooted so the SD config staged but never applied (`carrier` 0,
+    `blocks` 0), `GET /api/dsp/config` reported `source:"sd"` with the full SD
+    model and `config_generation:0` — the pending branch reporting the staged
+    origin, where the pre-fix firmware would have answered `"default"`.
+    Re-authorising the U24 returned the carrier, the staged config applied, and
+    `config_generation` bumped 0 → 1 — confirming the generation token is still
+    bumped only by the audio ISR at apply. `/api/status`'s own
+    `source`/`model_origin` fields still report the applied origin only; give
     them the same treatment if a carrier-less status read matters.
 23. **`AIUS_NET_DHCP_DEADLINE_MS` at 9,000 ms bought one mode, not headroom.** The
     DHCP window is quantised by `FNET_CFG_DHCP_CLN_RESPONSE_TIMEOUT_MS`:
