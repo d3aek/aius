@@ -2393,23 +2393,35 @@ static FLASHMEM const char *dsp_origin_name(DspModelOrigin origin)
 	}
 }
 
-/* Serialize the single effective DSP config: g_active_model, kept in sync with
- * whatever is actually running (the const factory default at boot, or the last
- * model applied at an audio block boundary). Cold path, fixed buffer,
- * capacity-checked; returns 0 (deterministic error) if the model cannot fit the
- * response budget. `source`/`config_generation` are runtime-reported, not part
- * of the model struct itself. */
+/* Serialize the DSP config the board WILL use: g_active_model once it has been
+ * applied at a block boundary, or the staged g_pending_dsp_model while a commit
+ * is pending. The staged branch is what a board with no carrier reports -- it
+ * never reaches the block-boundary apply, so reporting only g_active_model would
+ * answer "default"/generation 0 for a PUT it has already accepted (defect 22).
+ * Cold path, fixed buffer, capacity-checked; returns 0 (deterministic error) if
+ * the model cannot fit the response budget. `source`/`config_generation` are
+ * runtime-reported, not part of the model struct itself. `config_generation`
+ * stays the applied value on purpose: it is the single-writer optimistic-
+ * concurrency token (the audio ISR owns it), so a PUT's base_generation is
+ * checked against the same counter whether or not a block has run. */
 static FLASHMEM size_t http_dsp_config_json(uint8_t *body, size_t capacity)
 {
 	static const char *const channel_names[6] = {"fl", "fr", "fc", "lfe", "sl", "sr"};
-	const AiusOpticalConfig &cfg = g_active_model;
+	/* g_pending_dsp_model/origin are written only by this HTTP thread and are
+	 * fully populated before g_dsp_apply_pending is armed, so reading them here
+	 * takes no audio-ISR race. */
+	const bool apply_pending = g_dsp_apply_pending;
+	const AiusOpticalConfig &cfg =
+		apply_pending ? g_pending_dsp_model : g_active_model;
+	const DspModelOrigin origin =
+		apply_pending ? g_pending_dsp_origin : g_dsp_model_origin;
 	if (capacity > AIUS_OPTICAL_MODEL_MAX_JSON_BYTES)
 		capacity = AIUS_OPTICAL_MODEL_MAX_JSON_BYTES;
 	char *output = (char *)body;
 	size_t length = 0;
 	if (!http_json_append(output, capacity, &length,
 	                      "{\"source\":\"%s\",\"config_generation\":%lu,\"sample_rate_hz\":%lu,",
-	                      dsp_source_name(g_dsp_model_origin),
+	                      dsp_source_name(origin),
 	                      (unsigned long)g_config_generation,
 	                      (unsigned long)cfg.sample_rate_hz))
 		return 0;

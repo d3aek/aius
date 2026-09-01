@@ -918,9 +918,24 @@ table.
     happens not to run. The gate now distinguishes the two with an explicit
     `sd-job` basis used **only** when the board provably cannot apply, and which
     reports what it did not check — a non-reporting board *with* audio still fails.
-    The firmware fix is a design call (report a committed source separately, or set
-    it at commit time rather than at apply time) and was deliberately not taken
-    under a gate deadline.
+
+    **FIXED 2026-09-01.** `http_dsp_config_json()` now reports the STAGED config
+    when a commit is pending: `const bool apply_pending = g_dsp_apply_pending;`
+    selects `g_pending_dsp_model`/`g_pending_dsp_origin` over the applied
+    `g_active_model`/`g_dsp_model_origin`, so a carrier-less board answers with
+    the PUT it accepted instead of `"default"`. This is the "report a committed
+    source" arm of the design call, chosen over "set it at commit time" on
+    purpose: `config_generation` is the single-writer optimistic-concurrency
+    token (the audio ISR owns it), and bumping it from the HTTP thread at commit
+    would race that writer, so it stays the applied value. The staged fields are
+    written only by the HTTP thread and fully populated before the volatile flag
+    is armed, so the reporter's read takes no ISR race. Builds clean (+32 B
+    OCRAM). NOTE: the carrier-less condition could not be reproduced on the bench
+    (the U24 free-runs the optical carrier and USB-deauth needs root), so the
+    pending branch is verified by construction and a no-regression check on the
+    carrier-present path, not by live carrier-less reproduction. `/api/status`'s
+    own `source`/`model_origin` fields still report the applied origin only; give
+    them the same treatment if a carrier-less status read matters.
 23. **`AIUS_NET_DHCP_DEADLINE_MS` at 9,000 ms bought one mode, not headroom.** The
     DHCP window is quantised by `FNET_CFG_DHCP_CLN_RESPONSE_TIMEOUT_MS`:
     **4,003–4,005 ms on 27 of 29 boots, 8,005 ms on 2** — one lost `DISCOVER` and its
