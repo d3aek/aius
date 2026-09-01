@@ -22,10 +22,10 @@ Exit codes: 0 ok; 1 transfer/protocol failure; 2 not frozen or empty;
             4 usage error.
 
 --slot addresses one of the bank's slots (default: active_slot from the
-header). GET /api/recorder/data is not yet slot-addressed on the device
-(Phase C's still-owed remainder) -- it always reads the ACTIVE slot, so
---slot for anything other than the currently-active one is refused here
-rather than silently pulling the wrong slot's bytes.
+header). GET /api/recorder/data is slot-addressed on the device (Phase C):
+every chunk request carries &slot, the device validates the range (400 when
+out of range) and reads that slot's frozen bytes, refusing a stale/evicted
+freeze_generation with 409.
 
 The pull must complete within one boot session: a reboot destroys every
 capture, and a thaw or auto-advance between chunks bumps the addressed
@@ -58,9 +58,9 @@ def fetch(url: str, token: str, timeout_s: float = 10.0) -> bytes:
 
 
 def fetch_chunk(base: str, token: str, offset: int, length: int,
-                generation: int) -> bytes:
+                generation: int, slot: int) -> bytes:
     url = (f"{base}/api/recorder/data?offset={offset}&length={length}"
-           f"&generation={generation}")
+           f"&generation={generation}&slot={slot}")
     last_error: Exception | None = None
     for _ in range(RETRIES_PER_CHUNK):
         try:
@@ -128,11 +128,6 @@ def main() -> int:
         print(f"slot {slot} out of range (0..{bank['slot_count'] - 1})",
               file=sys.stderr)
         return 4
-    if slot != active_slot:
-        print(f"slot {slot} requested, but GET /api/recorder/data only "
-              f"reads the active slot ({active_slot}) -- multi-slot data "
-              "addressing is not wired on the device yet", file=sys.stderr)
-        return 4
     header = bank["slots"][slot]
     if header["state"] != "frozen":
         print(f"slot {slot} is {header['state']}, not frozen -- freeze "
@@ -154,7 +149,7 @@ def main() -> int:
     ring = bytearray()
     while len(ring) < valid_bytes:
         want = min(chunk_max, valid_bytes - len(ring))
-        chunk = fetch_chunk(base, args.auth, len(ring), want, generation)
+        chunk = fetch_chunk(base, args.auth, len(ring), want, generation, slot)
         if not chunk:
             print(f"empty chunk at offset {len(ring)}", file=sys.stderr)
             return 1

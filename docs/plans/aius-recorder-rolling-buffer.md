@@ -3,9 +3,9 @@ title: Aius flight recorder — debounce + rolling multi-slot buffer
 type: plans
 scope: component
 component: aius
-status: draft
+status: shipped
 tags: [aius, firmware, audio, recorder, psram, ota]
-updated: 2026-08-28
+updated: 2026-09-01
 ---
 
 # Aius flight recorder — debounce + rolling multi-slot buffer
@@ -319,7 +319,7 @@ overlapping ones.
   here. Host-only — no device flash in this phase.
 - unit: parent-only
 
-### Phase C — HTTP surface + egress tool for multi-slot addressing IN-PROGRESS (status document + data-route slot addressing shipped host-only; on-device bench proof gated under Phase D)
+### Phase C — HTTP surface + egress tool for multi-slot addressing ✓ SHIPPED 2026-09-01
 
 - outcome: `GET /api/recorder` reports the bank (active slot index +
   per-slot summaries: state, trigger, generation, valid/gap counts,
@@ -380,12 +380,20 @@ overlapping ones.
   it and matches this plan's "release on completion" contract. Host proof:
   `http`, `http-transaction` (43 rows), `optical-app` (37 rows), `recorder`
   (27+12), `runtime-target` green; `teensy41-optical` cross-build green.
-- **Still owed (bench, gated under Phase D):** induce 2 real triggers across
-  one boot, pull both frozen slots, confirm two distinct complete WAVs and
-  that the *next* active slot is reported as RECORDING throughout.
+- **Bench-proven 2026-09-01:** recorder OTA'd as one agnostic image and
+  self-committed (auto-rollback unneeded). Phase A debounce suppressed the
+  boot-transient underrun (froze at `at_block 416`, not `at_block 1`); the
+  4-slot bank auto-advanced twice; two distinct triggers (underrun +
+  carrier_loss, the latter induced by a USB deauthorize of the U24 source)
+  produced two frozen slots pulled as two distinct complete WAVs (different
+  sha256), with slot 2 recording throughout and the read-lease holding both
+  slots through their live HTTP pulls (`gaps=0`, no wedge). The data route
+  honoured `slot` on-device (out-of-range → 400). One gap the bench surfaced
+  and closed: `aius-recorder-pull.py` was stale (never sent `&slot`, refused
+  any non-active slot) — fixed to send the param and pull any frozen slot.
 - unit: parent-only
 
-### Phase D — adversarial review + bench proof, before any flash
+### Phase D — adversarial review + bench proof ✓ SHIPPED 2026-09-01
 
 - outcome: a first design-level adversarial review already ran (2026-08-28,
   see the Design section's read-lease/reinit-context/recycle-naming
@@ -419,6 +427,16 @@ overlapping ones.
   otherwise recycle its slot), and the Phase A debounce — all before the
   listening-room board is touched.
 - unit: parent-only
+- **✓ Done 2026-09-01.** The second adversarial pass ran against the actual
+  A–C diff and caught a real HIGH bug: the Phase-C read-lease released on the
+  next dispatch, so a one-shot pull that closed without a follow-up request
+  pinned its slot forever and, once the ring wrapped onto it, silently stopped
+  recording. Fixed to release via the transaction's true-completion hook
+  (`http_response.sd_settle`). The board was then flashed (single agnostic OTA,
+  now that the slot-agnostic cutover is live and proven — no cee8b46-isolation
+  branch needed), and the full on-device cycle passed (see Phase C's
+  bench-proven note). The mid-window power-cut and the DSP transfer-function
+  battery were not part of this recorder proof.
 
 ## Residual risks / non-goals
 
