@@ -6,7 +6,7 @@ component: aius
 status: in-progress
 subtype: implementation
 tags: [aius, firmware, teensy, audio, clocking, spdif]
-updated: 2026-08-04
+updated: 2026-09-01
 toc: true
 ---
 
@@ -903,6 +903,28 @@ open. Gate 1 reruns with the U24 XL on the final candidate image.**
 CM-era discriminators closed as overtaken 2026-08-03 — register entry.
 Where gates 2, 5 and 7 above name the CM6206, the source is now the
 qualified U24 XL.)
+
+**Gate-1 rerun on the final image FAILS at 52 post-settle trims
+(2026-09-01).** The pending gate-1 rerun ran on the deployed image
+`3824579` with the U24 XL as source, twice — free-running and under active
+48 kHz host playback (aplay confirmed streaming for the whole run). Both
+runs gave an identical **52 post-settle trims** (bound ≤ 2), max follow
+error 0.74 / 1.07 Hz, ingress slope ~0, and every harmful counter 0
+(tx_underrun, overruns, output_drops, unsupported_episodes, watchdog).
+594/594 samples each — the acceptance runner's new transient-drop retry
+let the 10-minute gate complete without aborting. Active vs free-running
+playback made **no difference**, so the 52 trims are the carrier's inherent
+wander as this image's DPLL tracks it, not the aplay content. This
+contradicts the 2026-08-02 line above, which was a carrier-value
+observation (span 0, `trim_updates` 0) on an earlier image, not a gate-1
+analyzer run on `3824579`. Unresolved, needs bench/firmware investigation:
+(a) a trim-cadence change between the qualified image and `3824579` — A/B
+the two images with the same source before blaming the source; (b) U24
+degradation since 2026-08-02 (the source-qualification README's
+marginal-power-stage / re-enumeration caution); (c) the ≤2 bound being
+unrealistic for a ±0.5 ppm crystal source, which the owner-approved
+bound-revision path already anticipates. Do not weaken the bound without
+that A/B. Evidence retained in session scratch (two 594-sample runs).
 
 If the 48 kHz slope exceeds 0.25 words/s, Phase 2 is not complete. The next
 mechanism is a slow correction term driven by ingress slope into the same
