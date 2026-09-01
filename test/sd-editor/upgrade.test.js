@@ -21,14 +21,15 @@
  *
  * Wire-shape provenance, all authored to docs/plans/aius-ota-upgrade.md's
  * slice-3 contract (the routes ship from a parallel slice):
- *   GET  /api/ota          the AiusOtaProgress fields plus the ota_diag ones
- *                          (test_key, key_fingerprint, activation_available);
- *                          404 {"error":"ota_absent"} when OTA is compiled out.
+ *   GET  /api/ota          ota_status_document()'s OtaStatus shape: armed, state,
+ *                          staged_bytes, total_bytes, next_offset flat; image and
+ *                          key nested; fault the kOtaVerdicts token ("none" for
+ *                          OK); 404 {"error":"ota_absent"} when OTA is compiled out.
  *   PUT  /api/ota/image    container-absolute Content-Range chunks answering
  *                          {"ok":true,"next_offset":N}, the last one
  *                          {"ok":true} -- the same shape /sd/replays/<id> uses.
  *   POST /api/ota/verify   digest then signature, refusals latched in
- *                          fail_reason / verifier_fault rather than only in the
+ *                          fault / verifier_fault rather than only in the
  *                          response, so the page must READ THE POLL.
  *   POST /api/ota/arm | abort | activate.
  *   GET  /api/status       `target_id`, the board identity the container's
@@ -181,18 +182,21 @@ function pickContainer(headerBytes, options = {}) {
 
 /* ---- the device ----------------------------------------------------------- */
 
+/* ota_status_document()'s wire shape (aius_optical_app.cpp): armed/state/
+ * staged_bytes/total_bytes/next_offset flat, image and key nested, fault the
+ * kOtaVerdicts token ("none" for OK). image.target_id is empty until a container
+ * is offered -- the identity the target check needs arrives from /api/status. */
 const idleOta = () => ({
-  ok: true,
+  armed: true,
   state: 'idle',
-  latch_armed: true,
-  image_length: 0,
-  staged_length: 0,
+  staged_bytes: 0,
+  total_bytes: 0,
   next_offset: 0,
-  fail_reason: 'ok',
-  verifier_fault: 0,
-  test_key: false,
-  key_fingerprint: 'b7c1e4f0',
+  image: { target_id: '', build_revision: '', build_utc: 0 },
+  key: { fingerprint: 'b7c1e4f0', test_key: false },
   activation_available: false,
+  fault: 'none',
+  verifier_fault: 0,
 });
 
 let device;
@@ -235,11 +239,11 @@ function createDevice(options = {}) {
       const refusal = stub.onChunk ? stub.onChunk(stub.chunks.length - 1, stub) : null;
       if (refusal) return refusal;
       if (start === 0) {
-        Object.assign(stub.ota, { state: 'offered', image_length: total - HEADER_BYTES, staged_length: 0, next_offset: HEADER_BYTES });
+        Object.assign(stub.ota, { state: 'offered', total_bytes: total - HEADER_BYTES, staged_bytes: 0, next_offset: HEADER_BYTES });
       } else {
         Object.assign(stub.ota, {
           state: end >= total ? 'staged' : 'staging',
-          staged_length: end - HEADER_BYTES,
+          staged_bytes: end - HEADER_BYTES,
           next_offset: end,
         });
       }
@@ -247,14 +251,14 @@ function createDevice(options = {}) {
     }
     if (url === '/api/ota/verify' && method === 'POST') {
       if (stub.verifyFault === 'digest') {
-        Object.assign(stub.ota, { state: 'failed', fail_reason: 'digest' });
+        Object.assign(stub.ota, { state: 'failed', fault: 'ota_digest' });
         return jsonResponse(409, { ok: false, error: 'ota_digest' });
       }
       if (stub.verifyFault === 'signature') {
-        Object.assign(stub.ota, { state: 'failed', fail_reason: 'signature', verifier_fault: 7 });
+        Object.assign(stub.ota, { state: 'failed', fault: 'ota_signature', verifier_fault: 7 });
         return jsonResponse(409, { ok: false, error: 'ota_signature' });
       }
-      Object.assign(stub.ota, { state: 'verified', fail_reason: 'ok' });
+      Object.assign(stub.ota, { state: 'verified', fault: 'none' });
       return jsonResponse(200, { ok: true });
     }
     if (url === '/api/ota/arm' && method === 'POST') {
@@ -263,7 +267,7 @@ function createDevice(options = {}) {
       return jsonResponse(200, { ok: true });
     }
     if (url === '/api/ota/abort' && method === 'POST') {
-      Object.assign(stub.ota, idleOta(), { test_key: stub.ota.test_key, activation_available: stub.ota.activation_available });
+      Object.assign(stub.ota, idleOta(), { key: stub.ota.key, activation_available: stub.ota.activation_available });
       return jsonResponse(200, { ok: true });
     }
     if (url === '/api/ota/activate' && method === 'POST') {
@@ -428,7 +432,7 @@ describe('Aius SD firmware upgrade — container header parse', () => {
     await setToken('secret');
     await selectContainer(buildHeader({ targetId: 'teensy41-bench' }));
     device.status = { ok: true, target_id: DEVICE_TARGET };
-    device.ota.target_id = DEVICE_TARGET;
+    device.ota.image.target_id = DEVICE_TARGET;
     await vi.advanceTimersByTimeAsync(1000);
     await settle();
 
@@ -575,7 +579,7 @@ describe('Aius SD firmware upgrade — interrupted transfers', () => {
   });
 
   it('restarts at zero when the device is staging a different image', async () => {
-    await ready({ ota: Object.assign(idleOta(), { state: 'staging', image_length: 999, staged_length: 512, next_offset: 768 }) });
+    await ready({ ota: Object.assign(idleOta(), { state: 'staging', total_bytes: 999, staged_bytes: 512, next_offset: 768 }) });
 
     await startRun();
 
@@ -632,7 +636,7 @@ describe('Aius SD firmware upgrade — verification faults', () => {
         if (index === 3) {
           /* The last chunk is accepted but the machine stays mid-staging: an
            * upload the device did not finish must not read as staged. */
-          Object.assign(stub.ota, { state: 'staging', staged_length: 9000, next_offset: 9256 });
+          Object.assign(stub.ota, { state: 'staging', staged_bytes: 9000, next_offset: 9256 });
           return jsonResponse(200, { ok: true });
         }
         return null;
@@ -660,7 +664,7 @@ describe('Aius SD firmware upgrade — verification faults', () => {
   });
 
   it('renders a disarmed latch as a refusal the device explains', async () => {
-    await ready({ ota: Object.assign(idleOta(), { latch_armed: false }), onChunk: () => jsonResponse(409, { ok: false, error: 'ota_disarmed' }) });
+    await ready({ ota: Object.assign(idleOta(), { armed: false }), onChunk: () => jsonResponse(409, { ok: false, error: 'ota_disarmed' }) });
 
     await startRun();
 
@@ -719,7 +723,7 @@ describe('Aius SD firmware upgrade — activation gating', () => {
 
 describe('Aius SD firmware upgrade — the TEST KEY banner', () => {
   it('banners the published development key whenever the device reports it', async () => {
-    await boot({ ota: Object.assign(idleOta(), { test_key: true, key_fingerprint: 'b7c1e4f0' }) });
+    await boot({ ota: Object.assign(idleOta(), { key: { fingerprint: 'b7c1e4f0', test_key: true } }) });
 
     expect(el('test-key').hidden).toBe(false);
     expect(el('test-key').textContent).toContain('TEST KEY');
@@ -735,10 +739,10 @@ describe('Aius SD firmware upgrade — the TEST KEY banner', () => {
   });
 
   it('drops the banner when the device stops reporting a test key', async () => {
-    await boot({ ota: Object.assign(idleOta(), { test_key: true }) });
+    await boot({ ota: Object.assign(idleOta(), { key: { fingerprint: 'b7c1e4f0', test_key: true } }) });
     expect(el('test-key').hidden).toBe(false);
 
-    device.ota.test_key = false;
+    device.ota.key.test_key = false;
     await vi.advanceTimersByTimeAsync(1000);
     await settle();
 

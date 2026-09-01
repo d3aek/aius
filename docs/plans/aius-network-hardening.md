@@ -5,7 +5,7 @@ scope: component
 component: aius
 status: in-progress
 tags: [firmware, ethernet, recovery, watchdog, testing]
-updated: 2026-08-04
+updated: 2026-09-01
 toc: true
 ---
 
@@ -1738,8 +1738,10 @@ table.
     discontinuity, inaudible (the TX ring rides through), with the substep
     maxima attributing any recurrence on sight. Full record:
     [`aius-open-work-register.md`](aius-open-work-register.md) §Open defects.
-36. **2.4 % of `GET /api/status` polls fail to return a complete body, on the
-    current image only.** Found in the 2026-08-04 8 h watch, diagnosed
+36. ~~**2.4 % of `GET /api/status` polls fail to return a complete body, on the
+    current image only.**~~ **CLOSED 2026-09-01 — truncation gone on the flashed
+    37/38 fix; verified 0/1,734 responses truncated. See the close-out bullet.**
+    Found in the 2026-08-04 8 h watch, diagnosed
     2026-08-05 by static analysis; **not yet confirmed on hardware — the board
     is disconnected, and the discriminating observation below has not run.**
     336 of 13,851 polls failed while the board stayed alive (generation 346
@@ -1812,10 +1814,22 @@ table.
         stalls the write (H1). The 100 ms deadline is what converts that
         recoverable stall into a truncated reply (H2). Neither alone explains
         both the timing and the counter.
-      - **Defect 38's fix should therefore close this**, and is committed but
-        NOT yet flashed. Re-running this watch on the fixed image is the proof;
-        the prediction is that `http_client_drops` stays flat and the slow polls
-        survive as ~1.3 s successes rather than becoming failures.
+      - **CLOSED 2026-09-01 — the truncation is gone on the flashed fix.** The
+        37/38 fixes are deployed (image `3824579`, another strand flashed past
+        them today), and the watch was re-run against the live board: two runs,
+        1,734 total `/api/status` responses, **zero incomplete/truncated bodies**
+        (bodies a steady ~7.26 KB with the trailing sentinel key). The truncation
+        signature that defined this defect did not occur once. Residual, not
+        truncation: a small fraction of requests (4 of 869 serial, ~0.5 %; more
+        under 3-way concurrency the single-threaded stack cannot serve) hit a
+        full 5 s send stall and the connection is dropped CLEANLY —
+        `RemoteDisconnected` client-side, `http_client_drops` +1 each — rather
+        than a body being corrupted. 5 s is exactly the new
+        `RESPONSE_TIMEOUT_MS`: the same send-path stall the 100 ms deadline used
+        to truncate now rides the 5 s window, recovering in almost every case and
+        dropping cleanly in the rare one that exceeds it. The residual stall tail
+        is a milder follow-up (likely the compute/ISR stall family), tracked as
+        item 41 below rather than reopening this.
       - **The "71.5 minute onset" should not be treated as a threshold.** Rate
         today was 3 in 4,481 (0.067 %) against 336 in 13,851 (2.4 %) on
         2026-08-04, and the first failure came at 6,033 s rather than 4,289 s.
@@ -1824,7 +1838,8 @@ table.
         onset in the static analysis is better read as the first sample of a
         low-rate process than as a crossing at a fixed uptime.
 37. ~~**Every accepted socket silently inherits a 2,048 B send buffer.**~~
-    **FIXED 2026-08-05 (not yet flashed).** `accept_once` now raises SO_SNDBUF
+    **FIXED 2026-08-05; DEPLOYED (image `3824579`, verified live 2026-09-01).**
+    `accept_once` now raises SO_SNDBUF
     to 8,192 B on the accepted socket
     (`aius_network_teensy.cpp` `widen_accepted_send_buffer`). Original entry:
     `Nativesocket.cpp` sets `SO_SNDBUF = FNET_SOCKET_DEFAULT_SIZE`
@@ -1847,7 +1862,8 @@ table.
     `accept_once` is now `FLASHMEM`, which pays for it out of the ITCM that
     function occupied and leaves 148 bytes free.
 38. ~~**`RESPONSE_TIMEOUT_MS` is not re-armed on `WOULD_BLOCK`.**~~
-    **FIXED 2026-08-05 (not yet flashed)** by raising the deadline to 5,000 ms
+    **FIXED 2026-08-05; DEPLOYED (image `3824579`, verified live 2026-09-01 —
+    defect 36's truncation gone).** By raising the deadline to 5,000 ms
     rather than re-arming, which preserves the design (the deadline bounds lack
     of forward progress) while making it reachable only by a peer that has
     genuinely stopped. 5,000 ms spans two consecutive FNET RTO recoveries
@@ -1867,13 +1883,21 @@ table.
     `TCP_DELACK_MAX` of 200 ms and roughly 12x below FNET's own minimum RTO, so
     a single mid-response loss cannot be recovered before it fires.
 
-39. **The upgrade page reads six `/api/ota` fields the firmware does not emit,
-    and its regression pins the stale contract.** Found 2026-08-05 while
-    rendering the UI screenshots; static, not observed on a device.
-    `firmware/sd/www/upgrade.js` reads `latch_armed`, `image_length`,
+39. ~~**The upgrade page reads six `/api/ota` fields the firmware does not emit,
+    and its regression pins the stale contract.**~~ **FIXED 2026-09-01.**
+    `firmware/sd/www/upgrade.js` now reads the real `OtaStatus` shape and
+    `test/sd-editor/upgrade.test.js`'s device stub emits it, so the fixture no
+    longer encodes the bug; 50/50 vitest green, and the corrected field set was
+    checked against a live `GET /api/ota` off the deployed board (`3824579`).
+    It was seven reads, not six — the page also read a top-level `test_key` the
+    firmware nests under `key.test_key`. The `fault` field needed one extra
+    touch beyond the rename: the route spells no-fault as the literal `"none"`
+    (kOtaVerdicts row 0), so `faultName()` now maps `"none"` to empty like `ok`.
+    Original entry, found 2026-08-05 while rendering the UI screenshots; static,
+    not observed on a device. `upgrade.js` read `latch_armed`, `image_length`,
     `staged_length`, `fail_reason`, `key_fingerprint` and a top-level
-    `target_id` (its own header comment at `:36-41` documents that shape).
-    `ota_status_document()` at `firmware/src/aius_optical_app.cpp:1556-1570`
+    `target_id` (its own header comment at `:36-41` documented that shape).
+    `ota_status_document()` at `firmware/src/aius_optical_app.cpp:1572-1608`
     emits `armed`, `total_bytes`, `staged_bytes`, `fault`, a nested
     `key.{fingerprint,test_key}` and a nested `image.target_id`.
     - **The firmware is right and the page is wrong.** Swagger's `OtaStatus`,
@@ -1892,6 +1916,36 @@ table.
       fixture encodes the bug. Fixing this means changing the page's reads AND
       re-pinning that fixture to `OtaStatus`, otherwise the suite fails on the
       corrected page.
+
+40. **`/api/status` emits no `target_id`, so the upgrade page never learns the
+    device identity in the idle state.** Found 2026-09-01 while fixing defect 39.
+    `upgrade.js`'s `refreshIdentity()` reads `result.body.target_id` off
+    `GET /api/status`, but the status document (`optical_main.cpp`, the doc that
+    emits `build_revision` from `AIUS_BUILD_GIT_REV`) carries no `target_id` key
+    — confirmed against a live board. The page's other identity source,
+    `/api/ota` `image.target_id`, is empty until a container is offered, so the
+    page shows `unknown` and skips the client-side target-mismatch pre-check
+    until an image is staged. Low severity: the device re-checks `target_id` at
+    offer time and answers `UNSUPPORTED` itself, which the page renders. The fix
+    is a design call, not a rename — either the status document emits the fixed
+    `g_ota_target_id` (`optical_main.cpp:3520`, `"teensy41-optical"`), or the
+    page stops promising a client-side identity check it cannot make. Left for a
+    separate decision; defect 39 deliberately did not touch this path or its
+    test stub's `/api/status` `target_id`.
+
+41. **Rare ~5 s send-path stall drops a `/api/status` response cleanly.**
+    Found 2026-09-01 during defect 36's close-out watch. With the 37/38 fixes
+    deployed, ~0.5 % of serial polls (4 of 869) and more under concurrency stall
+    for the full `RESPONSE_TIMEOUT_MS` (5 s) and the connection is dropped —
+    `RemoteDisconnected` client-side, `http_client_drops` +1 — instead of the
+    body truncating. This is the tail of the same send-path stall defect 38
+    addressed: the deadline was raised so the stall no longer corrupts a body,
+    but the underlying stall still occasionally exceeds even 5 s. A 5 s network
+    stall is ~3 audio epochs, so the likely issuer is the compute/ISR stall
+    family (the 1.79 s FlexSPI2 bus-hold lineage), with the network service
+    starved during the hold. Not a regression — a clean drop the client retries
+    through — but worth a root-cause pass. Needs the board and a longer watch to
+    correlate a drop with a `stall_diag` event.
 
 #### Decisions taken, so they are not re-opened
 

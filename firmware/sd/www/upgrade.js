@@ -33,14 +33,17 @@
  * THE ROUTES, coded to docs/plans/aius-ota-upgrade.md's slice-3 contract and
  * built in a parallel slice:
  *
- *   GET  /api/ota          public poll. 200 with {state, latch_armed,
- *                          image_length, staged_length, next_offset,
- *                          fail_reason, verifier_fault, test_key,
- *                          key_fingerprint, activation_available, target_id};
- *                          404 {error:"ota_absent"} when OTA is compiled out.
- *                          `state` and `fail_reason` are the AiusOtaState /
- *                          AiusOtaStatus names, and a numeric encoding of
- *                          either is decoded through the same published enums.
+ *   GET  /api/ota          public poll. 200 with {armed, state, staged_bytes,
+ *                          total_bytes, next_offset, image:{target_id,
+ *                          build_revision, build_utc}, key:{fingerprint,
+ *                          test_key}, activation_available, fault,
+ *                          verifier_fault}; 404 {error:"ota_absent"} when OTA is
+ *                          compiled out. This is ota_status_document()'s wire
+ *                          shape (aius_optical_app.cpp) -- the OtaStatus schema,
+ *                          not a flat record. `state` is the AiusOtaState name;
+ *                          `fault` is a kOtaVerdicts token, "none" when there is
+ *                          no fault and an `ota_`-prefixed word otherwise, and a
+ *                          numeric encoding is decoded through the same enums.
  *   PUT  /api/ota/image    one Content-Range chunk per request, answering
  *                          {"ok":true,"next_offset":N} exactly as the replay
  *                          upload does. OFFSETS ARE CONTAINER-ABSOLUTE: the
@@ -207,23 +210,25 @@
   }
 
   /* A wire fault name, whichever encoding the route used: the AiusOtaStatus
-   * word, its numeric value, or an `ota_`-prefixed error token. */
+   * word, its numeric value, or an `ota_`-prefixed error token. The OTA poll's
+   * `fault` field spells no-fault as the literal "none" (kOtaVerdicts row 0),
+   * which reads the same as an empty field -- no fault to name. */
   function faultName(value) {
     if (typeof value === 'number' && Number.isInteger(value)) {
       return STATUS_NAMES[value] || `status ${value}`;
     }
     const text = String(value || '').trim();
-    if (text === '') return '';
+    if (text === '' || text === 'none') return '';
     return text.startsWith('ota_') ? text.slice(4) : text;
   }
 
   /* The fault word a step should print: the route's own error token first, the
-   * latched fail_reason second, the bare HTTP status last. `ok` is not a fault
-   * -- a refusal whose poll has nothing latched must not read "fault: ok". */
+   * poll's latched `fault` second, the bare HTTP status last. `ok`/`none` is not
+   * a fault -- a refusal whose poll has nothing latched must not read "fault: ok". */
   function faultFor(result, ota) {
     const fromBody = faultName(result.body && result.body.error ? result.body.error : '');
     if (fromBody !== '' && fromBody !== 'ok') return fromBody;
-    const fromPoll = ota ? faultName(ota.fail_reason) : '';
+    const fromPoll = ota ? faultName(ota.fault) : '';
     if (fromPoll !== '' && fromPoll !== 'ok') return fromPoll;
     return `http_${result.status}`;
   }
@@ -587,23 +592,27 @@
     const name = stateName(ota.state);
     setPill($('ota-pill'), name === 'failed' ? 'error' : name);
     put('ota-state', name);
-    put('ota-latch', ota.latch_armed === true ? 'armed' : 'disarmed');
+    put('ota-latch', ota.armed === true ? 'armed' : 'disarmed');
 
-    const staged = Number(ota.staged_length) || 0;
-    const total = Number(ota.image_length) || 0;
+    const staged = Number(ota.staged_bytes) || 0;
+    const total = Number(ota.total_bytes) || 0;
     put('ota-staged', total > 0 ? `${formatBytes(staged)} of ${formatBytes(total)}` : formatBytes(staged));
     put('ota-next', `${Number(ota.next_offset) || 0} bytes`);
 
-    const fault = faultName(ota.fail_reason);
+    const fault = faultName(ota.fault);
     const verifierFault = Number(ota.verifier_fault) || 0;
     put('ota-fault', fault === '' || fault === 'ok' ? 'none' : verifierFault !== 0 ? `${fault} (verifier ${verifierFault})` : fault);
     $('ota-fault').dataset.tone = fault === '' || fault === 'ok' ? 'ok' : 'warn';
 
-    const fingerprint = typeof ota.key_fingerprint === 'string' && ota.key_fingerprint !== '' ? ota.key_fingerprint : 'unreported';
-    put('ota-key', ota.test_key === true ? `${fingerprint} (TEST KEY)` : fingerprint);
+    /* key and image are nested objects in the OtaStatus document; a stale poll
+     * or an unreachable device leaves them undefined. */
+    const key = ota.key || {};
+    const image = ota.image || {};
+    const fingerprint = typeof key.fingerprint === 'string' && key.fingerprint !== '' ? key.fingerprint : 'unreported';
+    put('ota-key', key.test_key === true ? `${fingerprint} (TEST KEY)` : fingerprint);
     put('ota-activation', ota.activation_available === true ? 'available' : 'pending activation slice');
-    if (typeof ota.target_id === 'string' && ota.target_id !== '' && state.deviceTargetId === '') {
-      state.deviceTargetId = ota.target_id;
+    if (typeof image.target_id === 'string' && image.target_id !== '' && state.deviceTargetId === '') {
+      state.deviceTargetId = image.target_id;
     }
     put('ota-target', state.deviceTargetId || 'unknown');
 
@@ -611,7 +620,7 @@
      * keypair's seed is published, so a TEST KEY device accepts firmware
      * signed by anyone holding the repository. */
     const banner = $('test-key');
-    if (ota.test_key === true) {
+    if (key.test_key === true) {
       banner.textContent = `TEST KEY: this device trusts the published development signing key (${fingerprint}). Anyone with the repository can sign firmware it will accept. Rotate the key before this device leaves the bench.`;
       banner.hidden = false;
     } else {
@@ -620,7 +629,7 @@
 
     setCardStatus(
       'ota',
-      ota.latch_armed === true
+      ota.armed === true
         ? `Device reports ${name}, latch armed.`
         : `Device reports ${name}. The OTA latch is DISARMED: staging verbs will be refused until an operator arms it.`,
     );
@@ -708,7 +717,7 @@
     if (!ota) return 0;
     const name = stateName(ota.state);
     if (name !== 'offered' && name !== 'staging') return 0;
-    if (Number(ota.image_length) !== header.imageLength) return 0;
+    if (Number(ota.total_bytes) !== header.imageLength) return 0;
     const next = Number(ota.next_offset) || 0;
     if (!Number.isFinite(next) || next < HEADER_BYTES) return 0;
     if (next >= header.containerLength) return 0;
@@ -823,12 +832,12 @@
     const ota = await pollOta();
     const name = ota ? stateName(ota.state) : 'unreachable';
     if (name !== 'staged') {
-      const latched = ota ? faultName(ota.fail_reason) : 'unreachable';
+      const latched = ota ? faultName(ota.fault) : 'unreachable';
       settleStep('staged', 'fail', `The device reports ${name} after the last chunk, not staged.`, latched !== '' && latched !== 'ok' ? latched : name);
       setPill($('log-pill'), 'error');
       return false;
     }
-    settleStep('staged', 'ok', `Staged ${formatBytes(Number(ota.staged_length) || 0)}; the device holds the whole payload.`);
+    settleStep('staged', 'ok', `Staged ${formatBytes(Number(ota.staged_bytes) || 0)}; the device holds the whole payload.`);
     return true;
   }
 
@@ -840,7 +849,7 @@
     const result = await request('/api/ota/verify', { method: 'POST', headers: mutationHeaders({}) });
     const ota = await pollOta();
     const name = ota ? stateName(ota.state) : 'unreachable';
-    const fault = ota ? faultName(ota.fail_reason) : '';
+    const fault = ota ? faultName(ota.fault) : '';
 
     if (fault === 'digest') {
       settleStep('digest', 'fail', 'The staged bytes do not hash to the digest the header claims.', 'digest');
