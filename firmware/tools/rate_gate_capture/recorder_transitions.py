@@ -31,6 +31,7 @@ import json
 import subprocess
 import threading
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -133,6 +134,28 @@ def reduce_recorder_transitions(slots: list[np.ndarray]) -> dict:
     }
 
 
+def usb_authorize(path: str, value: int) -> None:
+    """Set a USB device's `authorized` flag. Deauthorizing the U24 (3-1.1)
+    drops the board's source carrier, inducing the loss->replay leg; 0 = down,
+    1 = up. The file is group-writable to plugdev (the operator's group)."""
+    subprocess.run(["sh", "-c", f"echo {value} > {path}"],
+                   capture_output=True, check=True)
+
+
+def board_post(base: str, auth: str, path: str, body: str) -> int:
+    """POST a JSON body with the SD-auth header; return the HTTP status
+    without raising on 4xx/5xx (a 409 replay_carrier_present is expected
+    until the carrier has actually dropped)."""
+    request = urllib.request.Request(base + path, method="POST",
+                                     data=body.encode("utf-8"))
+    request.add_header("X-Aius-SD-Auth", auth)
+    try:
+        with urllib.request.urlopen(request, timeout=8) as response:
+            return response.status
+    except urllib.error.HTTPError as error:
+        return error.code
+
+
 class RecorderClient:
     """Minimal /api/recorder client: header read, freeze/thaw, PUT config,
     and slot data reads reassembled to logical (oldest-first) frame order."""
@@ -193,6 +216,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--phase-seconds", type=float, default=2.0)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--expect-build")
+    parser.add_argument("--with-replay", action="store_true",
+                        help="drive the loss->replay leg (USB-deauths the U24)")
+    parser.add_argument("--replay-id", default="channel_id_51")
+    parser.add_argument("--usb-path",
+                        default="/sys/bus/usb/devices/3-1.1/authorized")
     args = parser.parse_args(argv)
 
     import capture  # sibling module: reuse polling + evidence emission
@@ -242,15 +270,37 @@ def main(argv: list[str] | None = None) -> int:
     aplay(args.tone_48)
     time.sleep(0.2)
     client.freeze()
-    time.sleep(0.5)
-    stop.set()
-    poller.join(timeout=5)
+    time.sleep(0.6)
 
+    # Remember the captured slot NOW, before the replay leg perturbs the bank.
     # The bank freezes the ACTIVE slot then advances, so the slot this run
     # captured is the one just behind the new active pointer.
     header = client.header()
     captured = (header["active_slot"] - 1) % header["slot_count"]
     meta = next(s for s in header["slots"] if s["slot"] == captured)
+
+    if args.with_replay:
+        try:
+            print("loss->replay: deauthorizing U24", flush=True)
+            usb_authorize(args.usb_path, 0)          # drop the source carrier
+            time.sleep(2.5)                           # >=2 unlocked samples
+            for _ in range(6):
+                status = board_post(
+                    args.base, auth, "/api/replays/start",
+                    json.dumps({"id": args.replay_id, "loop": False}))
+                print(f"replays/start -> {status}", flush=True)
+                if status == 200:
+                    break
+                time.sleep(0.8)                       # carrier not gone yet
+            time.sleep(3.5)                           # dwell in replay
+        finally:
+            print("loss->replay: reauthorizing U24", flush=True)
+            usb_authorize(args.usb_path, 1)           # ALWAYS restore the U24
+            time.sleep(1.5)
+
+    stop.set()
+    poller.join(timeout=5)
+
     slots = []
     if meta["state"] == "frozen" and meta["rate_changes"] >= 1:
         slots.append(client.read_slot(
