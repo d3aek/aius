@@ -107,30 +107,46 @@ class HttpTransport:
         self.target = target
         self.timeout = timeout
 
-    def get_json(self, path):
+    def get_json(self, path, attempts=4):
+        # The device serves one HTTP client at a time and drops a connection
+        # that arrives before the previous is fully released, and a momentary
+        # audio-ISR-side send stall can leave a response unanswered until the
+        # transaction times out. Both surface as a transport error on ~0.5% of
+        # polls (measured), and a 10-minute acceptance run must not abort on one.
+        # Retry transient transport errors -- as aius-sd-sync.sh does for the
+        # same reason -- but never retry an HTTP or JSON error, which is real.
         host, port = self.target
-        connection = http.client.HTTPConnection(host, port, timeout=self.timeout)
-        try:
-            connection.request("GET", path, headers={"Connection": "close"})
-            response = connection.getresponse()
-            raw_bytes = response.read()
-        except (OSError, http.client.HTTPException) as error:
-            raise BenchError(f"GET {path}: {type(error).__name__}: {error}") from error
-        finally:
-            connection.close()
+        raw_bytes = None
+        status = None
+        for attempt in range(attempts):
+            connection = http.client.HTTPConnection(host, port, timeout=self.timeout)
+            try:
+                connection.request("GET", path, headers={"Connection": "close"})
+                response = connection.getresponse()
+                raw_bytes = response.read()
+                status = response.status
+                break
+            except (OSError, http.client.HTTPException) as error:
+                if attempt + 1 >= attempts:
+                    raise BenchError(
+                        f"GET {path}: {type(error).__name__}: {error} "
+                        f"(after {attempts} attempts)") from error
+                time.sleep(0.25)
+            finally:
+                connection.close()
         try:
             raw = raw_bytes.decode("utf-8")
         except UnicodeDecodeError as error:
             raise BenchError(f"GET {path}: response is not UTF-8 JSON") from error
-        if response.status != 200:
-            raise BenchError(f"GET {path}: HTTP {response.status}: {raw[:160]}")
+        if status != 200:
+            raise BenchError(f"GET {path}: HTTP {status}: {raw[:160]}")
         try:
             body = json.loads(raw)
         except json.JSONDecodeError as error:
             raise BenchError(f"GET {path}: malformed JSON: {error}") from error
         if not isinstance(body, dict):
             raise BenchError(f"GET {path}: JSON root is not an object")
-        return {"http_status": response.status, "raw": raw, "body": body}
+        return {"http_status": status, "raw": raw, "body": body}
 
 
 def parse_target(text):

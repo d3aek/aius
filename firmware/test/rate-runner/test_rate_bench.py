@@ -579,5 +579,76 @@ class ExitSemanticsTests(unittest.TestCase):
         self.assertEqual(json.loads(stdout)["verdict"], "pass")
 
 
+class TransportRetryTests(unittest.TestCase):
+    """get_json retries transient transport drops (the device's
+    one-client-at-a-time close and momentary send-stall timeouts) but never an
+    HTTP or JSON error, which is real."""
+
+    class _Resp:
+        def __init__(self, status, body):
+            self.status = status
+            self._body = body
+
+        def read(self):
+            return self._body
+
+    class _Conn:
+        def __init__(self, outcome):
+            self._outcome = outcome
+
+        def request(self, *args, **kwargs):
+            pass
+
+        def getresponse(self):
+            if self._outcome == "drop":
+                raise BENCH.http.client.RemoteDisconnected("closed")
+            status, body = self._outcome
+            return TransportRetryTests._Resp(status, body)
+
+        def close(self):
+            pass
+
+    @contextlib.contextmanager
+    def _patched(self, outcomes):
+        calls = {"n": 0}
+
+        def factory(host, port, timeout=None):
+            outcome = outcomes[calls["n"]]
+            calls["n"] += 1
+            return TransportRetryTests._Conn(outcome)
+
+        original_conn = BENCH.http.client.HTTPConnection
+        original_sleep = BENCH.time.sleep
+        BENCH.http.client.HTTPConnection = factory
+        BENCH.time.sleep = lambda _seconds: None
+        try:
+            yield calls
+        finally:
+            BENCH.http.client.HTTPConnection = original_conn
+            BENCH.time.sleep = original_sleep
+
+    def test_retries_transient_drops_then_succeeds(self):
+        body = json.dumps({"ok": True}).encode("utf-8")
+        transport = BENCH.HttpTransport(("10.0.0.1", 80), timeout=0.01)
+        with self._patched(["drop", "drop", (200, body)]) as calls:
+            result = transport.get_json("/api/status", attempts=4)
+        self.assertEqual(result["body"], {"ok": True})
+        self.assertEqual(calls["n"], 3)
+
+    def test_raises_after_exhausting_attempts(self):
+        transport = BENCH.HttpTransport(("10.0.0.1", 80), timeout=0.01)
+        with self._patched(["drop", "drop", "drop", "drop"]) as calls:
+            with self.assertRaises(BENCH.BenchError):
+                transport.get_json("/api/status", attempts=4)
+        self.assertEqual(calls["n"], 4)
+
+    def test_does_not_retry_http_error(self):
+        transport = BENCH.HttpTransport(("10.0.0.1", 80), timeout=0.01)
+        with self._patched([(503, b'{"error":"sd_busy"}')]) as calls:
+            with self.assertRaises(BENCH.BenchError):
+                transport.get_json("/api/status", attempts=4)
+        self.assertEqual(calls["n"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()

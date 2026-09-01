@@ -1940,12 +1940,19 @@ table.
     `RemoteDisconnected` client-side, `http_client_drops` +1 — instead of the
     body truncating. This is the tail of the same send-path stall defect 38
     addressed: the deadline was raised so the stall no longer corrupts a body,
-    but the underlying stall still occasionally exceeds even 5 s. A 5 s network
-    stall is ~3 audio epochs, so the likely issuer is the compute/ISR stall
-    family (the 1.79 s FlexSPI2 bus-hold lineage), with the network service
-    starved during the hold. Not a regression — a clean drop the client retries
-    through — but worth a root-cause pass. Needs the board and a longer watch to
-    correlate a drop with a `stall_diag` event.
+    but the underlying stall still occasionally exceeds even 5 s. **NOT the
+    compute/ISR stall family (measured 2026-09-01).** A 9-minute correlation
+    watch (4,889 polls, 23 drops, ~0.47 %, every drop the same 5.0 s
+    `RemoteDisconnected`) read `stall_diag.events` on every poll and immediately
+    after each drop: it stayed flat at 2 throughout, never incrementing across a
+    drop. So this is a pure network send-path timeout — the response write never
+    completes within `RESPONSE_TIMEOUT_MS` even though the CPU never stalls (the
+    stall witness fires at a 100 µs threshold and did not) — not the 1.79 s
+    FlexSPI2 bus-hold lineage. Root cause is therefore in the FNET send/RTO path
+    (a lost segment whose retransmissions do not recover within 5 s), not audio
+    starvation. Not a regression: a clean drop the client retries through, and
+    the acceptance runner now retries transient drops for exactly this reason
+    (`aius_rate_bench.py` `HttpTransport.get_json`).
 
 #### Decisions taken, so they are not re-opened
 
