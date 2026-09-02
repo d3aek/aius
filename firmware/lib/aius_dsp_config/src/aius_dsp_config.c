@@ -896,7 +896,12 @@ static FLASHMEM AiusDspConfigErrorCode parse_source(AiusJsonCursor *parser)
 
 /* ---- Top level ----------------------------------------------------------- */
 
-/* Bit positions for the nine required top-level keys. */
+/* Bit positions for the nine required top-level keys, then the response-only
+ * keys GET /api/dsp/config adds (staged_generation, config_pending; the
+ * defect-22 staging report). Those two are accepted and ignored so a
+ * consumer that round-trips the GET document -- the native latency renderer,
+ * the bench's bypass PUT -- is not refused as UNKNOWN_KEY; they are never
+ * required, so TOP_ALL_SEEN covers the nine only. */
 enum {
 	TOP_SOURCE = 0,
 	TOP_CONFIG_GENERATION,
@@ -906,7 +911,9 @@ enum {
 	TOP_OUTPUT_EQ,
 	TOP_MATRIX,
 	TOP_LIMITER,
-	TOP_BASE_GENERATION
+	TOP_BASE_GENERATION,
+	TOP_STAGED_GENERATION,
+	TOP_CONFIG_PENDING
 };
 #define TOP_ALL_SEEN 0x1FFu
 
@@ -941,6 +948,14 @@ static FLASHMEM AiusDspConfigErrorCode parse_top_value(AiusJsonCursor *parser,
 		return parse_matrix(parser, &model->matrix);
 	case TOP_LIMITER:
 		return parse_limiter(parser, &model->limiter);
+	case TOP_STAGED_GENERATION: {
+		double ignored = 0.0;
+		return take_non_negative_integer(parser, &ignored);
+	}
+	case TOP_CONFIG_PENDING: {
+		uint8_t ignored = 0u;
+		return take_bool(parser, &ignored);
+	}
 	default: {
 		double base = 0.0;
 		AiusDspConfigErrorCode error =
@@ -1006,6 +1021,10 @@ FLASHMEM AiusDspConfigErrorCode aius_dsp_config_parse_put(const uint8_t *json, s
 				field = TOP_LIMITER;
 			else if (aius_json_key_is(key, key_len, overflow, "base_generation"))
 				field = TOP_BASE_GENERATION;
+			else if (aius_json_key_is(key, key_len, overflow, "staged_generation"))
+				field = TOP_STAGED_GENERATION;
+			else if (aius_json_key_is(key, key_len, overflow, "config_pending"))
+				field = TOP_CONFIG_PENDING;
 			else
 				return AIUS_DSP_CONFIG_ERR_UNKNOWN_KEY;
 
@@ -1033,7 +1052,7 @@ FLASHMEM AiusDspConfigErrorCode aius_dsp_config_parse_put(const uint8_t *json, s
 	aius_json_skip_whitespace(&parser);
 	if (!aius_json_at_end(&parser))
 		return AIUS_DSP_CONFIG_ERR_MALFORMED_JSON;
-	if (seen != TOP_ALL_SEEN)
+	if ((seen & TOP_ALL_SEEN) != TOP_ALL_SEEN)
 		return AIUS_DSP_CONFIG_ERR_MISSING_KEY;
 
 	*out = parsed;

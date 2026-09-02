@@ -209,6 +209,54 @@ static void test_malformed(void)
 	             "bad escape in key");
 }
 
+/* GET /api/dsp/config carries two response-only keys (staged_generation,
+ * config_pending) on top of the PUT contract. A consumer that round-trips
+ * the GET document -- the native latency renderer, the bench's bypass PUT --
+ * must not be refused for them, so the parser accepts and ignores both,
+ * still rejects a duplicate, and never requires them. Found live 2026-09-02:
+ * the renderer refused the first document that carried them. */
+static void test_response_only_keys(void)
+{
+	static const char *const ROUND_TRIPPED_BODY =
+		"{\"source\":\"sd\",\"config_generation\":0,\"sample_rate_hz\":48000,"
+		"\"staged_generation\":3,\"config_pending\":false,"
+		"\"features\":{\"input_eq\":true,\"matrix\":true,\"output_eq\":true,"
+		"\"limiter\":true,\"meters\":true},"
+		"\"input_channels\":{\"fl\":{\"gain_db\":0,\"eq\":[]},"
+		"\"fr\":{\"gain_db\":0,\"eq\":[]},\"fc\":{\"gain_db\":0,\"eq\":[]},"
+		"\"lfe\":{\"gain_db\":0,\"eq\":[]},\"sl\":{\"gain_db\":0,\"eq\":[]},"
+		"\"sr\":{\"gain_db\":0,\"eq\":[]}},\"output_eq\":[],"
+		"\"matrix\":{\"center_gain_linear\":0,\"surround_gain_linear\":0,"
+		"\"lfe_gain_linear\":0,\"lfe_crossover_hz\":120,"
+		"\"headroom_linear\":1,\"clipfree\":false},"
+		"\"limiter\":{\"enabled\":false,\"threshold_dbfs\":0,\"attack_ms\":1,"
+		"\"release_ms\":100,\"lookahead_ms\":0},\"base_generation\":5}";
+	AiusDspModel m;
+	memset(&m, 0xa5, sizeof(m));
+	AiusDspConfigErrorCode error = parse(ROUND_TRIPPED_BODY, &m);
+	check(error == AIUS_DSP_CONFIG_OK,
+	      "response-only keys: got error %d (%s)", (int)error,
+	      aius_dsp_config_error_message(error));
+	check(m.base_generation == 5u,
+	      "response-only keys: base_generation %u", m.base_generation);
+
+	expect_error(
+		"{\"source\":\"sd\",\"config_generation\":0,\"sample_rate_hz\":48000,"
+		"\"staged_generation\":3,\"staged_generation\":3,"
+		"\"features\":{\"input_eq\":true,\"matrix\":true,\"output_eq\":true,"
+		"\"limiter\":true,\"meters\":true},"
+		"\"input_channels\":{\"fl\":{\"gain_db\":0,\"eq\":[]},"
+		"\"fr\":{\"gain_db\":0,\"eq\":[]},\"fc\":{\"gain_db\":0,\"eq\":[]},"
+		"\"lfe\":{\"gain_db\":0,\"eq\":[]},\"sl\":{\"gain_db\":0,\"eq\":[]},"
+		"\"sr\":{\"gain_db\":0,\"eq\":[]}},\"output_eq\":[],"
+		"\"matrix\":{\"center_gain_linear\":0,\"surround_gain_linear\":0,"
+		"\"lfe_gain_linear\":0,\"lfe_crossover_hz\":120,"
+		"\"headroom_linear\":1,\"clipfree\":false},"
+		"\"limiter\":{\"enabled\":false,\"threshold_dbfs\":0,\"attack_ms\":1,"
+		"\"release_ms\":100,\"lookahead_ms\":0},\"base_generation\":0}",
+		AIUS_DSP_CONFIG_ERR_DUPLICATE_KEY, "duplicate staged_generation");
+}
+
 static void test_unknown_keys(void)
 {
 	/* Top-level unknown key. */
@@ -1205,6 +1253,7 @@ int main(void)
 	test_argument_and_size_errors();
 	test_malformed();
 	test_unknown_keys();
+	test_response_only_keys();
 	test_missing_keys();
 	test_bounds();
 	test_lfe_crossover();
