@@ -280,6 +280,7 @@ static bool g_tx_gate_carrier; /* latched checkpoint-7 carrier input */
 static bool g_tx_gate_replay;  /* never re-derived at request time */
 
 static FLASHMEM void tx_gate_actuate(bool open);
+static inline void tx_gate_execute_open(void);
 static FLASHMEM bool clock_output_is_master(void);
 static FLASHMEM bool clock_input_is_master(void);
 
