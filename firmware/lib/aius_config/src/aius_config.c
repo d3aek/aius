@@ -4,6 +4,23 @@
 
 #include <string.h>
 
+/* Cold code -> FLASH. This is the SD/PUT config parser: it runs at boot and on
+ * an operator's config write, never on the audio block path, so every
+ * definition below carries FLASHMEM and lands in FLASH instead of the shared
+ * FlexRAM/ITCM pool the audio pipeline needs. FLASHMEM is Teensyduino's
+ * __attribute__((section(".flashmem"))) from <avr/pgmspace.h>; TEENSYDUINO is a
+ * project-wide compiler -D, so the native host suites fall through to the no-op
+ * and this file keeps its portable, Arduino-free compile. The attribute must
+ * sit on each DEFINITION: GCC does not merge a `section` attribute from a
+ * forward declaration, so a prototype-only FLASHMEM silently leaves the code in
+ * ITCM. Enforced post-link by test/itcm-placement/verify_target.py. */
+#if defined(TEENSYDUINO)
+#include <avr/pgmspace.h>
+#endif
+#ifndef FLASHMEM
+#define FLASHMEM
+#endif
+
 #define AIUS_CONFIG_KEY_BUFFER_MAX 32u
 /* Only the skip-unknown path recurses on attacker structure; cap its depth. */
 #define AIUS_CONFIG_MAX_NESTING 4u
@@ -14,7 +31,7 @@
  * What stays here is this schema: the feature key set, its required-key mask and
  * this library's error vocabulary. */
 
-static void copy_message(char *dst, const char *src)
+static FLASHMEM void copy_message(char *dst, const char *src)
 {
 	size_t i = 0;
 	while (i + 1u < AIUS_CONFIG_ERROR_MESSAGE_MAX && src[i] != '\0') {
@@ -24,7 +41,7 @@ static void copy_message(char *dst, const char *src)
 	dst[i] = '\0';
 }
 
-const char *aius_config_error_message(AiusConfigErrorCode code)
+FLASHMEM const char *aius_config_error_message(AiusConfigErrorCode code)
 {
 	switch (code) {
 	case AIUS_CONFIG_OK:
@@ -54,14 +71,14 @@ const char *aius_config_error_message(AiusConfigErrorCode code)
 	}
 }
 
-static void set_status(AiusConfig *config, AiusConfigErrorCode code)
+static FLASHMEM void set_status(AiusConfig *config, AiusConfigErrorCode code)
 {
 	config->valid = (uint8_t)(code == AIUS_CONFIG_OK);
 	config->error_code = code;
 	copy_message(config->error_message, aius_config_error_message(code));
 }
 
-void aius_config_set_defaults(AiusConfig *config)
+FLASHMEM void aius_config_set_defaults(AiusConfig *config)
 {
 	if (config == NULL)
 		return;
@@ -71,12 +88,13 @@ void aius_config_set_defaults(AiusConfig *config)
 	set_status(config, AIUS_CONFIG_ERR_NOT_LOADED);
 }
 
-static int skip_value(AiusJsonCursor *parser)
+static FLASHMEM int skip_value(AiusJsonCursor *parser)
 {
 	return aius_json_skip_value(parser, 0u, AIUS_CONFIG_MAX_NESTING);
 }
 
-static AiusConfigErrorCode parse_boolean(AiusJsonCursor *parser, uint8_t *value)
+static FLASHMEM AiusConfigErrorCode parse_boolean(AiusJsonCursor *parser,
+	                                              uint8_t *value)
 {
 	size_t start = parser->pos;
 
@@ -97,8 +115,8 @@ static AiusConfigErrorCode parse_boolean(AiusJsonCursor *parser, uint8_t *value)
 	return AIUS_CONFIG_ERR_WRONG_TYPE;
 }
 
-static AiusConfigErrorCode parse_features(AiusJsonCursor *parser,
-	                                          AiusConfigFeatures *features)
+static FLASHMEM AiusConfigErrorCode
+parse_features(AiusJsonCursor *parser, AiusConfigFeatures *features)
 {
 	uint8_t seen = 0u;
 	if (!aius_json_consume(parser, '{')) {
@@ -160,8 +178,8 @@ static AiusConfigErrorCode parse_features(AiusJsonCursor *parser,
 	return AIUS_CONFIG_OK;
 }
 
-AiusConfigErrorCode aius_config_parse(const uint8_t *json, size_t len,
-	                                      AiusConfig *out)
+FLASHMEM AiusConfigErrorCode aius_config_parse(const uint8_t *json, size_t len,
+	                                               AiusConfig *out)
 {
 	if (out == NULL)
 		return AIUS_CONFIG_ERR_NULL_ARGUMENT;

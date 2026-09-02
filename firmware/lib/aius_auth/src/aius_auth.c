@@ -2,17 +2,34 @@
 
 #include "aius_auth.h"
 
+/* Cold code -> FLASH. Token derivation runs once at bring-up and the token
+ * comparison runs per HTTP request, never on the audio block path, so every
+ * definition below carries FLASHMEM and lands in FLASH instead of the shared
+ * FlexRAM/ITCM pool the audio pipeline needs. FLASHMEM is Teensyduino's
+ * __attribute__((section(".flashmem"))) from <avr/pgmspace.h>; TEENSYDUINO is a
+ * project-wide compiler -D, so the native host suites fall through to the no-op
+ * and this file keeps its portable, Arduino-free compile. The attribute must
+ * sit on each DEFINITION: GCC does not merge a `section` attribute from a
+ * forward declaration, so a prototype-only FLASHMEM silently leaves the code in
+ * ITCM. Enforced post-link by test/itcm-placement/verify_target.py. */
+#if defined(TEENSYDUINO)
+#include <avr/pgmspace.h>
+#endif
+#ifndef FLASHMEM
+#define FLASHMEM
+#endif
+
 /* This is a compiled, public salt for domain separation, not a secret key. */
 static const uint8_t k_compiled_salt[] =
 	"AIUS-P7-physical-access-bootstrap-v1";
 
-static uint64_t fnv1a64_byte(uint64_t state, uint8_t value)
+static FLASHMEM uint64_t fnv1a64_byte(uint64_t state, uint8_t value)
 {
 	state ^= (uint64_t)value;
 	return state * UINT64_C(1099511628211);
 }
 
-static uint64_t derive_value(
+static FLASHMEM uint64_t derive_value(
 	const uint8_t device_material[AIUS_AUTH_DEVICE_MATERIAL_SIZE])
 {
 	uint64_t state = UINT64_C(14695981039346656037);
@@ -24,7 +41,7 @@ static uint64_t derive_value(
 	return state;
 }
 
-AiusAuthStatus aius_auth_format_token(
+FLASHMEM AiusAuthStatus aius_auth_format_token(
 	uint64_t value, char token[AIUS_AUTH_TOKEN_STORAGE_SIZE])
 {
 	static const char hex[] = "0123456789abcdef";
@@ -39,7 +56,7 @@ AiusAuthStatus aius_auth_format_token(
 	return AIUS_AUTH_OK;
 }
 
-AiusAuthStatus aius_auth_derive_token(
+FLASHMEM AiusAuthStatus aius_auth_derive_token(
 	const uint8_t device_material[AIUS_AUTH_DEVICE_MATERIAL_SIZE],
 	char token[AIUS_AUTH_TOKEN_STORAGE_SIZE])
 {
@@ -48,21 +65,22 @@ AiusAuthStatus aius_auth_derive_token(
 	return aius_auth_format_token(derive_value(device_material), token);
 }
 
-static uint8_t is_hex(uint8_t value)
+static FLASHMEM uint8_t is_hex(uint8_t value)
 {
 	return (uint8_t)(((value >= (uint8_t)'0') && (value <= (uint8_t)'9')) ||
 	                  ((value >= (uint8_t)'a') && (value <= (uint8_t)'f')) ||
 	                  ((value >= (uint8_t)'A') && (value <= (uint8_t)'F')));
 }
 
-static uint8_t lower_hex(uint8_t value)
+static FLASHMEM uint8_t lower_hex(uint8_t value)
 {
 	uint8_t upper = (uint8_t)((value >= (uint8_t)'A') &&
 	                          (value <= (uint8_t)'F'));
 	return (uint8_t)(value + (uint8_t)(upper * ((uint8_t)'a' - (uint8_t)'A')));
 }
 
-AiusAuthStatus aius_auth_validate_token(const char *token, size_t length)
+FLASHMEM AiusAuthStatus aius_auth_validate_token(
+	const char *token, size_t length)
 {
 	uint32_t invalid = (uint32_t)(length != AIUS_AUTH_TOKEN_LENGTH);
 
@@ -79,7 +97,7 @@ AiusAuthStatus aius_auth_validate_token(const char *token, size_t length)
 	return invalid == 0u ? AIUS_AUTH_OK : AIUS_AUTH_ERR_CONTENT;
 }
 
-int aius_auth_token_matches(
+FLASHMEM int aius_auth_token_matches(
 	const char expected[AIUS_AUTH_TOKEN_LENGTH], const char *presented,
 	size_t presented_length)
 {

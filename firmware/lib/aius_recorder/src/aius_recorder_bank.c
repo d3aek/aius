@@ -3,6 +3,26 @@
 #include <math.h>
 #include <string.h>
 
+/* Cold code -> FLASH. This file is a thin multiplexer over aius_recorder.c and
+ * inherits its context: the "producer" entry point is reached from
+ * AiusAudioProcessor::enqueue(), which is itself FLASHMEM
+ * (.flashmem.audio_enqueue), and everything else is epoch, drain or HTTP work.
+ * Nothing here runs from an ISR, so every definition below carries FLASHMEM and
+ * lands in FLASH instead of the shared FlexRAM/ITCM pool the audio pipeline
+ * needs. FLASHMEM is Teensyduino's __attribute__((section(".flashmem"))) from
+ * <avr/pgmspace.h>; TEENSYDUINO is a project-wide compiler -D, so the native
+ * host suites fall through to the no-op and this file keeps its portable,
+ * Arduino-free compile. The attribute must sit on each DEFINITION: GCC does not
+ * merge a `section` attribute from a forward declaration, so a prototype-only
+ * FLASHMEM silently leaves the code in ITCM. Enforced post-link by
+ * test/itcm-placement/verify_target.py. */
+#if defined(TEENSYDUINO)
+#include <avr/pgmspace.h>
+#endif
+#ifndef FLASHMEM
+#define FLASHMEM
+#endif
+
 /* A post-roll longer than a slot can physically hold is nonsensical once
  * slots shrink from one long ring to N shorter ones -- clamp against slot
  * capacity in the production block size, on top of aius_recorder_set_config's
@@ -12,8 +32,8 @@
  * to 0, where the clamp deliberately declines to act rather than clamp to a
  * nonsensical zero post-roll (native fixtures live here; the target does
  * not). */
-static uint32_t bank_clamp_postroll(const AiusRecorderBank *bank,
-                                    uint32_t postroll_blocks)
+static FLASHMEM uint32_t bank_clamp_postroll(const AiusRecorderBank *bank,
+                                             uint32_t postroll_blocks)
 {
 	uint32_t slot_capacity_blocks =
 		bank->slots[0].ring_frames / AIUS_RECORDER_BANK_BLOCK_FRAMES;
@@ -25,7 +45,8 @@ static uint32_t bank_clamp_postroll(const AiusRecorderBank *bank,
 /* Replay a config a slot refused while it was mid-capture, at the moment it
  * re-arms. Silent no-op for a slot with nothing pending, which is the normal
  * case on every advance. */
-static void bank_apply_pending_config(AiusRecorderBank *bank, uint32_t slot)
+static FLASHMEM void bank_apply_pending_config(AiusRecorderBank *bank,
+                                               uint32_t slot)
 {
 	if (bank->config_pending_slots[slot] == 0u)
 		return;
@@ -36,12 +57,15 @@ static void bank_apply_pending_config(AiusRecorderBank *bank, uint32_t slot)
 		bank->config_pending_slots[slot] = 0u;
 }
 
-AiusStatus aius_recorder_bank_init(AiusRecorderBank *bank, uint8_t *ring,
-                                   uint32_t ring_bytes, uint32_t fitted_mb,
-                                   int32_t *staging, uint32_t *staging_frames,
-                                   uint32_t staging_slots,
-                                   uint32_t slot_frames,
-                                   uint32_t default_sample_rate_hz)
+FLASHMEM AiusStatus aius_recorder_bank_init(AiusRecorderBank *bank,
+                                            uint8_t *ring,
+                                            uint32_t ring_bytes,
+                                            uint32_t fitted_mb,
+                                            int32_t *staging,
+                                            uint32_t *staging_frames,
+                                            uint32_t staging_slots,
+                                            uint32_t slot_frames,
+                                            uint32_t default_sample_rate_hz)
 {
 	if (bank == NULL)
 		return AIUS_INVALID_ARG;
@@ -89,33 +113,37 @@ AiusStatus aius_recorder_bank_init(AiusRecorderBank *bank, uint8_t *ring,
 	return AIUS_OK;
 }
 
-bool aius_recorder_bank_present(const AiusRecorderBank *bank)
+FLASHMEM bool aius_recorder_bank_present(const AiusRecorderBank *bank)
 {
 	return bank->slots[0].state != AIUS_RECORDER_ABSENT;
 }
 
-void aius_recorder_bank_producer_block(AiusRecorderBank *bank,
-                                       const int32_t *l, const int32_t *right,
-                                       uint32_t frames,
-                                       uint32_t sample_rate_hz,
-                                       uint32_t overruns, uint32_t underruns,
-                                       bool limiter_gain_valid,
-                                       float limiter_gain, uint32_t now_ms)
+FLASHMEM void aius_recorder_bank_producer_block(AiusRecorderBank *bank,
+                                                const int32_t *l,
+                                                const int32_t *right,
+                                                uint32_t frames,
+                                                uint32_t sample_rate_hz,
+                                                uint32_t overruns,
+                                                uint32_t underruns,
+                                                bool limiter_gain_valid,
+                                                float limiter_gain,
+                                                uint32_t now_ms)
 {
 	aius_recorder_producer_block(&bank->slots[bank->active], l, right,
 	                        frames, sample_rate_hz, overruns, underruns,
 	                        limiter_gain_valid, limiter_gain, now_ms);
 }
 
-void aius_recorder_bank_epoch(AiusRecorderBank *bank, bool carrier_locked,
-                              bool gate_open, uint32_t underruns,
-                              uint32_t now_ms)
+FLASHMEM void aius_recorder_bank_epoch(AiusRecorderBank *bank,
+                                       bool carrier_locked, bool gate_open,
+                                       uint32_t underruns, uint32_t now_ms)
 {
 	aius_recorder_epoch(&bank->slots[bank->active], carrier_locked,
 	                    gate_open, underruns, now_ms);
 }
 
-uint32_t aius_recorder_bank_drain(AiusRecorderBank *bank, uint32_t max_bytes)
+FLASHMEM uint32_t aius_recorder_bank_drain(AiusRecorderBank *bank,
+                                           uint32_t max_bytes)
 {
 	AiusRecorder *active = &bank->slots[bank->active];
 	uint32_t drained = aius_recorder_drain(active, max_bytes);
@@ -179,14 +207,14 @@ uint32_t aius_recorder_bank_drain(AiusRecorderBank *bank, uint32_t max_bytes)
 	return drained;
 }
 
-AiusStatus aius_recorder_bank_freeze(AiusRecorderBank *bank)
+FLASHMEM AiusStatus aius_recorder_bank_freeze(AiusRecorderBank *bank)
 {
 	if (bank == NULL)
 		return AIUS_INVALID_ARG;
 	return aius_recorder_freeze(&bank->slots[bank->active]);
 }
 
-AiusStatus aius_recorder_bank_thaw(AiusRecorderBank *bank)
+FLASHMEM AiusStatus aius_recorder_bank_thaw(AiusRecorderBank *bank)
 {
 	if (bank == NULL)
 		return AIUS_INVALID_ARG;
@@ -202,7 +230,7 @@ AiusStatus aius_recorder_bank_thaw(AiusRecorderBank *bank)
 	return status;
 }
 
-AiusStatus aius_recorder_bank_park(AiusRecorderBank *bank)
+FLASHMEM AiusStatus aius_recorder_bank_park(AiusRecorderBank *bank)
 {
 	if (bank == NULL)
 		return AIUS_INVALID_ARG;
@@ -215,8 +243,8 @@ AiusStatus aius_recorder_bank_park(AiusRecorderBank *bank)
 	return AIUS_OK;
 }
 
-bool aius_recorder_bank_newest_frozen(const AiusRecorderBank *bank,
-                                      uint32_t *slot)
+FLASHMEM bool aius_recorder_bank_newest_frozen(const AiusRecorderBank *bank,
+                                               uint32_t *slot)
 {
 	if (bank == NULL || slot == NULL)
 		return false;
@@ -252,17 +280,18 @@ bool aius_recorder_bank_newest_frozen(const AiusRecorderBank *bank,
 	return true;
 }
 
-uint32_t aius_recorder_bank_deferred_epochs(const AiusRecorderBank *bank)
+FLASHMEM uint32_t
+aius_recorder_bank_deferred_epochs(const AiusRecorderBank *bank)
 {
 	return bank->deferred_epochs;
 }
 
-uint32_t aius_recorder_bank_lease_skips(const AiusRecorderBank *bank)
+FLASHMEM uint32_t aius_recorder_bank_lease_skips(const AiusRecorderBank *bank)
 {
 	return bank->lease_skips;
 }
 
-bool aius_recorder_bank_config_pending(const AiusRecorderBank *bank)
+FLASHMEM bool aius_recorder_bank_config_pending(const AiusRecorderBank *bank)
 {
 	for (uint32_t i = 0; i < AIUS_RECORDER_BANK_SLOTS; i++) {
 		if (bank->config_pending_slots[i] != 0u)
@@ -271,10 +300,10 @@ bool aius_recorder_bank_config_pending(const AiusRecorderBank *bank)
 	return false;
 }
 
-AiusStatus aius_recorder_bank_set_config(AiusRecorderBank *bank, uint32_t mask,
-                                         float gr_threshold_db,
-                                         uint32_t gr_hold_blocks,
-                                         uint32_t postroll_blocks)
+FLASHMEM AiusStatus
+aius_recorder_bank_set_config(AiusRecorderBank *bank, uint32_t mask,
+                              float gr_threshold_db, uint32_t gr_hold_blocks,
+                              uint32_t postroll_blocks)
 {
 	if (bank == NULL || (mask & ~AIUS_RECORDER_MASK_ALL) != 0u ||
 	    gr_threshold_db > 0.0f || !isfinite(gr_threshold_db))
@@ -307,10 +336,11 @@ AiusStatus aius_recorder_bank_set_config(AiusRecorderBank *bank, uint32_t mask,
 	return AIUS_OK;
 }
 
-AiusStatus aius_recorder_bank_read(const AiusRecorderBank *bank,
-                                   uint32_t slot, uint32_t offset_bytes,
-                                   uint32_t length_bytes, uint32_t generation,
-                                   const uint8_t **out, uint32_t *out_length)
+FLASHMEM AiusStatus
+aius_recorder_bank_read(const AiusRecorderBank *bank, uint32_t slot,
+                        uint32_t offset_bytes, uint32_t length_bytes,
+                        uint32_t generation, const uint8_t **out,
+                        uint32_t *out_length)
 {
 	if (bank == NULL || slot >= AIUS_RECORDER_BANK_SLOTS)
 		return AIUS_INVALID_ARG;
@@ -318,20 +348,22 @@ AiusStatus aius_recorder_bank_read(const AiusRecorderBank *bank,
 	                          length_bytes, generation, out, out_length);
 }
 
-void aius_recorder_bank_read_acquire(AiusRecorderBank *bank, uint32_t slot)
+FLASHMEM void aius_recorder_bank_read_acquire(AiusRecorderBank *bank,
+                                              uint32_t slot)
 {
 	bank->reads_in_flight[slot]++;
 }
 
-void aius_recorder_bank_read_release(AiusRecorderBank *bank, uint32_t slot)
+FLASHMEM void aius_recorder_bank_read_release(AiusRecorderBank *bank,
+                                              uint32_t slot)
 {
 	if (bank->reads_in_flight[slot] > 0u)
 		bank->reads_in_flight[slot]--;
 }
 
-AiusStatus aius_recorder_bank_snapshot_slot(const AiusRecorderBank *bank,
-                                            uint32_t slot,
-                                            AiusRecorderSnapshot *out)
+FLASHMEM AiusStatus
+aius_recorder_bank_snapshot_slot(const AiusRecorderBank *bank, uint32_t slot,
+                                 AiusRecorderSnapshot *out)
 {
 	if (bank == NULL || slot >= AIUS_RECORDER_BANK_SLOTS || out == NULL)
 		return AIUS_INVALID_ARG;

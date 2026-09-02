@@ -7,8 +7,8 @@ out of the audio path's headroom. ITCM is reserved for the bounded producer code
 that must preempt the serial AUDIO epoch. Epoch processing remains FLASHMEM even
 when it runs per block.
 
-Six checks: the no-LTO precondition, then the cold, optical composition, mixed
-ingress-producer, mixed recorder and LDF-library translation-unit shapes.
+Five checks: the no-LTO precondition, then the cold, optical composition, mixed
+ingress-producer and LDF-library translation-unit shapes.
 
 The no-LTO precondition. Every other check reads ONE OBJECT FILE at a time, so
 it sees only placement the compiler has already committed to. Link-time
@@ -49,12 +49,6 @@ source file added beside it is covered too.
 
 The mixed ingress object keeps only its five producer entry points in ITCM.
 Initialisation, consumption, flush and diagnostics are epoch work in FLASH.
-
-The mixed recorder object must keep its new PSRAM-geometry helper out of ITCM.
-aius_recorder is an allowlisted LDF library -- its producer path is legitimately
-hot -- so the generic gate cannot speak for that one helper and this named-section
-check still can. The rest of that pre-existing object is outside this phase's
-placement contract.
 
 The optical hot object: `src/optical_main.cpp` defines the audio processor, so it
 cannot join COLD_OBJECTS -- some of its ITCM is exactly what ITCM is for. Its
@@ -146,11 +140,6 @@ INGRESS_HOT_SECTIONS = (
     ".text.aius_audio_ingress_record_source_change",
 )
 
-RECORDER_OBJECT_GLOB = "lib*/aius_recorder/aius_recorder.c.o"
-RECORDER_COLD_SECTIONS = (
-    ".text.aius_recorder_ring_bytes_after_staging",
-)
-
 # An object PlatformIO's library dependency finder compiled, by the only thing
 # that identifies one: the `lib<hash>/<libname>/` prefix the LDF gives each
 # resolved library's build directory. The hash is derived from the library's
@@ -214,16 +203,20 @@ ITCM_ALLOWED_LDF_LIBS = {
     #    predate the placement contract and were never under any check; the entry
     #    records that, and removing one is the unit of work that brings a library
     #    under the gate.
-    "aius_auth": "SD maintenance token derivation; unannotated",
     "aius_codec_api": "arena allocator; unannotated",
-    "aius_config": "SD config parser; unannotated",
     "aius_dsp": "aius_measure.c is live here and its producer block is hot",
     "aius_dts": "DTS adapter; unannotated",
-    "aius_recorder": "flight-recorder producer path is legitimately hot; its one "
-                     "bring-up-only helper is pinned cold separately below",
     # aius_usb_control left this table 2026-08-16: every definition is now
     # FLASHMEM (funding the OTA dark-stamp's FASTRUN additions,
     # aius-ota-resilience.md Phase 1), so the library is under the gate.
+    # aius_recorder, aius_config and aius_auth left it 2026-09-02: every
+    # definition in aius_recorder.c, aius_recorder_bank.c, aius_config.c and
+    # aius_auth.c is now FLASHMEM. The recorder's "producer" is a writer
+    # context, not an ISR -- it is reached from AiusAudioProcessor::enqueue(),
+    # itself FLASHMEM -- so none of the three had an ITCM claim to make. The
+    # named RECORDER_COLD_SECTIONS check that used to pin the recorder's one
+    # bring-up helper retired with them: the generic gate now holds the whole
+    # library to zero `.text`.
 }
 
 # 2. The dynamic-initialization thunk GCC emits for the file's statics. It has
@@ -514,31 +507,6 @@ def verify_ingress_hot_object(build_dir: Path, readelf: str) -> int:
             f"{INGRESS_HOT_OBJECT} no longer emits producer code: {missing}"
         )
     return sum(sections.values())
-
-
-def verify_recorder_cold_helper(build_dir: Path, readelf: str) -> int:
-    """The bring-up-only PSRAM geometry helper must execute from flash."""
-    objects = list(build_dir.glob(RECORDER_OBJECT_GLOB))
-    if len(objects) != 1:
-        raise VerificationError(
-            "expected one linked recorder object matching "
-            f"{RECORDER_OBJECT_GLOB!r}, found {objects}"
-        )
-    sections, _comdat, _clones = inspect_object(objects[0], readelf)
-    offenders = {
-        name: sections[name]
-        for name in RECORDER_COLD_SECTIONS
-        if name in sections
-    }
-    if offenders:
-        raise VerificationError(
-            "recorder bring-up helper still emits ITCM code: "
-            + ", ".join(
-                f"{name}: {size} bytes"
-                for name, size in sorted(offenders.items())
-            )
-        )
-    return len(RECORDER_COLD_SECTIONS)
 
 
 def parse_function_symbols(output: str) -> dict[str, int]:
@@ -890,13 +858,6 @@ def _ingress_hot_summary(producer: int) -> str:
     )
 
 
-def _recorder_cold_summary(checked: int) -> str:
-    return (
-        "recorder-object ITCM placement: PASS "
-        f"({checked} bring-up-only section absent from ITCM)"
-    )
-
-
 def _dark_window_summary(checked: int) -> str:
     return (
         "dark-window ITCM residency: PASS "
@@ -954,9 +915,6 @@ def verify_cold_placement(source, target, env) -> None:
     print(_hot_summary(*verify_hot_object(build_dir, readelf)))
     print(_ingress_hot_summary(verify_ingress_hot_object(build_dir, readelf)))
     print(_ldf_summary(*verify_ldf_libraries_in_build(build_dir, readelf)))
-    print(_recorder_cold_summary(
-        verify_recorder_cold_helper(build_dir, readelf)
-    ))
     print(_dark_window_summary(
         verify_dark_window_residency(build_dir, readelf)
     ))
@@ -1023,12 +981,6 @@ def _main(argv: list[str]) -> int:
         print(f"LDF-library ITCM placement: FAIL: {error}", file=sys.stderr)
         return 1
     print(_ldf_summary(*ldf))
-    try:
-        recorder = verify_recorder_cold_helper(build_dir, args.readelf)
-    except (OSError, subprocess.CalledProcessError, VerificationError) as error:
-        print(f"recorder-object ITCM placement: FAIL: {error}", file=sys.stderr)
-        return 1
-    print(_recorder_cold_summary(recorder))
     try:
         dark = verify_dark_window_residency(build_dir, args.readelf)
     except (OSError, subprocess.CalledProcessError, VerificationError) as error:

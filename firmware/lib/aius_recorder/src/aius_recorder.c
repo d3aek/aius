@@ -3,6 +3,19 @@
 #include <math.h>
 #include <string.h>
 
+/* Cold code -> FLASH. "Producer" here names the recorder's writer context, not
+ * an interrupt: aius_recorder_producer_block() is reached from
+ * AiusAudioProcessor::enqueue(), which is itself FLASHMEM
+ * (.flashmem.audio_enqueue), and the epoch/drain/HTTP entry points are serial
+ * runtime work. Nothing in this file runs from an ISR, so every definition
+ * below carries FLASHMEM and lands in FLASH instead of the shared FlexRAM/ITCM
+ * pool the audio pipeline needs. FLASHMEM is Teensyduino's
+ * __attribute__((section(".flashmem"))) from <avr/pgmspace.h>; TEENSYDUINO is a
+ * project-wide compiler -D, so the native host suites fall through to the no-op
+ * and this file keeps its portable, Arduino-free compile. The attribute must
+ * sit on each DEFINITION: GCC does not merge a `section` attribute from a
+ * forward declaration, so a prototype-only FLASHMEM silently leaves the code in
+ * ITCM. Enforced post-link by test/itcm-placement/verify_target.py. */
 #if defined(TEENSYDUINO)
 #include <avr/pgmspace.h>
 #endif
@@ -21,7 +34,7 @@
  * count or one redundant token store, never a corrupt transition, because
  * the state word itself always has exactly one writer per edge. */
 
-static int power_of_two(uint32_t value)
+static FLASHMEM int power_of_two(uint32_t value)
 {
 	return value != 0u && (value & (value - 1u)) == 0u;
 }
@@ -48,7 +61,7 @@ aius_recorder_ring_bytes_after_staging(uint32_t storage_bytes,
  * re-armed in place is still looking at the same stream one epoch later.
  * A recorder re-armed somewhere else in a bank inherits that history from the
  * slot it takes over from (aius_recorder_inherit_epoch_state). */
-static void reset_capture(AiusRecorder *r)
+static FLASHMEM void reset_capture(AiusRecorder *r)
 {
 	r->slot_write = 0u;
 	r->slot_read = 0u;
@@ -81,11 +94,13 @@ static void reset_capture(AiusRecorder *r)
 	r->reclaim_count = 0u;
 }
 
-AiusStatus aius_recorder_init(AiusRecorder *r, uint8_t *ring,
-                              uint32_t ring_bytes, uint32_t fitted_mb,
-                              int32_t *staging, uint32_t *staging_frames,
-                              uint32_t staging_slots, uint32_t slot_frames,
-                              uint32_t default_sample_rate_hz)
+FLASHMEM AiusStatus aius_recorder_init(AiusRecorder *r, uint8_t *ring,
+                                       uint32_t ring_bytes, uint32_t fitted_mb,
+                                       int32_t *staging,
+                                       uint32_t *staging_frames,
+                                       uint32_t staging_slots,
+                                       uint32_t slot_frames,
+                                       uint32_t default_sample_rate_hz)
 {
 	if (r == NULL)
 		return AIUS_INVALID_ARG;
@@ -126,8 +141,8 @@ AiusStatus aius_recorder_init(AiusRecorder *r, uint8_t *ring,
  * (stage/commit). postroll_blocks == 0 skips straight to DRAINING: the
  * post-roll counts staged blocks from the trigger block inclusive, and zero
  * of them means the capture ends at the trigger boundary. */
-static void producer_latch_trigger(AiusRecorder *r, uint32_t which,
-                              uint32_t now_ms)
+static FLASHMEM void producer_latch_trigger(AiusRecorder *r, uint32_t which,
+                                       uint32_t now_ms)
 {
 	uint32_t postroll = r->postroll_blocks;
 	r->trigger = which;
@@ -144,12 +159,13 @@ static void producer_latch_trigger(AiusRecorder *r, uint32_t which,
 	r->state = AIUS_RECORDER_POSTROLL;
 }
 
-void aius_recorder_producer_block(AiusRecorder *r, const int32_t *l,
-                             const int32_t *right, uint32_t frames,
-                             uint32_t sample_rate_hz,
-                             uint32_t overruns, uint32_t underruns,
-                             bool limiter_gain_valid, float limiter_gain,
-                             uint32_t now_ms)
+FLASHMEM void aius_recorder_producer_block(AiusRecorder *r, const int32_t *l,
+                                      const int32_t *right, uint32_t frames,
+                                      uint32_t sample_rate_hz,
+                                      uint32_t overruns, uint32_t underruns,
+                                      bool limiter_gain_valid,
+                                      float limiter_gain,
+                                      uint32_t now_ms)
 {
 	uint32_t state = r->state;
 	if (state != AIUS_RECORDER_RECORDING && state != AIUS_RECORDER_POSTROLL)
@@ -298,7 +314,7 @@ void aius_recorder_producer_block(AiusRecorder *r, const int32_t *l,
 
 /* Controller: reclaim after the producer block counter remains unchanged for
  * the bounded window. */
-static void epoch_reclaim(AiusRecorder *r, uint32_t now_ms)
+static FLASHMEM void epoch_reclaim(AiusRecorder *r, uint32_t now_ms)
 {
 	uint32_t state = r->state;
 	if (state == AIUS_RECORDER_RECORDING) {
@@ -315,8 +331,9 @@ static void epoch_reclaim(AiusRecorder *r, uint32_t now_ms)
 	r->state = AIUS_RECORDER_DRAINING;
 }
 
-void aius_recorder_epoch(AiusRecorder *r, bool carrier_locked, bool gate_open,
-                         uint32_t underruns, uint32_t now_ms)
+FLASHMEM void aius_recorder_epoch(AiusRecorder *r, bool carrier_locked,
+                                  bool gate_open, uint32_t underruns,
+                                  uint32_t now_ms)
 {
 	uint32_t state = r->state;
 	if (state == AIUS_RECORDER_ABSENT)
@@ -385,7 +402,7 @@ void aius_recorder_epoch(AiusRecorder *r, bool carrier_locked, bool gate_open,
 	}
 }
 
-uint32_t aius_recorder_drain(AiusRecorder *r, uint32_t max_bytes)
+FLASHMEM uint32_t aius_recorder_drain(AiusRecorder *r, uint32_t max_bytes)
 {
 	uint32_t state = r->state;
 	if (state == AIUS_RECORDER_ABSENT || state == AIUS_RECORDER_FROZEN)
@@ -426,7 +443,7 @@ uint32_t aius_recorder_drain(AiusRecorder *r, uint32_t max_bytes)
 	return drained_frames * AIUS_RECORDER_FRAME_BYTES;
 }
 
-AiusStatus aius_recorder_freeze(AiusRecorder *r)
+FLASHMEM AiusStatus aius_recorder_freeze(AiusRecorder *r)
 {
 	if (r == NULL)
 		return AIUS_INVALID_ARG;
@@ -445,7 +462,7 @@ AiusStatus aius_recorder_freeze(AiusRecorder *r)
 	return AIUS_INVALID_ARG;
 }
 
-AiusStatus aius_recorder_thaw(AiusRecorder *r)
+FLASHMEM AiusStatus aius_recorder_thaw(AiusRecorder *r)
 {
 	if (r == NULL || r->state != AIUS_RECORDER_FROZEN)
 		return AIUS_INVALID_ARG;
@@ -457,8 +474,8 @@ AiusStatus aius_recorder_thaw(AiusRecorder *r)
 	return AIUS_OK;
 }
 
-void aius_recorder_inherit_epoch_state(AiusRecorder *r,
-                                       const AiusRecorder *from)
+FLASHMEM void aius_recorder_inherit_epoch_state(AiusRecorder *r,
+                                                const AiusRecorder *from)
 {
 	if (r == NULL || from == NULL || r == from)
 		return;
@@ -471,7 +488,7 @@ void aius_recorder_inherit_epoch_state(AiusRecorder *r,
 	r->underrun_base_epoch = from->underrun_base_epoch;
 }
 
-AiusStatus aius_recorder_park(AiusRecorder *r)
+FLASHMEM AiusStatus aius_recorder_park(AiusRecorder *r)
 {
 	if (r == NULL)
 		return AIUS_INVALID_ARG;
@@ -484,10 +501,10 @@ AiusStatus aius_recorder_park(AiusRecorder *r)
 	return AIUS_OK;
 }
 
-AiusStatus aius_recorder_set_config(AiusRecorder *r, uint32_t mask,
-                                    float gr_threshold_db,
-                                    uint32_t gr_hold_blocks,
-                                    uint32_t postroll_blocks)
+FLASHMEM AiusStatus aius_recorder_set_config(AiusRecorder *r, uint32_t mask,
+                                             float gr_threshold_db,
+                                             uint32_t gr_hold_blocks,
+                                             uint32_t postroll_blocks)
 {
 	if (r == NULL || (mask & ~AIUS_RECORDER_MASK_ALL) != 0u ||
 	    gr_threshold_db > 0.0f || !isfinite(gr_threshold_db))
@@ -512,9 +529,12 @@ AiusStatus aius_recorder_set_config(AiusRecorder *r, uint32_t mask,
 	return AIUS_OK;
 }
 
-AiusStatus aius_recorder_read(const AiusRecorder *r, uint32_t offset_bytes,
-                              uint32_t length_bytes, uint32_t generation,
-                              const uint8_t **out, uint32_t *out_length)
+FLASHMEM AiusStatus aius_recorder_read(const AiusRecorder *r,
+                                       uint32_t offset_bytes,
+                                       uint32_t length_bytes,
+                                       uint32_t generation,
+                                       const uint8_t **out,
+                                       uint32_t *out_length)
 {
 	if (r == NULL || out == NULL || out_length == NULL)
 		return AIUS_INVALID_ARG;
@@ -538,7 +558,8 @@ AiusStatus aius_recorder_read(const AiusRecorder *r, uint32_t offset_bytes,
 	return AIUS_OK;
 }
 
-void aius_recorder_snapshot(const AiusRecorder *r, AiusRecorderSnapshot *out)
+FLASHMEM void aius_recorder_snapshot(const AiusRecorder *r,
+                                     AiusRecorderSnapshot *out)
 {
 	memset(out, 0, sizeof(*out));
 	out->state = r->state;

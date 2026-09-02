@@ -1150,11 +1150,11 @@ memory)
 	python3 "$fw_root/test/memory/test_target_memory.py"
 	;;
 itcm-placement)
-	# The post-link ITCM placement guard: six checks -- the environment carries
+	# The post-link ITCM placement guard: five checks -- the environment carries
 	# no -flto, cold objects emit no ITCM, the optical and mixed-ingress objects
-	# emit exactly their pinned producer allowlists, every LDF-resolved library
-	# is either gated to zero ITCM or named in the allowlist, and recorder
-	# bring-up geometry stays cold. Named here so it is reachable like its
+	# emit exactly their pinned producer allowlists, and every LDF-resolved
+	# library is either gated to zero ITCM or named in the allowlist (the
+	# recorder is gated since 2026-09-02). Named here so it is reachable like its
 	# siblings -- boot-target runs the mutation tests for its own post-link
 	# verifier, and network-transport runs the vendor-header source contract,
 	# while this guard was reachable only through platformio.ini's post-link

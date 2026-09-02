@@ -120,8 +120,23 @@ ends left open:
     `DspConfig` schema already declares both.
   - ~~H1 (teardown lease release) is host-proven only.~~ **Accepted on the
     host proof** (recorder plan Phase D).
-  - ITCM has 1108 B free and the cold recorder-bank helpers landed there; a
-    placement pass is owed before anything else grows.
+  - ~~ITCM has 1108 B free and the cold recorder-bank helpers landed there; a
+    placement pass is owed before anything else grows.~~ **Done 2026-09-02:
+    every definition in `aius_recorder`, `aius_config` and `aius_auth` is
+    `FLASHMEM`** (the recorder "producer" is a writer context reached from the
+    FLASHMEM `enqueue()`, not an ISR), the three libraries left
+    `ITCM_ALLOWED_LDF_LIBS` and are gated to zero `.text`, and the named
+    recorder-helper check retired. ITCM 195,500 → 190,764 B used, headroom
+    1,108 → 5,844 B; DTCM/OCRAM unchanged. Cross-build + all guards green;
+    **not yet flashed**. What is left in ITCM is beyond annotation (nm census
+    of the ELF): newlib printf family ≈ 25 KB (`_vfprintf_r`, `_svfprintf_r`,
+    `_vfiprintf_r`, `_dtoa_r`), FNET + NativeEthernet ≈ 43 KB, SdFat ≈ 19 KB,
+    the AC-3 decoder ≈ 15 KB, the DTS core ≈ 10 KB. Shedding ~32 KB would hand
+    a whole FlexRAM block back to the DTCM stack/locals zone. Proposal (not
+    agreed): a rule in `firmware/link/aius_teensy41.ld` placing libc's printf
+    objects (every caller is a FLASHMEM serializer) and SdFat in `.flashmem`;
+    the decoders and FNET only after a measured decode-budget / poll-latency
+    check.
   - ~~The `optical-cutover` suite fails at HEAD on a pre-existing `micros()` in
     `update()`.~~ **Fixed**: the suite's `update()` allow-list admits the
     input-fault cadence watermark's `micros()`, which moves no samples.

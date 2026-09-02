@@ -165,11 +165,15 @@ names the constraint. The three that constrain everyday work:
   sliver. The assert pins it to the smallest zone this board has demonstrably run
   with.
 
-**As of 2026-08-05 the optical image links with roughly 148 bytes of ITCM
-headroom, so any new function on a hot path must be placed deliberately.** That
-is less than one small function. Assume a new hot-path function does not fit
-until the build says otherwise, and budget for it by pinning something cold to
-flash.
+**As of 2026-09-02 the optical image links with 5,844 bytes of ITCM headroom
+(190,764 of 196,608 used), so any new function on a hot path must be placed
+deliberately.** It was 1,108 bytes before the recorder, config and auth
+libraries went `FLASHMEM`, and 148 on 2026-08-05. Assume a new hot-path function
+does not fit until the build says otherwise, and budget for it by pinning
+something cold to flash. The remaining ITCM is dominated by code no annotation
+reaches — newlib's printf family (~25 KB), FNET + NativeEthernet (~43 KB), SdFat
+(~19 KB) and the vendored decoders — which only a linker-script placement rule
+can move.
 
 The remedy is placement:
 
@@ -181,7 +185,7 @@ The remedy is placement:
 - **Large buffers go in `DMAMEM` (OCRAM), not DTCM.** The HTTP request/response
   buffers, the DSP models, the replay service and the UDP buffers are all placed
   that way; a DTCM instance of the composed runtime would not fit.
-- **Six post-link ITCM guards run on every optical build**
+- **Five post-link ITCM guards run on every optical build**
   ([`firmware/test/itcm-placement/verify_target.py`](firmware/test/itcm-placement/verify_target.py)).
   They reject `.text` from declared-cold objects, pin the mixed ingress library
   and `optical_main.cpp` to their named hot entry points, require any LDF library
