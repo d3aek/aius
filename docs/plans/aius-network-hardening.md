@@ -1020,7 +1020,13 @@ table.
     the order `platform_publish_config()` already keeps for SD loads). The
     live sequence above is unchanged by this: each of those PUTs committed, and
     the 200 is only released on commit, so a client that polls after its 200
-    sees the same 1 → 2 → 3. Not yet flashed; cross-build proof only.
+    sees the same 1 → 2 → 3. **Verified live on `b38e8448f5c8` (2026-09-02
+    23:04 UTC, carrier lit):** one round-tripped PUT, `200`, then
+    `staged_generation` 1 → 2 beside `config_generation` 1 → 2 (applied at
+    the next block boundary), `config_pending false`, `/api/status`
+    `dsp_staged_generation 2` / `model_origin "put"`, `sd_diag.http_jobs` 1
+    with `http_faults` 0. The faulted-write arm is not provokable safely and
+    stays host-reasoned.
 23. **`AIUS_NET_DHCP_DEADLINE_MS` at 9,000 ms bought one mode, not headroom.** The
     DHCP window is quantised by `FNET_CFG_DHCP_CLN_RESPONSE_TIMEOUT_MS`:
     **4,003–4,005 ms on 27 of 29 boots, 8,005 ms on 2** — one lost `DISCOVER` and its

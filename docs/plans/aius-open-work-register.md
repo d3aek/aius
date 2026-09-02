@@ -107,8 +107,14 @@ ends left open:
     that fails to commit still advances it while `config_pending` stays
     false.~~ **Moved to commit** (`sd_settle_http_write()`, beside the apply
     arm; [`aius-network-hardening.md`](aius-network-hardening.md) defect 22
-    correction (d)). Cross-build proven; **not yet flashed** — the deployed
-    `3570a216216d` still bumps at accept.
+    correction (d)). **On the board since `b38e8448f5c8` (flashed 2026-09-02
+    23:02 UTC, owner-approved):** a round-tripped PUT answered `200` and the
+    next GET read `staged_generation` 1 → 2, `config_generation` 1 → 2
+    (applied at the block boundary under the lit carrier), `config_pending
+    false`, `/api/status` `dsp_staged_generation 2`, `model_origin "put"`,
+    `sd_diag.http_jobs 1`, `http_faults 0`. The SD write cost 1,024
+    `tx_underrun_frames` (~21 ms) during playback, the standing card-traffic
+    price. The faulted-write arm (counter unchanged) is host-reasoned only.
   - ~~`CONTRIBUTING.md` carries ~12 stale `…` paths.~~
     **Swept** to repository-relative paths; the sd-editor paragraph now names
     the suite runner (`test.sh --suite sd-editor`).
@@ -128,7 +134,10 @@ ends left open:
     `ITCM_ALLOWED_LDF_LIBS` and are gated to zero `.text`, and the named
     recorder-helper check retired. ITCM 195,500 → 190,764 B used, headroom
     1,108 → 5,844 B; DTCM/OCRAM unchanged. Cross-build + all guards green;
-    **not yet flashed**. What is left in ITCM is beyond annotation (nm census
+    **on the board since `b38e8448f5c8` (2026-09-02)**: fresh boot with the
+    carrier lit, `relocks 0`, `tx_underrun_frames 0`, `gate_open_padded_frames
+    128`, all four recorder slots recording (no boot-underrun freeze), audio
+    flowing. What is left in ITCM is beyond annotation (nm census
     of the ELF): newlib printf family ≈ 25 KB (`_vfprintf_r`, `_svfprintf_r`,
     `_vfiprintf_r`, `_dtoa_r`), FNET + NativeEthernet ≈ 43 KB, SdFat ≈ 19 KB,
     the AC-3 decoder ≈ 15 KB, the DTS core ≈ 10 KB. Shedding ~32 KB would hand

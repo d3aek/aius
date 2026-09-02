@@ -26,8 +26,10 @@ except the ITCM placement pass, whose state is below.
 
 **Status.** DONE: recorder-auth rule corrected, CONTRIBUTING path sweep, SD fixture,
 H1 accepted on host proof, optical-cutover and registry suites green, `staged_generation`
-advancing at SD commit, ITCM placement pass (headroom 1,108 → 5,844 B). BLOCKED on the
-operator: the flash, the gate-4 decision. Nothing is in flight.
+advancing at SD commit, ITCM placement pass (headroom 1,108 → 5,844 B), the flash
+(`b38e8448f5c8` on the board, both firmware changes verified live). IN PROGRESS: the
+gate-4 `transitions` analyzer adaptation (design decision (d), host-side + offline
+re-analysis of the saved runs). Nothing is blocked on the operator.
 
 ### What landed (all pushed)
 
@@ -41,9 +43,13 @@ operator: the flash, the gate-4 decision. Nothing is in flight.
 
 ### Uncommitted tree state
 
-`git_modules/aius`: clean at `bcf2233` plus this document. The current
-`firmware/.pio/build/teensy41-optical/firmware.{elf,hex}` is the `bcf2233` build (ITCM
-190,764 B) and is the image to flash.
+`git_modules/aius`: the gate-4 analyzer adaptation is in flight in
+`firmware/tools/net/aius_rate_bench.py`, `firmware/tools/rate_gate_capture/capture.py`,
+`firmware/test/rate-runner/test_rate_bench.py`, `firmware/test/rate-gate-capture/
+test_capture.py` and `docs/plans/aius-rate-gate-capture-tool.md`; if those are dirty
+when you resume, the sub-agent's report never reached a commit — check the two suites
+before trusting them. `CLAUDE.md`'s deployed-image line (`b38e8448f5c8`) is a queued
+`the release-promotion step` if still clean.
 
 upstream repository root: the `git_modules/aius` pointer is bumped in the commit that carries this
 document. Every other dirty path (`.claude/**`, `data/*.sqlite`, `docs/plans/almanac.md`,
@@ -53,14 +59,15 @@ was run directly (`pnpm exec vitest run <file>`).
 
 ### Next action
 
-Ask the owner the two questions under §Pending decisions. If the flash is approved, at a
-silent window: `firmware/scripts/flash_optical.sh` (default hex =
-the `bcf2233` build; rebuild first with `firmware/scripts/build.sh teensy41-optical` if
-`.pio/build` has moved), then read `/api/status` (`build_revision` should start
-`bcf2233`, `tx_underrun_frames` 0 after the relock pad), re-run the carrier-less
-two-PUT sequence from network-hardening defect 22 and confirm `staged_generation`
-advances only on `200`, and run the 48 kHz smoke. Record the results in the register's
-2026-09-02 remediation bullets and retire this document.
+Land the gate-4 analyzer adaptation (design decision (d)) once its host proof is green:
+`firmware/scripts/test.sh --environment native --suite rate-runner` and
+`--suite rate-gate-capture`, plus the offline re-analysis of the saved run-2 evidence
+(`aius_rate_bench.py analyze transitions --evidence
+.scratch/9b96cdc1-b48a-4ff1-943a-37bbd052f84e/gate4-run2/evidence.jsonl
+--expected-phases 48000,44100,48000` → `pass`). Then the one remaining live step: a
+gate-4 run with `--with-replay` on `b38e8448f5c8` (U24 de-auth + replay start, so an
+audio interruption the owner must accept first), recorded in
+`aius-rate-gate-capture-tool.md` §Live-run results. Retire this document with that.
 
 ### Decisions taken this session
 
@@ -83,6 +90,19 @@ advances only on `200`, and run the 48 kHz smoke. Record the results in the regi
   and existence-checked one level above the firmware tree; the sd-editor arm names its path.
 - **ITCM pass scope: the three first-party libs only** (`aius_recorder`, `aius_auth`,
   `aius_config`). The bigger levers are ldscript-level and proposals (§Findings).
+- **Owner, 2026-09-02 ~23:00 UTC: flash now** — done, `b38e8448f5c8` (HEAD rebuild of
+  the `bcf2233` code so the revision stamp is clean); both firmware changes verified
+  live (register bullets, network-hardening defect 22 (d)).
+- **Owner, same ask: gate 4 → adapt the `transitions` analyzer to the aplay-blip
+  stimulus, thresholds untouched** (ruling (d) in `aius-rate-gate-capture-tool.md`).
+  Shape: live windows derived from the observed labels instead of the positional
+  "last window is replay" rule (a real bug, F13 — it produced run 2's false
+  `transition-unattributed-unsupported`); the analyzer judges the phase sequence the
+  capture tool declares it drove (`expected_phases`, recorded in the evidence
+  metadata) instead of asserting a replay leg that was not played; `event_overflows`
+  reported rather than gated in `transitions` only (F8: an events-ring overflow
+  between two polls is a tool-observability loss; `unsupported-event-count` stays as
+  the guard). No threshold changes.
 
 ### Traps
 
@@ -119,20 +139,9 @@ advances only on `200`, and run the 48 kHz smoke. Record the results in the regi
 
 ### Pending decisions
 
-- **Gate-4 pass (owner).** Exact words: *"A gate-4 pass is unreachable with the aplay
-  stimulus because the U24 idles at ~48.02 kHz between rate phases and those idle gaps
-  trip `transition-unattributed-unsupported` and the idle underruns. Do you want (a) a
-  stimulus source that cuts the carrier cleanly between phases (programmable generator;
-  hardware, no tool change), (b) the `transitions` analyzer taught the aplay-blip
-  pattern — idle-gap `unsupported` episodes and their underruns declared as between-phase
-  windows when they align with the stimulus timeline, thresholds untouched — or (c) leave
-  gate 4 at its current honest FAIL-on-stimulus-grounds verdict?"* Recommendation: (b),
-  because it is host-provable against the two saved evidence runs and the F8 poll-cadence
-  note already treats `event_overflows` as tool-caused; (a) costs hardware, (c) leaves
-  a gate that can never go green. Blocks: nothing else; the gate stays red until then.
-- **Flash the new image?** `c34242e` (+ the ITCM pass when it lands) is cross-build
-  proven only. Flashing is `firmware/scripts/flash_optical.sh` over USB CDC, reboots the
-  board and stops all audio; sign without `--slot` (board is `ab: null`). Recommendation:
-  flash at the next silent window and re-run the carrier-less two-PUT sequence
-  (network-hardening defect 22) plus the 48 kHz smoke. Blocks: on-device closure of the
-  `staged_generation` and ITCM items.
+- **Live gate-4 re-run with `--with-replay` on `b38e8448f5c8`.** Not yet asked. Exact
+  words: *"The adapted analyzer passes the saved run offline; a live `--with-replay`
+  gate-4 run would give the first real green and costs a U24 de-auth plus a replay start
+  (audio stops for the run, ~30 s). Run it now, or at a silent window?"* Options: now
+  (closes gate 4 tonight) / later (nothing else blocks). Recommendation: at the next
+  silent window. Blocks: retiring this document.
