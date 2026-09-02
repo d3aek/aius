@@ -720,19 +720,34 @@ teardown, so the lease still leaked permanently mid-stream.
     freeze landed on the recycled slot 0 with `trigger operator`, no
     `carrier_loss` fired on either recycle, `deferred_epochs 0`,
     `lease_skips 0`, `lease_leaks 0`. This is the epoch-history inheritance
-    path running on device; it is **not** the H2 provocation (which needs a
-    real carrier drop with three frozen slots — still owed, U24 de-auth
-    procedure in the review-fix handover).
+    path running on device; the H2 provocation proper is the next bullet.
+  - **H2 provoked on device, 2026-09-02 14:22 UTC (real carrier drop with
+    three slots frozen while locked).** Bank before: slots 0 (`operator`), 1
+    and 2 (`underrun`) frozen at `freeze_generation 1`, slot 3 recording,
+    `slots_recycled 4`. U24 de-authorised (`/sys/bus/usb/devices/3-1.1/
+    authorized` ← 0): `carrier 0`, gate closed, and the bank read slot 3
+    frozen by `carrier_loss` (`at_ms 13785862`, `postroll_captured 1`), slot
+    0 — the oldest frozen — recycled to RECORDING at `freeze_generation 2`,
+    slots 1 and 2 untouched at generation 1, `slots_recycled 5`,
+    `deferred_epochs 0`, `lease_skips 0`, `lease_leaks 0`. Exactly one
+    `carrier_loss` fired, on the active slot only. Re-authorised ~1.5 min
+    later: relock to `tracking` at 48020, and the recycled slot 0 then froze
+    on its own on the relock underrun (`underrun`, `at_block 776` = 8.3 s
+    after relock, `stream_end_frame 397824`, a fresh epoch counted from 0,
+    `gap_count 0`), recycling slot 1 to generation 2 (`slots_recycled 6`).
+    The same carrier-less window carried the defect-22 two-PUT proof
+    ([`aius-network-hardening.md`](aius-network-hardening.md) defect 22).
+    Cost: ~1.5 min of silence in the room; the U24 mixer reset to 70,70 on
+    re-enumeration and was restored to 110,110.
   - **The flight recorder caught the gate-2 defect on its own**: an
     `underrun` freeze at 44100 with the 128-frame dropout inside it, plus a
     `carrier_loss` freeze at the 44.1 kHz stimulus start. First real
     field use of the bank.
   - **Still not evidenced on device**: H1 (teardown lease release — no route
     triggers `AIUS_NET_ACTION_TEARDOWN`; needs a physical link drop
-    mid-pull; proven by the runtime-target end-to-end row), H2 as above,
-    `park()` mid-POSTROLL, the read-lease-deferred recycle, and the
-    rehearsal-activation re-verification. Phase D stays IN-PROGRESS on
-    those.
+    mid-pull; proven by the runtime-target end-to-end row), `park()` mid-POSTROLL, the
+    read-lease-deferred recycle, and the rehearsal-activation
+    re-verification. Phase D stays IN-PROGRESS on those.
 
 ## Residual risks / non-goals
 

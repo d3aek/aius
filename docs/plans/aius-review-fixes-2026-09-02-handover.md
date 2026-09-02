@@ -35,8 +35,12 @@ digests recorded. OTA upgrade page: DONE — synced to the card (12/12 files,
 2026-09-02 11:07 UTC) and resume validated on device (first PUT after a killed
 tab starts at the device's `next_offset`). Plan docs: device
 results promoted (recorder Phase C/D, latency Phase 3 regression row, sample-rate
-gate 2/4/7 evidence, capture-tool live-run section). Remaining: the H2/defect-22
-device provocation and the two owner decisions below.
+gate 2/4/7 evidence, capture-tool live-run section). Session 3 (same day):
+H2/defect-22 provoked on device and recorded (recorder Phase D, network-hardening
+defect 22); the four owner decisions below taken; gate-2 dropout root-caused from
+the retained status samples plus the firmware. Remaining: write the gate-7 /
+gate-2 rewording (decisions 1–2) and the gate-2 diagnosis + new firmware phase
+(decision 4) into the plans, then retire this document.
 
 ### What landed (all pushed to `origin/master` of `git_modules/aius`)
 
@@ -50,10 +54,15 @@ Session 2:
 |---|---|---|
 | `ce84850` | gate-4 tool: per-slot `(slot, freeze_generation)` capture identity (F10), `aplay --samples` fractional phases + `stimulus-not-followed` diagnosis (F11), honest ring budget, `unresolved_fiducials` lower bound | rate-gate-capture 68 rows |
 | `5555876` | gate-4 reducer: old rate from a 4096-frame pre-fiducial window (F12); plans: live-run results section with gate 2/4/7 digests, F10–F12, gate-2 defect opened in `aius-sample-rate-following.md` | rate-gate-capture 69 rows; offline reduction of the saved frames + second live run both resolve both fiducials |
-| (this commit series) | recorder plan Phase C/D device evidence, latency plan 823-frame regression row, upgrade-page fresh-load resume vitest case, this handover | vitest `upgrade.test.js` 64 rows |
+| `a74a465` | recorder plan Phase C/D device evidence, latency plan 823-frame regression row, upgrade-page fresh-load resume vitest case, this handover | vitest `upgrade.test.js` 64 rows |
 
-upstream repository side: pointer bump owed after the last submodule commit
-(`.scratch/9b96cdc1-b48a-4ff1-943a-37bbd052f84e/commit-msg-upstream repository-pointer.txt`).
+upstream repository side: pointer at `a74a465` landed in `0508d9174`.
+
+Session 3 (docs only, no firmware or tool change):
+
+| Commit | Contents | Proof |
+|---|---|---|
+| (this commit) | H2 device provocation → recorder Phase D; defect-22 two-PUT live proof → network-hardening; handover state | live board reads, saved in session scratch |
 
 ### Device validation results (board `e746cf952dd6+teensy41-optical`, 2026-09-02)
 
@@ -99,6 +108,30 @@ Phase C/D and `aius-e2e-latency.md` Phase 3; gate 2 (real 128-frame dropout at
   activated. Transcript: `.scratch/9b96cdc1-…/inspect-ota-3.txt`; scenario
   `ota-resume.json` beside it (a `Scenario` object with an eval that sets
   `#token` — the runner's `localStorage` pre-seed did not populate the box).
+- **H2 / defect 22 (session 3, 14:22–14:24 UTC)**: U24 de-auth with slots 0/1/2
+  frozen → only slot 3 fired `carrier_loss`, slot 0 recycled to generation 2,
+  `slots_recycled` 4→5, no lease counters moved; two carrier-less PUTs advanced
+  `staged_generation` 1→2→3 with `config_generation` pinned at 7 and both
+  documents agreeing; on re-auth the model applied (`config_generation` 8). The
+  relock itself underran 256 frames 8.3 s later (`gate_open_trims` +1, +256
+  trimmed) and the recorder froze the recycled slot 0 on it — live evidence for
+  the gate-2 diagnosis below. Full numbers in the two plans.
+- **Gate-2 dropout root cause (session 3, from `gate2-e746cf9/evidence.jsonl` +
+  firmware)**: `clock_apply_desired_plan` flushes the transmit ring to 0 on a
+  rate change (`optical_main.cpp:7884`) and the gate's reopen can only trim
+  DOWN to `AIUS_TX_GATE_OPEN_TARGET_FRAMES` (128 on this env,
+  `tx_gate_actuate` `:2165`), so the pre-commit ring floor after a relock is
+  producer/ISR phase luck. In gate 2 it was 0 (`tx_high_water 512` = the bare
+  512-frame PCM quantum; the polled level is an alias of the 4-block cycle —
+  `tx_fills` advances 348.5 per 1.011 s poll, so each poll walks half a block,
+  giving the 8-sample "sawtooth"); 18 s of clock following walked the commit
+  one block past the ISR fill → 128 frames of silence, floor ratchets to 128
+  (`tx_high_water 640`). Same mechanism as the gate-4 idle-gap underruns and
+  the 48 kHz floor at 1536 after 23 episodes. The frozen slot was evicted
+  before this session (bank recycled twice), so no waveform; the status
+  samples and the code are the evidence. Owner decision 4: record + open a
+  firmware phase (deterministic floor at the gate-open edge, set at the
+  pre-commit tap by pad-or-trim), no flash this session.
 
 ### Uncommitted tree state
 
@@ -113,7 +146,10 @@ untracked ``, etc.) is foreign. `the repo tooling test` cannot compile
 the repo graph while the foreign untracked almanac tests exist (`frontend-test.
 input.candidate`), so vitest was run directly (`pnpm exec vitest run <file>`).
 
-Session evidence lives in `.scratch/9b96cdc1-b48a-4ff1-943a-37bbd052f84e/`
+Session 3 evidence lives in `.scratch/ffe0223b-b9bc-4249-9585-af24839a1a20/`
+(`status-before/after.json`, `recorder-before/after.json`,
+`dsp-config-before.json`, the PUT body). Session 2's lives in
+`.scratch/9b96cdc1-b48a-4ff1-943a-37bbd052f84e/`
 (gate-4 runs `gate4-ce84850/` and `gate4-run2/` with `evidence.jsonl`, the pulled
 slot frames `gate4-ce84850-slot3.npy`, bench verdict JSONs, the OTA probe
 `inspect-ota-2.txt`) and session 1's in
@@ -123,26 +159,22 @@ after 7 days; the digests are in the plans.
 
 ### Next action
 
-1. Provoke H2/defect-22 on device (owner-visible, ~1 min of no audio; **pending
-   decision 3**): with three slots frozen while locked (freeze twice if needed —
-   the bank currently has slots 0, 2, 3 frozen and 1 recording), write `0` to
-   `/sys/bus/usb/devices/3-1.1/authorized` (U24 de-auth = carrier loss), confirm
-   only the active slot fires `carrier_loss`, the older frozen slots keep their
-   `freeze_generation`, and `slots_recycled` advances by 1 only; while
-   carrier-less, PUT the round-tripped `/api/dsp/config` and confirm both
-   documents report `config_pending` / `staged_generation 2`; write `1` back, then
-   re-apply `amixer -c 0 cset numid=5 110,110`. Record under
-   `aius-recorder-rolling-buffer.md` Phase D and `aius-network-hardening.md`
-   defect 22.
-2. Resolve pending decisions 1 and 2 and reword the gate-7 / gate-2 lines in
-   `aius-rate-gate-capture-tool.md` §Follow-on work and
-   `aius-sample-rate-following.md` accordingly.
-3. Investigate the gate-2 dropout (open board defect in
-   `aius-sample-rate-following.md` §Device evidence — 2026-09-02): the flight
-   recorder holds it (`underrun` freeze at 44100); read the transmit-ring level
-   and the relock at the 44.1 kHz stimulus start from that slot before it is
-   recycled (the bank is 4 slots; two operator freezes will evict it).
-4. Retire this document once 1–2 are done.
+1. ~~Provoke H2/defect-22 on device~~ **Done 2026-09-02 14:22 UTC** (session 3;
+   recorded in `aius-recorder-rolling-buffer.md` Phase D and
+   `aius-network-hardening.md` defect 22).
+2. Reword per decisions 1 and 2: gate 7 = "no discontinuity outside the
+   board-declared windows; the windows need not be visible" (passes on the
+   2026-09-02 evidence → flip the gate-7 verdict lines); gate 2 keeps
+   `audio_rate_hz` labelled self-referential and is judged on continuity +
+   harmful counters. Files: `aius-rate-gate-capture-tool.md` §Follow-on work +
+   §Live-run results — 2026-09-02, `aius-sample-rate-following.md` §Device
+   evidence — 2026-09-02.
+3. ~~Investigate the gate-2 dropout~~ **Root-caused** (§Device validation
+   results above). Owed: write it into `aius-sample-rate-following.md` §Device
+   evidence — 2026-09-02 (replace "Cause not yet investigated") and open the
+   firmware phase in `aius-output-jitter.md` (deterministic ring floor at the
+   gate-open edge; target policy is the same knob as the held governor's).
+4. Retire this document once 2–3 are done.
 
 ### Decisions taken
 
@@ -165,6 +197,12 @@ after 7 days; the digests are in the plans.
 - **Phase D of the recorder plan stays `IN-PROGRESS`** on the unevidenced items
   listed in its last bullet.
 - **No fabricated evidence**: plan lines whose artifacts were never retained say so.
+- **Owner decisions 2026-09-02 (session 3)**: (1) gate 7 is redefined as "no
+  discontinuity outside the board-declared windows; the windows need not be
+  externally visible"; (2) gate 2 keeps `audio_rate_hz` labelled
+  self-referential and is judged on continuity + harmful counters; (3) H2 was
+  provoked on device (done); (4) the gate-2 dropout gets its diagnosis recorded
+  and a firmware phase opened, with no flash this session.
 
 ### Traps
 
@@ -212,20 +250,7 @@ after 7 days; the digests are in the plans.
 
 ### Pending decisions
 
-1. **Gate 7 contract.** The fixed detector (proven at the ±410 stimulus) sees no
-   artifact through 12 board-declared invalid windows in 120 s. (a) keep the
-   contract, gate 7 stays red until the U24's handling of the validity bit is
-   characterised; (b) redefine gate 7 as "no discontinuity outside the
-   board-declared windows; the windows need not be visible", which passes on the
-   2026-09-02 evidence. Recommendation: (b). Blocks: the gate-7 wording in both
-   plans.
-2. **Gate 2 scope.** `audio_rate_hz` is capture-clock-locked on this hardware and
-   can never be an independent measurement: drop it, keep it labelled
-   self-referential and judge gate 2 on continuity + harmful counters, or measure
-   via a channel-status decode elsewhere. Recommendation: keep it labelled. The
-   gate-2 fail stands on continuity either way. Blocks: the gate-2 wording.
-3. **Physical validation of H1/H2.** Provoke the teardown lease-leak fix (needs an
-   Ethernet unplug mid-pull) and the recycle carrier-loss fix (U24 de-auth, ~1 min
-   of silence) on the listening-room board, or accept the host end-to-end proof?
-   Recommendation: run the U24 de-auth procedure (Next action 1) when the room is
-   idle; skip the unplug. Blocks: nothing in code; only the evidence lines.
+All four taken 2026-09-02 (§Decisions taken, last bullet). Still open, not yet
+asked: whether H1 (teardown lease release) needs the physical Ethernet unplug
+mid-pull or the host end-to-end proof stands; the recorder plan's Phase D lists
+it as not evidenced on device.

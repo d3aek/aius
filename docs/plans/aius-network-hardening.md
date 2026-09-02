@@ -993,6 +993,22 @@ table.
     at 0 and both documents agreeing on `source`/`model_origin`. Closing the
     structural gap (a host-visible seam for these serializers) is a larger
     change than this correction and is not attempted here.
+
+    **VERIFIED LIVE carrier-less 2026-09-02 14:22 UTC (image
+    `e746cf952dd6`, U24 de-authorised mid-session, so `config_generation`
+    was pinned at its applied value 7 rather than 0).** Two round-tripped
+    PUTs (the GET document plus `base_generation: 7`) each answered `200
+    {"ok":true}`; after the first, `/api/dsp/config` read `staged_generation
+    2`, `config_pending true`, `config_generation 7` and `/api/status` read
+    `dsp_staged_generation 2`, `dsp_config_pending 1`; after the second, 3 /
+    `true` / 7 and 3 / 1. Both documents agreed on `source "sd"` throughout
+    and `/api/status` said `model_origin "put"` (the `source` vocabulary is
+    two words by design — see the serializer comment). Each PUT committed:
+    `sd_diag.http_jobs` 49 → 50 → 51, `http_faults 0`, `job_state 15`. On
+    re-authorisation the staged model applied at the first block boundary:
+    `config_generation` 7 → 8, `config_pending false`, `staged_generation`
+    still 3. The owed live proof is closed; the host-visible serializer seam
+    stays open.
 23. **`AIUS_NET_DHCP_DEADLINE_MS` at 9,000 ms bought one mode, not headroom.** The
     DHCP window is quantised by `FNET_CFG_DHCP_CLN_RESPONSE_TIMEOUT_MS`:
     **4,003–4,005 ms on 27 of 29 boots, 8,005 ms on 2** — one lost `DISCOVER` and its
