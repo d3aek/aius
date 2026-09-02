@@ -5,6 +5,12 @@ The device transport performs only GET /api/status and GET /api/events. Source
 selection, carrier-rate changes, encoded fixture injection, capture and forced
 trim remain bench/operator actions because the firmware exposes no control for
 them. Raw response JSON is retained beside the parsed evidence.
+
+Every sample record carries `attempts` (its total GET count, status plus
+events) alongside the per-fetch `status_attempts` / `events_attempts`, so a
+sample the transport had to retry is distinguishable from a clean one. The
+analysis record reports `transport_retries`, `transport_retried_samples`,
+`samples_without_attempts` and the board's own `http_client_drops_delta`.
 """
 
 import argparse
@@ -24,6 +30,9 @@ MAX_INTERVAL_S = 60.0
 TX_CAPACITY_FRAMES = 2048
 INGRESS_CAPACITY_WORDS = 8192
 SUPPORTED_RATES = (32000, 44100, 48000)
+# One sample is exactly two GETs (status, then events), so a clean sample
+# records `attempts` == 2 and anything above that is a transport retry.
+SAMPLE_REQUESTS = 2
 
 SCENARIOS = {
     "48k-10m": {"duration": 600.0, "minimum": 600.0, "settle": 30.0},
@@ -35,8 +44,28 @@ SCENARIOS = {
     "waveform": {"duration": 120.0, "minimum": 0.0, "settle": 10.0},
 }
 
+# Defect 41 (aius-network-hardening.md): the send-path stall that drops a
+# response holds the transaction for the firmware's full RESPONSE_TIMEOUT_MS
+# (5 s), and the 0.75 s client timeout expires long before the board gives up.
+# A retry budget shorter than 5 s therefore spends every attempt INSIDE the
+# same stall and still fails the run, so the wait has to come from the backoff
+# rather than from the socket timeout: four sleeps of 0.25 / 1 / 2 / 3 s put
+# the last attempt about 9.3 s after the first (0.75 s per timed-out attempt
+# plus the sleeps), covering a 5 s stall with margin, and bound one GET at
+# about 10 s in the worst case.
+RETRY_BACKOFF_S = (0.25, 1.0, 2.0, 3.0)
+DEFAULT_ATTEMPTS = len(RETRY_BACKOFF_S) + 1
+
 # These are lifetime uint32_t diagnostics. Summing adjacent modulo deltas makes
 # a run crossing UINT32_MAX unambiguous without mistaking a wrap for a reset.
+#
+# http_client_drops is deliberately NOT in this tuple. It counts the board side
+# of the same defect-41 drop the transport retries through: the response was
+# lost, not the audio. Nothing reached the DAC late or twice, so gating a
+# 10-minute acceptance run on it would fail the run for a diagnostic the runner
+# already recovered from. It is reported instead, as metrics.http_client_drops_
+# delta beside metrics.transport_retries, so a run that limped is never read as
+# a clean one.
 COMMON_HARMFUL_COUNTERS = (
     "overruns",
     "event_overflows",
@@ -107,18 +136,22 @@ class HttpTransport:
         self.target = target
         self.timeout = timeout
 
-    def get_json(self, path, attempts=4):
+    def get_json(self, path, attempts=DEFAULT_ATTEMPTS):
         # The device serves one HTTP client at a time and drops a connection
         # that arrives before the previous is fully released, and a momentary
-        # audio-ISR-side send stall can leave a response unanswered until the
-        # transaction times out. Both surface as a transport error on ~0.5% of
+        # send-path stall can leave a response unanswered until the transaction
+        # times out (defect 41). Both surface as a transport error on ~0.5% of
         # polls (measured), and a 10-minute acceptance run must not abort on one.
         # Retry transient transport errors -- as aius-sd-sync.sh does for the
         # same reason -- but never retry an HTTP or JSON error, which is real.
+        # The attempt count rides back on the result so a sample that limped is
+        # never written as an identical record to one that did not.
         host, port = self.target
         raw_bytes = None
         status = None
+        used = 0
         for attempt in range(attempts):
+            used = attempt + 1
             connection = http.client.HTTPConnection(host, port, timeout=self.timeout)
             try:
                 connection.request("GET", path, headers={"Connection": "close"})
@@ -127,13 +160,17 @@ class HttpTransport:
                 status = response.status
                 break
             except (OSError, http.client.HTTPException) as error:
-                if attempt + 1 >= attempts:
+                if used >= attempts:
                     raise BenchError(
                         f"GET {path}: {type(error).__name__}: {error} "
                         f"(after {attempts} attempts)") from error
-                time.sleep(0.25)
             finally:
+                # Release the stale socket BEFORE the backoff, not after it:
+                # the board serves one client at a time, so holding a dead
+                # connection across a multi-second wait is the very condition
+                # that makes the next attempt drop too.
                 connection.close()
+            time.sleep(RETRY_BACKOFF_S[min(attempt, len(RETRY_BACKOFF_S) - 1)])
         try:
             raw = raw_bytes.decode("utf-8")
         except UnicodeDecodeError as error:
@@ -146,7 +183,8 @@ class HttpTransport:
             raise BenchError(f"GET {path}: malformed JSON: {error}") from error
         if not isinstance(body, dict):
             raise BenchError(f"GET {path}: JSON root is not an object")
-        return {"http_status": status, "raw": raw, "body": body}
+        return {"http_status": status, "raw": raw, "body": body,
+                "attempts": used}
 
 
 def parse_target(text):
@@ -303,6 +341,41 @@ def accumulated_delta(samples, path, bits=32):
         require_uint(value, path, bits)
     return sum(unsigned_delta(before, after, bits)
                for before, after in zip(values, values[1:]))
+
+
+def transport_metrics(samples, metrics):
+    """Report per-sample transport retries and the board's own drop counter.
+
+    Evidence written before the retry counter existed carries no `attempts`, so
+    those samples are counted as unrecorded rather than as clean: a zero total
+    over old evidence would be a claim the run never made.
+    """
+    retries = 0
+    retried_samples = 0
+    unrecorded = 0
+    for sample in samples:
+        attempts = sample.get("attempts")
+        if (isinstance(attempts, bool) or not isinstance(attempts, int) or
+                attempts < SAMPLE_REQUESTS):
+            unrecorded += 1
+            continue
+        if attempts > SAMPLE_REQUESTS:
+            retries += attempts - SAMPLE_REQUESTS
+            retried_samples += 1
+    metrics["transport_retries"] = retries
+    metrics["transport_retried_samples"] = retried_samples
+    metrics["samples_without_attempts"] = unrecorded
+    # http_client_drops is the board's count of the same event; it is reported,
+    # never gated (see COMMON_HARMFUL_COUNTERS). Older status documents may not
+    # carry it, which is a missing metric rather than a failure.
+    drops = [sample["status"].get("http_client_drops") for sample in samples]
+    if all(not isinstance(value, bool) and isinstance(value, int) and
+           0 <= value < 1 << 32 for value in drops):
+        metrics["http_client_drops_delta"] = sum(
+            unsigned_delta(before, after)
+            for before, after in zip(drops, drops[1:]))
+    else:
+        metrics["http_client_drops_delta"] = None
 
 
 def add_failure(failures, code, message):
@@ -652,6 +725,7 @@ def analyze_samples(samples, events, scenario, options=None, external=None):
     follow_bound = options.get("max_follow_error_millihz", 1000)
     metrics["settle_s"] = settle_s
     metrics["follow_error_bound_millihz"] = follow_bound
+    transport_metrics(samples, metrics)
 
     allow_mismatch = scenario == "negative"
     allow_generation = scenario == "transitions"
@@ -909,8 +983,20 @@ def evidence_record(stream, record):
     stream.flush()
 
 
-def collect_one(transport, cursor, elapsed_s):
+def collect_one(transport, cursor, started):
+    """Collect one sample, timestamped when its status response arrived.
+
+    `elapsed_s` is stamped from the status response, not from the moment the
+    fetch was issued: a retried fetch can spend seconds inside get_json, and a
+    timestamp taken before it would place the sample earlier than the counters
+    it carries -- biasing the settle window, the ingress slope and the
+    transition-window indexing on exactly the samples that had trouble.
+
+    `attempts` is the sample's total GET count (status plus events), so a clean
+    sample reads SAMPLE_REQUESTS and anything above it is a retry.
+    """
     status_response = transport.get_json("/api/status")
+    elapsed_s = time.monotonic() - started
     validate_status(status_response["body"])
     events_response = transport.get_json(f"/api/events?cursor={cursor}")
     validate_events(events_response["body"])
@@ -922,6 +1008,9 @@ def collect_one(transport, cursor, elapsed_s):
         "raw_status_json": status_response["raw"],
         "events_http_status": events_response["http_status"],
         "raw_events_json": events_response["raw"],
+        "status_attempts": status_response["attempts"],
+        "events_attempts": events_response["attempts"],
+        "attempts": status_response["attempts"] + events_response["attempts"],
         "status": status_response["body"],
         "events": events_response["body"]["events"],
         "next_event_cursor": events_response["body"]["next"],
@@ -943,9 +1032,12 @@ def collect_live(args, analysis_options, external, external_raw):
     samples = []
     all_events = []
     seen_events = {}
-    started = time.monotonic()
     try:
         first_status = transport.get_json("/api/status")
+        # Zero the run clock when the first status response is in hand, so
+        # every elapsed_s below is measured from a response, never from a
+        # request that may have been retried (see collect_one).
+        started = time.monotonic()
         validate_status(first_status["body"])
         identity = build_identity(first_status["body"])
         cursor = first_status["body"].get("event_sequence")
@@ -978,12 +1070,19 @@ def collect_live(args, analysis_options, external, external_raw):
             "raw_status_json": first_status["raw"],
             "events_http_status": events_response["http_status"],
             "raw_events_json": events_response["raw"],
+            "status_attempts": first_status["attempts"],
+            "events_attempts": events_response["attempts"],
+            "attempts": first_status["attempts"] + events_response["attempts"],
             "status": first_status["body"],
             "events": events_response["body"]["events"],
             "next_event_cursor": events_response["body"]["next"],
         }
         evidence_record(stream, sample)
-        samples.append({"elapsed_s": 0.0, "status": sample["status"]})
+        samples.append({
+            "elapsed_s": 0.0,
+            "status": sample["status"],
+            "attempts": sample["attempts"],
+        })
         cursor = sample["next_event_cursor"]
         for event in sample["events"]:
             seen_events[event["sequence"]] = event
@@ -995,14 +1094,14 @@ def collect_live(args, analysis_options, external, external_raw):
             if remaining <= 0:
                 break
             time.sleep(min(args.interval, remaining))
-            elapsed = time.monotonic() - started
-            sample = collect_one(transport, cursor, elapsed)
+            sample = collect_one(transport, cursor, started)
             if build_identity(sample["status"]) != identity:
                 raise BenchError("device build identity changed during collection")
             evidence_record(stream, sample)
             samples.append({
                 "elapsed_s": sample["elapsed_s"],
                 "status": sample["status"],
+                "attempts": sample["attempts"],
             })
             cursor = sample["next_event_cursor"]
             for event in sample["events"]:
@@ -1057,9 +1156,13 @@ def load_evidence(path):
                     f"evidence line {number}: malformed raw JSON: {error}") from error
             validate_status(status)
             validate_events(event_body)
+            # `attempts` post-dates the transport retry, so evidence written
+            # before it simply has none; carry whatever is there and let
+            # transport_metrics report the gap rather than inventing a 2.
             samples.append({
                 "elapsed_s": record.get("elapsed_s"),
                 "status": status,
+                "attempts": record.get("attempts"),
             })
             for event in event_body["events"]:
                 previous = seen_events.get(event["sequence"])

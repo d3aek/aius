@@ -3,6 +3,8 @@ import importlib.util
 import io
 import json
 import pathlib
+import socket
+import sys
 import tempfile
 import unittest
 
@@ -162,7 +164,7 @@ def analyze_48(samples, **options):
 
 
 def evidence_file(path, samples, scenario="48k-10m", analysis_options=None,
-                  external=None):
+                  external=None, attempts=None):
     identity = BENCH.build_identity(samples[0]["status"])
     records = [{
         "kind": "metadata",
@@ -175,14 +177,18 @@ def evidence_file(path, samples, scenario="48k-10m", analysis_options=None,
         records[0]["raw_external_observation_json"] = json.dumps(external)
     empty_events = json.dumps({"cursor": 0, "next": 0, "events": []},
                               separators=(",", ":"))
-    for entry in samples:
-        records.append({
+    for index, entry in enumerate(samples):
+        record = {
             "kind": "sample",
             "elapsed_s": entry["elapsed_s"],
             "raw_status_json": json.dumps(
                 entry["status"], separators=(",", ":")),
             "raw_events_json": empty_events,
-        })
+        }
+        # attempts=None writes the pre-retry-counter evidence shape.
+        if attempts is not None:
+            record["attempts"] = attempts[index]
+        records.append(record)
     path.write_text(
         "".join(json.dumps(record) + "\n" for record in records),
         encoding="utf-8")
@@ -578,76 +584,277 @@ class ExitSemanticsTests(unittest.TestCase):
         self.assertEqual(json.loads(stdout)["verdict"], "pass")
 
 
+class _Response:
+    def __init__(self, status, body, truncated=False):
+        self.status = status
+        self._body = body
+        self._truncated = truncated
+
+    def read(self):
+        if self._truncated:
+            # aius_http.c:605 promises a Content-Length on every response, so
+            # a body cut short by a send-path stall arrives as an
+            # IncompleteRead, not as a short read the caller could mistake
+            # for valid JSON.
+            raise BENCH.http.client.IncompleteRead(self._body[:4], 99)
+        return self._body
+
+
+class _Connection:
+    """A scripted HTTPConnection. Outcomes: 'drop' (RemoteDisconnected from
+    getresponse), 'timeout'/'reset' (socket.timeout/OSError from request),
+    'truncated' (IncompleteRead from read), or a (status, body) pair."""
+
+    def __init__(self, outcome, log):
+        self._outcome = outcome
+        self._log = log
+
+    def request(self, *_args, **_kwargs):
+        if self._outcome == "timeout":
+            raise socket.timeout("timed out")
+        if self._outcome == "reset":
+            raise OSError(104, "Connection reset by peer")
+
+    def getresponse(self):
+        if self._outcome == "drop":
+            raise BENCH.http.client.RemoteDisconnected("closed")
+        if self._outcome == "truncated":
+            return _Response(200, b'{"ok":true}', truncated=True)
+        status, body = self._outcome
+        return _Response(status, body)
+
+    def close(self):
+        self._log.append(("close",))
+
+
+@contextlib.contextmanager
+def scripted_transport(outcomes, clock=None):
+    """Drive the real HttpTransport over a scripted connection factory.
+
+    Records connection closes and backoff sleeps in one ordered log so the
+    close-before-sleep ordering is observable. When `clock` is given, the
+    fake monotonic clock advances by the socket timeout on each attempt and
+    by each backoff sleep, so elapsed-time stamping is observable too.
+    """
+    calls = {"n": 0, "log": []}
+
+    def factory(_host, _port, timeout=None):
+        outcome = outcomes[calls["n"]]
+        calls["n"] += 1
+        if clock is not None:
+            clock["now"] += timeout or 0.0
+        return _Connection(outcome, calls["log"])
+
+    def sleep(seconds):
+        calls["log"].append(("sleep", seconds))
+        if clock is not None:
+            clock["now"] += seconds
+
+    original_conn = BENCH.http.client.HTTPConnection
+    original_sleep = BENCH.time.sleep
+    original_monotonic = BENCH.time.monotonic
+    BENCH.http.client.HTTPConnection = factory
+    BENCH.time.sleep = sleep
+    if clock is not None:
+        BENCH.time.monotonic = lambda: clock["now"]
+    try:
+        yield calls
+    finally:
+        BENCH.http.client.HTTPConnection = original_conn
+        BENCH.time.sleep = original_sleep
+        BENCH.time.monotonic = original_monotonic
+
+
 class TransportRetryTests(unittest.TestCase):
     """get_json retries transient transport drops (the device's
-    one-client-at-a-time close and momentary send-stall timeouts) but never an
-    HTTP or JSON error, which is real."""
+    one-client-at-a-time close, defect 41's 5 s send-path stall, and the
+    truncated-body IncompleteRead its Content-Length promise produces) but
+    never an HTTP or JSON error, which is real."""
 
-    class _Resp:
-        def __init__(self, status, body):
-            self.status = status
-            self._body = body
+    BODY = json.dumps({"ok": True}).encode("utf-8")
 
-        def read(self):
-            return self._body
-
-    class _Conn:
-        def __init__(self, outcome):
-            self._outcome = outcome
-
-        def request(self, *args, **kwargs):
-            pass
-
-        def getresponse(self):
-            if self._outcome == "drop":
-                raise BENCH.http.client.RemoteDisconnected("closed")
-            status, body = self._outcome
-            return TransportRetryTests._Resp(status, body)
-
-        def close(self):
-            pass
-
-    @contextlib.contextmanager
-    def _patched(self, outcomes):
-        calls = {"n": 0}
-
-        def factory(host, port, timeout=None):
-            outcome = outcomes[calls["n"]]
-            calls["n"] += 1
-            return TransportRetryTests._Conn(outcome)
-
-        original_conn = BENCH.http.client.HTTPConnection
-        original_sleep = BENCH.time.sleep
-        BENCH.http.client.HTTPConnection = factory
-        BENCH.time.sleep = lambda _seconds: None
-        try:
-            yield calls
-        finally:
-            BENCH.http.client.HTTPConnection = original_conn
-            BENCH.time.sleep = original_sleep
+    def _transport(self):
+        return BENCH.HttpTransport(("10.0.0.1", 80), timeout=0.75)
 
     def test_retries_transient_drops_then_succeeds(self):
-        body = json.dumps({"ok": True}).encode("utf-8")
-        transport = BENCH.HttpTransport(("10.0.0.1", 80), timeout=0.01)
-        with self._patched(["drop", "drop", (200, body)]) as calls:
-            result = transport.get_json("/api/status", attempts=4)
+        with scripted_transport(["drop", "drop", (200, self.BODY)]) as calls:
+            result = self._transport().get_json("/api/status")
         self.assertEqual(result["body"], {"ok": True})
         self.assertEqual(calls["n"], 3)
+        self.assertEqual(result["attempts"], 3)
 
-    def test_raises_after_exhausting_attempts(self):
-        transport = BENCH.HttpTransport(("10.0.0.1", 80), timeout=0.01)
-        with self._patched(["drop", "drop", "drop", "drop"]) as calls:
+    def test_retries_request_side_timeout_and_socket_error(self):
+        with scripted_transport(
+                ["timeout", "reset", (200, self.BODY)]) as calls:
+            result = self._transport().get_json("/api/status")
+        self.assertEqual(result["body"], {"ok": True})
+        self.assertEqual(calls["n"], 3)
+        self.assertEqual(result["attempts"], 3)
+
+    def test_retries_incomplete_read_of_a_truncated_body(self):
+        with scripted_transport(["truncated", (200, self.BODY)]) as calls:
+            result = self._transport().get_json("/api/status")
+        self.assertEqual(result["body"], {"ok": True})
+        self.assertEqual(calls["n"], 2)
+        self.assertEqual(result["attempts"], 2)
+
+    def test_closes_the_connection_before_backing_off(self):
+        # Holding the dead socket across a multi-second backoff would occupy
+        # the board's single client slot for the whole wait.
+        with scripted_transport(["drop", "drop", (200, self.BODY)]) as calls:
+            self._transport().get_json("/api/status")
+        self.assertEqual(calls["log"], [
+            ("close",), ("sleep", BENCH.RETRY_BACKOFF_S[0]),
+            ("close",), ("sleep", BENCH.RETRY_BACKOFF_S[1]),
+            ("close",),
+        ])
+
+    def test_raises_after_exhausting_the_defect_41_budget(self):
+        outcomes = ["drop"] * BENCH.DEFAULT_ATTEMPTS
+        with scripted_transport(outcomes) as calls:
             with self.assertRaises(BENCH.BenchError):
-                transport.get_json("/api/status", attempts=4)
-        self.assertEqual(calls["n"], 4)
+                self._transport().get_json("/api/status")
+        self.assertEqual(calls["n"], BENCH.DEFAULT_ATTEMPTS)
+        sleeps = [entry[1] for entry in calls["log"] if entry[0] == "sleep"]
+        self.assertEqual(sleeps, list(BENCH.RETRY_BACKOFF_S))
+
+    def test_retry_budget_outlasts_the_five_second_stall(self):
+        # Defect 41: the board holds a stalled transaction for the full
+        # RESPONSE_TIMEOUT_MS (5 s). A budget shorter than that retries
+        # entirely inside the stall.
+        attempts = BENCH.DEFAULT_ATTEMPTS
+        budget = sum(BENCH.RETRY_BACKOFF_S) + 0.75 * attempts
+        self.assertGreater(budget, 5.0)
+        self.assertLess(budget, 15.0)
 
     def test_does_not_retry_http_error(self):
-        transport = BENCH.HttpTransport(("10.0.0.1", 80), timeout=0.01)
-        with self._patched([(503, b'{"error":"sd_busy"}')]) as calls:
+        with scripted_transport([(503, b'{"error":"sd_busy"}')]) as calls:
             with self.assertRaises(BENCH.BenchError):
-                transport.get_json("/api/status", attempts=4)
+                self._transport().get_json("/api/status")
         self.assertEqual(calls["n"], 1)
+        self.assertEqual(calls["log"], [("close",)])
+
+    def test_retries_the_drop_but_not_the_http_error_behind_it(self):
+        # Fails if the retry loop is deleted: without it the drop itself is
+        # the raised error and the 503 is never reached.
+        with scripted_transport(["drop", (503, b'{"error":"sd_busy"}')]) as calls:
+            with self.assertRaises(BENCH.BenchError) as caught:
+                self._transport().get_json("/api/status")
+        self.assertEqual(calls["n"], 2)
+        self.assertIn("HTTP 503", str(caught.exception))
+
+
+class CollectOneTests(unittest.TestCase):
+    """collect_one is the sample record's author: it counts attempts and
+    stamps elapsed_s from the status RESPONSE, not from the request."""
+
+    @staticmethod
+    def _payloads():
+        status_body = json.dumps(make_status(), separators=(",", ":"))
+        events_body = json.dumps(
+            {"cursor": 0, "next": 0, "events": []}, separators=(",", ":"))
+        return status_body.encode("utf-8"), events_body.encode("utf-8")
+
+    def test_drop_after_a_200_is_retried_and_counted(self):
+        # The status GET already returned 200; the events GET drops. Both
+        # GETs are read-only and offset-free, so the retry is idempotent and
+        # the sample is still whole.
+        status_bytes, events_bytes = self._payloads()
+        outcomes = [(200, status_bytes), "drop", (200, events_bytes)]
+        transport = BENCH.HttpTransport(("10.0.0.1", 80), timeout=0.75)
+        with scripted_transport(outcomes) as calls:
+            record = BENCH.collect_one(transport, 0, BENCH.time.monotonic())
+        self.assertEqual(calls["n"], 3)
+        self.assertEqual(record["status_attempts"], 1)
+        self.assertEqual(record["events_attempts"], 2)
+        self.assertEqual(record["attempts"], 3)
+        self.assertEqual(record["status"]["boot_generation"], 17)
+        self.assertEqual(record["events"], [])
+
+    def test_elapsed_s_is_stamped_after_the_retried_status_fetch(self):
+        status_bytes, events_bytes = self._payloads()
+        outcomes = ["drop", (200, status_bytes), (200, events_bytes)]
+        clock = {"now": 100.0}
+        transport = BENCH.HttpTransport(("10.0.0.1", 80), timeout=0.75)
+        with scripted_transport(outcomes, clock=clock):
+            started = BENCH.time.monotonic()
+            record = BENCH.collect_one(transport, 0, started)
+        # 0.75 s timed-out attempt + 0.25 s backoff + 0.75 s of the attempt
+        # that answered. A stamp taken before the fetch would read 0.0.
+        self.assertGreaterEqual(record["elapsed_s"], 1.7)
+        self.assertEqual(record["attempts"], 3)
+
+
+class TransportEvidenceTests(unittest.TestCase):
+    """The analysis reports the run's retry total and the board's own drop
+    counter, and tolerates evidence written before either existed."""
+
+    @staticmethod
+    def _samples():
+        return [
+            sample(0, output_blocks=1),
+            sample(1, output_blocks=2),
+            sample(2, output_blocks=3),
+        ]
+
+    def test_reports_retry_total_from_sample_attempts(self):
+        samples = self._samples()
+        samples[0]["attempts"] = 2
+        samples[1]["attempts"] = 5
+        samples[2]["attempts"] = 2
+        result = analyze_48(samples)
+        self.assertEqual(result["verdict"], "pass")
+        self.assertEqual(result["metrics"]["transport_retries"], 3)
+        self.assertEqual(result["metrics"]["transport_retried_samples"], 1)
+        self.assertEqual(result["metrics"]["samples_without_attempts"], 0)
+
+    def test_old_evidence_without_attempts_is_unrecorded_not_clean(self):
+        result = analyze_48(self._samples())
+        self.assertEqual(result["verdict"], "pass")
+        self.assertEqual(result["metrics"]["transport_retries"], 0)
+        self.assertEqual(result["metrics"]["samples_without_attempts"], 3)
+        self.assertIsNone(result["metrics"]["http_client_drops_delta"])
+
+    def test_http_client_drops_is_reported_and_never_gated(self):
+        samples = self._samples()
+        for entry, drops in zip(samples, (5, 7, 7)):
+            entry["status"]["http_client_drops"] = drops
+        result = analyze_48(samples)
+        # A retried drop cost the audio path nothing, so it must not fail the
+        # run -- but it must be visible.
+        self.assertEqual(result["verdict"], "pass")
+        self.assertEqual(result["metrics"]["http_client_drops_delta"], 2)
+        self.assertNotIn("http_client_drops", BENCH.COMMON_HARMFUL_COUNTERS)
+
+    def test_load_evidence_round_trips_attempts(self):
+        samples = self._samples()
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "evidence.jsonl"
+            evidence_file(path, samples, attempts=[2, 4, 2])
+            _metadata, loaded, _events = BENCH.load_evidence(path)
+            self.assertEqual([entry["attempts"] for entry in loaded],
+                             [2, 4, 2])
+            result = BENCH.analyze_samples(loaded, [], "48k-10m", {
+                "minimum_duration_s": 0,
+                "settle_s": 0,
+                "max_follow_error_millihz": 1000,
+            })
+            self.assertEqual(result["metrics"]["transport_retries"], 2)
+
+            evidence_file(path, samples)
+            _metadata, legacy, _events = BENCH.load_evidence(path)
+            self.assertEqual([entry["attempts"] for entry in legacy],
+                             [None, None, None])
 
 
 if __name__ == "__main__":
-    unittest.main()
+    # The rate-runner arm of scripts/test.sh names this file only, so discover
+    # every test_*.py beside it: test_recorder_pull.py runs in the same suite
+    # without the runner having to name it. It is still a standalone entry
+    # point (test/registry wants scripts/test.sh to name it too, which is a
+    # change to a file this suite does not own); once the arm lists it, this
+    # block can go back to a plain unittest.main().
+    HERE = pathlib.Path(__file__).resolve().parent
+    SUITE = unittest.TestLoader().discover(str(HERE), pattern="test_*.py")
+    RESULT = unittest.TextTestRunner(verbosity=1).run(SUITE)
+    sys.exit(0 if RESULT.wasSuccessful() else 1)

@@ -10,7 +10,7 @@
 # Suites: ab, arena, audio-ingress, audio-service, auth, clock, clock-target, codec-api-contract, config, dsp-config, json, dts, dts-arena,
 #         dts-fuzz, dts-lfe, a52, a52-fuzz, eac3, eac3-fuzz, iec61937, iec61937-fuzz, capability-protocol,
 #         capability, pipeline, dsp, dsp-vectors, downmix-identity, measure, net, net-runner,
-#         rate-runner, latency-runner,
+#         rate-runner, rate-gate-capture, latency-runner,
 #         recovery-runner, flash, http,
 #         usb-control, replay, replay-samples, tx-gate, tx-governor, input-liveness, recorder, boot, boot-target, fault-target, ota,
 #         build-metadata, runtime, network-transport, sd, sd-target, optical-app,
@@ -641,6 +641,18 @@ net-runner)
 	;;
 rate-runner)
 	python3 "$fw_root/test/rate-runner/test_rate_bench.py"
+	# The recorder pull tool's slot selection, exit codes and header sidecar
+	# (aius-recorder-rolling-buffer.md Phase C): pure functions, no board.
+	python3 "$fw_root/test/rate-runner/test_recorder_pull.py"
+	;;
+rate-gate-capture)
+	# The host-side optical capture reducers that produce the
+	# --external-observation JSON gates 2, 4 and 7 read: the rate model, the
+	# capture<->status time origins, the amplitude-derived discontinuity
+	# detector at the documented +-410 stimulus, the fiducial-based
+	# old_rate_output_frames, and the capture-health faults. Synthetic
+	# waveforms only -- no board, no ALSA device.
+	python3 "$fw_root/test/rate-gate-capture/test_capture.py"
 	;;
 latency-runner)
 	# Exact-carrier native reference: public IEC parser -> resident production

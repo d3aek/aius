@@ -924,7 +924,11 @@ degradation since 2026-08-02 (the source-qualification README's
 marginal-power-stage / re-enumeration caution); (c) the ≤2 bound being
 unrealistic for a ±0.5 ppm crystal source, which the owner-approved
 bound-revision path already anticipates. Do not weaken the bound without
-that A/B. Evidence retained in session scratch (two 594-sample runs).
+that A/B. **No evidence artifact is retained**: both runs were written to
+session scratch on 2026-09-01 and `.scratch/` is GC'd after 7 days, so the
+numbers above are as the analyzer reported them at the time, not a
+re-analyzable `--evidence` JSONL. Write the A/B rerun's evidence somewhere
+durable before it is used to settle the bound.
 
 If the 48 kHz slope exceeds 0.25 words/s, Phase 2 is not complete. The next
 mechanism is a slow correction term driven by ingress slope into the same
