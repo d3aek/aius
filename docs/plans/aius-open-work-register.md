@@ -6,7 +6,7 @@ component: aius
 subtype: backlog
 status: in-progress
 tags: [aius, backlog, debt, defects]
-updated: 2026-08-16
+updated: 2026-09-02
 toc: true
 ---
 
@@ -95,25 +95,36 @@ ends left open:
   §Operator rulings (2026-09-02)), the gate-2 dropout root cause
   ([`aius-sample-rate-following.md`](aius-sample-rate-following.md) §Device
   evidence — 2026-09-02) and its fix phase
-  ([`aius-output-jitter.md`](aius-output-jitter.md) Phase F, designed, not
-  built). Still the owner's call:
-  - `GET /api/recorder` wants `X-Aius-SD-Auth` while `CLAUDE.md` says reads
-    need nothing: correct the rule or the route (the gotcha is noted in
-    `CLAUDE.md` meanwhile).
-  - `staged_generation` bumps at PUT accept (`optical_main.cpp:5577`), before
-    the SD commit, so a PUT that fails to commit still advances it while
-    `config_pending` stays false. Proposed: bump at commit.
-  - `CONTRIBUTING.md` carries ~12 stale `…` paths (lines
-    20, 47, 84–86, 124, 204, 214–219). Proposed: sweep to submodule-relative.
-  - `test/sd-editor/fixtures/dsp-config-default.json` (the swagger
-    `DspConfig` example) lacks `staged_generation` / `config_pending`.
-    Proposed: refresh from a live GET.
-  - H1 (teardown lease release) is host-proven only; provoking it needs an
-    Ethernet unplug mid-pull. Proposed: accept the host proof.
+  ([`aius-output-jitter.md`](aius-output-jitter.md) Phase F, SHIPPED and
+  validated on the board the same evening, image `3570a216216d`). The
+  remediation series that followed (2026-09-02, late):
+  - ~~`GET /api/recorder` wants `X-Aius-SD-Auth` while `CLAUDE.md` says reads
+    need nothing.~~ **The route is right, the rule was wrong**: every recorder
+    route is token-gated by the recorder contract, GETs included
+    (`dispatch_recorder()` in `aius_optical_app.cpp`, recorded audio + trigger
+    state). `CLAUDE.md` corrected.
+  - ~~`staged_generation` bumps at PUT accept, before the SD commit, so a PUT
+    that fails to commit still advances it while `config_pending` stays
+    false.~~ **Moved to commit** (`sd_settle_http_write()`, beside the apply
+    arm; [`aius-network-hardening.md`](aius-network-hardening.md) defect 22
+    correction (d)). Cross-build proven; **not yet flashed** — the deployed
+    `3570a216216d` still bumps at accept.
+  - ~~`CONTRIBUTING.md` carries ~12 stale `…` paths.~~
+    **Swept** to repository-relative paths; the sd-editor paragraph now names
+    the suite runner (`test.sh --suite sd-editor`).
+  - ~~`test/sd-editor/fixtures/dsp-config-default.json` lacks
+    `staged_generation` / `config_pending`.~~ **By design**: that fixture is
+    pinned byte-for-byte to the generated factory model
+    (`firmware/config/optical_dsp.json`), which has no runtime keys; the wire
+    example that carries them is `dsp-config-sd.json`, refreshed. The swagger
+    `DspConfig` schema already declares both.
+  - ~~H1 (teardown lease release) is host-proven only.~~ **Accepted on the
+    host proof** (recorder plan Phase D).
   - ITCM has 1108 B free and the cold recorder-bank helpers landed there; a
     placement pass is owed before anything else grows.
-  - The `optical-cutover` suite fails at HEAD on a pre-existing `micros()` in
-    `update()` (commit `225253d`), unrelated to the series.
+  - ~~The `optical-cutover` suite fails at HEAD on a pre-existing `micros()` in
+    `update()`.~~ **Fixed**: the suite's `update()` allow-list admits the
+    input-fault cadence watermark's `micros()`, which moves no samples.
   - A gate-4 *pass* is unreachable with the aplay stimulus (idle gaps between
     phases): needs a source that cuts the carrier between phases or an
     analyzer decision (tool plan §Follow-on work).

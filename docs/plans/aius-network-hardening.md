@@ -1009,6 +1009,18 @@ table.
     `config_generation` 7 → 8, `config_pending false`, `staged_generation`
     still 3. The owed live proof is closed; the host-visible serializer seam
     stays open.
+
+    **CORRECTION 2026-09-02 (d): the counter now advances at commit, not at
+    accept.** The review-fix handover flagged that `app_store_dsp_config()`
+    bumped `g_staged_generation` on accept, before the SD write, so a PUT whose
+    write faulted (the client got its 5xx, the staging was discarded,
+    `config_pending` stayed false) still moved the counter and reported a
+    staging that never existed. Moved into `sd_settle_http_write()` beside the
+    arming of `g_dsp_apply_pending` (counter first, then the volatile flag —
+    the order `platform_publish_config()` already keeps for SD loads). The
+    live sequence above is unchanged by this: each of those PUTs committed, and
+    the 200 is only released on commit, so a client that polls after its 200
+    sees the same 1 → 2 → 3. Not yet flashed; cross-build proof only.
 23. **`AIUS_NET_DHCP_DEADLINE_MS` at 9,000 ms bought one mode, not headroom.** The
     DHCP window is quantised by `FNET_CFG_DHCP_CLN_RESPONSE_TIMEOUT_MS`:
     **4,003–4,005 ms on 27 of 29 boots, 8,005 ms on 2** — one lost `DISCOVER` and its

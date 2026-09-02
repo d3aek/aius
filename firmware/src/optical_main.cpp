@@ -2462,9 +2462,13 @@ static FLASHMEM const char *dsp_origin_name(DspModelOrigin origin)
  *
  * `staged_generation` is the counter that DOES advance per staging, so a
  * carrier-less board -- where nothing ever applies and config_generation is
- * pinned at 0 -- can still tell one accepted PUT from the next.
- * `config_pending` says which of the two the rest of this document describes:
- * true means these are the staged bytes awaiting a block boundary. */
+ * pinned at 0 -- can still tell one committed PUT from the next. It moves
+ * when a staging becomes real: an SD load when it publishes, a PUT when its
+ * SD write commits (sd_settle_http_write), which is also the instant its 200
+ * is released and config_pending turns true; a PUT whose write faults moves
+ * neither. `config_pending` says which of the two the rest of this document
+ * describes: true means these are the staged bytes awaiting a block
+ * boundary. */
 static FLASHMEM size_t http_dsp_config_json(uint8_t *body, size_t capacity)
 {
 	static const char *const channel_names[6] = {"fl", "fr", "fc", "lfe", "sl", "sr"};
@@ -5610,10 +5614,13 @@ static FLASHMEM AiusOpticalAppStoreResult app_store_dsp_config(
 		return AIUS_OPTICAL_APP_STORE_BUSY;
 	g_pending_dsp_model = parsed;
 	g_pending_dsp_origin = DSP_ORIGIN_PUT;
-	/* Advanced here, at accept, not at the SD commit or the block-boundary
-	 * apply: it is the "this staging is a different one from the last"
-	 * signal, and on a carrier-less board the apply never comes. */
-	g_staged_generation++;
+	/* g_staged_generation is NOT advanced here. It advances in
+	 * sd_settle_http_write() when this staging's SD write commits -- the
+	 * same instant the client's 200 is released and config_pending turns
+	 * true -- so a PUT whose write faults leaves the counter where it was
+	 * (its staging is discarded, and a counter that had moved would report a
+	 * staging that never existed). Still never at the block-boundary apply:
+	 * on a carrier-less board the apply never comes. */
 	g_dsp_upload_pending = true;
 	g_sd_commit_target = SD_COMMIT_DSP_MODEL;
 	g_sd_commit_writing = false;
@@ -7040,9 +7047,14 @@ static FLASHMEM void sd_settle_http_write(void)
 		return;
 	if (g_sd_commit_target == SD_COMMIT_DSP_MODEL) {
 		/* The SD write is durable; the audio-side apply happens at the
-		 * next block boundary (AiusAudioProcessor::enqueue), not here. */
-		if (committed && g_dsp_upload_pending)
+		 * next block boundary (AiusAudioProcessor::enqueue), not here.
+		 * The staging counter advances with the commit, before the
+		 * volatile apply flag, the same order the SD-load stager keeps
+		 * (platform_publish_config): a faulted write moves neither. */
+		if (committed && g_dsp_upload_pending) {
+			g_staged_generation++;
 			g_dsp_apply_pending = true;
+		}
 		g_dsp_upload_pending = false;
 	} else {
 		if (committed && g_config_upload_pending)
