@@ -103,6 +103,9 @@ DSP_APPLY_TIMEOUT_SECONDS = 15.0
 # token. Any other failure leaves the board's state unproven.
 NON_MUTATING_PUT_STATUSES = (400, 401, 409)
 BYPASS_CONFIG_PREFIX = "dsp-config-bypass"
+# Relative to the Aius repository root (the git_modules/aius submodule), where
+# the dirty check runs; the ancestry pins below are superproject commits from
+# before the submodule split, so they are checked against the superproject.
 HARNESS_PATHS = (
     "firmware/tools/latency",
     "firmware/test/latency-runner",
@@ -393,10 +396,15 @@ def tool_versions(mode: str) -> dict:
 
 
 def repository_identity() -> dict:
-    root = Path(__file__).resolve().parents[6]
+    # The harness lives in the Aius repository (firmware/tools/latency), which
+    # is a submodule of the upstream repository since 2026-08. The harness revision and
+    # the dirty check come from the Aius tree; the two accepted-evidence pins
+    # predate the split and live in the superproject's history, so ancestry is
+    # checked there. A standalone Aius checkout cannot verify the pins.
+    tree = Path(__file__).resolve().parents[3]
     head = subprocess.run(
         ["git", "rev-parse", "HEAD"],
-        cwd=root,
+        cwd=tree,
         check=False,
         text=True,
         stdout=subprocess.PIPE,
@@ -405,13 +413,38 @@ def repository_identity() -> dict:
     if head.returncode != 0:
         raise RuntimeError("cannot resolve latency harness revision")
     revision = head.stdout.strip()
+    superproject = subprocess.run(
+        ["git", "rev-parse", "--show-superproject-working-tree"],
+        cwd=tree,
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if superproject.returncode != 0 or not superproject.stdout.strip():
+        raise RuntimeError(
+            "cannot resolve the superproject that carries the accepted "
+            "latency evidence pins; run from the upstream repository checkout"
+        )
+    root = Path(superproject.stdout.strip())
+    superproject_head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=root,
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if superproject_head.returncode != 0:
+        raise RuntimeError("cannot resolve the superproject revision")
+    superproject_revision = superproject_head.stdout.strip()
     phase1_ancestor = subprocess.run(
         [
             "git",
             "merge-base",
             "--is-ancestor",
             PHASE1_IMAGE_REVISION,
-            revision,
+            superproject_revision,
         ],
         cwd=root,
         check=False,
@@ -443,7 +476,7 @@ def repository_identity() -> dict:
         )
     dirty = subprocess.run(
         ["git", "status", "--porcelain", "--", *HARNESS_PATHS],
-        cwd=root,
+        cwd=tree,
         check=False,
         text=True,
         stdout=subprocess.PIPE,
@@ -458,6 +491,7 @@ def repository_identity() -> dict:
     ]
     return {
         "harness_revision": revision,
+        "superproject_revision": superproject_revision,
         "expected_build_revision": (
             f"{PHASE1_IMAGE_REVISION[:12]}+teensy41-optical"
         ),
