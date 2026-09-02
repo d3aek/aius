@@ -1786,6 +1786,12 @@ private:
 				g_enqueue_last_us = now_us | 1u;
 			}
 		}
+		/* An armed gate open executes HERE, at the pre-commit instant, so
+		 * the level it sets is the standing floor every later commit lands
+		 * on (aius-output-jitter Phase F). Before the governor tap, so the
+		 * governor's first window sample is the set floor, not the
+		 * pre-open residue. */
+		tx_gate_execute_open();
 #if AIUS_TX_GOVERNOR_ENABLED
 		/* Latency-governor tap (aius-output-jitter Phase E): the ring level
 		 * BEFORE this block is staged is the standing floor sample the
@@ -2140,46 +2146,76 @@ static AudioConnection g_spdif_right(g_spdif_in, 1, g_audio_processor, 1);
 /* e2e-latency Phase 3 R1: the transmit-ring occupancy latched at gate-open
  * WAS the dominant and least deterministic latency term -- measured
  * 128..1,792 frames across otherwise identical sessions (2.7..37 ms). Every
- * closed→open edge now trims the ring down to this target, so a session's
- * ring residence is a design constant instead of acquisition luck. Dropping
- * is safe by construction at this edge only: the gate was closed, the
- * output was physically dark, and the frames dropped were never heard --
- * what remains is the newest audio. 256 = two blocks of service-jitter
- * margin beyond the in-flight block on the stall-free image; the
- * gate_open_trim counters on the clock document plus the existing underrun
- * counter are the acceptance instruments if this margin is ever wrong.
- * (The target macro's default lives with the governor block above the audio
- * processor class, where both of its consumers can see it.) */
+ * closed→open edge trims the ring down to this target, so a session's ring
+ * residence is a design constant instead of acquisition luck. Dropping is
+ * safe by construction at this edge only: the gate was closed, the output
+ * was physically dark, and the frames dropped were never heard -- what
+ * remains is the newest audio. 256 = two blocks of service-jitter margin
+ * beyond the in-flight block on the stall-free image; the gate_open_trim
+ * counters on the clock document plus the existing underrun counter are the
+ * acceptance instruments if this margin is ever wrong. (The target macro's
+ * default lives with the governor block above the audio processor class,
+ * where both of its consumers can see it.)
+ *
+ * aius-output-jitter Phase F: the target was a CEILING, not a floor. The
+ * edge fired at whatever instant checkpoint 7 ran and could only trim down,
+ * so after a relock -- which empties the ring -- the standing pre-commit
+ * floor was the phase the producer's first burst happened to have against
+ * the transmit ISR: 0 on the 2026-09-02 gate-2 run, one lost race later a
+ * 128-frame dropout, and every such underrun ratcheted the floor up a block.
+ * Now the open edge only ARMS a pending open here; enqueue() executes it at
+ * its pre-commit instant, setting the ring to exactly the target (trim down
+ * or pad up with silence -- both unheard, the pad is still dark) before this
+ * block commits, so the floor every later commit lands on IS the target. */
 static uint32_t g_tx_gate_open_trims;          /* .bss = 0 */
 static uint32_t g_tx_gate_open_trimmed_frames; /* .bss = 0 */
+static uint32_t g_tx_gate_open_padded_frames;  /* .bss = 0 */
+static bool g_tx_gate_open_pending;            /* .bss = false */
 
 static FLASHMEM void tx_gate_actuate(bool open)
 {
 	if (open) {
-		/* Same two-store critical-section contract as
-		 * clock_flush_ring_preserve_diag(): the TX ISR is the sole
-		 * cursor reader. The underrun-count arm rides the same masked
-		 * section, so no fill() can observe an open gate before the
-		 * trim has set the session's ring residence. */
-		noInterrupts();
-		const uint32_t dropped = aius_spdif_tx24_trim_to(
-			&g_aius_spdif_tx24, AIUS_TX_GATE_OPEN_TARGET_FRAMES);
-		g_aius_spdif_tx24.gate_open = 1u;
-		interrupts();
-		if (dropped != 0u) {
-			g_tx_gate_open_trims++;
-			g_tx_gate_open_trimmed_frames += dropped;
-		}
-		CORE_PIN14_CONFIG = 3; /* SPDIF_OUT, as begin() routed it */
+		/* Deferred to the producer: tx_gate_execute_open() below. A
+		 * relock with no producer resumption therefore leaves the pad
+		 * dark, which is what a dark ring should sound like. */
+		g_tx_gate_open_pending = true;
 		return;
 	}
 	/* Close: stop counting before the pad goes dark, so post-close idle
 	 * substitution never lands in the glitch metric. A single volatile
-	 * store; no masking needed. */
+	 * store; no masking needed. An armed-but-unexecuted open is simply
+	 * cancelled. */
+	g_tx_gate_open_pending = false;
 	g_aius_spdif_tx24.gate_open = 0u;
 	CORE_PIN14_PORTCLEAR = CORE_PIN14_BITMASK;
 	CORE_PIN14_DDRREG |= CORE_PIN14_BITMASK;
 	CORE_PIN14_CONFIG = 5; /* ALT5 GPIO, now driving low */
+}
+
+/* The armed open, run by enqueue() immediately before it stages a block.
+ * Same two-store critical-section contract as clock_flush_ring_preserve_diag():
+ * the TX ISR is the sole cursor reader. The underrun-count arm rides the same
+ * masked section, so no fill() can observe an open gate before the level has
+ * been set. Cost when nothing is pending: one bool test per block. */
+static inline void tx_gate_execute_open(void)
+{
+	if (!g_tx_gate_open_pending)
+		return;
+	uint32_t dropped;
+	uint32_t padded;
+	noInterrupts();
+	aius_spdif_tx24_set_level(&g_aius_spdif_tx24,
+	                          AIUS_TX_GATE_OPEN_TARGET_FRAMES,
+	                          &dropped, &padded);
+	g_aius_spdif_tx24.gate_open = 1u;
+	interrupts();
+	g_tx_gate_open_pending = false;
+	if (dropped != 0u) {
+		g_tx_gate_open_trims++;
+		g_tx_gate_open_trimmed_frames += dropped;
+	}
+	g_tx_gate_open_padded_frames += padded;
+	CORE_PIN14_CONFIG = 3; /* SPDIF_OUT, as begin() routed it */
 }
 
 static FLASHMEM uint8_t current_state(void)
@@ -2991,6 +3027,7 @@ static FLASHMEM bool http_clock_json(char *output, size_t capacity,
 		"\"gate_open_target_frames\":%lu,"
 		"\"gate_open_trims\":%lu,"
 		"\"gate_open_trimmed_frames\":%lu,"
+		"\"gate_open_padded_frames\":%lu,"
 		"\"governor_trims\":%lu,"
 		"\"governor_trimmed_frames\":%lu,"
 		"\"ingress_level_words\":%lu,"
@@ -3016,6 +3053,7 @@ static FLASHMEM bool http_clock_json(char *output, size_t capacity,
 		(unsigned long)AIUS_TX_GATE_OPEN_TARGET_FRAMES,
 		(unsigned long)g_tx_gate_open_trims,
 		(unsigned long)g_tx_gate_open_trimmed_frames,
+		(unsigned long)g_tx_gate_open_padded_frames,
 		(unsigned long)g_tx_governor_trims,
 		(unsigned long)g_tx_governor_trimmed_frames,
 		(unsigned long)ingress.level_words,

@@ -200,6 +200,41 @@ static inline uint32_t aius_spdif_tx24_trim_to(AiusSpdifTx24Ring *ring,
     return drop;
 }
 
+/* Set occupancy to EXACTLY `target_frames`: trim down by advancing the
+ * consumer cursor (as trim_to), or pad UP by committing digital silence when
+ * the ring is short. Same masked-section caller contract as trim_to. The one
+ * legitimate caller is the TX gate's closed->open edge, executed at the
+ * producer's pre-commit instant (aius-output-jitter Phase F): with the pad
+ * dark, dropped frames were never heard and padded frames are silence nobody
+ * hears either, and setting the level at that instant is what makes the
+ * standing pre-commit floor `target_frames` by construction rather than the
+ * phase luck of the producer's first burst against the transmit ISR. The
+ * buffer is never cleared (see reset()), so padding must write the zeros.
+ * `target_frames` must not exceed AIUS_SPDIF_TX24_RING_FRAMES. */
+static inline void aius_spdif_tx24_set_level(AiusSpdifTx24Ring *ring,
+                                             uint32_t target_frames,
+                                             uint32_t *dropped,
+                                             uint32_t *padded)
+{
+    const uint32_t level = ring->written - ring->consumed;
+    *dropped = 0u;
+    *padded = 0u;
+    if (level > target_frames) {
+        *dropped = level - target_frames;
+        ring->consumed += *dropped;
+        return;
+    }
+    const uint32_t deficit = target_frames - level;
+    uint32_t index = ring->written & AIUS_SPDIF_TX24_RING_MASK;
+    for (uint32_t i = 0; i < deficit; i++) {
+        ring->left[index] = 0;
+        ring->right[index] = 0;
+        index = (index + 1u) & AIUS_SPDIF_TX24_RING_MASK;
+    }
+    ring->written = ring->written + deficit;
+    *padded = deficit;
+}
+
 /* Committed frames not yet transmitted. This is the transmit queue occupancy
  * the meter reports; there is no other queue behind it. */
 static inline uint32_t aius_spdif_tx24_level(const AiusSpdifTx24Ring *ring)

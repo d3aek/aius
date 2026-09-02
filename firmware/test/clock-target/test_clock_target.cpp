@@ -664,6 +664,73 @@ static void test_gate_open_trim_normalizes_occupancy(void)
 	assert(aius_spdif_tx24_level(&ring) == 100u);
 }
 
+/* aius-output-jitter Phase F: the gate-open edge sets the level EXACTLY,
+ * padding a short ring with silence it writes itself (the buffer is never
+ * cleared), across the buffer wrap and the cursor wrap alike. */
+static void test_gate_open_set_level_pads_or_trims_to_target(void)
+{
+	AiusSpdifTx24Ring ring = {};
+	uint32_t dropped = 99u;
+	uint32_t padded = 99u;
+
+	/* Empty ring, cursors just short of the buffer wrap: the pad writes
+	 * zeros at the wrapped indexes and only the pad is reported. */
+	for (uint32_t i = 0; i < AIUS_SPDIF_TX24_RING_FRAMES; i++) {
+		ring.left[i] = 0x7fffff;
+		ring.right[i] = -0x800000;
+	}
+	ring.written = AIUS_SPDIF_TX24_RING_FRAMES * 3u - 8u;
+	ring.consumed = ring.written;
+	ring.underruns = 5u;
+	aius_spdif_tx24_set_level(&ring, 128u, &dropped, &padded);
+	assert(dropped == 0u);
+	assert(padded == 128u);
+	assert(aius_spdif_tx24_level(&ring) == 128u);
+	assert(ring.underruns == 5u);
+	for (uint32_t i = 0; i < 128u; i++) {
+		const uint32_t index =
+			(AIUS_SPDIF_TX24_RING_FRAMES * 3u - 8u + i) &
+			AIUS_SPDIF_TX24_RING_MASK;
+		assert(ring.left[index] == 0);
+		assert(ring.right[index] == 0);
+	}
+	/* The frame just past the pad is untouched: nothing beyond `written`
+	 * was written. */
+	assert(ring.left[120u] == 0x7fffff);
+	assert(ring.right[120u] == -0x800000);
+
+	/* Short but not empty: only the deficit is padded. */
+	ring.consumed = ring.written - 100u;
+	aius_spdif_tx24_set_level(&ring, 128u, &dropped, &padded);
+	assert(dropped == 0u);
+	assert(padded == 28u);
+	assert(aius_spdif_tx24_level(&ring) == 128u);
+
+	/* At target: a no-op that reports nothing. */
+	aius_spdif_tx24_set_level(&ring, 128u, &dropped, &padded);
+	assert(dropped == 0u);
+	assert(padded == 0u);
+	assert(aius_spdif_tx24_level(&ring) == 128u);
+
+	/* Over target, across the 32-bit cursor wrap: trims like trim_to. */
+	ring.written = UINT32_MAX - 3u;
+	ring.consumed = ring.written - 1792u;
+	aius_spdif_tx24_set_level(&ring, 128u, &dropped, &padded);
+	assert(dropped == 1664u);
+	assert(padded == 0u);
+	assert(aius_spdif_tx24_level(&ring) == 128u);
+	assert(ring.written == UINT32_MAX - 3u);
+
+	/* Empty at the 32-bit cursor wrap: the pad carries `written` across
+	 * it and the level still reads the target. */
+	ring.written = UINT32_MAX - 3u;
+	ring.consumed = ring.written;
+	aius_spdif_tx24_set_level(&ring, 128u, &dropped, &padded);
+	assert(padded == 128u);
+	assert(ring.written == 124u);
+	assert(aius_spdif_tx24_level(&ring) == 128u);
+}
+
 } /* namespace */
 
 uint32_t aius_audio_clock_fake_register_read(
@@ -695,6 +762,7 @@ int main(void)
 	test_srfm_integer_millihertz();
 	test_flush_preserves_lifetime_diagnostics();
 	test_gate_open_trim_normalizes_occupancy();
+	test_gate_open_set_level_pads_or_trims_to_target();
 	puts("clock-target tests passed");
 	return 0;
 }
