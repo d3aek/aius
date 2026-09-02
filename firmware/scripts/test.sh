@@ -654,6 +654,19 @@ rate-gate-capture)
 	# waveforms only -- no board, no ALSA device.
 	python3 "$fw_root/test/rate-gate-capture/test_capture.py"
 	;;
+sd-editor)
+	# The SD-card web UI regressions (test/sd-editor/*.test.js at the repo
+	# root): vitest with this repo as its root, per the root vitest.config.js.
+	# The upstream repository's own vitest include is the repo-graph anchor and must not
+	# list this tree, so this is the one runner for these suites. pnpm must
+	# run from a workspace package -- inside the submodule it reports "No
+	# package found in this workspace" -- so it runs from the superproject
+	# when this repo is a submodule, else from here.
+	aius_root="$(cd "$fw_root/.." && pwd)"
+	host_root="$(git -C "$aius_root" rev-parse --show-superproject-working-tree 2>/dev/null || true)"
+	[ -n "$host_root" ] || host_root="$aius_root"
+	(cd "$host_root" && pnpm exec vitest run --root "$aius_root")
+	;;
 latency-runner)
 	# Exact-carrier native reference: public IEC parser -> resident production
 	# pipeline/decoders -> shared runtime-config adapter -> public DSP.
