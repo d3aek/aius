@@ -864,9 +864,21 @@ The first gate runs with the fixed external capture tool
   underrun 8.3 s later, recorder freeze on it), and the 48 kHz floor of
   1536 after 23 unsupported episodes. Fix: make the floor deterministic at
   the gate-open edge —
-  [`aius-output-jitter.md`](aius-output-jitter.md) Phase F (owner decision
-  2026-09-02: record and open the phase; no flash that session). Gate 2
-  stays FAIL until that phase ships and the run repeats clean.
+  [`aius-output-jitter.md`](aius-output-jitter.md) Phase F, built and
+  flashed the same evening (`3570a216216d+teensy41-optical`).
+
+  **Gate 2 re-run on `3570a216216d` (Phase F on board): PASS.** Same
+  tool, same stimulus, `--expect-build 3570a216216d+teensy41-optical`:
+  `continuous_output true`, no zero run in the U24 capture,
+  `clock.tx_underrun_frames` delta 0, every other harmful delta 0, 12 trims
+  / 12 invalid windows, `max_follow_error_millihz` 722, and the polled
+  `tx_level_frames` never below **128** (min 128, max 512; `tx_high_water`
+  640 = target + quantum) across 129 samples — the floor the fix promised
+  (evidence-sha256
+  `781250dd5d3e06972905473562b4eef9cf4b2706b035fe4e29c0b431fb011d23`).
+  `gate_open_padded_frames` advanced 128 → 256 at the 44.1 kHz relock and
+  `gate_open_trims` stayed 0. `audio_rate_hz 44100` is recorded, labelled
+  self-referential, and asserts nothing.
 - **Gate 7 (trim-boundary waveform, 48 kHz): PASS under the contract
   redefined 2026-09-02 (FAIL on the old wording; output clean either
   way).** `discontinuities_outside_invalid 0`, `capture_frame_gaps 0`, no

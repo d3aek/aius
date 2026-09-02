@@ -89,10 +89,10 @@ will burn the one-shot freeze — an open question in the input-recovery plan's
 **Update 2026-09-02 — Phase F opened.** The rate-gate capture tool's gate-2
 run root-caused a 128-frame dropout to the post-relock transmit-ring floor
 being phase luck (the gate-open target only trims down; nothing pads up).
-Phase F below makes the floor deterministic at the gate-open edge; it is
-designed and owner-approved to open, not built. The deployed image is now
-the plain single-image `e746cf952dd6+teensy41-optical` (no A/B), so the
-"slot B" statements above are historical.
+Phase F below makes the floor deterministic at the gate-open edge; built
+and flashed the same day (`3570a216216d+teensy41-optical`, plain
+single-image posture, no A/B — the "slot B" statements above are
+historical), with gate 2 passing for the first time on it.
 
 **Decisions taken this session (owner, in chat):**
 - Jitter is fixed by removing sources, never by widening the transmit
@@ -396,7 +396,34 @@ trigger spends its one-shot freeze on the boot bring-up underrun (blind
 witness every boot until thawed by hand), and rapid recorder-data reads can
 wedge HTTP for a few seconds (server recovered unaided, audio unaffected).
 
-### Phase F — deterministic transmit-ring floor at the gate-open edge
+### Phase F — deterministic transmit-ring floor at the gate-open edge ✓ SHIPPED 2026-09-02
+
+**Shipped 2026-09-02** (aius `018c000` + `3570a21`, image
+`3570a216216d+teensy41-optical` flashed over USB CDC the same evening):
+`aius_spdif_tx24_set_level()` (trim down or pad up with silence),
+`tx_gate_actuate(true)` arms, `enqueue()` executes the open at its
+pre-commit instant, `clock.gate_open_padded_frames` served and swagger'd.
+Host: clock-target (new set_level row), tx-governor, optical-app,
+runtime-target, http green; teensy41-optical build `[SUCCESS]`, memory and
+itcm-placement gates pass (ITCM free unchanged at 1108 B — `enqueue()` is
+flash-resident). **Device, fresh boot with the carrier lit:**
+`tx_underrun_frames 0`, `gate_open_padded_frames 128`, `tx_high_water 640`
+= 128 + 512 — the bring-up underrun that used to spend the flight
+recorder's one-shot freeze on every boot is gone (all four slots stayed
+recording). Then, without a reboot: gate 2 (44.1 kHz, 129 s, capture tool,
+`--expect-build`) **pass** — `continuous_output true`, underrun delta 0,
+polled ring level min 128 / max 512 (evidence-sha256
+`781250dd5d3e06972905473562b4eef9cf4b2706b035fe4e29c0b431fb011d23`);
+e2e latency row 899 frames / 18.73 ms (+76 frames on the `e746cf9` row,
+inside this phase's ≤128-frame bound; [`aius-e2e-latency.md`](aius-e2e-latency.md));
+48 kHz smoke pass, zero deltas. Across boot, three relocks and the three
+runs: `tx_underrun_frames 0`, `gate_open_trims 0`, `tx_high_water 640`
+throughout; `gate_open_padded_frames` 128 → 256 (the 48→44.1 relock padded
+a full target; the 44.1→48 relock found the ring already at exactly 128 at
+the open instant and padded nothing — the pad is "up to" a target, the
+floor is the invariant). Not run: the explicit U24 de-auth/re-auth row
+(the sysfs write was refused by the agent's permission classifier that
+session; the gate-2 stimulus relock is the relock evidence).
 
 **Finding, 2026-09-02 (rate-gate capture tool, gate 2 at 44.1 kHz, image
 `e746cf952dd6`; full trace in

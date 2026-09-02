@@ -1076,6 +1076,27 @@ row's raw artifacts are session scratch (7-day GC), not retained under
 on the same image: pass, zero deltas, no transport retries,
 `max_clock_tx_level_frames` 512.
 
+**Regression row 2026-09-02, later (image `3570a216216d+teensy41-optical`,
+output-jitter Phase F on board — the transmit-ring floor is now set to
+`gate_open_target_frames` at the gate-open edge instead of being the
+producer's phase luck):** same bench, same form (`--expect-build`,
+`expected_build_override: true`, fresh boot): **899 frames / 18.73 ms raw,
+24/24 codes accepted, residual 0, every zero-delta counter clean.** Board
+share ≈ 899 − 90 = 809 frames / **16.9 ms**: +76 frames (+1.58 ms) on the
+`e746cf9` row above, which is the difference between a floor that happened
+to land at ~52 frames on that boot and a floor that is now 128 by
+construction. This is inside the ≤128-frame bound Phase F set for itself
+and above the owner's ≤16 ms target by ~41 frames; the previous row's
+"under target" was partly the lottery, and the deterministic floor makes
+the 128-vs-256 target question (and the limiter-lookahead trade) the real
+levers. Cautions (1) and (2) above still apply; `tx_level_frames` at the
+row's manifest read 128–512 (floor 128, high water 640). Harmful-counter
+smoke (`pcm-48k-smoke`, 120 s) on the same image: pass, zero deltas,
+`max_clock_tx_level_frames` 512; gate 2 (44.1 kHz, 129 s) on the same
+image: pass for the first time
+([`aius-sample-rate-following.md`](aius-sample-rate-following.md) §Device
+evidence — 2026-09-02).
+
 ## Outstanding-work audit
 
 - `docs/plans/aius-ac3-support.md` — `extend`: Add physical first-output and AU-tail latency to the completed decoder evidence while its deferred four-hour gate remains pending OTA work.

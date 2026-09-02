@@ -110,7 +110,8 @@ defective tool and must be re-run** before any of it is treated as evidence.
   is the gate-7 correlation fiducial (implemented, unit-tested).
 - **Live integration (step 6) — re-run with the fixed tool on
   `e746cf952dd6+teensy41-optical` (2026-09-02): gate 2 FAIL (real board
-  dropout, root-caused the same day), gate 7 PASS under the contract the
+  dropout, root-caused the same day and fixed by output-jitter Phase F —
+  PASS on `3570a216216d` that evening), gate 7 PASS under the contract the
   owner redefined on 2026-09-02 (the saved evidence re-analyzes clean), gate
   4 FAIL on the aplay-stimulus grounds with `old_rate_output_frames`
   genuinely measured at 0.** Each with its digest in §Live-run results —
@@ -143,6 +144,15 @@ are the citation. Every verdict is a real bench verdict, not a tool error.
   `self_referential` label and asserts nothing on this hardware; gate 2 is
   judged on continuity and the harmful counters, which is exactly where this
   run fails.
+- **Gate 2 re-run on `3570a216216d+teensy41-optical` (output-jitter Phase
+  F on board, same evening): PASS.**
+  `evidence-sha256: 781250dd5d3e06972905473562b4eef9cf4b2706b035fe4e29c0b431fb011d23`.
+  External: `audio_rate_hz 44100` (self-referential, as labelled),
+  `continuous_output true`, no zero run. Bench: no failures; underrun delta
+  0, 12 trims / 12 invalid windows, `max_follow_error_millihz` 722,
+  `max_clock_tx_level_frames` 512 with the polled level never below 128.
+  The dropout above was the post-relock ring floor being phase luck;
+  Phase F sets it to the target at the gate-open edge.
 - **Gate 7 (`waveform`, 48 kHz): PASS under the contract redefined
   2026-09-02 (was FAIL on the old contract, output clean either way).**
   `evidence-sha256: 87e9ef415af946d9320808b4391f6c81817593c797acf038f36f70bc55b0ae7b`.
@@ -514,10 +524,10 @@ is producing that JSON faithfully.
   board with the produced JSON (a real verdict, not a tool error), on one exact
   committed image with `--expect-build`. **Met 2026-09-02** on
   `e746cf952dd6+teensy41-optical` with the fixed tool (§Live-run results —
-  2026-09-02): gate 2 fail (real dropout), gate 7 pass (under the contract
-  redefined the same day; fail on the old one), gate 4 fail (stimulus
-  grounds) with `old_rate_output_frames = 0` measured through resolved
-  fiducials.
+  2026-09-02): gate 2 fail (real dropout; pass on `3570a216216d` after the
+  Phase F fix the same evening), gate 7 pass (under the contract redefined
+  the same day; fail on the old one), gate 4 fail (stimulus grounds) with
+  `old_rate_output_frames = 0` measured through resolved fiducials.
 - The transitions descope lands with its tests green in the same change set.
   **Done** (aius `93610f6`).
 - Every recorded live result cites an `evidence.jsonl` path and SHA-256.
