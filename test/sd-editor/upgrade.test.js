@@ -701,6 +701,30 @@ describe('Aius SD firmware upgrade — interrupted transfers', () => {
     expect(device.chunks[0]).toEqual({ start: 0, end: 256, total: 10256 });
   });
 
+  it('resumes on a FRESH page load from the offset the device already holds', async () => {
+    /* The resume test above re-runs on the same page instance. This is the
+     * operator's real case: the tab died mid-upload, the device still holds
+     * the staged prefix, and a new page load must pick the SAME container up
+     * at the device's next_offset. Nothing is persisted in the browser -- the
+     * only state is the device's own status document, published
+     * container-absolute (optical_main.cpp:4706-4709). Before the 88b9203 fix
+     * the page compared total_bytes with the PAYLOAD length, could never
+     * match a real device, and silently restarted every fresh load at 0. */
+    await ready({ ota: Object.assign(idleOta(), { state: 'staging' }, containerAbsolute(PAYLOAD_BYTES, 4096, 4096)) });
+    let announced = '';
+    device.onChunk = () => {
+      if (announced === '') announced = textOf('upload');
+      return null;
+    };
+
+    await startRun();
+
+    expect(announced).toContain('Resuming upload at 4.3 KiB');
+    expect(device.chunks[0]).toEqual({ start: 4352, end: 8448, total: 10256 });
+    expect(device.chunks).toHaveLength(2);
+    expect(device.ota.next_offset).toBe(10256);
+  });
+
   it('surfaces a file the browser can no longer read as a stopped run, not a hang', async () => {
     await ready({ container: { payloadReadFails: true } });
 

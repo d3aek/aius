@@ -1055,6 +1055,27 @@ accounting):**
   and block-pipeline depth are design work with no committed
   contract.
 
+**Regression row 2026-09-02 (image `e746cf952dd6+teensy41-optical`, the
+recorder rolling-bank + review-fix series on board):** e2e PCM production
+row via `bench.py --expect-build e746cf952dd6+teensy41-optical` (recorded
+with `expected_build_override: true`; the Phase 1 acceptance row stays
+pinned to its own image): **823 frames / 17.15 ms raw, 24/24 codes
+accepted, every zero-delta counter clean.** Board share ≈ 823 − 90 =
+733 frames / **15.3 ms**, inside the owner's ≤16 ms target above and below
+the standing 17.4 ms — the first row under target, and without the
+limiter-lookahead trade. Two cautions before reading it as a design
+improvement: (1) the same bench on the previous image `fc674c60f06c`
+measured 1508 frames / 31.42 ms in the same session because that boot had
+ratcheted the transmit ring to 1152 frames (governor held off by the
+2026-08-16 decision; the ring ratchets upward on each stimulus start), and
+after the fresh boot the ring peaked at 512 — so a row taken late in a
+boot can carry +10 ms of pure ring residence and every row must note
+`tx_level_frames` from its manifest or be taken after a fresh boot; (2) the
+row's raw artifacts are session scratch (7-day GC), not retained under
+`firmware/test/evidence/`. Harmful-counter smoke (`pcm-48k-smoke`, 120 s)
+on the same image: pass, zero deltas, no transport retries,
+`max_clock_tx_level_frames` 512.
+
 ## Outstanding-work audit
 
 - `docs/plans/aius-ac3-support.md` — `extend`: Add physical first-output and AU-tail latency to the completed decoder evidence while its deferred four-hour gate remains pending OTA work.

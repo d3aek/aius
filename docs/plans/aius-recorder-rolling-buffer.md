@@ -578,11 +578,28 @@ overlapping ones.
   `[SUCCESS]`. **`optical-cutover` fails identically to its pre-change
   baseline** (a `micros()` in `AiusAudioProcessor::update()`, commit 225253d,
   unrelated) — byte-identical output, no new failure.
-  **Owed, not evidenced:** the `newest_frozen_slot` default and every new
+  ~~**Owed, not evidenced:** the `newest_frozen_slot` default and every new
   status field live in `optical_main.cpp`, which no native suite compiles;
   only the cross-build proves them. Live re-verification of a defaulted
   `GET /api/recorder/data` against a fresh capture is owed before the next
-  deploy.
+  deploy.~~ **Device-verified 2026-09-02** on `e746cf952dd6+teensy41-optical`
+  (flashed over USB CDC, plain single-image posture): after
+  `POST /api/recorder/freeze` the header read `active_slot 1` /
+  `newest_frozen_slot 0`, and `GET /api/recorder/data?offset=0&length=4096&generation=0`
+  without `slot` returned 200 / 4096 B (a guaranteed 409 before the fix);
+  `aius-recorder-pull.py` with no `--slot` chose slot 0 "newest frozen slot
+  reported by the device" and pulled 2 MiB in 32 chunks, `gaps=0`, after
+  which the header read `lease_leaks 0`, `deferred_epochs 0`,
+  `lease_skips 0`. Every new status field (`newest_frozen_slot`,
+  `deferred_epochs`, `lease_skips`, `config_pending`, `lease_leaks`, per-slot
+  `stream_end_frame` / `rate_change_count` / `rate_change_frames[]`) is
+  served, and the fiducial pair was consumed live by the gate-4 capture tool
+  ([`aius-rate-gate-capture-tool.md`](aius-rate-gate-capture-tool.md)
+  §Live-run results — 2026-09-02): `wav_index = stream_index −
+  (stream_end_frame − valid_frames)` placed both `rate_change_frames` inside
+  the pulled ring at the frames where the output actually switched. Note
+  `GET /api/recorder` on this build requires `X-Aius-SD-Auth` (`sd_auth`
+  otherwise), contrary to the "reads need nothing" rule in `CLAUDE.md`.
 - **Bench-proven 2026-09-01:** recorder OTA'd as one agnostic image and
   self-committed (auto-rollback unneeded). Phase A debounce suppressed the
   boot-transient underrun (froze at `at_block 416`, not `at_block 1`); the
@@ -685,6 +702,37 @@ teardown, so the lease still leaked permanently mid-stream.
   test for the fix's own terminals; the four that exist now
   (`response.settle-hook-abort-paths`, `teardown.recorder-lease-released`) are
   that test, added after the fact.
+- **Device evidence 2026-09-02 (image `e746cf952dd6+teensy41-optical`, the
+  H1–H5 review fixes on board).** What is and is not now evidenced on the
+  listening-room board:
+  - **Harmful-counter smoke** (`pcm-48k-smoke`, 120 s): pass on both
+    `d2d058c` and `e746cf9`, every zero-delta counter clean, no transport
+    retries, `max_clock_tx_level_frames` 512. **E2e latency** (PCM production
+    row, `bench.py --expect-build`): 823 frames / 17.15 ms raw, 24/24 codes
+    — the recorder's per-block work costs nothing visible
+    ([`aius-e2e-latency.md`](aius-e2e-latency.md) Phase 3).
+  - **Newest-frozen default read and lease counters**: see Phase C's
+    device-verified note above.
+  - **Two live recycles while locked, no spurious trigger.** During the
+    gate-4 runs the bank went from four frozen slots to `slots_recycled 2`:
+    slot 0 (frozen by `carrier_loss`) and then slot 1 (`underrun`) were
+    recycled to RECORDING at `freeze_generation 1`, and the next operator
+    freeze landed on the recycled slot 0 with `trigger operator`, no
+    `carrier_loss` fired on either recycle, `deferred_epochs 0`,
+    `lease_skips 0`, `lease_leaks 0`. This is the epoch-history inheritance
+    path running on device; it is **not** the H2 provocation (which needs a
+    real carrier drop with three frozen slots — still owed, U24 de-auth
+    procedure in the review-fix handover).
+  - **The flight recorder caught the gate-2 defect on its own**: an
+    `underrun` freeze at 44100 with the 128-frame dropout inside it, plus a
+    `carrier_loss` freeze at the 44.1 kHz stimulus start. First real
+    field use of the bank.
+  - **Still not evidenced on device**: H1 (teardown lease release — no route
+    triggers `AIUS_NET_ACTION_TEARDOWN`; needs a physical link drop
+    mid-pull; proven by the runtime-target end-to-end row), H2 as above,
+    `park()` mid-POSTROLL, the read-lease-deferred recycle, and the
+    rehearsal-activation re-verification. Phase D stays IN-PROGRESS on
+    those.
 
 ## Residual risks / non-goals
 

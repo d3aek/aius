@@ -20,225 +20,212 @@ per the handover skill's retirement rule. Resumers: check §What landed against
 An adversarial review of the week's `git_modules/aius` work (78cb738..9abb25b:
 recorder rolling bank Phases A–D, rate-gate capture tool, rate-bench retry, OTA
 upgrade page defect 39, defect 22) found 6 high / 7 medium findings. All were fixed,
-host-proven, and the firmware fixes were validated on the deployed board
-(`http://192.0.2.66`, plain single-image posture, flashed over USB CDC). This document
-carries the state; the per-topic plans carry the design.
+host-proven, and the firmware fixes validated on the deployed board
+(`http://192.0.2.66`, plain single-image posture, flashed over USB CDC). A second
+session (same day) fixed three more gate-4 tool defects found by the first live
+run, re-ran gate 4, synced the upgrade page to the card, and promoted the device
+results into the plans. This document carries the remaining state; the per-topic
+plans carry the design and the evidence.
 
 ## State — resume here
 
 **Status.** Firmware fixes: DONE and on the board (`e746cf952dd6+teensy41-optical`).
-Host tools: DONE, pull tool and rate bench validated live; rate-gate capture tool
-validated live for gates 2 and 7, gate 4 blocked by a tool bug (below). OTA upgrade
-page: DONE at host level, NOT yet synced to the SD card, device validation owed.
-Latency budget: MEASURED, inside target. Plan docs: updated for the code changes;
-the live results below are NOT yet promoted into the plans.
+Host tools: DONE; rate-gate capture tool validated live for gates 2, 4 and 7 with
+digests recorded. OTA upgrade page: DONE — synced to the card (12/12 files,
+2026-09-02 11:07 UTC) and resume validated on device (first PUT after a killed
+tab starts at the device's `next_offset`). Plan docs: device
+results promoted (recorder Phase C/D, latency Phase 3 regression row, sample-rate
+gate 2/4/7 evidence, capture-tool live-run section). Remaining: the H2/defect-22
+device provocation and the two owner decisions below.
 
 ### What landed (all pushed to `origin/master` of `git_modules/aius`)
 
+Session 1 (see the plans for detail): `f6e2e35`, `701791b`, `f7e1af0`, `d2d058c`,
+`e746cf9`, `804ced5`, `82674e4`, `88b9203`, `4173c2b`. upstream repository side landed in
+`f4ef0ad85` (vitest include, swagger pair, pointer).
+
+Session 2:
+
 | Commit | Contents | Proof |
 |---|---|---|
-| `f6e2e35` | latency harness resolves its root after the submodule move | latency-runner 114 rows |
-| `701791b` | `bench.py --expect-build` regression rows against a newer image | latency-runner 114 rows |
-| `f7e1af0` | recorder library: epoch-history inheritance, thaw honours lease, clean settle, bounded deferral, pending config, `newest_frozen`, rate-change fiducials | recorder 27 + bank 22 rows |
-| `d2d058c` | lease released on teardown, newest-frozen read default, status fields, defect 22 consistency, `ab.booted_slot` | http 44, optical-app 38, runtime-target teardown e2e; cross-build fits |
-| `e746cf9` | DSP-config parser accepts `staged_generation` / `config_pending` on round-trip (found live: renderer refused the new document) | dsp-config + latency-runner green |
-| `804ced5` | rate-bench retry visibility + budget, pull tool newest-frozen default and exit codes, `test_recorder_pull.py` registered | rate-runner 53 rows, registry green |
-| (this commit series) | rate-gate capture tool fixes; OTA upgrade page container-absolute fix + docs + `CLAUDE.md` posture rule; this handover | rate-gate-capture 59 rows; sd-editor vitest 369; network-transport green |
+| `ce84850` | gate-4 tool: per-slot `(slot, freeze_generation)` capture identity (F10), `aplay --samples` fractional phases + `stimulus-not-followed` diagnosis (F11), honest ring budget, `unresolved_fiducials` lower bound | rate-gate-capture 68 rows |
+| `5555876` | gate-4 reducer: old rate from a 4096-frame pre-fiducial window (F12); plans: live-run results section with gate 2/4/7 digests, F10–F12, gate-2 defect opened in `aius-sample-rate-following.md` | rate-gate-capture 69 rows; offline reduction of the saved frames + second live run both resolve both fiducials |
+| (this commit series) | recorder plan Phase C/D device evidence, latency plan 823-frame regression row, upgrade-page fresh-load resume vitest case, this handover | vitest `upgrade.test.js` 64 rows |
 
-upstream repository side (uncommitted at the time of writing, see below): `vitest.config.js`
-include for `test/**`, `swagger.json` +
-`swagger.test.js` for the new keys (11/11), submodule pointer bump.
+upstream repository side: pointer bump owed after the last submodule commit
+(`.scratch/9b96cdc1-b48a-4ff1-943a-37bbd052f84e/commit-msg-upstream repository-pointer.txt`).
 
 ### Device validation results (board `e746cf952dd6+teensy41-optical`, 2026-09-02)
 
-- **Latency (e2e PCM production row, `bench.py --expect-build`)**: 823 frames /
-  17.15 ms raw, 24/24 codes accepted, every zero-delta counter clean. Board share
-  ≈ 15.3 ms after the 90-frame adapter, inside the ≤16 ms owner target
-  (`aius-e2e-latency.md:998`) and below the standing 17.4 ms. Baseline on the
-  previous image `fc674c60f06c` measured 1508 frames / 31.42 ms because that boot had
-  ratcheted the transmit ring to 1152 frames (governor held off); after the fresh
-  boot the ring peaks at 512. Evidence dirs: session scratch only (7-day GC).
-- **Harmful-counter smoke (`pcm-48k-smoke`, 120 s)**: pass on both `d2d058c` and
-  `e746cf9`, zero deltas, no transport retries, `max_clock_tx_level_frames` 512.
-- **Newest-frozen read default (H5)**: after `POST /api/recorder/freeze`,
-  `active_slot` 1 / `newest_frozen_slot` 0; `GET /api/recorder/data?offset=0&length=4096&generation=0`
-  without `slot` → 200 / 4096 B (was a guaranteed 409). Note `freeze_generation`
-  starts at 0. Pull tool default chose slot 0 "newest frozen slot reported by the
-  device", 2 MiB in 32 chunks, `gaps=0`; afterwards `lease_leaks 0`,
-  `deferred_epochs 0`, `lease_skips 0`.
-- **Lease leak on teardown (H1)**: NOT provoked on device — no route triggers
-  `AIUS_NET_ACTION_TEARDOWN`; it needs a physical link drop mid-pull. Proven by the
-  runtime-target end-to-end test (real composition, borrowed body streaming when the
-  link drops, mutation-checked).
-- **Spurious CARRIER_LOSS on recycle (H2)**: NOT provoked on device (needs three
-  frozen slots then a carrier drop via U24 USB de-authorisation; procedure below).
-  Host-proven by probe-backed rows.
-- **Defect 22**: `/api/status` and `/api/dsp/config` agree (`source: sd`,
-  `config_generation 1`, `staged_generation 1`, pending false). The carrier-less
-  staged branch was not exercised (needs the U24 de-auth + a PUT).
-- **Gate 2 (44.1 kHz pcm-120s) with the fixed tool**: FAIL, honestly. The tool found
-  exactly one 128-frame zero run in the U24 capture and the board's
-  `clock.tx_underrun_frames` advanced by exactly 128 at ~19 s into the run. Tool and
-  board agree: a real 2.9 ms dropout at 44.1 kHz. `audio_rate_hz 44100` is
-  `capture-clock-locked` (self-referential, as the tool now says). Last week's PASS
-  came from a detector blind at ±410.
-- **Gate 7 (48 kHz waveform)**: `discontinuities_outside_invalid 0`,
-  `capture_frame_gaps 0`, `correlated_invalid_windows 0`; the board logged 12 trims /
-  12 invalid windows; the bench FAILS with "waveform invalid_intervals_frames must be a
-  non-empty integer array". Contract question, not a tool defect (see Pending).
-- **Gate 4 (transitions, `--phase-seconds 1.2`, no `--with-replay`)**: the tool refused
-  with `no-transition-captured` (the fail-shaped path works), but wrongly: the board's
-  slot 2 IS frozen by the operator freeze with `rate_changes 1` and fiducial
-  `rate_change_frames [6885376]` / `stream_end_frame 15302656`. Cause: the tool's
-  "newer than the pre-run baseline" check compares `freeze_generation` across slots,
-  but the generation is per slot (every slot reads 0). See Findings.
-- Incidental: the flight recorder captured the gate-2 underrun on its own
-  (slot 1 `frozen`, trigger `underrun`, 44100) and a carrier-loss at the 44.1 kHz
-  stimulus start (slot 0, `carrier_loss`).
+Session 1's results (latency 823 frames / 17.15 ms, smoke pass, newest-frozen read
+default, lease counters) are now recorded in `aius-recorder-rolling-buffer.md`
+Phase C/D and `aius-e2e-latency.md` Phase 3; gate 2 (real 128-frame dropout at
+44.1 kHz) and gate 7 (output clean, contract open) in
+`aius-rate-gate-capture-tool.md` §Live-run results — 2026-09-02 and
+`aius-sample-rate-following.md` §Device evidence — 2026-09-02, with digests.
+
+- **Gate 4 (fixed tool, `--phase-seconds 2`, no replay leg)**: captured slot 0 at
+  `freeze_generation 1` (a recycled slot), `trigger operator`, `rate_changes 2`,
+  both fiducials retained and resolved, **`old_rate_output_frames 0`,
+  `lower_bound false`** (`evidence-sha256 6dc5f172…0fda8`, full digest in the
+  plan). Bench: `fail` on the known aplay-stimulus grounds only
+  (`transition-sequence` wants the replay leg; idle-gap `unsupported`;
+  `event_overflows`-only `harmful-counter`). The 1.2 s run's
+  `no-transition-captured` was F10 + F11 (the board never followed a 1 s phase:
+  status polls show `unsupported` at 48000 throughout), not the board.
+- **Recorder bank after the gate-4 runs**: `slots_recycled 2` (slots 0 and 1
+  recycled to `freeze_generation 1` while locked, no spurious `carrier_loss`),
+  `lease_leaks 0`, `deferred_epochs 0`, `lease_skips 0`, auto-triggers restored.
+  Not the H2 provocation (needs a real carrier drop with three frozen slots).
+- **SD sync**: `aius-sd-sync.sh` 12/12 `{"ok":true}`; served `upgrade.js` now
+  byte-identical to the repo (`curl --upload-file` is bash-guard-denied; the
+  script is the route). `tx_underrun_frames` read 3840 afterwards (was 1536
+  before the session; the two gate-4 runs account for 896 + 768 of the delta in
+  their idle gaps).
+- **OTA upgrade-page resume (defect 39 fix, validated on device)**: headless
+  Chromium via `the repo tooling tool playwright-inspect` against
+  `http://192.0.2.66/sd/www/upgrade.html` with the signed container
+  `e746cf9.aiuo` (570624 B, untagged), `window.fetch` wrapped to record every
+  `Content-Range`. First run: `bytes 0-255/570624`, `bytes 256-4351/570624`,
+  `bytes 4352-8447/570624`, … 12 chunks, then a page reload killed the in-flight
+  PUT (`net::ERR_ABORTED`). Device after the kill: `state staging`,
+  `staged_bytes 49408`, `next_offset 49408`, `total_bytes 570624`
+  (container-absolute). Fresh page load, same container, start: **first PUT
+  `bytes 49408-53503/570624`** — the device's `next_offset`, not 0 — then
+  `53504-57599`, `57600-61695`. `POST /api/ota/abort` → 200; the page's next PUT
+  got 409, it stopped with "Upload stopped at 60 KiB of 557 KiB -- the device is
+  not in a state that accepts this step" (`upload:fail`), and the device read
+  `idle`, `fault none`, `activation_available false`. Never armed, never
+  activated. Transcript: `.scratch/9b96cdc1-…/inspect-ota-3.txt`; scenario
+  `ota-resume.json` beside it (a `Scenario` object with an eval that sets
+  `#token` — the runner's `localStorage` pre-seed did not populate the box).
 
 ### Uncommitted tree state
 
 `git_modules/aius`: clean after this commit series except
-`firmware/test/memory/fixtures/teensy41-optical.elf` (1788 → 129 B, a real tiny ELF,
-foreign, untouched by this session — leave it).
+`firmware/test/memory/fixtures/teensy41-optical.elf` (1788 → 129 B, foreign,
+untouched by both sessions — leave it).
 
-upstream repository root (this session owns only these): `vitest.config.js`,
-`swagger.json`, `test/swagger.test.js`, the
-`git_modules/aius` pointer. Every other dirty path at the root (`.claude/**`,
-`data/*.sqlite`, `docs/plans/almanac.md`, `src/apps/almanac/**`,
-`src/services/almanac-server/**`, other submodule pointers, untracked
-``, etc.) is foreign.
+upstream repository root: this session owns only the `git_modules/aius` pointer. Every other
+dirty path at the root (`.claude/**`, `data/*.sqlite`, `docs/plans/almanac.md`,
+`src/apps/almanac/**`, `src/services/almanac-server/**`, other submodule pointers,
+untracked ``, etc.) is foreign. `the repo tooling test` cannot compile
+the repo graph while the foreign untracked almanac tests exist (`frontend-test.
+input.candidate`), so vitest was run directly (`pnpm exec vitest run <file>`).
 
-Session evidence (latency rows, smoke JSONL, gate 2/4/7 evidence dirs with sha256
-lines, pulled WAV, signed container `e746cf9.aiuo`) lives in
-`.scratch/0178356f-7996-445d-8aa2-c81dd27cbc1b/` and is GC'd in 7 days; copy anything
-worth keeping under `firmware/test/evidence/` (gitignored) or cite digests in the
-plans before then.
+Session evidence lives in `.scratch/9b96cdc1-b48a-4ff1-943a-37bbd052f84e/`
+(gate-4 runs `gate4-ce84850/` and `gate4-run2/` with `evidence.jsonl`, the pulled
+slot frames `gate4-ce84850-slot3.npy`, bench verdict JSONs, the OTA probe
+`inspect-ota-2.txt`) and session 1's in
+`.scratch/0178356f-7996-445d-8aa2-c81dd27cbc1b/` (gate 2/7 evidence, latency
+rows, smoke JSONL, signed container `e746cf9.aiuo`, stimulus tones). Both are GC'd
+after 7 days; the digests are in the plans.
 
 ### Next action
 
-1. Sync the fixed upgrade page to the card and validate resume on the board:
-   `firmware/tools/aius-sd-sync.sh --device http://192.0.2.66 --www firmware/sd/www --token <.secrets/aius-sd-auth>`
-   (both `upgrade.js` and `upgrade.html` changed; costs ~59 ms of underrun). Then in
-   a browser against `http://192.0.2.66/sd/www/upgrade.html`: pick the signed
-   container (sign fresh: `aius_ota_sign.py sign --image .pio/build/teensy41-optical/firmware.hex --secret firmware/config/ota-home-signing-key.sec --build-revision e746cf952dd6 --output <new path>`,
-   no `--slot`), upload, kill the tab after a few chunks, reopen, re-upload, and check
-   the first `PUT /api/ota/image` `Content-Range` starts at `/api/ota`'s
-   `next_offset` (not 0); then `POST /api/ota/abort`. Do NOT activate.
-2. Fix the gate-4 baseline bug in
-   `firmware/tools/rate_gate_capture/recorder_transitions.py` (per-slot
-   `freeze_generation`; compare the (slot, generation) pair or the
-   `newest_frozen_slot` identity against the pre-run header), re-run gate 4, then
-   record gate 2/4/7 results + digests in `docs/plans/aius-rate-gate-capture-tool.md`.
-3. Provoke H2/defect-22 on device (owner-visible, ~1 min of no audio): freeze twice
-   more so three slots are frozen while locked, write `0` to
-   `/sys/bus/usb/devices/3-1.1/authorized` (U24 de-auth = carrier loss), confirm only
-   the active slot fires `carrier_loss`, the older frozen slots keep their
-   `freeze_generation`, and `slots_recycled` advances by 1 only; while carrier-less,
-   PUT the round-tripped `/api/dsp/config` and confirm both documents report
-   `config_pending` / `staged_generation 2`; write `1` back, then re-apply
-   `amixer -c 0 cset numid=5 110,110` (the U24 resets its mixer on re-enumeration).
-4. Commit the upstream repository side (`vitest.config.js`, swagger pair, pointer) with
-   `.scratch/…/commit-msg-upstream repository.txt` if this session did not.
-5. Promote the device results above into `aius-recorder-rolling-buffer.md`
-   (Phase C/D evidence), `aius-e2e-latency.md` (the 823-frame row), and
-   `aius-sample-rate-following.md` (gate 2's real 44.1 kHz dropout), then retire
-   this document.
+1. Provoke H2/defect-22 on device (owner-visible, ~1 min of no audio; **pending
+   decision 3**): with three slots frozen while locked (freeze twice if needed —
+   the bank currently has slots 0, 2, 3 frozen and 1 recording), write `0` to
+   `/sys/bus/usb/devices/3-1.1/authorized` (U24 de-auth = carrier loss), confirm
+   only the active slot fires `carrier_loss`, the older frozen slots keep their
+   `freeze_generation`, and `slots_recycled` advances by 1 only; while
+   carrier-less, PUT the round-tripped `/api/dsp/config` and confirm both
+   documents report `config_pending` / `staged_generation 2`; write `1` back, then
+   re-apply `amixer -c 0 cset numid=5 110,110`. Record under
+   `aius-recorder-rolling-buffer.md` Phase D and `aius-network-hardening.md`
+   defect 22.
+2. Resolve pending decisions 1 and 2 and reword the gate-7 / gate-2 lines in
+   `aius-rate-gate-capture-tool.md` §Follow-on work and
+   `aius-sample-rate-following.md` accordingly.
+3. Investigate the gate-2 dropout (open board defect in
+   `aius-sample-rate-following.md` §Device evidence — 2026-09-02): the flight
+   recorder holds it (`underrun` freeze at 44100); read the transmit-ring level
+   and the relock at the 44.1 kHz stimulus start from that slot before it is
+   recycled (the bank is 4 slots; two operator freezes will evict it).
+4. Retire this document once 1–2 are done.
 
-### Decisions taken this session
+### Decisions taken
 
 - **Deploy route is `scripts/flash_optical.sh` over USB CDC, plain `teensy41-optical`
-  env.** The board reports `"ab": null`; the 2026-08-31 slot-agnostic chooser cutover
-  was superseded on 2026-09-01 by plain-image HalfKay flashes. `CLAUDE.md` §Device
-  access and OTA now states both postures. Re-cutover to A/B is owed but not
-  scheduled.
+  env.** The board reports `"ab": null`; `CLAUDE.md` §Device access and OTA states
+  both postures. Re-cutover to A/B is owed but not scheduled.
 - **Latency regression rows use `bench.py --expect-build <rev>`**, recorded with
   `expected_build_override: true`; the Phase 1 acceptance row stays pinned.
-- **`GET /api/recorder/data` without `slot` targets the newest frozen slot** (409 only
-  when nothing is frozen); the pull tool follows the same order (`--slot` →
-  `newest_frozen_slot` → highest `freeze_generation` frozen → `active_slot`).
-- **Settle window semantics**: a dirty block (own underrun delta or gap) resets the
-  window; a fired block neither advances nor resets it. Header, plan and code agree.
-- **`http_client_drops` is reported, not a harmful counter** (the retried drop never
-  reaches the DAC); every rate-bench sample now carries `attempts`.
-- **`staged_generation` / `config_pending` are accepted-and-ignored by the DSP-config
-  parser** so GET documents round-trip (native renderer, bypass PUT).
-- **Phase D of the recorder plan is `IN-PROGRESS`, plan `status: in-progress`** — its
-  targeted-proof items are unevidenced and its own fix carried H1.
-- **No fabricated evidence**: plan lines whose artifacts were never retained now say so.
+- **`GET /api/recorder/data` without `slot` targets the newest frozen slot**; the
+  pull tool follows the same order.
+- **Settle window semantics**: a dirty block resets the window; a fired block
+  neither advances nor resets it.
+- **`http_client_drops` is reported, not a harmful counter.**
+- **`staged_generation` / `config_pending` are accepted-and-ignored by the
+  DSP-config parser** so GET documents round-trip.
+- **Gate-4 capture identity is the per-slot `(slot, freeze_generation)` pair**, not
+  a generation compared across slots; **phases are played by frame count**; the
+  ring budget is `(phases − 1) × phase + 1 s`; the old rate comes from a 4096-frame
+  window before the fiducial (F10–F12 in the tool plan).
+- **Phase D of the recorder plan stays `IN-PROGRESS`** on the unevidenced items
+  listed in its last bullet.
+- **No fabricated evidence**: plan lines whose artifacts were never retained say so.
 
 ### Traps
 
-- `bench.py` refuses a dirty harness (`firmware/tools/latency`,
-  `firmware/test/latency-runner`): commit before a formal row. `__pycache__/` is now
-  ignored so it no longer counts as dirt.
+- `bench.py` refuses a dirty harness: commit before a formal row.
 - The transmit ring ratchets upward on each stimulus start while the governor is
-  held off (`AIUS_TX_GOVERNOR_ENABLED=0`); a latency row taken late in a boot can read
-  +10 ms of pure ring residence. Measure after a fresh boot or note
-  `tx_level_frames` from the manifest.
+  held off; measure latency after a fresh boot or note `tx_level_frames`.
 - `freeze_generation` is per slot and starts at 0; a data read with the wrong
-  generation is a 409 `recorder_state`, indistinguishable from "not frozen" by code.
+  generation is a 409 `recorder_state`, indistinguishable from "not frozen".
 - `/api/recorder` GET requires `X-Aius-SD-Auth` on this build (contrary to the
   "reads need nothing" rule in `CLAUDE.md`).
+- A 1 s stimulus phase is shorter than the board's follow latency (it sits in
+  `unsupported` for the whole phase); 2 s phases follow within ~1.2 s.
+- The board stamps `rate_change_frames` at block granularity ~400 frames *after*
+  the output has switched; the blocks adjacent to the stamp are unclassifiable.
 - `optical-cutover` suite fails at HEAD on a pre-existing `micros()` in `update()`
-  (commit 225253d), unrelated to this series.
-- ITCM has 1108 B free; the new cold recorder-bank helpers
-  (`aius_recorder_bank_newest_frozen`, `_deferred_epochs`, `_lease_skips`,
-  `_config_pending`, `aius_recorder_inherit_epoch_state`) landed in ITCM because the
-  lib is ITCM-allowlisted and portable C has no `FLASHMEM`. A placement follow-up is
-  owed before anything else grows.
-- The U24 PCM playback mixer was at −20 dB at session start; benches were run at
-  unity (`amixer -c 0 cset numid=5 110,110`). Re-check after any re-enumeration.
+  (commit 225253d), unrelated.
+- ITCM has 1108 B free; the cold recorder-bank helpers landed in ITCM. A
+  placement follow-up is owed before anything else grows.
+- The U24 PCM playback mixer resets on re-enumeration; benches run at unity
+  (`amixer -c 0 cset numid=5 110,110`). It read 110,110 at session-2 start.
+- `curl --upload-file` is bash-guard-denied; card uploads go through
+  `aius-sd-sync.sh` (which uploads all 12 files unconditionally).
+- `playwright-inspect` scenario files are a `Scenario` object
+  (`{"localStorage": …, "steps": [...]}`), not a bare step array.
 
-### Findings and loose ends
+### Findings and loose ends (not agreed, owner's call)
 
-- `firmware/tools/rate_gate_capture/recorder_transitions.py` baseline check treats
-  `freeze_generation` as global; gate 4 cannot pass on a board where every slot reads
-  0. Proposed: compare `(newest_frozen_slot, freeze_generation)` before/after or
-  require `rate_changes >= 1` on a slot whose `trigger.which == "operator"` and
-  `trigger.at_ms` is later than the run start. Not agreed.
-- Gate 4 run captured only one rate change (`rate_changes 1`) on slot 2 for a
-  48→44.1→48 sequence at `--phase-seconds 1.2`; either the freeze landed before the
-  second switch or the second switch did not stamp. Proposed: investigate with the
-  header's fiducials after the baseline fix. Not agreed.
 - `CLAUDE.md` says reads need no auth; `GET /api/recorder` returns
-  `sd_auth`. Proposed: correct the rule or the route. Not agreed.
+  `sd_auth`. Proposed: correct the rule or the route.
 - `staged_generation` bumps at PUT accept, before the SD commit
   (`optical_main.cpp:5577`), so a PUT that fails to commit still advances it while
-  `config_pending` stays false. Proposed: bump at commit. Not agreed.
+  `config_pending` stays false. Proposed: bump at commit.
 - `CONTRIBUTING.md` still carries ~12 stale `…` paths (lines 20,
-  47, 84-86, 124, 204, 214-219). Proposed: sweep. Not agreed.
+  47, 84-86, 124, 204, 214-219). Proposed: sweep.
 - `test/sd-editor/fixtures/dsp-config-default.json` (the swagger `DspConfig`
-  example) lacks `staged_generation` / `config_pending`. Proposed: refresh the
-  fixture from a live GET. Not agreed.
-- The gate-2 44.1 kHz 128-frame dropout at ~19 s is a real board defect, previously
-  invisible. Proposed: open it under `aius-sample-rate-following.md`. Not agreed.
-- The transmit-ring ratchet (governor held off by owner decision 2026-08-16) is what
-  made the previous image read 31 ms; unchanged by this series. Proposed: nothing
-  here; note for the governor decision. Not agreed.
+  example) lacks `staged_generation` / `config_pending`. Proposed: refresh from a
+  live GET.
+- The transmit-ring ratchet (governor held off by owner decision 2026-08-16) made
+  the previous image read 31 ms. Proposed: note for the governor decision.
+- A gate-4 *pass* is unreachable with the aplay stimulus (idle gaps between phases);
+  needs a source that cuts the carrier between phases or an analyzer decision
+  (already recorded in the tool plan).
 - `firmware/test/memory/fixtures/teensy41-optical.elf` is dirty in the working tree
-  (foreign). Proposed: its owner decides. Not agreed.
+  (foreign). Its owner decides.
 
 ### Pending decisions
 
-1. **Gate 7 contract.** "The board logs each PLL trim as an invalid window (12 in
-   120 s) while the sensitive output detector sees no artifact at all. Should gate 7
-   require the U24 capture to show those intervals (current bench contract, which
-   fails), or should it pass when the output is continuous and the invalid windows
-   are the board's own bookkeeping?" Options: (a) keep the contract, gate 7 stays
-   red until the U24's handling of the validity bit is characterised; (b) redefine
-   gate 7 as "no discontinuity outside the board-declared windows, and the windows
-   need not be visible", which passes today. Recommendation: (b); the trims are
-   sub-sample and inaudible by construction, and the capture proves it. Blocks: the
-   gate-7 line in `aius-rate-gate-capture-tool.md` and `aius-sample-rate-following.md`.
-2. **Gate 2 scope.** "`audio_rate_hz` is capture-clock-locked on this hardware and can
-   never be an independent measurement; is gate 2's rate field to be dropped, kept as
-   a self-referential sanity check, or measured via a channel-status decode?"
-   Recommendation: keep it, labelled self-referential (as the tool now does), and
-   judge gate 2 on continuity + harmful counters. Blocks: the plan's gate-2 wording.
-3. **Physical validation of H1/H2.** "Do you want the teardown lease-leak fix (needs
-   an Ethernet unplug mid-pull) and the recycle carrier-loss fix (needs the U24
-   de-auth, ~1 min of silence) provoked on the listening-room board, or is the host
-   end-to-end proof sufficient?" Recommendation: run the U24 de-auth procedure (item
-   3 of Next action) when the room is idle; skip the unplug. Blocks: nothing in code;
-   only the evidence lines.
+1. **Gate 7 contract.** The fixed detector (proven at the ±410 stimulus) sees no
+   artifact through 12 board-declared invalid windows in 120 s. (a) keep the
+   contract, gate 7 stays red until the U24's handling of the validity bit is
+   characterised; (b) redefine gate 7 as "no discontinuity outside the
+   board-declared windows; the windows need not be visible", which passes on the
+   2026-09-02 evidence. Recommendation: (b). Blocks: the gate-7 wording in both
+   plans.
+2. **Gate 2 scope.** `audio_rate_hz` is capture-clock-locked on this hardware and
+   can never be an independent measurement: drop it, keep it labelled
+   self-referential and judge gate 2 on continuity + harmful counters, or measure
+   via a channel-status decode elsewhere. Recommendation: keep it labelled. The
+   gate-2 fail stands on continuity either way. Blocks: the gate-2 wording.
+3. **Physical validation of H1/H2.** Provoke the teardown lease-leak fix (needs an
+   Ethernet unplug mid-pull) and the recycle carrier-loss fix (U24 de-auth, ~1 min
+   of silence) on the listening-room board, or accept the host end-to-end proof?
+   Recommendation: run the U24 de-auth procedure (Next action 1) when the room is
+   idle; skip the unplug. Blocks: nothing in code; only the evidence lines.
