@@ -26,12 +26,36 @@ extern "C" {
  *     FROZEN -- advances to the next slot in the ring, UNLESS that slot has
  *     an outstanding HTTP read lease, in which case the advance defers one
  *     epoch at a time (retried on the next drain() call) rather than
- *     recycling a slot a response is still streaming from.
+ *     recycling a slot a response is still streaming from. The deferral is
+ *     BOUNDED: after AIUS_RECORDER_RECLAIM_EPOCHS deferred drains the advance
+ *     skips past the leased slot to the first candidate that is not leased
+ *     (counted in lease_skips), leaving the leased capture intact for its
+ *     reader; only when every other slot is leased too does it keep
+ *     deferring. Deferred drains are counted in deferred_epochs.
  *   - a slot that was already FROZEN when the ring wraps back to it is
  *     recycled (thawed back to RECORDING) and counted in slots_recycled --
  *     an honest count of wraps, not a claim about whether the operator
  *     pulled it first (nothing marks a generation as read; see the plan's
  *     Design section for why that distinction is out of scope here).
+ *   - the incoming slot INHERITS the outgoing slot's epoch-side edge history
+ *     (aius_recorder_inherit_epoch_state), because the bank forwards epochs
+ *     to the active slot only: without it a recycled slot edge-detects the
+ *     carrier against whatever the stream looked like when it was last
+ *     active, seconds ago, and fires a spurious CARRIER_LOSS (or misses a
+ *     real one on a virgin slot).
+ *
+ * THE UNDERRUN TRIGGER IS BLIND FOR THE SETTLE WINDOW AFTER EVERY ADVANCE,
+ * BY DESIGN. A slot re-arms with settled_blocks == 0 (reset_capture), so the
+ * incoming capture cannot arm its underrun trigger until it has staged
+ * AIUS_RECORDER_SETTLE_BLOCKS consecutive clean blocks -- about 85 ms at the
+ * production 512-frame block, and longer if the stream is not clean. This is
+ * the same debounce a boot or a manual thaw gets, applied for the same reason:
+ * an underrun observed in the first blocks after a capture re-arms says more
+ * about the transition than about the stream. The cost is real and named
+ * here rather than discovered: a second underrun burst arriving inside that
+ * window after a first one auto-advanced the bank is NOT captured by the
+ * incoming slot (the outgoing slot's capture already holds the first burst).
+ * Pinned by test_bank_underrun_blind_window_after_advance.
  *
  * Total ring bytes across all N slots is always exactly the single-ring
  * byte extent aius_recorder_ring_bytes_after_staging() would have produced
@@ -76,6 +100,34 @@ typedef struct {
 	 * slot from before the ring has wrapped once). Honest about what it
 	 * measures -- see the module comment above. */
 	uint32_t slots_recycled;
+	/* Read-lease deferral accounting, for the status document.
+	 * deferred_epochs is cumulative over the bank's life (every drain() that
+	 * found the advance blocked by a lease); lease_skips counts the advances
+	 * that ran out of deferral budget and skipped past a leased slot.
+	 * defer_held is the CURRENT run only -- the consecutive deferred drains
+	 * behind the present block, zeroed by every completed advance, and the
+	 * value compared against AIUS_RECORDER_RECLAIM_EPOCHS. */
+	uint32_t deferred_epochs;
+	uint32_t lease_skips;
+	uint32_t defer_held;
+	/* Newest freeze, tracked at the moment drain() observes it so the
+	 * status/HTTP layer has a "read this one" default that is not the
+	 * active slot (the advance happens in the same drain that freezes, so
+	 * the active slot is always the RECORDING one). Valid only while that
+	 * slot is still FROZEN; aius_recorder_bank_newest_frozen() falls back to
+	 * a generation scan once it isn't. */
+	uint32_t newest_frozen;
+	bool newest_frozen_valid;
+	/* Config a slot refused because it was mid-capture, replayed onto that
+	 * slot when it next thaws or is recycled. Without this a slot that was
+	 * in POSTROLL/DRAINING when the operator reconfigured came back with the
+	 * PREVIOUS config and nothing said so. One flag per slot: a slot that
+	 * accepts a later config clears its own. */
+	uint32_t config_pending_slots[AIUS_RECORDER_BANK_SLOTS];
+	uint32_t pending_mask;
+	float pending_gr_threshold_db;
+	uint32_t pending_gr_hold_blocks;
+	uint32_t pending_postroll_blocks;
 } AiusRecorderBank;
 
 /* Bind storage and arm every slot, or refuse the whole bank into ABSENT
@@ -87,7 +139,13 @@ typedef struct {
  * ascending base offsets into `ring`. staging/staging_frames/staging_slots/
  * slot_frames are the SAME shared carve passed to all N slots (safe: only
  * the active slot's producer/drain ever touch it). Call once, cold, before
- * the transmit interrupt arms. */
+ * the transmit interrupt arms.
+ *
+ * The per-slot default post-roll gets the same slot-capacity clamp
+ * aius_recorder_bank_set_config() applies, so a bank whose slots are shorter
+ * than AIUS_RECORDER_POSTROLL_DEFAULT_BLOCKS never arms with a post-roll it
+ * cannot hold -- the default is as capable of overrunning a short slot as an
+ * operator's value is. */
 AiusStatus aius_recorder_bank_init(AiusRecorderBank *bank, uint8_t *ring,
                                    uint32_t ring_bytes, uint32_t fitted_mb,
                                    int32_t *staging, uint32_t *staging_frames,
@@ -134,13 +192,43 @@ AiusStatus aius_recorder_bank_freeze(AiusRecorderBank *bank);
  * doesn't cover: forcing a FROZEN active slot back to RECORDING immediately
  * rather than waiting for the next slot's read lease to clear (or simply an
  * operator who wants the current slot back, not the next one). AIUS_OK only
- * if the active slot was FROZEN, same as aius_recorder_thaw. */
+ * if the active slot was FROZEN, same as aius_recorder_thaw.
+ *
+ * AIUS_REFUSED when the active slot has an outstanding read lease: thawing it
+ * would recycle the ring bytes a response is still streaming from, which is
+ * exactly what drain()'s deferral exists to prevent -- an operator thaw is no
+ * more entitled to do that than the round-robin is. The caller retries once
+ * the pull completes (or lets auto-advance take over). Distinct from the
+ * AIUS_INVALID_ARG a non-FROZEN slot returns, so the caller can tell "not
+ * frozen" from "frozen but busy". */
 AiusStatus aius_recorder_bank_thaw(AiusRecorderBank *bank);
 
 /* Cold, ONE-WAY: park every slot (any state -> ABSENT), same one-way
  * contract as aius_recorder_park, applied N times. Refuses only a null
  * argument. */
 AiusStatus aius_recorder_bank_park(AiusRecorderBank *bank);
+
+/* The most recently frozen slot that is STILL frozen, for a reader that wants
+ * "the capture that just happened" -- true plus its index, or false when no
+ * slot is frozen. This is the honest default for the data route: `active`
+ * advances inside the same drain() that freezes, so reading the active slot
+ * always hits a RECORDING one.
+ *
+ * Tracked at the freeze, so it is exact while that slot holds. Once it leaves
+ * FROZEN (thaw, recycle, park) the answer falls back to the frozen slot with
+ * the highest freeze_generation -- the one thawed, and therefore re-frozen,
+ * most recently -- with ties broken in ring order backwards from the active
+ * slot, which is newest-first. */
+bool aius_recorder_bank_newest_frozen(const AiusRecorderBank *bank,
+                                      uint32_t *slot);
+
+/* Read-lease deferral counters and the pending-config flag, for the status
+ * document: how many drains the round-robin has spent blocked behind a lease,
+ * how many advances gave up waiting and skipped a leased slot, and whether any
+ * slot is still carrying a config it refused while mid-capture. */
+uint32_t aius_recorder_bank_deferred_epochs(const AiusRecorderBank *bank);
+uint32_t aius_recorder_bank_lease_skips(const AiusRecorderBank *bank);
+bool aius_recorder_bank_config_pending(const AiusRecorderBank *bank);
 
 /* Epoch, cold: install trigger config on every slot (so a slot not yet
  * activated already carries it). postroll_blocks is additionally clamped to
@@ -153,7 +241,13 @@ AiusStatus aius_recorder_bank_park(AiusRecorderBank *bank);
  * expected, not an error, and is not surfaced as one: the config still
  * lands on every slot that can accept it. Returns AIUS_INVALID_ARG only for
  * a bad argument shape (mask bits, gr_threshold_db sign/finiteness), never
- * for an individual slot's state refusal. */
+ * for an individual slot's state refusal.
+ *
+ * The refused slot does NOT keep the old config forever: the bank remembers
+ * the config it refused and applies it the moment that slot thaws or is
+ * recycled, so a reconfigure never silently survives one capture and then
+ * comes back as the previous settings. aius_recorder_bank_config_pending()
+ * reports the in-between state for the status document. */
 AiusStatus aius_recorder_bank_set_config(AiusRecorderBank *bank, uint32_t mask,
                                          float gr_threshold_db,
                                          uint32_t gr_hold_blocks,

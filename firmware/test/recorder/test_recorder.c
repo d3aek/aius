@@ -422,9 +422,13 @@ static void test_underrun_gate_qualification(void)
 	assert(f.r.state == AIUS_RECORDER_RECORDING);
 	/* ...and growth under the open gate would be, but the trigger stays
 	 * suppressed until AIUS_RECORDER_SETTLE_BLOCKS clean blocks have
-	 * staged since the edge (one already has, above). */
-	for (uint32_t i = 1u; i < AIUS_RECORDER_SETTLE_BLOCKS; i++)
+	 * staged since the edge (one already has, above). Drained inside the
+	 * loop: the fixture's 4-slot staging would otherwise gap, and a gapped
+	 * block is not a clean one. */
+	for (uint32_t i = 1u; i < AIUS_RECORDER_SETTLE_BLOCKS; i++) {
+		drain_all(&f);
 		feed_block(&f, 8u, 0, 0u, 620u);
+	}
 	assert(f.r.state == AIUS_RECORDER_RECORDING);
 	/* Now settled: the next underrun growth fires. */
 	feed_block(&f, 8u, 0, 0u, 740u);
@@ -450,6 +454,54 @@ static void test_underrun_suppressed_before_settled(void)
 	 * since the first block. */
 	feed_block(&f, 8u, 0, 0u, 5000u);
 	assert(f.r.state == AIUS_RECORDER_RECORDING);
+}
+
+/* "Cleanly-staged" is the header's word and the code has to mean it: a block
+ * that carried an underrun delta of its own, or that gapped, is not evidence
+ * the stream has settled. Counting those as clean let a stream that was
+ * stalling the entire time arm the underrun trigger anyway -- the exact
+ * failure the window exists to prevent. The window is N CONSECUTIVE clean
+ * blocks; a dirty one restarts it. */
+static void test_settle_requires_consecutive_clean_blocks(void)
+{
+	Fixture f;
+	fixture_init(&f);
+	aius_recorder_epoch(&f.r, false, true, 0u, 0u);
+	/* One clean block (it adopts the baselines, so it carries no delta). */
+	feed_block(&f, 8u, 0, 0u, 0u);
+	drain_all(&f);
+	assert(f.r.settled_blocks == 1u);
+	/* More than a full window of underrun-bearing blocks: never settles,
+	 * so the trigger never arms, however long the stall runs. */
+	uint32_t underruns = 0u;
+	for (uint32_t i = 0; i < AIUS_RECORDER_SETTLE_BLOCKS + 1u; i++) {
+		underruns += 10u;
+		feed_block(&f, 8u, 0, 0u, underruns);
+		drain_all(&f);
+		assert(f.r.settled_blocks == 0u);
+		assert(f.r.state == AIUS_RECORDER_RECORDING);
+	}
+	/* A gapped block is dirty too: fill staging, overflow one block, and
+	 * the window restarts even though no underrun moved. */
+	feed_block(&f, 8u, 0, 0u, underruns);
+	assert(f.r.settled_blocks == 1u);
+	for (uint32_t b = 1u; b < SLOTS; b++)
+		feed_block(&f, 8u, 0, 0u, underruns);
+	feed_block(&f, 8u, 0, 0u, underruns); /* staging full: dropped */
+	assert(f.r.gap_count == 1u);
+	assert(f.r.settled_blocks == 0u);
+	drain_all(&f);
+	/* A full window of genuinely clean blocks does settle... */
+	for (uint32_t i = 0; i < AIUS_RECORDER_SETTLE_BLOCKS; i++) {
+		feed_block(&f, 8u, 0, 0u, underruns);
+		drain_all(&f);
+	}
+	assert(f.r.settled_blocks == AIUS_RECORDER_SETTLE_BLOCKS);
+	assert(f.r.state == AIUS_RECORDER_RECORDING);
+	/* ...and the same delta that was ignored throughout now fires. */
+	feed_block(&f, 8u, 0, 0u, underruns + 10u);
+	assert(f.r.state == AIUS_RECORDER_POSTROLL);
+	assert(f.r.trigger == AIUS_RECORDER_TRIGGER_UNDERRUN);
 }
 
 static void test_underrun_epoch_fallback_suppressed_before_settled(void)
@@ -578,10 +630,13 @@ static void test_second_trigger_first_wins(void)
 	                                1u, 4u) == AIUS_OK);
 	/* Open the gate first and settle so the later underrun edge is
 	 * qualified without a transition re-adoption or the settle window
-	 * eating it. */
+	 * eating it. Drained inside the loop so no block gaps: a gapped block
+	 * is not a clean one and would restart the window. */
 	aius_recorder_epoch(&f.r, false, true, 0u, 0u);
-	for (uint32_t i = 0; i < AIUS_RECORDER_SETTLE_BLOCKS; i++)
+	for (uint32_t i = 0; i < AIUS_RECORDER_SETTLE_BLOCKS; i++) {
 		feed_block(&f, 8u, 0, 0u, 0u);
+		drain_all(&f);
+	}
 	feed_block(&f, 8u, 0, 1u, 0u); /* overrun edge -> POSTROLL */
 	assert(f.r.state == AIUS_RECORDER_POSTROLL);
 	assert(f.r.trigger == AIUS_RECORDER_TRIGGER_OVERRUN);
@@ -782,6 +837,67 @@ static void test_rate_resets_on_thaw(void)
 	assert(s.rate_changes == 0u);
 }
 
+/* WHERE the rate changed, not just that it did: with the fiducials a host can
+ * say how many old-rate frames a switch left in the ring (and cut the WAV
+ * there); with the count alone it can only reject the whole capture. */
+static void test_rate_change_fiducials(void)
+{
+	Fixture f;
+	fixture_init(&f);
+	assert(aius_recorder_set_config(&f.r, AIUS_RECORDER_MASK_DEFAULT, 0.0f,
+	                                1u, 0u) == AIUS_OK);
+	AiusRecorderSnapshot s;
+
+	/* The first staged block adopts its rate without a change, so it leaves
+	 * no fiducial -- the same rule rate_changes follows. */
+	feed_block_at(&f, 8u, 0, DEFAULT_RATE_HZ, 0u, 0u);
+	drain_all(&f);
+	aius_recorder_snapshot(&f.r, &s);
+	assert(s.rate_change_count == 0u);
+	assert(s.rate_change_frames[0] == 0u);
+
+	/* Two changes at known offsets: 8-frame blocks, so the switch at the
+	 * second block starts at stream frame 8 and the switch back at 24. */
+	feed_block_at(&f, 8u, 0, ALT_RATE_HZ, 0u, 0u);
+	drain_all(&f);
+	feed_block_at(&f, 8u, 0, ALT_RATE_HZ, 0u, 0u); /* same rate: no change */
+	drain_all(&f);
+	feed_block_at(&f, 8u, 0, DEFAULT_RATE_HZ, 0u, 0u);
+	drain_all(&f);
+	aius_recorder_snapshot(&f.r, &s);
+	assert(s.rate_change_count == 2u);
+	assert(s.rate_changes == s.rate_change_count);
+	assert(s.rate_change_frames[0] == 8u);
+	assert(s.rate_change_frames[1] == 24u);
+
+	/* Fill the array (frames 32 and 40), then overflow it: the fifth change
+	 * counts and nothing beyond the array is written. */
+	feed_block_at(&f, 8u, 0, ALT_RATE_HZ, 0u, 0u);
+	drain_all(&f);
+	feed_block_at(&f, 8u, 0, DEFAULT_RATE_HZ, 0u, 0u);
+	drain_all(&f);
+	feed_block_at(&f, 8u, 0, ALT_RATE_HZ, 0u, 0u); /* the fifth, at 48 */
+	drain_all(&f);
+	aius_recorder_snapshot(&f.r, &s);
+	assert(s.rate_change_count == 5u);
+	assert(s.rate_change_frames[2] == 32u);
+	assert(s.rate_change_frames[3] == 40u);
+	for (uint32_t i = 0; i < AIUS_RECORDER_RATE_CHANGE_MAX; i++)
+		assert(s.rate_change_frames[i] != 48u);
+
+	/* A thawed capture is a fresh one: the fiducials go with the rest of
+	 * the extent, never carried into the next capture's index space. */
+	assert(aius_recorder_freeze(&f.r) == AIUS_OK);
+	feed_block_at(&f, 8u, 0, ALT_RATE_HZ, 0u, 0u); /* zero post-roll */
+	drain_all(&f);
+	assert(f.r.state == AIUS_RECORDER_FROZEN);
+	assert(aius_recorder_thaw(&f.r) == AIUS_OK);
+	aius_recorder_snapshot(&f.r, &s);
+	assert(s.rate_change_count == 0u);
+	for (uint32_t i = 0; i < AIUS_RECORDER_RATE_CHANGE_MAX; i++)
+		assert(s.rate_change_frames[i] == 0u);
+}
+
 static void test_config_validation(void)
 {
 	Fixture f;
@@ -819,6 +935,7 @@ int main(void)
 	test_masked_trigger_tracks_baseline();
 	test_underrun_gate_qualification();
 	test_underrun_suppressed_before_settled();
+	test_settle_requires_consecutive_clean_blocks();
 	test_underrun_epoch_fallback_suppressed_before_settled();
 	test_underrun_epoch_fallback_and_reclaim();
 	test_replay_stop_transient_suppressed();
@@ -830,6 +947,7 @@ int main(void)
 	test_rate_stamp_and_changes();
 	test_rate_stamp_ignores_dropped_blocks();
 	test_rate_resets_on_thaw();
+	test_rate_change_fiducials();
 	test_config_validation();
 	return 0;
 }

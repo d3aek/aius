@@ -88,15 +88,24 @@ extern "C" {
  * stream stops in whole-block units). */
 #define AIUS_RECORDER_RECLAIM_EPOCHS 32u
 
-/* Underrun-trigger settle window, in cleanly-staged 512-frame blocks under an
- * open gate (~85 ms): a boot bring-up or post-thaw session that hasn't
- * demonstrated this many clean blocks yet cannot arm the underrun trigger.
+/* Underrun-trigger settle window, in CONSECUTIVE cleanly-staged 512-frame
+ * blocks under an open gate (~85 ms): a boot bring-up or post-thaw session
+ * that hasn't demonstrated this many clean blocks yet cannot arm the underrun
+ * trigger. Clean means the block fired no trigger, carried no underrun delta
+ * of its own, and actually reached staging -- an underrun-bearing or gapped
+ * block resets the window to zero rather than counting toward it, so a
+ * continuously stalling stream never settles.
  * Field evidence (aius-open-work-register.md) shows the spurious trigger
  * firing at block 1 -- the gate is often already well past its own
  * closed->open edge by the time an unrelated stall (SD mount class) lands,
  * so gating on the edge alone does not suppress it; gating on N clean
  * blocks since the edge does, regardless of how much time separates them. */
 #define AIUS_RECORDER_SETTLE_BLOCKS 8u
+
+/* Per-capture rate-change fiducials retained for the host. A capture that
+ * changes rate more often than this is already unusable as one WAV, so the
+ * array holds the FIRST this many transitions and the count keeps counting. */
+#define AIUS_RECORDER_RATE_CHANGE_MAX 4u
 
 typedef enum {
 	AIUS_RECORDER_ABSENT = 0,
@@ -149,6 +158,18 @@ typedef struct {
 	 * over all of it. */
 	uint32_t sample_rate_hz;
 	uint32_t rate_changes;
+	/* Where those changes happened, so a host can count how many old-rate
+	 * frames a switch left in the ring instead of guessing. Each entry is the
+	 * capture's own free-running stream index (frames staged since arm -- the
+	 * same index space as the trigger's at_frame, and the one valid_frames
+	 * measures and oldest_frame is the wrapped position of) of the FIRST frame
+	 * carrying the new rate. rate_change_count is the total observed and is
+	 * the same number rate_changes reports, under the name this array's
+	 * contract uses: it may exceed AIUS_RECORDER_RATE_CHANGE_MAX, in which
+	 * case the array holds the first that many and the rest are counted
+	 * only. */
+	uint32_t rate_change_frames[AIUS_RECORDER_RATE_CHANGE_MAX];
+	uint32_t rate_change_count;
 	uint32_t ring_frames;        /* capacity */
 	uint32_t valid_frames;       /* extent a reader may serve */
 	uint32_t oldest_frame;       /* physical ring index of the oldest frame */
@@ -196,6 +217,10 @@ typedef struct {
 	 * wrong speed. */
 	volatile uint32_t sample_rate_hz;
 	volatile uint32_t rate_changes;
+	/* Stream index (frames_staged at the stamping block) of the first frame
+	 * at each new rate, first AIUS_RECORDER_RATE_CHANGE_MAX only; rate_changes
+	 * keeps counting past the array. */
+	volatile uint32_t rate_change_frames[AIUS_RECORDER_RATE_CHANGE_MAX];
 	volatile uint32_t suppressed_triggers;
 	volatile uint32_t postroll_remaining;
 	volatile uint32_t postroll_captured;
@@ -206,12 +231,19 @@ typedef struct {
 	 * baselines on its first block instead of edge-detecting against stale
 	 * ones (counters keep advancing while FROZEN). */
 	volatile uint32_t baseline_sync;
-	/* Underrun-trigger settle counter: cleanly-staged blocks under an open
-	 * gate since the last closed->open edge (or init/thaw), capped at
-	 * AIUS_RECORDER_SETTLE_BLOCKS. Two writers by design (producer
-	 * increments, epoch resets on the edge) -- the same accepted shape as
-	 * freeze_token/suppressed_triggers: a collision costs at most one
-	 * block's delay in arming, never a corrupt transition. */
+	/* Underrun-trigger settle counter: CONSECUTIVE cleanly-staged blocks
+	 * under an open gate since the last closed->open edge (or init/thaw),
+	 * capped at AIUS_RECORDER_SETTLE_BLOCKS. The producer both increments it
+	 * on a clean block and zeroes it on a dirty one; the epoch zeroes it on
+	 * the gate edge. Two writers by design -- the same accepted shape as
+	 * freeze_token/suppressed_triggers, and the collision is asymmetric: a
+	 * lost producer increment costs one block's delay in arming, while a lost
+	 * epoch reset leaves the pre-edge count standing and can arm up to
+	 * AIUS_RECORDER_SETTLE_BLOCKS - 1 blocks EARLY -- a spurious trigger, the
+	 * very thing this window exists to prevent, though still never a corrupt
+	 * transition. Accepted because on this firmware both writers run from
+	 * main-loop checkpoints (the AUDIO tap and the epoch/replay checkpoint),
+	 * never an interrupt, so the interleaving is theoretical. */
 	volatile uint32_t settled_blocks;
 	uint32_t gr_hold_count;
 	/* Trigger metadata: stored before the POSTROLL state store. */
@@ -313,9 +345,32 @@ uint32_t aius_recorder_drain(AiusRecorder *r, uint32_t max_bytes);
 AiusStatus aius_recorder_freeze(AiusRecorder *r);
 
 /* Epoch: FROZEN -> RECORDING. Increments freeze_generation, resets the
- * capture (extent, gaps, trigger, post-roll) and re-arms. Config persists.
- * Any other state: AIUS_INVALID_ARG. */
+ * capture (extent, gaps, trigger, post-roll) and re-arms. Config persists, and
+ * so does the epoch-side EDGE HISTORY (carrier level, latched gate, epoch
+ * underrun baseline): a thaw in place does not move the recorder to a
+ * different point in the stream, so re-deriving that history from nothing
+ * would manufacture an edge on the next epoch. Any other state:
+ * AIUS_INVALID_ARG. */
 AiusStatus aius_recorder_thaw(AiusRecorder *r);
+
+/* Epoch: hand a recorder the epoch-side edge history (carrier level, latched
+ * gate, epoch underrun baseline) of the one it is taking over from.
+ *
+ * The single-ring core edge-detects against its OWN last epoch, which is
+ * exactly right while one recorder sees every epoch. A bank forwards each
+ * epoch to its active slot only, so a slot re-armed mid-stream would otherwise
+ * edge-detect against whatever the stream looked like when it was last active
+ * -- history that may be seconds old and, in the carrier case, inverted: a
+ * slot last active while locked keeps carrier_prev == 1 and fires a spurious
+ * CARRIER_LOSS on its first epoch under an already-unlocked carrier, while a
+ * virgin slot (carrier_prev == 0) silently misses a real falling edge on that
+ * first epoch. Seeding the incoming slot from the outgoing one makes both
+ * cases read the stream, not the slot's own past.
+ *
+ * Not a capture reset: it touches no producer-owned field and no state word,
+ * so it is safe on any state and composes with thaw in either order. */
+void aius_recorder_inherit_epoch_state(AiusRecorder *r,
+                                       const AiusRecorder *from);
 
 /* Epoch, cold: install trigger config. gr_threshold_db <= 0 (0 disables GR
  * whatever the mask says; the linear threshold is derived here, never in the

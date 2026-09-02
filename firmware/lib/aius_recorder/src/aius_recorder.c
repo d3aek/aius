@@ -42,6 +42,12 @@ aius_recorder_ring_bytes_after_staging(uint32_t storage_bytes,
 	return ring_bytes;
 }
 
+/* Everything a new capture must start from zero. Deliberately NOT here:
+ * carrier_prev, gate_open and underrun_base_epoch -- the epoch-side edge
+ * history is a property of the STREAM, not of the capture, and a recorder
+ * re-armed in place is still looking at the same stream one epoch later.
+ * A recorder re-armed somewhere else in a bank inherits that history from the
+ * slot it takes over from (aius_recorder_inherit_epoch_state). */
 static void reset_capture(AiusRecorder *r)
 {
 	r->slot_write = 0u;
@@ -57,6 +63,8 @@ static void reset_capture(AiusRecorder *r)
 	 * nominal until one arrives and has nothing yet to have changed from. */
 	r->sample_rate_hz = r->default_sample_rate_hz;
 	r->rate_changes = 0u;
+	for (uint32_t i = 0; i < AIUS_RECORDER_RATE_CHANGE_MAX; i++)
+		r->rate_change_frames[i] = 0u;
 	r->suppressed_triggers = 0u;
 	r->postroll_remaining = 0u;
 	r->postroll_captured = 0u;
@@ -163,6 +171,11 @@ void aius_recorder_producer_block(AiusRecorder *r, const int32_t *l,
 	if (underruns < r->underrun_base)
 		r->underrun_base = underruns;
 
+	/* This block's own underrun delta, read before the baselines below
+	 * consume it: a block that carried one is not a clean block, whether or
+	 * not the trigger was in a position to fire on it. */
+	uint32_t underrun_delta = underruns > r->underrun_base ? 1u : 0u;
+
 	uint32_t mask = r->trigger_mask;
 	uint32_t fired = AIUS_RECORDER_TRIGGER_NONE;
 	uint32_t token = r->freeze_token;
@@ -189,14 +202,6 @@ void aius_recorder_producer_block(AiusRecorder *r, const int32_t *l,
 			}
 		}
 	}
-	/* Settle counter: advances on any block that evaluated with no trigger
-	 * firing while the gate is open, capped -- a fired block needs no
-	 * further settling (the capture is already underway), and a
-	 * closed-gate block never counts (epoch resets this to 0 on the next
-	 * open edge regardless). */
-	if (fired == AIUS_RECORDER_TRIGGER_NONE && r->gate_open &&
-	    r->settled_blocks < AIUS_RECORDER_SETTLE_BLOCKS)
-		r->settled_blocks++;
 	/* The fired edge consumed the baseline delta either way. */
 	r->overrun_base = overruns;
 	r->underrun_base = underruns;
@@ -218,8 +223,11 @@ void aius_recorder_producer_block(AiusRecorder *r, const int32_t *l,
 	 * never block, never overwrite unconsumed staging. */
 	if (frames == 0u)
 		return;
-	if (frames > r->slot_frames ||
-	    r->slot_write - r->slot_read >= r->staging_slots) {
+	uint32_t gapped = (frames > r->slot_frames ||
+	                   r->slot_write - r->slot_read >= r->staging_slots)
+	                          ? 1u
+	                          : 0u;
+	if (gapped) {
 		r->gap_count = r->gap_count + 1u;
 		r->last_gap_frame = r->frames_staged;
 	} else {
@@ -235,8 +243,19 @@ void aius_recorder_producer_block(AiusRecorder *r, const int32_t *l,
 		 * Every later disagreement counts, and a nonzero rate_changes is
 		 * what lets a downloader reject a mixed-rate ring. */
 		if (sample_rate_hz != r->sample_rate_hz) {
-			if (r->frames_staged != 0u)
+			if (r->frames_staged != 0u) {
+				/* Fiducial for the host: the stream index of the
+				 * first frame at the new rate, so a downloader can
+				 * say how many old-rate frames the switch left
+				 * behind rather than only that one happened. The
+				 * first AIUS_RECORDER_RATE_CHANGE_MAX are kept;
+				 * past that the count alone stands. */
+				if (r->rate_changes <
+				    AIUS_RECORDER_RATE_CHANGE_MAX)
+					r->rate_change_frames[r->rate_changes] =
+						r->frames_staged;
 				r->rate_changes = r->rate_changes + 1u;
+			}
 			r->sample_rate_hz = sample_rate_hz;
 		}
 		/* The slot_write store publishes the slot (stage/commit). */
@@ -244,6 +263,26 @@ void aius_recorder_producer_block(AiusRecorder *r, const int32_t *l,
 		r->frames_staged = r->frames_staged + frames;
 		if (!r->wrapped && r->frames_staged >= r->ring_frames)
 			r->wrapped = 1u;
+	}
+
+	/* Settle counter, evaluated once the block's own cleanliness is known.
+	 * DIRTY is an underrun delta of this block's own or a gap, and it resets
+	 * the window to zero: the header's contract is N CONSECUTIVE
+	 * cleanly-staged blocks, which the earlier form did not honour (it
+	 * counted underrun-bearing and gapped blocks as clean, so a stream that
+	 * was stalling the whole time settled anyway and armed the very trigger
+	 * the window exists to hold off). A block that FIRED neither advances
+	 * the window nor resets it -- the capture it started is already
+	 * underway, and the firing says nothing about the stream's cleanliness.
+	 * A closed-gate block is likewise neither: the epoch zeroes this on the
+	 * next open edge regardless. A zero-frame block returned above, being no
+	 * commit at all. */
+	if (r->gate_open) {
+		if (underrun_delta || gapped)
+			r->settled_blocks = 0u;
+		else if (fired == AIUS_RECORDER_TRIGGER_NONE &&
+		         r->settled_blocks < AIUS_RECORDER_SETTLE_BLOCKS)
+			r->settled_blocks = r->settled_blocks + 1u;
 	}
 	r->blocks_staged = r->blocks_staged + 1u;
 
@@ -418,6 +457,20 @@ AiusStatus aius_recorder_thaw(AiusRecorder *r)
 	return AIUS_OK;
 }
 
+void aius_recorder_inherit_epoch_state(AiusRecorder *r,
+                                       const AiusRecorder *from)
+{
+	if (r == NULL || from == NULL || r == from)
+		return;
+	/* Three epoch-owned words, copied from the recorder that has been
+	 * seeing the epochs to the one about to. Nothing producer-owned and no
+	 * state word is touched, so this is safe in any state and in any order
+	 * against thaw. */
+	r->carrier_prev = from->carrier_prev;
+	r->gate_open = from->gate_open;
+	r->underrun_base_epoch = from->underrun_base_epoch;
+}
+
 AiusStatus aius_recorder_park(AiusRecorder *r)
 {
 	if (r == NULL)
@@ -492,6 +545,12 @@ void aius_recorder_snapshot(const AiusRecorder *r, AiusRecorderSnapshot *out)
 	out->fitted_mb = r->fitted_mb;
 	out->sample_rate_hz = r->sample_rate_hz;
 	out->rate_changes = r->rate_changes;
+	out->rate_change_count = r->rate_changes;
+	/* Element-wise because the source words are volatile. Entries past
+	 * rate_change_count are zero (reset_capture clears the array), so a
+	 * reader that trusts the count never reads a stale fiducial. */
+	for (uint32_t i = 0; i < AIUS_RECORDER_RATE_CHANGE_MAX; i++)
+		out->rate_change_frames[i] = r->rate_change_frames[i];
 	out->ring_frames = r->ring_frames;
 	out->valid_frames = r->wrapped ? r->ring_frames : r->frames_drained;
 	out->oldest_frame = r->wrapped ? (r->frames_drained & r->ring_mask) : 0u;
