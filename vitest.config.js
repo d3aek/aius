@@ -12,7 +12,10 @@
 //
 // Dependencies (vitest, happy-dom) resolve up the tree to the upstream repo's
 // node_modules; the suites declare `@vitest-environment happy-dom` per file.
+// The cache goes under firmware/.build/ (already ignored) -- Vite's default
+// would create an untracked node_modules/.vite/ at this root.
 export default {
+  cacheDir: 'firmware/.build/vitest',
   test: {
     include: ['test/**/*.test.js'],
     environment: 'node',
