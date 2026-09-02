@@ -2423,6 +2423,16 @@ def build_parser() -> argparse.ArgumentParser:
             "contract version (requires --reuse-existing)"
         ),
     )
+    parser.add_argument(
+        "--expect-build",
+        default=None,
+        help=(
+            "accept this build_revision instead of the pinned accepted "
+            "image: a latency regression check of a newer image, recorded "
+            "in the manifest as expected_build_override; it is NOT the "
+            "Phase 1 acceptance row"
+        ),
+    )
     return parser
 
 
@@ -2581,6 +2591,15 @@ def main() -> int:
     validate_arguments(args)
     repository = repository_identity()
     require_clean_harness(repository)
+    if args.expect_build is not None:
+        # A regression row against a newer image. The pinned accepted image
+        # stays recorded so a reader can see the row is not the Phase 1
+        # acceptance, only the same measurement taken on another build.
+        repository["accepted_build_revision"] = repository[
+            "expected_build_revision"
+        ]
+        repository["expected_build_revision"] = args.expect_build
+        repository["expected_build_override"] = True
     return run_formal_collection(args, repository)
 
 
