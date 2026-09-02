@@ -15,7 +15,7 @@
 #         usb-control, replay, replay-samples, tx-gate, tx-governor, input-liveness, recorder, boot, boot-target, fault-target, ota,
 #         build-metadata, runtime, network-transport, sd, sd-target, optical-app,
 #         optical-cutover, runtime-target, memory, itcm-placement, fake-fidelity,
-#         registry.
+#         registry, sd-editor.
 #
 # That list is not documentation: the `registry` suite fails when it, the suites
 # table in README.md, and the arms of the `case` below disagree with the
@@ -665,7 +665,7 @@ sd-editor)
 	aius_root="$(cd "$fw_root/.." && pwd)"
 	host_root="$(git -C "$aius_root" rev-parse --show-superproject-working-tree 2>/dev/null || true)"
 	[ -n "$host_root" ] || host_root="$aius_root"
-	(cd "$host_root" && pnpm exec vitest run --root "$aius_root")
+	(cd "$host_root" && pnpm exec vitest run --root "$aius_root" "$aius_root/test/sd-editor")
 	;;
 latency-runner)
 	# Exact-carrier native reference: public IEC parser -> resident production

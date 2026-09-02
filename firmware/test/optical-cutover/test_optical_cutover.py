@@ -524,9 +524,12 @@ def assert_activation_gates_on_psram_presence(text):
     aius-ota-upgrade.md's final-slice architecture: the reworked sequencer reads
     the staged image from a linear PSRAM view during the FlexSPI1 erase (FlexSPI2
     is independent), so a board with no PSRAM cannot do it and the presence gate
-    REFUSES (ota_no_psram) rather than darkening the board. The PSRAM staging
-    region is PARTITIONED from the flight-recorder ring, never aliased, and the
-    disjointness is asserted rather than assumed. No native suite compiles
+    REFUSES (ota_no_psram) rather than darkening the board. Since b76f8fc
+    (2026-08-16, OTA resilience Phase 2) the pad-1 staging region deliberately
+    ALIASES the flight-recorder ring, to keep every in-window readback off the
+    marginal pad-2 chip; the proof is therefore ORDERING, not disjointness --
+    the recorder bank must already be parked, and ota_psram_staging() asserts
+    that rather than trusting its caller. No native suite compiles
     optical_main.cpp, so this is a text property."""
     definitions = function_definitions(text)
 
@@ -544,21 +547,36 @@ def assert_activation_gates_on_psram_presence(text):
         "missing ota_psram_staging() -- the disjoint PSRAM region resolver"
     )
     staging = without_comments_and_literals(definitions["ota_psram_staging"])
-    assert "aius_recorder_ring_bytes_after_staging" in staging, (
-        "ota_psram_staging() must size the recorder carve with the SAME formula "
-        "begin_pipeline() uses, or the OTA region can overlap the ring"
+    assert "aius_ota_staging_place(" in staging, (
+        "ota_psram_staging() must resolve its region through the host-pinned "
+        "placement helper, not an open-coded offset"
     )
     assert "RECORDER_STAGING_BYTES" in staging, (
         "ota_psram_staging() must account for the recorder's staging carve"
     )
-    assert "recorder_end" in staging, (
-        "ota_psram_staging() must prove disjointness at runtime: the OTA base "
-        "is the recorder region's end, so the two cannot alias"
+    # The runtime half of the proof after b76f8fc: pad-1 staging aliases the
+    # ring, so the bank must already be parked and the refusal is the assert.
+    assert "!placement.on_pad2 && aius_recorder_bank_present(" in staging, (
+        "ota_psram_staging() must refuse a pad-1 placement while the recorder "
+        "bank still holds the ring that placement aliases, or a mis-ordered "
+        "caller races the SD->PSRAM copy against a live producer"
+    )
+    assert staging.find("aius_recorder_bank_present(") < staging.find("*base ="), (
+        "the park assert must run BEFORE the staging base is published, or a "
+        "refusable placement still hands the caller a live-ring pointer"
     )
     clean = without_comments_and_literals(text)
     assert "static_assert(RECORDER_STAGING_BYTES" in clean, (
         "missing the static_assert pinning the recorder staging carve -- the "
-        "constant half of the OTA/recorder disjointness proof"
+        "constant half of the OTA/recorder placement proof"
+    )
+    assert (
+        "static_assert(AIUS_OTA_STAGING_PAD_BYTES - RECORDER_STAGING_BYTES >="
+        in clean
+    ), (
+        "missing the static_assert that pad 1 minus the staging carve still "
+        "holds a maximum image; without it the marginal-chip fix would "
+        "silently shrink the largest deliverable image"
     )
 
     assert "app_ota_activate" in definitions, "missing app_ota_activate()"
@@ -1915,6 +1933,14 @@ CLOCK_JSON_KEYS = (
     "unsupported_episodes",
     "tx_level_frames",
     "tx_underrun_frames",
+    # Output-jitter phases D/E/F: gate-open TX-ring trim (cec2dfa), the
+    # latency governor (fecd2e6), and the relock ring pad.
+    "gate_open_target_frames",
+    "gate_open_trims",
+    "gate_open_trimmed_frames",
+    "gate_open_padded_frames",
+    "governor_trims",
+    "governor_trimmed_frames",
     "ingress_level_words",
     "ingress_high_water_words",
 )
@@ -2183,6 +2209,10 @@ def assert_audio_update_is_ingress_only(text):
         "aius_replay_service_discard_words",
         "audio_ingress_publish_live",
         "aius_audio_ingress_record_gap",
+        # The input-fault cadence watermark (micros() between update() calls,
+        # aius-output-jitter.md): one timestamp read and a max, no movement
+        # of samples, so it is instrumentation rather than work.
+        "micros",
     }
     calls = set(re.findall(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(", clean))
     unexpected = sorted(calls - allowed_calls)
@@ -2296,7 +2326,7 @@ def assert_enqueue_preflights_before_effects(text):
         clean.find("aius_dsp_process("),
         clean.find("aius_spdif_tx24_commit("),
         clean.find("aius_measure_producer_block("),
-        clean.find("aius_recorder_producer_block("),
+        clean.find("aius_recorder_bank_producer_block("),
         clean.find("g_blocks++"),
     )
     assert all(position >= 0 for position in order), (
@@ -2518,19 +2548,37 @@ def assert_dsp_model_origin_is_staged_not_assumed(text):
         "GET /api/status does not carry `model_origin`, so nothing on the "
         "device says whether the running model arrived by PUT or off the card"
     )
-    assert status.count("dsp_source_name(g_dsp_model_origin)") == 1, (
-        "the status `source` value is not derived from the active origin"
+    # Both renderings went staged-aware in d2d058c, matching the selection
+    # http_dsp_config_json already made: while a commit is pending they report
+    # the STAGED origin, not the still-applied one.
+    assert status.count(
+        "dsp_apply_pending ? g_pending_dsp_origin : g_dsp_model_origin"
+    ) == 1, (
+        "the status origin is not the staged-aware selection, so a pending "
+        "commit is reported under the origin it is about to replace"
     )
-    assert status.count("dsp_origin_name(g_dsp_model_origin)") == 1, (
-        "the status `model_origin` value is not the active origin verbatim"
+    assert status.count("dsp_source_name(reported_origin)") == 1, (
+        "the status `source` value is not derived from the reported origin"
+    )
+    assert status.count("dsp_origin_name(reported_origin)") == 1, (
+        "the status `model_origin` value is not the reported origin verbatim"
     )
 
     dsp_config = without_comments(function_body(text, DSP_CONFIG_JSON_MARKER))
     assert '\\"source\\":\\"%s\\"' in dsp_config, (
         "GET /api/dsp/config dropped or retyped its `source` field"
     )
-    assert "dsp_source_name(g_dsp_model_origin)" in dsp_config, (
-        "the config `source` value is not derived from the active origin"
+    # Staged-aware since fc674c6 (defect 22): the served document describes the
+    # staged model while a commit is pending, so `source` must describe it too.
+    assert (
+        "apply_pending ? g_pending_dsp_origin : g_dsp_model_origin"
+        in dsp_config
+    ), (
+        "the config origin is not the staged-aware selection, so `source` can "
+        "describe a different model than the body around it"
+    )
+    assert "dsp_source_name(origin)" in dsp_config, (
+        "the config `source` value is not derived from the selected origin"
     )
     # The KEY, not the substring: `g_dsp_model_origin` is read here legitimately
     # to derive `source`, and it contains this name.
@@ -2545,6 +2593,9 @@ def assert_dsp_model_origin_is_staged_not_assumed(text):
 
 RECORDER_JSON_MARKER = (
     "static FLASHMEM size_t app_write_recorder(void *, uint8_t *body,"
+)
+RECORDER_SLOT_ARRAY_MARKER = (
+    "static FLASHMEM bool recorder_slot_array(char *output, size_t capacity,"
 )
 BEGIN_PIPELINE_MARKER = (
     "FLASHMEM void AiusAudioProcessor::begin_pipeline(void)"
@@ -2561,7 +2612,8 @@ def assert_recorder_reports_the_streams_rate(text):
     contradicted it. The producer tap is where the block's own rate is in
     scope, so that is where the capture learns it."""
     enqueue = without_comments_and_literals(function_body(text, ENQUEUE_MARKER))
-    opening = enqueue.find("aius_recorder_producer_block(")
+    # Rolling-bank rename (72196d1, Phase B): the recorder seam is now the bank.
+    opening = enqueue.find("aius_recorder_bank_producer_block(")
     assert opening >= 0, "the enqueue flight-recorder tap is missing"
     arguments = enqueue[
         enqueue.find("(", opening) + 1:
@@ -2576,7 +2628,7 @@ def assert_recorder_reports_the_streams_rate(text):
         function_body(text, BEGIN_PIPELINE_MARKER)
     )
     arms = []
-    for match in re.finditer(r"aius_recorder_init\s*\(", begin):
+    for match in re.finditer(r"aius_recorder_bank_init\s*\(", begin):
         arm_open = begin.find("(", match.start())
         arms.append(
             begin[arm_open + 1: matching_delimiter(begin, arm_open, "(", ")")]
@@ -2591,15 +2643,25 @@ def assert_recorder_reports_the_streams_rate(text):
             "nominal, so its pre-capture reported rate is not the device's"
         )
 
+    # Rolling bank (Phase C): the per-slot rate facts moved out of the bank
+    # document into recorder_slot_array, one entry per slot. Both halves of the
+    # served document must stay free of the compile-time nominal.
     body = without_comments(function_body(text, RECORDER_JSON_MARKER))
-    assert "AIUS_OPTICAL_SAMPLE_RATE_HZ" not in body, (
-        "GET /api/recorder still serves the compile-time nominal; the "
-        "snapshot's observed rate is the only honest one"
+    slots = without_comments(function_body(text, RECORDER_SLOT_ARRAY_MARKER))
+    assert "recorder_slot_array(" in body, (
+        "the bank document no longer appends the per-slot array, so nothing "
+        "on the route carries the observed rate"
     )
-    assert '\\"sample_rate_hz\\":' in body and "s.sample_rate_hz" in body, (
+    for where, document in (("the bank document", body),
+                            ("the slot array", slots)):
+        assert "AIUS_OPTICAL_SAMPLE_RATE_HZ" not in document, (
+            f"{where} still serves the compile-time nominal; the "
+            "snapshot's observed rate is the only honest one"
+        )
+    assert '\\"sample_rate_hz\\":' in slots and "s.sample_rate_hz" in slots, (
         "GET /api/recorder does not serve the snapshot's observed rate"
     )
-    assert '\\"rate_changes\\":' in body and "s.rate_changes" in body, (
+    assert '\\"rate_changes\\":' in slots and "s.rate_changes" in slots, (
         "GET /api/recorder does not report rate_changes, so a downloader "
         "cannot tell a single-rate ring from a mixed-rate one it must reject"
     )
@@ -2687,7 +2749,7 @@ POSITIVE_CHECKS = (
         assert_dark_window_parks_every_interrupt_source,
     ),
     (
-        "OTA activation gates on PSRAM presence and stages disjoint from the recorder ring",
+        "OTA activation gates on PSRAM presence and stages only over a parked recorder ring",
         assert_activation_gates_on_psram_presence,
     ),
     (
@@ -3262,15 +3324,16 @@ def run_audio_cutover_self_test():
         "dsp-origin/swap-assumes",
         "CONSTANT origin",
     )
+    # Anchored on the two statements, not the block between them: d2d058c put
+    # g_staged_generation++ and its comment in the middle of the old anchor.
+    # The two-tab indent is what distinguishes the SD stager's apply-pending
+    # arm from the three-tab PUT one.
     origin_after_flag = text.replace(
-        "\t\tg_pending_dsp_origin = DSP_ORIGIN_SD;\n"
-        "\t\t/* Staged, not applied: the block-boundary swap in\n"
-        "\t\t * AiusAudioProcessor::enqueue() remains the only place the\n"
-        "\t\t * active model changes, where config_generation increments and\n"
-        "\t\t * the active origin adopts the staged one. */\n"
-        "\t\tg_dsp_apply_pending = true;",
-        "\t\tg_dsp_apply_pending = true;\n"
-        "\t\tg_pending_dsp_origin = DSP_ORIGIN_SD;",
+        "\t\tg_pending_dsp_origin = DSP_ORIGIN_SD;\n", "", 1
+    ).replace(
+        "\n\t\tg_dsp_apply_pending = true;",
+        "\n\t\tg_dsp_apply_pending = true;"
+        "\n\t\tg_pending_dsp_origin = DSP_ORIGIN_SD;",
         1,
     )
     _expect_fail(
@@ -3315,10 +3378,10 @@ def run_audio_cutover_self_test():
         "dsp-origin/status-field-dropped",
         "does not carry `model_origin`",
     )
+    # The rate argument now sits in recorder_slot_array, one line per field.
     recorder_nominal_rate = text.replace(
-        "\t\t(unsigned long)s.sample_rate_hz, (unsigned long)s.rate_changes,",
-        "\t\t(unsigned long)AIUS_OPTICAL_SAMPLE_RATE_HZ,\n"
-        "\t\t(unsigned long)s.rate_changes,",
+        "\t\t\t(unsigned long)s.sample_rate_hz,",
+        "\t\t\t(unsigned long)AIUS_OPTICAL_SAMPLE_RATE_HZ,",
         1,
     )
     _expect_fail(

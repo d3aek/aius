@@ -7,9 +7,10 @@ in [`CLAUDE.md`](CLAUDE.md).
 
 ## Prerequisites and checkout
 
-**Run every command in this file from the repository root.** The Aius scripts
-resolve their own roots from their own paths, so they work from any working
-directory, but the paths quoted here are repository-relative.
+**Run every command in this file from this repository's root** (``
+when it is checked out as the upstream submodule). The Aius scripts resolve their
+own roots from their own paths, so they work from any working directory, but the
+paths quoted here are relative to this repository.
 
 - **Git LFS** — the durable binary evidence (datasheets, reference schematics,
   enclosure STEP, firmware test fixtures) is stored as LFS objects. Materialize
@@ -63,17 +64,17 @@ inspects the linked objects of an optical image; without a current cross-build i
 exits 3 and prints the build command to run.
 
 The SD-hosted web pages (status, DSP editor, replay manager, upgrade) are host JS
-covered by vitest in [`test/sd-editor/`](test/sd-editor/). Run it from the
-**upstream repository root**, which owns the vitest config and the `node_modules` tree:
+covered by vitest in [`test/sd-editor/`](test/sd-editor/). This repository is its
+own vitest root (the root `vitest.config.js`); the suite runner resolves the
+superproject for `pnpm` when this repo is a submodule:
 
 ```bash
-pnpm exec vitest run test/sd-editor
+firmware/scripts/test.sh --environment native --suite sd-editor
 ```
 
-The upstream repository's root `vitest.config.js` includes `test/**` for
-exactly this suite, so a plain `pnpm test` at the root picks it up too. (Until
-2026-09-02 the include reached only `src/**`, and the command here named a
-`` path that does not exist, so these tests ran nowhere.)
+`pnpm exec vitest run --root git_modules/aius` from the repository root is the same
+run. The upstream repository's own vitest include is that repository's graph anchor and does
+not list this tree, so nothing else runs these suites.
 
 ### Cross-building for the Teensy
 

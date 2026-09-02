@@ -78,6 +78,12 @@ ENTRY_POINT_RE = re.compile(r"^(?:test|fuzz)_.+\.(?:c|cpp|py)$")
 CASE_OPEN = 'case "$suite" in'
 ARM_RE = re.compile(r"^([a-z0-9][a-z0-9-]*)\)\s*$")
 FW_ROOT_TEST_RE = re.compile(r"\$fw_root/(test/[A-Za-z0-9._/-]+)")
+# Repo-root suites: the SD-card web UI vitest suites live at <repo>/test/, one
+# level above the firmware tree, and their arm names them through $aius_root.
+# They are catalogued and existence-checked like any other arm; they are not
+# firmware test/ directories, so the directory-orphan and entry-point checks
+# (which walk firmware/test/) do not see them.
+AIUS_ROOT_TEST_RE = re.compile(r"\$aius_root/(test/[A-Za-z0-9._/-]+)")
 HEADER_OPEN = "# Suites:"
 README_TABLE_HEADER = "| Suite | Covers |"
 BACKTICKED_RE = re.compile(r"`([^`]+)`")
@@ -175,6 +181,13 @@ def referenced_test_paths(arm_body):
     return sorted(set(FW_ROOT_TEST_RE.findall(arm_body)))
 
 
+def referenced_repo_paths(arm_body):
+    """`test/...` paths an arm body names through `$aius_root`, returned
+    firmware-root-relative (`../test/...`) so one `exists` predicate serves
+    both roots."""
+    return sorted({"../" + path for path in AIUS_ROOT_TEST_RE.findall(arm_body)})
+
+
 # --------------------------------------------------------------------------
 # Checks. Every check returns a list of failure strings; each failure names the
 # suite, the list it is missing from, and the line to add.
@@ -227,15 +240,16 @@ def check_suite_dir_has_arm(arms, suite_dirs):
 def check_arm_paths_exist(arms, exists):
     failures = []
     for name in sorted(arms):
-        paths = referenced_test_paths(arms[name])
+        paths = referenced_test_paths(arms[name]) + referenced_repo_paths(arms[name])
         if not paths:
             failures.append(
                 f"arm `{name}` in scripts/test.sh names no path under test/ -- "
                 f"there is no suite\n"
                 f"      directory behind it. Point it at its sources "
-                f"(\"$fw_root/test/<dir>/...\") or\n"
-                f"      delete the arm, its `# Suites:` header entry and its "
-                f"README.md table row."
+                f"(\"$fw_root/test/<dir>/...\", or \"$aius_root/test/<dir>\" for a\n"
+                f"      repo-root suite) or delete the arm, its `# Suites:` header "
+                f"entry and its\n"
+                f"      README.md table row."
             )
             continue
         for path in paths:
@@ -507,6 +521,27 @@ def run_self_test():
         ),
         "arm-paths-exist/empty",
         "names no path under test/",
+    )
+
+    # 2c. A repo-root suite (named through $aius_root) is a valid path, checked
+    #     one level above the firmware tree; an absent one still fails.
+    repo_root_sh = GOOD_TEST_SH.replace(
+        'python3 "$fw_root/test/beta/test_gamma.py"',
+        'pnpm exec vitest run --root "$aius_root" "$aius_root/test/gamma"',
+    )
+    repo_root_entry_points = [p for p in GOOD_ENTRY_POINTS if "gamma" not in p]
+    _expect_green(
+        _registry(
+            test_sh=repo_root_sh,
+            entry_points=repo_root_entry_points,
+            paths=GOOD_PATHS | {"../test/gamma"},
+        ),
+        "arm-paths-exist/repo-root",
+    )
+    _expect_fail(
+        _registry(test_sh=repo_root_sh, entry_points=repo_root_entry_points),
+        "arm-paths-exist/repo-root-missing",
+        "../test/gamma, which does not exist",
     )
 
     # 3. A registered directory whose arm forgot one of its sources -- the

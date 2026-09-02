@@ -1,6 +1,8 @@
 {
   "source": "sd",
   "config_generation": 4,
+  "staged_generation": 1,
+  "config_pending": false,
   "sample_rate_hz": 48000,
   "features": { "input_eq": true, "matrix": true, "output_eq": false, "limiter": true, "meters": true },
   "input_channels": {

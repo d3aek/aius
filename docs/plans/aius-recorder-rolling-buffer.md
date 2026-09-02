@@ -598,8 +598,9 @@ overlapping ones.
   §Live-run results — 2026-09-02): `wav_index = stream_index −
   (stream_end_frame − valid_frames)` placed both `rate_change_frames` inside
   the pulled ring at the frames where the output actually switched. Note
-  `GET /api/recorder` on this build requires `X-Aius-SD-Auth` (`sd_auth`
-  otherwise), contrary to the "reads need nothing" rule in `CLAUDE.md`.
+  `GET /api/recorder` requires `X-Aius-SD-Auth` (`401 sd_auth` otherwise): every
+  recorder route is token-gated by this plan's contract, the GETs included, and
+  `CLAUDE.md`'s "reads need nothing" rule was corrected to say so (2026-09-02).
 - **Bench-proven 2026-09-01:** recorder OTA'd as one agnostic image and
   self-committed (auto-rollback unneeded). Phase A debounce suppressed the
   boot-transient underrun (froze at `at_block 416`, not `at_block 1`); the
@@ -743,9 +744,13 @@ teardown, so the lease still leaked permanently mid-stream.
     `underrun` freeze at 44100 with the 128-frame dropout inside it, plus a
     `carrier_loss` freeze at the 44.1 kHz stimulus start. First real
     field use of the bank.
-  - **Still not evidenced on device**: H1 (teardown lease release — no route
-    triggers `AIUS_NET_ACTION_TEARDOWN`; needs a physical link drop
-    mid-pull; proven by the runtime-target end-to-end row), `park()` mid-POSTROLL, the
+  - **H1 (teardown lease release) is accepted on its host proof** (the
+    `teardown.recorder-lease-released` runtime-target end-to-end row through
+    the real composition), 2026-09-02: no route triggers
+    `AIUS_NET_ACTION_TEARDOWN`, so provoking it on device needs a physical
+    Ethernet unplug mid-pull, which is not scheduled and no longer holds this
+    phase.
+  - **Still not evidenced on device**: `park()` mid-POSTROLL, the
     read-lease-deferred recycle, and the rehearsal-activation
     re-verification. Phase D stays IN-PROGRESS on those.
 

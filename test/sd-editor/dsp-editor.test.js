@@ -11,8 +11,12 @@
  * Fixture provenance: `dsp-config-*.json` are the exact wire shape
  * `http_dsp_config_json()` emits (firmware/src/optical_main.cpp) and the
  * swagger `DspConfig` example; the SD one additionally carries every EQ type,
- * the clip-free matrix policy, and (usefully for the stacked plot) two stereo
- * pairs whose members DIFFER. `meters-*.json` are the settled
+ * the clip-free matrix policy, (usefully for the stacked plot) two stereo
+ * pairs whose members DIFFER, and the two runtime-reported keys
+ * (`staged_generation`, `config_pending`) the wire adds on top of the model.
+ * The default one deliberately lacks those two: it is pinned byte-for-byte to
+ * the generated factory model (see the "keeps the default fixture identical"
+ * case), which has no runtime keys. `meters-*.json` are the settled
  * `GET /api/meters` shape that `http_meters_json()` emits as of Phase 14b --
  * six positional dBFS input entries floored at -120, `[L, R]` output arrays,
  * a per-mille integer replay waveform -- authored to the contract rather than
@@ -745,11 +749,16 @@ describe('Aius SD DSP editor — writing the model back', () => {
     expect(put.url).toBe('/api/dsp/config');
     expect(put.headers['X-Aius-SD-Auth']).toBe('0123456789abcdef');
     expect(put.headers['Content-Type']).toBe('application/json');
-    // The one deliberate non-verbatim key: this fixture predates
-    // surround_delay_ms, and the editor sends the 0 the absent key means.
+    // Two deliberate departures from verbatim: this fixture predates
+    // surround_delay_ms, so the editor sends the 0 the absent key means; and
+    // the GET's two runtime-reported keys (staged_generation, config_pending)
+    // are the device's to say, not the client's, so the PUT never carries them.
+    const { staged_generation, config_pending, ...model } = loaded;
+    expect(staged_generation).toBe(1);
+    expect(config_pending).toBe(false);
     expect(JSON.parse(put.body)).toEqual({
-      ...loaded,
-      matrix: { ...loaded.matrix, surround_delay_ms: 0 },
+      ...model,
+      matrix: { ...model.matrix, surround_delay_ms: 0 },
       base_generation: 4,
     });
   });

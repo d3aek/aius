@@ -413,6 +413,7 @@ Suites (all build with `-Wall -Wextra -Werror` + ASan/UBSan):
 | `itcm-placement` | The six post-link ITCM guards, re-run over an existing optical build, plus the host-only tests of the LDF-library gate and the `-flto` precondition. |
 | `fake-fidelity` | Every host fake's constants against the real framework headers, three ways: a listed constant must exist upstream with the same value, *every* enum member `fake/fnet.h` declares must match FNET's own (no name list, so a positional renumber cannot hide), and a fake must not invent a constant. Each kind is then re-run over a mutated copy of the fake, so the suite proves it can still see the defects it was written for. A fake with a wrong constant agrees with itself and with the tests asserting the same macro, so only an external reference catches it. |
 | `registry` | The guard on this table: fails when it, the `# Suites:` header in `scripts/test.sh` and that script's `case` arms disagree with the directories under `test/`. |
+| `sd-editor` | The SD-card web pages (status, DSP editor, replay manager, upgrade) as vitest suites at the repo root's `test/sd-editor/`, run with this repo as the vitest root; needs `pnpm` (resolved through the superproject when this repo is a submodule). |
 
 The `dts`/`dts-lfe` suites run against committed reference PCM, so `ffmpeg` /
 `dcadec` are needed only to regenerate the corpora, not to run the suites. This
