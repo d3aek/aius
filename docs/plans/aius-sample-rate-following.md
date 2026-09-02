@@ -810,6 +810,49 @@ Raw artifacts remain under
 - `cm6206-direct-loop-48k-125s/`; and
 - `cm6206-direct-loop-44k1-altset1-8ch-125s/`.
 
+### Device evidence — 2026-09-02, external capture tool, image `e746cf952dd6`
+
+The first gate runs with the fixed external capture tool
+([`aius-rate-gate-capture-tool.md`](aius-rate-gate-capture-tool.md)
+§Live-run results — 2026-09-02) on exact image
+`e746cf952dd6+teensy41-optical`, U24 XL loop, each with its evidence digest:
+
+- **Gate 2 (44.1 kHz PCM, 120 s): FAIL — open board defect.** The U24
+  capture holds exactly one 128-frame zero run and the board's
+  `clock.tx_underrun_frames` advanced by exactly 128 at ~19 s into the run;
+  every other harmful delta is 0, 12 trims / 12 invalid windows,
+  `http_client_drops` 0 (evidence-sha256
+  `f67108c070fbeaf5fd5917190ffecf71345815e738ecef5f2c0e0c8759ade53e`).
+  Tool and board agree:
+  a single 2.9 ms dropout at 44.1 kHz that the 2026-09-01 tool could not see
+  (its detector was blind at the ±410 stimulus). The flight recorder froze it
+  on its own (`underrun` trigger, slot at 44100). Cause not yet investigated;
+  the `unsupported`/relock at the 44.1 kHz stimulus start and the
+  transmit-ring level at the moment of the underrun are the first two things
+  to read from that frozen slot. `audio_rate_hz 44100` is capture-clock-locked
+  (self-referential) on this hardware; gate 2's rate wording is an owner
+  decision recorded in the tool plan.
+- **Gate 7 (trim-boundary waveform, 48 kHz): FAIL on the contract, output
+  clean.** `discontinuities_outside_invalid 0`, `capture_frame_gaps 0`, no
+  zero run, held run, spike or phase slip in 120 s at a detector proven at the
+  documented stimulus, while the board logged 12 trims / 12 invalid windows;
+  the bench fails only because `invalid_intervals_frames` is empty
+  (evidence-sha256
+  `87e9ef415af946d9320808b4391f6c81817593c797acf038f36f70bc55b0ae7b`).
+  Whether the windows must be externally visible is the
+  owner decision recorded in the tool plan.
+- **Gate 4 (48→44.1→48, aplay stimulus, no replay leg): FAIL on the
+  stimulus grounds already recorded; `old_rate_output_frames = 0` is now a
+  real measurement.** Both rate changes stamped, both fiducials resolved
+  against the recorded output (the output switches within one 256-frame
+  block of the stamp, in both directions), 2 rate changes, 2 events
+  (evidence-sha256
+  `6dc5f172e0ad2ea91d83da54187b5649e865606dc8e7af22803dd5e12740fda8`).
+  The bench's `transition-sequence` (no replay leg
+  driven), `transition-unattributed-unsupported` (aplay idle gaps) and
+  `event_overflows`-only `harmful-counter` (tool poll cadence) stand as the
+  aplay-stimulus limitation, not a board finding.
+
 ### Resume checkpoint after the hypervisor restart
 
 The hypervisor restart is an explicit investigation boundary. Resume in this

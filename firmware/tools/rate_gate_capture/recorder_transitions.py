@@ -103,6 +103,19 @@ MIN_PHASE_FRAMES = 4096
 # giving up (2 s at 48 kHz; a board that has not switched by then has not
 # switched).
 FIDUCIAL_SEARCH_FRAMES = 96000
+# How far BEFORE a fiducial the old rate is established. The board stamps
+# `rate_change_frames` at block granularity, and the live 2026-09-02 capture
+# shows the output already switching ~400 frames before the stamp: the
+# blocks adjacent to the fiducial straddle the discontinuity and classify
+# as nothing (one read 97 samples/cycle, a phase glitch). Reading the old
+# rate from a single adjacent block therefore fails exactly when the switch
+# is clean. The old rate is instead the first classifiable block this far
+# before the fiducial, and the change is searched forward from there, so a
+# switch that precedes its stamp measures as 0 stale frames rather than as
+# unresolved. 4096 frames is 85 ms at 48 kHz: no board switches twice in
+# that window, and a stamp lagging its switch by more than that would be a
+# firmware defect worth seeing as an unresolved fiducial.
+PRE_FIDUCIAL_WINDOW_FRAMES = 4096
 # The status poller's cadence. The board's event ring can overflow between
 # polls, and `event_overflows` is one of the transitions gate's harmful
 # counters, so the cadence is part of the measurement -- see
@@ -188,24 +201,29 @@ def output_rate_runs(labels: list[tuple[int, int, int | None]]
 
 def rate_change_frame(mono: np.ndarray, fiducial: int,
                       block: int = CLASSIFY_BLOCK,
-                      search_frames: int = FIDUCIAL_SEARCH_FRAMES
+                      search_frames: int = FIDUCIAL_SEARCH_FRAMES,
+                      window_frames: int = PRE_FIDUCIAL_WINDOW_FRAMES
                       ) -> int | None:
-    """First frame at or after `fiducial` whose samples-per-cycle differs
-    from the rate in force just before the fiducial.
+    """First frame whose samples-per-cycle differs from the rate in force
+    `window_frames` before `fiducial`, searched forward from there up to
+    `fiducial + search_frames`.
 
     The board declares WHEN it changed rate (the fiducial); this finds when
-    the OUTPUT actually changed. The gap between them is the stale old-rate
-    output. Returns None when the pre-fiducial rate cannot be established or
-    no change is found within search_frames."""
-    if fiducial < block or fiducial >= len(mono):
-        before = mono[max(0, fiducial - block):fiducial]
-    else:
-        before = mono[fiducial - block:fiducial]
-    old_rate = rate_from_samples_per_cycle(samples_per_cycle(before))
+    the OUTPUT actually changed. A change found after the fiducial is stale
+    old-rate output; a change found before it (the stamp lags the switch by
+    up to a block or so) is not, and the caller clamps it to 0. Returns None
+    when no classifiable block exists in the pre-fiducial window or no
+    change is found within search_frames."""
+    origin = max(0, fiducial - window_frames)
+    old_rate = None
+    start = origin
+    while start + block <= fiducial and old_rate is None:
+        old_rate = rate_from_samples_per_cycle(
+            samples_per_cycle(mono[start:start + block]))
+        start += block
     if old_rate is None:
         return None
     limit = min(len(mono), fiducial + search_frames)
-    start = fiducial
     while start + block <= limit:
         rate = rate_from_samples_per_cycle(
             samples_per_cycle(mono[start:start + block]))
@@ -296,8 +314,9 @@ def reduce_slot(frames: np.ndarray, fiducials) -> dict:
             record["lower_bound_note"] = (
                 f"{len(unresolved)} fiducial(s) had no measurable output-rate "
                 f"change within {FIDUCIAL_SEARCH_FRAMES} frames (or no "
-                f"classifiable pre-fiducial rate) and contributed 0; the "
-                f"count is a lower bound, not a measurement")
+                f"classifiable block in the {PRE_FIDUCIAL_WINDOW_FRAMES}-frame "
+                f"pre-fiducial window) and contributed 0; the count is a "
+                f"lower bound, not a measurement")
         return record
     stale = stale_old_rate_frames(runs)
     record.update({

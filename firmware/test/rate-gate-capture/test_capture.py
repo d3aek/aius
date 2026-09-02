@@ -556,6 +556,24 @@ class RecorderFiducialTests(unittest.TestCase):
         runs = REC.output_rate_runs(REC.classify_output_rates(stream[:, 0]))
         self.assertEqual(REC.stale_old_rate_frames(runs), 0)
 
+    def test_switch_shortly_before_the_stamp_measures_zero(self):
+        """The live 2026-09-02 capture: the board stamps the fiducial at
+        block granularity, ~400 frames AFTER the output already switched,
+        so the blocks adjacent to the stamp straddle the discontinuity and
+        classify as nothing. The old rate must come from a window before
+        the stamp, and a switch preceding its stamp is 0 stale frames, not
+        an unresolved fiducial."""
+        stream = output_stream([(48000, 19600), (44100, 20000)])
+        result = REC.reduce_recorder_transitions([stream], [[20000]])
+        self.assertEqual(result["external"]["old_rate_output_frames"], 0)
+        self.assertFalse(result["evidence"]["lower_bound"])
+        slot = result["evidence"]["slots"][0]
+        self.assertEqual(slot["unresolved_fiducials"], [])
+        detected = slot["rate_change_frames_detected"][0]
+        self.assertIsNotNone(detected)
+        self.assertLess(detected, 20000)
+        self.assertGreaterEqual(detected, 19600 - REC.CLASSIFY_BLOCK)
+
     def test_unresolved_fiducial_marks_the_count_a_lower_bound(self):
         """A fiducial after which the output never changes contributes 0,
         which is the one value it must not silently read as."""

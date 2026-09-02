@@ -21,9 +21,11 @@ fields, the coupled analyzer fix, and the live bench/repo state as of
 2026-09-01, revised 2026-09-02.
 
 **Read §Tool defects found in review before using any recorded live number.**
-A 2026-09-02 review found nine confirmed defects in the shipped tool; they are
-fixed and unit-tested, but every live result in this document was produced
-before the fixes and none of it is evidence until re-run.
+A 2026-09-02 review found nine confirmed defects in the shipped tool, and the
+first live re-run found three more in the gate-4 path (F10–F12). All are fixed
+and unit-tested. §Live-run results — 2026-09-02 carries the only results
+produced by the fixed tool, each with its evidence digest; the 2026-09-01
+section is kept for comparison only and none of it is evidence.
 
 ## Why this exists
 
@@ -89,9 +91,10 @@ defective tool and must be re-run** before any of it is treated as evidence.
   bounded-local-alignment correlation (`correlated_trim_updates`,
   `correlated_invalid_windows`, `discontinuities_outside_invalid`), the
   inferred gate-2 rate, and `old_rate_output_frames` via the flight recorder.
-  Build-sequence steps 1–5 are done. The suite is **56 tests green**
+  Build-sequence steps 1–5 are done. The suite is **69 tests green**
   (2026-09-02, `scripts/test.sh --environment native --suite
-  rate-gate-capture`); it was 19 before the review fixes.
+  rate-gate-capture`); it was 19 before the review fixes and 59 before the
+  gate-4 live-run fixes (F10–F12).
 - **Hard part 2 resolved (design decision 2026-09-01).** `amixer -c0 controls` on
   the U24 XL shows no IEC958 capture-status control, so a true channel-status
   decode is not available on this interface. Owner ruling: **redefine the
@@ -105,8 +108,66 @@ defective tool and must be re-run** before any of it is treated as evidence.
   opened at (defect F1 below).
 - **Hard part 1 resolved (design decision 2026-09-01).** Bounded local alignment
   is the gate-7 correlation fiducial (implemented, unit-tested).
-- **Live integration (step 6) — gate 2 PASS, gate 7 FAIL (real verdict),
-  gate 4 blocked on redesign.** Owner authorised running all gates.
+- **Live integration (step 6) — re-run with the fixed tool on
+  `e746cf952dd6+teensy41-optical` (2026-09-02): gate 2 FAIL (real board
+  dropout), gate 7 FAIL on the contract question, gate 4 FAIL on the
+  aplay-stimulus grounds with `old_rate_output_frames` genuinely measured
+  at 0.** Each with its digest in §Live-run results — 2026-09-02.
+
+## Live-run results — 2026-09-02 (fixed tool, image `e746cf952dd6`)
+
+All three gates were run against the deployed board on the exact image
+`e746cf952dd6+teensy41-optical` (`--expect-build`), with the tool at aius
+`82674e4` (gates 2 and 7) and `ce84850` plus the F12 reducer fix (gate 4).
+The evidence directories are session scratch (7-day GC); the digests below
+are the citation. Every verdict is a real bench verdict, not a tool error.
+
+- **Gate 2 (`pcm-120s`, 44.1 kHz): FAIL — a real board dropout.**
+  `evidence-sha256: f67108c070fbeaf5fd5917190ffecf71345815e738ecef5f2c0e0c8759ade53e`.
+  External: `audio_rate_hz 44100` (`audio_rate_hz_source:
+  "capture-clock-locked"`, `self_referential: true`, raw 44100.98,
+  measured tone 996.978 Hz — a tautology, as the tool now says),
+  `continuous_output false` with exactly **one 128-frame zero run** in the
+  U24 capture. Bench: `harmful-counter` (`clock.tx_underrun_frames` +128)
+  and `continuous-output`; every other counter delta 0, 12 trims / 12
+  invalid windows, `http_client_drops` 0. Tool and board agree: a single
+  2.9 ms dropout at ~19 s into the run. Last week's PASS came from a
+  detector blind at the ±410 stimulus (F3). Opened as a board defect in
+  [`aius-sample-rate-following.md`](aius-sample-rate-following.md).
+- **Gate 7 (`waveform`, 48 kHz): FAIL — on the contract, not the output.**
+  `evidence-sha256: 87e9ef415af946d9320808b4391f6c81817593c797acf038f36f70bc55b0ae7b`.
+  External: `discontinuities_outside_invalid 0`, `capture_frame_gaps 0`,
+  `correlated_invalid_windows 0`, `correlated_trim_updates 0`,
+  `invalid_intervals_frames []`; the fixed detector (jump threshold 85 LSB,
+  held-run floor 4.3 LSB, phase-slip 0.065 rad, `capture_start_offset_s`
+  1.75) saw no zero run, held run, spike or phase slip anywhere in 120 s
+  while the board logged 12 trims / 12 invalid windows. Every counter
+  delta 0. Bench: `external-observation` ("waveform invalid_intervals_frames
+  must be a non-empty integer array"). This time the "output is continuous
+  through the invalid windows" reading is supported — the detector is
+  proven at the documented stimulus — so the open question is purely the
+  contract (§Follow-on work, decision 1).
+- **Gate 4 (`transitions`, 48→44.1→48, `--phase-seconds 2`, no replay
+  leg): FAIL on the aplay-stimulus grounds; `old_rate_output_frames = 0`
+  is now a real measurement.**
+  `evidence-sha256: 6dc5f172e0ad2ea91d83da54187b5649e865606dc8e7af22803dd5e12740fda8`.
+  The flight recorder captured slot 0 at `freeze_generation 1` (a recycled
+  slot — the F10 identity path exercised live), `trigger operator`,
+  `rate_changes 2`, both fiducials retained (`rate_change_frames` at pulled
+  indexes 173056 and 210944, none rolled off) and both resolved
+  (`rate_change_frames_detected [173056, 210944]`, `unresolved_fiducials
+  []`, `lower_bound false`). Output-rate runs `[48000 95744, 44100 37888,
+  48000 41728]` frames; `stream_rate_timeline` `[[0.011, 48000], [3.146, 0],
+  [3.406, 44100], [5.234, 48000]]`. Bench: `transition-sequence` (expects the
+  `replay` leg, not driven), `transition-unattributed-unsupported` (aplay
+  idle gaps, 6 episodes), `harmful-counter` on `event_overflows` alone (10;
+  tool cadence, F8 note), `tx_underrun_frames` +768 in the idle gaps. A
+  first run with the reducer at `ce84850` (digest
+  `132c94e1850ace90b860b9ae9d8b74250279b536193d692b0739853b41095d25`)
+  captured slot 3 with the same fiducials but left the first one
+  unresolved — that was F12, fixed and re-run. The earlier run at
+  `--phase-seconds 1.2` (`a289bf3c…`) failed `no-transition-captured` for
+  F10 and F11, not the board.
 
 ## Live-run results — 2026-09-01 (INVALIDATED, re-run required)
 
@@ -412,22 +473,23 @@ is producing that JSON faithfully.
 ## Acceptance for this tool
 
 - The three reducer field-groups are unit-tested against synthetic WAVs.
-  **Done** — 56 tests in `firmware/test/rate-gate-capture/` (2026-09-02;
+  **Done** — 69 tests in `firmware/test/rate-gate-capture/` (2026-09-02;
   19 before the review fixes), including three that round-trip a synthetic
   `evidence.jsonl` through the real bench analyzer and two that drive the real
   bench `transitions` check. Run as `scripts/test.sh --environment native
   --suite rate-gate-capture`.
 - Each of gates 2, 4, 7 reaches a `pass`/`fail` verdict end-to-end on the live
   board with the produced JSON (a real verdict, not a tool error), on one exact
-  committed image with `--expect-build`. **All three reached a real verdict on
-  2026-09-01, but with the defective tool — NOT MET pending a re-run.** The
-  recorded verdicts (gate 2 pass, gate 7 fail, gate 4 fail with
-  `old_rate_output_frames = 0`) are invalidated by F1/F2/F3/F5 as detailed in
-  §Live-run results, and no evidence artifact exists for any of them.
+  committed image with `--expect-build`. **Met 2026-09-02** on
+  `e746cf952dd6+teensy41-optical` with the fixed tool (§Live-run results —
+  2026-09-02): gate 2 fail (real dropout), gate 7 fail (contract), gate 4 fail
+  (stimulus grounds) with `old_rate_output_frames = 0` measured through
+  resolved fiducials.
 - The transitions descope lands with its tests green in the same change set.
   **Done** (aius `93610f6`).
 - Every recorded live result cites an `evidence.jsonl` path and SHA-256.
-  **Not met for the 2026-09-01 runs** (§Evidence retention).
+  **Met for the 2026-09-02 runs; not met for the 2026-09-01 runs**, which
+  stay non-evidence (§Evidence retention).
 
 ## Evidence retention
 
@@ -517,26 +579,61 @@ unit-tested off-board; none has been re-proven on the board.
   arm in `firmware/scripts/test.sh`, so it had never run under the runner.
   Registered as `rate-gate-capture` with its header and README rows.
 
+Three more, found by the first live gate-4 run with the fixed tool
+(2026-09-02, aius `ce84850` and the follow-up reducer commit):
+
+- **F10 — `freeze_generation` treated as global.** The captured-slot check
+  required a `freeze_generation` newer than the pre-run baseline, but the
+  generation is per slot (it counts that slot's thaws and starts at 0), so on
+  a fresh boot every frozen slot reads 0 and every real capture was rejected.
+  The captured slot is now the newest frozen slot whose `(slot,
+  freeze_generation)` identity was not frozen at baseline; the evidence
+  carries `baseline_frozen_identities` and `captured_trigger`.
+- **F11 — `aplay -d int(phase_seconds)`.** `--phase-seconds 1.2` played 1 s
+  phases, shorter than the board's follow latency: the status polls show the
+  board in `unsupported` at 48000 for the whole 44.1 kHz phase and
+  `rate_changes` unchanged, so nothing was ever stamped. Phases are now played
+  by frame count (`aplay --samples` from the tone's WAV rate, recorded as
+  `phase_frames`), the evidence carries the `stream_rate_timeline`, and a run
+  whose polls never saw 44100 reports `failure_reason: stimulus-not-followed`
+  instead of blaming the freeze. The ring-capacity refusal was also
+  over-conservative (it demanded all three phases fit the slot; only the
+  frames from just before the first rate boundary to the freeze matter), so it
+  now budgets `(phases − 1) × phase + 1 s` and admits 2 s phases against the
+  board's 262144-frame slot.
+- **F12 — old rate read from the block adjacent to the fiducial.** The board
+  stamps `rate_change_frames` at block granularity, ~400 frames *after* the
+  output has already switched (live capture: the blocks from −448 to −64
+  frames before the stamp straddle the discontinuity, one reading 97
+  samples/cycle), so the adjacent-block classification returned nothing and
+  the fiducial went unresolved exactly when the switch was clean. The old rate
+  is now the first classifiable block in a 4096-frame window before the
+  fiducial, searched forward from there; a switch preceding its stamp measures
+  0. A fiducial that still resolves to nothing is listed in
+  `unresolved_fiducials` and marks the count `lower_bound: true` rather than
+  contributing a silent 0.
+
 ## Follow-on work (owner input needed)
 
-- **Re-run gates 2, 4 and 7 with the fixed tool** on one exact committed
-  image, and record each verdict with its evidence digest. Everything below
-  depends on that.
-- **Gate 7 contract.** Decide whether the board's invalid windows are meant to
-  be externally observable at all. If not, redefine or drop gate 7's external
-  fields; if so, specify the artifact signature the tool should detect. The
-  2026-09-01 evidence for "they are not observable" is retracted (F3).
-- **Gate 2 scope.** Decide whether a capture-clock-locked (self-referential)
-  `audio_rate_hz` satisfies gate 2, or whether the gate requires an
-  independent reading (capture rate ≠ expected rate, or a protocol analyzer).
-- **Gate 4 `old_rate_output_frames` fiducial — reference chosen, measurement
-  pending firmware.** The flight recorder is the reference
-  (`recorder_transitions.py`), but the measurement needs **both** new per-slot
-  fields in `GET /api/recorder`: `slots[].rate_change_frames` (with
-  `rate_change_count`) and `slots[].stream_end_frame`, which supplies the
-  origin that converts those stream indexes into pulled-frame indexes. Until
-  the firmware emits both the reducer reports a lower bound, and the
-  previously recorded "measured 0 live" is retracted (F5).
+- ~~Re-run gates 2, 4 and 7 with the fixed tool~~ **Done 2026-09-02**
+  (§Live-run results — 2026-09-02).
+- **Gate 7 contract (decision owed).** The fixed detector, proven at the
+  documented stimulus, sees no artifact at all through 12 board-declared
+  invalid windows. Either (a) keep the contract — gate 7 stays red until the
+  U24's handling of the validity bit is characterised — or (b) redefine gate 7
+  as "no discontinuity outside the board-declared windows; the windows need
+  not be externally visible", which passes on the 2026-09-02 evidence.
+  Recommendation: (b); the trims are sub-sample and the capture proves it.
+- **Gate 2 scope (decision owed).** `audio_rate_hz` is capture-clock-locked on
+  this hardware and cannot be an independent measurement. Options: drop the
+  field, keep it labelled self-referential (as the tool now does) and judge
+  gate 2 on continuity + harmful counters, or measure via a channel-status
+  decode on other hardware. Recommendation: keep it labelled; the 2026-09-02
+  gate-2 fail is on continuity and is a real board defect regardless.
+- ~~Gate 4 `old_rate_output_frames` fiducial — measurement pending
+  firmware~~ **Done**: the firmware emits `slots[].rate_change_frames`,
+  `rate_change_count` and `stream_end_frame` (recorder Phase C/D fixes), and
+  the 2026-09-02 run measured 0 through two resolved fiducials.
 - **Gate 4 green pass.** Reached a real fail verdict end-to-end. A pass needs
   either a stimulus source that cuts the S/PDIF carrier cleanly between rate
   phases (a programmable generator; the aplay-on-U24 idle at ~48.02 kHz
