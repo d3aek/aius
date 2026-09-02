@@ -63,11 +63,17 @@ inspects the linked objects of an optical image; without a current cross-build i
 exits 3 and prints the build command to run.
 
 The SD-hosted web pages (status, DSP editor, replay manager, upgrade) are host JS
-covered by vitest in [`test/sd-editor/`](test/sd-editor/):
+covered by vitest in [`test/sd-editor/`](test/sd-editor/). Run it from the
+**upstream repository root**, which owns the vitest config and the `node_modules` tree:
 
 ```bash
 pnpm exec vitest run test/sd-editor
 ```
+
+The upstream repository's root `vitest.config.js` includes `test/**` for
+exactly this suite, so a plain `pnpm test` at the root picks it up too. (Until
+2026-09-02 the include reached only `src/**`, and the command here named a
+`` path that does not exist, so these tests ran nowhere.)
 
 ### Cross-building for the Teensy
 

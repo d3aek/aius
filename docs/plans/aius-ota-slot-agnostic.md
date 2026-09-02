@@ -33,10 +33,20 @@ next physical visit.
 
 ## Status
 
-Cut over and bench-proven on the deployed board (`192.0.2.66`) on 2026-08-31.
-The board now runs the new chooser and one canonical, slot-agnostically-linked
-image: `ab.ledger_valid` flipped false→true and the device accepts untagged
-(`slot_id = NONE`) containers over OTA.
+Cut over and bench-proven on the deployed board (`192.0.2.66`) on 2026-08-31,
+then **superseded on the board on 2026-09-01**: subsequent plain-image HalfKay
+flashes over USB CDC (`firmware/scripts/flash_optical.sh`, default hex
+`.pio/build/teensy41-optical/firmware.hex`) put the single-image
+`teensy41-optical` build back on the device, overwriting the slot-agnostic
+chooser. As of 2026-09-02 the board runs `fc674c60f06c+teensy41-optical` and
+`/api/status` reports `"ab": null` — no A/B machinery, no chooser, expected
+container slot `NONE` by construction default. **A re-cutover is owed** before
+any claim about the chooser applies to this device again; the work below is
+unchanged and still proven, it is simply not what is installed.
+
+The 2026-08-31 cutover itself: the board ran the new chooser and one canonical,
+slot-agnostically-linked image, `ab.ledger_valid` flipped false→true, and the
+device accepted untagged (`slot_id = NONE`) containers over OTA.
 
 - **Phase 1** — shared `lib/aius_ab` primitives, host suite green.
 - **Phase 2** — remap-aware verify read (`ota_flash_read`): **bench-proven**.
@@ -55,7 +65,12 @@ image: `ab.ledger_valid` flipped false→true and the device accepts untagged
 - **Phase 5** — one build / one signature: **proven on the device**. The
   canonical slot-A image signed WITHOUT `--slot` was accepted, programmed,
   remapped and committed both A→B and B→A; operator rule updated in
-  `aius/CLAUDE.md` §Device access and OTA. STILL OWED: retire the dual slot-B
+  `aius/CLAUDE.md` §Device access and OTA (rewritten 2026-09-02 to key on
+  `/api/status`'s `ab` rather than on the chooser, since the board is back in
+  the plain single-image posture). The `ledger_valid` false→true flip and the
+  `409 ota_digest` refusal below were **observed live 2026-08-31, no artifact
+  retained** — the session's readings, not a captured transcript. STILL OWED:
+  retire the dual slot-B
   env, `gen_slot_ldscript.py`, and make `--slot` optional/deprecated in the
   signer + CLI (code cleanup; the dual-linked path still coexists).
 - **Phase 6** — atomic HalfKay cutover: **performed**. `recovery.hex` (new
@@ -67,7 +82,8 @@ false-verify; addresses/bits confirmed against `imxrt.h`; the D-cache aliasing
 finding fixed with `arm_dcache_delete`). The bench cycle settled the remaining
 hardware unknowns (FlexSPI AHB prefetch/RX-buffer, SWRESET/remap timing).
 
-**Bench acceptance (2026-08-31), owner-directed deviations noted:**
+**Bench acceptance (2026-08-31), owner-directed deviations noted. Every line is
+an observation made live at the time; no artifact was retained for any of them:**
 
 - New chooser live (`ledger_valid` false→true).
 - A→B→A completes and self-commits unaided; `rollback_observed: false`,
@@ -335,10 +351,18 @@ matters — the chooser is HalfKay-recover-only, so prove on a SPARE board first
    image. This is the one-shot cutover artifact (already builds clean today).
 2. **HalfKay-flash `recovery.hex`** (physical Program button). The board boots
    slot A; the new chooser stamps `booted_slot = A` into the retained ledger.
-3. **Confirm the new chooser is live.** `GET /api/status` → `ab.slot` now
-   reflects the ledger's `booted_slot` (Phase 3), and the board accepts an
-   untagged container. If `booted_slot` reads NONE, the old chooser is still
-   installed — stop.
+3. **Confirm the new chooser is live — and note that `booted_slot` is NOT on the
+   wire.** `GET /api/status` publishes `ab.slot` (`g_ab_running_slot`),
+   `ab.ledger_valid` and the boot-record fields; the ledger's `booted_slot`,
+   which is what `ab_compose` actually gates on
+   (`optical_main.cpp:3782-3794`), is never emitted. Neither published field
+   settles it alone: `ledger_valid` was also true under the old chooser on trial
+   boots, and `ab.slot` equals the compile-time `AIUS_AB_SLOT` under the old
+   chooser, so it only proves the new one when it disagrees with the flashed
+   env's slot. `"ab": null` means no A/B build at all. **The decisive check is
+   the offer**: push an untagged container and read chunk 0 — accepted means the
+   expected slot is `NONE`, `400 ota_unsupported` means it is not. If it is
+   refused, the old chooser is still installed — stop.
 4. **Sign the canonical image WITHOUT `--slot`** (`aius_ota_sign.py sign`
    without `--slot` → `slot_id = NONE`), one binary, one signature. Push it with
    `aius_ota_flash.py`; the device programs slot B, the chooser remaps and boots

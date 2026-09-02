@@ -533,6 +533,59 @@ def test_client_write_is_capacity_bounded_and_single_attempt():
     assert ".l_linger = 0" in socket_setup
 
 
+def test_server_accept_initialises_fromlen():
+    """The accept callback must still initialise `fromlen`, and say why.
+
+    Defect 20: upstream's `EthernetServer::poll()` passes an *uninitialised*
+    `fnet_size_t fromlen` to `fnet_socket_accept()`. FNET's
+    `_fnet_socket_addr_check_len()` refuses any length below
+    `sizeof(struct fnet_sockaddr_in)` -- zero included, via its trailing else --
+    and both pointers are non-null at that call site, so the accept succeeded or
+    failed on whatever the stack slot held, leaving the refused connection
+    QUEUED. Every inbound connection this device accepts goes through it.
+
+    PATCHED_SHA256 already notices ANY byte change to this file, but it cannot
+    say which change matters: a re-sync that drops the one-liner and refreshes
+    the baseline reads as an ordinary vendor bump. This asserts the fix itself,
+    inside the accept callback rather than anywhere in the file, plus the patch
+    marker that tells the next re-syncer it is deliberate.
+    """
+    marker = "void EthernetServer::poll(void* cookie)"
+    poll_body = function_body(source("NativeEthernetServer.cpp"), marker)
+    # The patch comment names fnet_socket_accept() several lines above the call,
+    # so the ordering is read off the comment-stripped body. The stripper pads
+    # with spaces, so offsets stay comparable between the two.
+    code = without_comments_and_literals(poll_body)
+    accept = code.find("fnet_socket_accept(")
+    assert accept >= 0, "the accept call left EthernetServer::poll()"
+    initialiser = code.find("fnet_size_t fromlen = sizeof(from);")
+    assert 0 <= initialiser < accept, (
+        "EthernetServer::poll() must initialise `fnet_size_t fromlen = "
+        "sizeof(from);` before fnet_socket_accept(); an uninitialised fromlen "
+        "is upstream's defect 20 and fails accepts against stack remnants"
+    )
+    assert "&fromlen" in code[accept : accept + 200]
+    assert "Aius patch" in poll_body[:initialiser], (
+        "the fromlen initialiser must keep its `Aius patch:` comment, so a "
+        "vendor re-sync sees a deliberate fix rather than a stray local edit"
+    )
+
+    # The guard must see the defect it exists for: strip the initialiser and it
+    # has to fail, not pass on some other `sizeof(from)` elsewhere in the file.
+    mutated = function_body(
+        source("NativeEthernetServer.cpp").replace(
+            "fnet_size_t fromlen = sizeof(from);", "fnet_size_t fromlen;", 1
+        ),
+        marker,
+    )
+    assert (
+        without_comments_and_literals(mutated).find(
+            "fnet_size_t fromlen = sizeof(from);"
+        )
+        == -1
+    )
+
+
 def test_server_and_stack_teardown_are_idempotent_and_bounded():
     server_source = source("NativeEthernetServer.cpp")
     server_begin = function_body(server_source, "void EthernetServer::begin()")
@@ -785,6 +838,7 @@ def main():
     test_one_shot_source_guard_and_guard_sensitivity()
     test_begin_and_dhcp_ownership_contract()
     test_client_write_is_capacity_bounded_and_single_attempt()
+    test_server_accept_initialises_fromlen()
     test_server_and_stack_teardown_are_idempotent_and_bounded()
     test_application_transport_header_guard_has_one_owner()
     test_fake_fnet_declares_the_dependencys_signatures()

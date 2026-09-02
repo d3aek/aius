@@ -187,6 +187,7 @@ function pickContainer(headerBytes, options = {}) {
  * kOtaVerdicts token ("none" for OK). image.target_id is empty until a container
  * is offered -- the identity the target check needs arrives from /api/status. */
 const idleOta = () => ({
+  /* Not offered, so app_ota_status() leaves all three byte counts at 0. */
   armed: true,
   state: 'idle',
   staged_bytes: 0,
@@ -197,6 +198,27 @@ const idleOta = () => ({
   activation_available: false,
   fault: 'none',
   verifier_fault: 0,
+});
+
+/* THE FIRMWARE'S BYTE ACCOUNTING, transcribed from app_ota_status() at
+ * firmware/src/optical_main.cpp:4706-4709:
+ *
+ *   status->staged_bytes = progress.staged_length + AIUS_OTA_HEADER_BYTES;
+ *   status->total_bytes  = progress.image_length  + AIUS_OTA_HEADER_BYTES;
+ *   status->next_offset  = progress.next_offset   + AIUS_OTA_HEADER_BYTES;
+ *
+ * The session counts PAYLOAD bytes; the status document publishes
+ * CONTAINER-ABSOLUTE ones, the same coordinate PUT /api/ota/image's
+ * Content-Range speaks. So this helper takes the three payload-relative numbers
+ * the device's own session would hold and applies the firmware's formula --
+ * the fixture states the FIRMWARE's shape, and a page that expects
+ * payload-relative counts must fail here. Deriving the stub's numbers from the
+ * page's expectation instead is precisely how defect 39 shipped green
+ * (docs/plans/aius-network-hardening.md defect 39). */
+const containerAbsolute = (imageLength, stagedLength, nextOffset) => ({
+  total_bytes: imageLength + HEADER_BYTES,
+  staged_bytes: stagedLength + HEADER_BYTES,
+  next_offset: nextOffset + HEADER_BYTES,
 });
 
 let device;
@@ -212,6 +234,7 @@ function createDevice(options = {}) {
     /* 'digest' | 'signature' | null -- which half of verify() refuses. */
     verifyFault: options.verifyFault || null,
     armRefusal: options.armRefusal || null,
+    activateRefusal: options.activateRefusal || null,
     onChunk: options.onChunk || null,
     chunks: [],
     calls: [],
@@ -238,15 +261,16 @@ function createDevice(options = {}) {
       stub.chunks.push({ start, end, total });
       const refusal = stub.onChunk ? stub.onChunk(stub.chunks.length - 1, stub) : null;
       if (refusal) return refusal;
-      if (start === 0) {
-        Object.assign(stub.ota, { state: 'offered', total_bytes: total - HEADER_BYTES, staged_bytes: 0, next_offset: HEADER_BYTES });
-      } else {
-        Object.assign(stub.ota, {
-          state: end >= total ? 'staged' : 'staging',
-          staged_bytes: end - HEADER_BYTES,
-          next_offset: end,
-        });
-      }
+      /* The session's own payload counts, then the firmware's formula over
+       * them. Offset 0 is the header: it offers the container (image_length
+       * known) with nothing of the payload absorbed yet. */
+      const imageLength = total - HEADER_BYTES;
+      const stagedLength = start === 0 ? 0 : end - HEADER_BYTES;
+      Object.assign(
+        stub.ota,
+        { state: start === 0 ? 'offered' : end >= total ? 'staged' : 'staging' },
+        containerAbsolute(imageLength, stagedLength, stagedLength),
+      );
       return end >= total ? jsonResponse(200, { ok: true }) : jsonResponse(200, { ok: true, next_offset: end });
     }
     if (url === '/api/ota/verify' && method === 'POST') {
@@ -271,6 +295,7 @@ function createDevice(options = {}) {
       return jsonResponse(200, { ok: true });
     }
     if (url === '/api/ota/activate' && method === 'POST') {
+      if (stub.activateRefusal) return stub.activateRefusal;
       Object.assign(stub.ota, { state: 'activation_requested' });
       return jsonResponse(200, { ok: true });
     }
@@ -317,8 +342,16 @@ async function selectContainer(headerBytes, options = {}) {
   await settle();
 }
 
+/* The upload's bounded sd_busy retry sleeps on a real timer (5 x 250 ms), and
+ * these tests run on fake ones, so a run that retries never resolves unless the
+ * clock is driven. Advancing past the whole retry budget is harmless for a run
+ * that never retries -- it only fires extra 1 Hz polls, which are idempotent. */
+const RETRY_BUDGET_MS = 2000;
+
 async function startRun() {
   el('start').click();
+  await settle(600);
+  await vi.advanceTimersByTimeAsync(RETRY_BUDGET_MS);
   await settle(600);
 }
 
@@ -355,6 +388,7 @@ describe('Aius SD firmware upgrade — container header parse', () => {
     expect(el('hdr-image-length').textContent).toBe('9.8 KiB (10000 bytes)');
     expect(el('hdr-container').textContent).toBe('10 KiB (10256 bytes)');
     expect(el('hdr-scheme').textContent).toBe('ed25519 (1)');
+    expect(el('hdr-slot').textContent).toBe('untagged (slot-agnostic) (0)');
     expect(el('hdr-digest').textContent).toBe('11'.repeat(32));
     expect(el('hdr-signature').textContent).toBe('22'.repeat(64));
     expect(el('hdr-crc').textContent).toMatch(/^0x[0-9a-f]{8}$/);
@@ -386,7 +420,11 @@ describe('Aius SD firmware upgrade — container header parse', () => {
     ['a payload larger than the flash', { imageLength: 8126465 }, { size: 8126721 }, 'image_length', 'this board can stage'],
     ['an unsigned container', { signatureScheme: 0 }, {}, 'signature_scheme', 'unsigned'],
     ['an unknown scheme tag', { signatureScheme: 9 }, {}, 'signature_scheme', 'unknown signature scheme 9'],
-    ['a non-zero reserved word', { reserved0: 1 }, {}, 'reserved', 'reserved field is non-zero'],
+    /* reserved0's low byte is the slot tag, so only a value OUTSIDE the slot
+     * domain is a refusal (aius_ota.c:229-231); the high byte stays
+     * reserved-must-be-zero (aius_ota.c:232-233). */
+    ['a slot tag outside the domain', { reserved0: 3 }, {}, 'slot_id', 'container slot tag 3'],
+    ['a non-zero reserved high byte', { reserved0: 0x0100 }, {}, 'reserved', 'reserved field is non-zero'],
     ['a non-zero reserved tail', { reservedByte: [67, 1] }, {}, 'reserved', 'reserved field is non-zero'],
     ['an empty target', { targetIdBytes: fill(32, 0) }, {}, 'target_id', 'not printable ASCII'],
     ['a non-ASCII target', { targetIdBytes: Uint8Array.from({ length: 32 }, (unused, index) => (index === 0 ? 0x01 : 0)) }, {}, 'target_id', 'not printable ASCII'],
@@ -414,6 +452,43 @@ describe('Aius SD firmware upgrade — container header parse', () => {
       expect(mutations()).toHaveLength(0);
     });
   }
+
+  /* Every value the slot domain has, accepted and named. A device on the legacy
+   * per-slot chooser is offered slot-tagged containers as a matter of course
+   * (aius_ota.c:229 puts the tag in reserved0's low byte), so refusing a
+   * non-zero reserved0 locally refused every one of them before a byte was
+   * sent. Only the DEVICE knows which tag it wants -- it compares against its
+   * expected slot at offer time (aius_ota.c:433) -- so the page reports. */
+  const SLOT_ROWS = [
+    [0, 'untagged (slot-agnostic) (0)'],
+    [1, 'slot A (1)'],
+    [2, 'slot B (2)'],
+  ];
+
+  for (const [tag, rendered] of SLOT_ROWS) {
+    it(`accepts and names a container tagged ${rendered}`, async () => {
+      await boot();
+      await setToken('secret');
+
+      await selectContainer(buildHeader({ reserved0: tag }));
+
+      expect(steps()).toEqual([['parsed', 'ok']]);
+      expect(el('hdr-slot').textContent).toBe(rendered);
+      expect(textOf('parsed')).toContain(rendered.replace(` (${tag})`, ''));
+      expect(el('image-pill').textContent).toBe('loaded');
+      expect(el('start').disabled).toBe(false);
+      expect(mutations()).toHaveLength(0);
+    });
+  }
+
+  it('stages a slot-tagged container end to end, spending no local refusal', async () => {
+    await ready({ header: { reserved0: 1 } });
+
+    await startRun();
+
+    expect(device.chunks[0]).toEqual({ start: 0, end: 256, total: 10256 });
+    expect(steps().map((step) => step[0])).toContain('armed');
+  });
 
   it('accepts a header whose target the device has not named yet', async () => {
     /* /api/status carries no identity: the device re-checks target_id at offer
@@ -517,8 +592,41 @@ describe('Aius SD firmware upgrade — the happy path', () => {
 });
 
 describe('Aius SD firmware upgrade — interrupted transfers', () => {
-  it('stops at the failing chunk, names the fault and says where a re-upload resumes', async () => {
-    await ready({ onChunk: (index) => (index === 2 ? jsonResponse(503, { ok: false, error: 'sd_busy' }) : null) });
+  /* A refusal that survives the page's bounded retry: the same 503 sd_busy at
+   * the same offset, `attempts` times. 1 + SD_BUSY_RETRIES exhausts it. */
+  const busyAt = (offset, attempts) => {
+    let seen = 0;
+    return (index, stub) => {
+      if (stub.chunks[index].start !== offset || seen >= attempts) return null;
+      seen++;
+      return jsonResponse(503, { ok: false, error: 'sd_busy' });
+    };
+  };
+
+  it('retries a transient sd_busy and continues at the same offset', async () => {
+    /* 503 sd_busy is documented transient -- "a plain retry resolves"
+     * (aius_optical_app.cpp:1712-1730), including the one-epoch ota_pending
+     * window after every accepted chunk -- so one of them must not end a
+     * multi-megabyte upload. */
+    await ready({ onChunk: busyAt(4352, 1) });
+
+    await startRun();
+
+    /* The refused chunk is re-sent at 4352, not skipped and not restarted. */
+    expect(device.chunks.map((chunk) => chunk.start)).toEqual([0, 256, 4352, 4352, 8448]);
+    expect(steps()).toEqual([
+      ['parsed', 'ok'],
+      ['upload', 'ok'],
+      ['staged', 'ok'],
+      ['digest', 'ok'],
+      ['signature', 'ok'],
+      ['armed', 'ok'],
+      ['activate', 'pending'],
+    ]);
+  });
+
+  it('stops at the failing chunk once the retries are exhausted, names the fault and says where a re-upload resumes', async () => {
+    await ready({ onChunk: busyAt(4352, 6) });
 
     await startRun();
 
@@ -526,28 +634,33 @@ describe('Aius SD firmware upgrade — interrupted transfers', () => {
       ['parsed', 'ok'],
       ['upload', 'fail'],
     ]);
+    /* One initial attempt plus the five retries, all at the same offset. */
+    expect(device.chunks.filter((chunk) => chunk.start === 4352)).toHaveLength(6);
     expect(faultOf('upload')).toBe('fault: sd_busy');
     expect(textOf('upload')).toContain('the SD volume is busy');
     expect(el('log-status').textContent).toContain('4352');
     expect(el('log-pill').textContent).toBe('error');
   });
 
+  it('stops immediately on a non-retryable refusal rather than spending the retry budget', async () => {
+    await ready({ onChunk: (index) => (index === 2 ? jsonResponse(409, { ok: false, error: 'ota_range' }) : null) });
+
+    await startRun();
+
+    expect(device.chunks).toHaveLength(3);
+    expect(faultOf('upload')).toBe('fault: range');
+  });
+
   it('resumes the next run from the offset the device reports, re-sending nothing', async () => {
     /* The device kept everything up to the dropped chunk, so the second run
      * must start at its next_offset -- restarting at 0 would re-offer a header
-     * the machine has already absorbed past. */
-    let drop = true;
-    await ready({
-      onChunk: (index, stub) => {
-        if (drop && index === 2) {
-          drop = false;
-          return jsonResponse(503, { ok: false, error: 'sd_busy' });
-        }
-        return null;
-      },
-    });
+     * the machine has already absorbed past. The device's next_offset is
+     * CONTAINER-ABSOLUTE (optical_main.cpp:4709), and so is Content-Range, so
+     * the number the device reports is the number the next PUT sends. */
+    await ready({ onChunk: busyAt(4352, 6) });
     await startRun();
     expect(device.ota.next_offset).toBe(4352);
+    expect(device.ota.total_bytes).toBe(10256);
     device.chunks.length = 0;
     /* The narration of the resume, caught while the loop still runs: the
      * settled entry states the whole transfer. */
@@ -579,7 +692,9 @@ describe('Aius SD firmware upgrade — interrupted transfers', () => {
   });
 
   it('restarts at zero when the device is staging a different image', async () => {
-    await ready({ ota: Object.assign(idleOta(), { state: 'staging', total_bytes: 999, staged_bytes: 512, next_offset: 768 }) });
+    /* Another container mid-staging: a 999-byte payload, 512 of it absorbed,
+     * published container-absolute like every other status read. */
+    await ready({ ota: Object.assign(idleOta(), { state: 'staging' }, containerAbsolute(999, 512, 512)) });
 
     await startRun();
 
@@ -636,7 +751,7 @@ describe('Aius SD firmware upgrade — verification faults', () => {
         if (index === 3) {
           /* The last chunk is accepted but the machine stays mid-staging: an
            * upload the device did not finish must not read as staged. */
-          Object.assign(stub.ota, { state: 'staging', staged_bytes: 9000, next_offset: 9256 });
+          Object.assign(stub.ota, { state: 'staging' }, containerAbsolute(PAYLOAD_BYTES, 9000, 9000));
           return jsonResponse(200, { ok: true });
         }
         return null;
@@ -651,6 +766,51 @@ describe('Aius SD firmware upgrade — verification faults', () => {
       ['staged', 'fail'],
     ]);
     expect(textOf('staged')).toContain('staging');
+  });
+
+  /* Every kOtaVerdicts token the routes can answer with, plus the dispatcher's
+   * own request-shape refusals (aius_optical_app.cpp:1457-1469, :1701-1730):
+   * the page must say what each one means rather than fall back to a bare HTTP
+   * description. `ota_status` doubles as the negative control for the sd_busy
+   * retry -- a 503 carrying any other token stops the run at once. */
+  const VERDICTS = [
+    [507, 'ota_storage', 'storage', 'could not write the staging record'],
+    [400, 'ota_chunk', 'chunk', 'larger than the 4096 bytes'],
+    [400, 'ota_header', 'header', 'whole 256-byte container header'],
+    [503, 'ota_status', 'status', 'could not read its own OTA status'],
+    [500, 'ota_self_test_failed', 'self_test_failed', 'flash self-test failed'],
+  ];
+
+  for (const [status, token, fault, message] of VERDICTS) {
+    it(`names ${token} in operator terms and stops the run`, async () => {
+      await ready({ onChunk: (index) => (index === 1 ? jsonResponse(status, { ok: false, error: token }) : null) });
+
+      await startRun();
+
+      expect(steps()).toEqual([
+        ['parsed', 'ok'],
+        ['upload', 'fail'],
+      ]);
+      expect(faultOf('upload')).toBe(`fault: ${fault}`);
+      expect(textOf('upload')).toContain(message);
+      /* Two chunks sent, no retry budget spent on a latched refusal. */
+      expect(device.chunks).toHaveLength(2);
+    });
+  }
+
+  it('names a refused activation as the disabled runtime latch', async () => {
+    await ready({
+      ota: Object.assign(idleOta(), { activation_available: true }),
+      activateRefusal: jsonResponse(409, { ok: false, error: 'ota_activation_disabled' }),
+    });
+    await startRun();
+
+    el('activate').click();
+    await settle();
+
+    expect(steps().at(-1)).toEqual(['activate', 'fail']);
+    expect(faultOf('activate')).toBe('fault: activation_disabled');
+    expect(textOf('activate')).toContain('POST /api/ota/enable-activation');
   });
 
   it('fails the arm step on a refusal and names the device state', async () => {
@@ -676,14 +836,17 @@ describe('Aius SD firmware upgrade — verification faults', () => {
 });
 
 describe('Aius SD firmware upgrade — activation gating', () => {
-  it('renders the activate step disabled with the pending caption', async () => {
+  it('renders the activate step disabled and names the verb that enables it', async () => {
+    /* activation_available is the device's runtime latch, set by POST
+     * /api/ota/enable-activation (aius_optical_app.cpp:1567-1571), not an
+     * unshipped feature -- the caption must name the operator's act. */
     await ready();
 
     await startRun();
 
     expect(el('activate').disabled).toBe(true);
-    expect(el('activate-caption').textContent).toContain('activation slice ships this verb');
-    expect(el('ota-activation').textContent).toBe('pending activation slice');
+    expect(el('activate-caption').textContent).toContain('POST /api/ota/enable-activation');
+    expect(el('ota-activation').textContent).toBe('disabled (enable-activation not sent)');
   });
 
   it('enables the activate step the moment the device reports it available', async () => {

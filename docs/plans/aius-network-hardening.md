@@ -805,12 +805,25 @@ table.
     **RESOLVED 2026-09-01 — the vendor patch is applied.** Confirmed against the
     tree: `firmware/vendor/NativeEthernet/NOTICE.md` documents "the FNET service
     callback that accepts inbound connections initialises `fromlen` to
-    `sizeof(from)` ... the one patch here that fixes an upstream defect", and
-    `fromlen = sizeof(_from)` is initialised at the peer/recv sites
-    (`NativeEthernet.h:360`, `NativeEthernetClient.cpp:215`). This settles the
-    contradiction with defect 24, which correctly stated the patch was applied;
-    defect 20's "not patched yet" was stale. Original disposition, now
-    superseded: **Fake and test row FIXED 2026-07-26; the vendor half confirmed.**
+    `sizeof(from)` ... the one patch here that fixes an upstream defect", and the
+    patch itself is `fnet_size_t fromlen = sizeof(from);` in the accept callback
+    at `firmware/vendor/NativeEthernet/src/NativeEthernetServer.cpp:343-354`
+    (landed in `2b39943`, carrying an `Aius patch:` comment that states the FNET
+    length check it defeats). **Citation corrected 2026-09-02**: this entry
+    previously cited `NativeEthernet.h:360` and `NativeEthernetClient.cpp:215`,
+    which are upstream-normal `fromlen` initialisers on the peer/recv sites and
+    not the patch — the accept path was the whole defect, so citing the other two
+    would have let a vendor re-sync drop the fix with the entry still reading
+    RESOLVED. **Pinned 2026-09-02** by
+    `firmware/test/network-transport/test_vendor_source.py`
+    `test_server_accept_initialises_fromlen()`, which asserts the initialiser
+    precedes `fnet_socket_accept()` inside `EthernetServer::poll()` and that the
+    `Aius patch` marker survives; `PATCHED_SHA256` alone notices the byte change
+    but cannot distinguish dropping this line from an ordinary vendor bump. This
+    settles the contradiction with defect 24, which correctly stated the patch
+    was applied; defect 20's "not patched yet" was stale. Original disposition,
+    now superseded: **Fake and test row FIXED 2026-07-26; the vendor half
+    confirmed.**
     Three things were established rather than assumed:
 
     - **The `else` is real.** `_fnet_socket_addr_check_len()` ends
@@ -925,11 +938,7 @@ table.
     `g_active_model`/`g_dsp_model_origin`, so a carrier-less board answers with
     the PUT it accepted instead of `"default"`. This is the "report a committed
     source" arm of the design call, chosen over "set it at commit time" on
-    purpose: `config_generation` is the single-writer optimistic-concurrency
-    token (the audio ISR owns it), and bumping it from the HTTP thread at commit
-    would race that writer, so it stays the applied value. The staged fields are
-    written only by the HTTP thread and fully populated before the volatile flag
-    is armed, so the reporter's read takes no ISR race. Builds clean (+32 B
+    purpose. Builds clean (+32 B
     OCRAM); flashed to the board as `fc674c6`. **VERIFIED LIVE carrier-less
     2026-09-01**: with the U24 USB-deauthorised (carrier dropped) and the board
     soft-rebooted so the SD config staged but never applied (`carrier` 0,
@@ -938,9 +947,52 @@ table.
     origin, where the pre-fix firmware would have answered `"default"`.
     Re-authorising the U24 returned the carrier, the staged config applied, and
     `config_generation` bumped 0 → 1 — confirming the generation token is still
-    bumped only by the audio ISR at apply. `/api/status`'s own
-    `source`/`model_origin` fields still report the applied origin only; give
-    them the same treatment if a carrier-less status read matters.
+    bumped only at the block-boundary apply.
+
+    **CORRECTION 2026-09-02 (a): `/api/status` disagreed with
+    `/api/dsp/config`.** The original fix left `/api/status`'s own
+    `source`/`model_origin` on the applied origin, so on a carrier-less board
+    the two documents reported different origins for the same model. Fixed:
+    `http_status_json()` now makes the same staged-aware selection, and carries
+    `dsp_config_pending` (0/1) so a reader can tell a staged answer from an
+    applied one. The `dsp_` prefix is required on that route — its existing
+    `config_valid` / `config_error` keys describe the public `aius.json` config,
+    not the DSP model.
+
+    **CORRECTION 2026-09-02 (b): the "would race the audio ISR" rationale was
+    wrong.** `config_generation`'s other writer is
+    `AiusAudioProcessor::enqueue()`, which runs at the runtime AUDIO
+    checkpoint; checkpoints never overlap, so an HTTP-thread write at commit
+    time would not race it. The real reason `config_generation` stays the
+    applied value is semantic: it is the optimistic-concurrency token a PUT's
+    `base_generation` is checked against, and that check means "the model you
+    edited is the model that is running". Bumping it at commit would make one
+    counter mean two things. The source comment carried the same wrong claim
+    and has been corrected with it.
+
+    **CORRECTION 2026-09-02 (c): carrier-less PUTs had no concurrency
+    signal.** With nothing ever applying, `config_generation` stays 0 across
+    successive PUTs, so `base_generation` cannot distinguish a client's second
+    PUT from its first. Added `g_staged_generation`, incremented by every
+    stager (an accepted PUT, an SD load) at the moment it writes
+    `g_pending_dsp_model`, and reported as `staged_generation` on
+    `/api/dsp/config` and `dsp_staged_generation` on `/api/status`.
+    Deliberately a SEPARATE counter rather than a change to
+    `config_generation`: applied-generation semantics stay intact and
+    `base_generation` still means what it meant. `/api/dsp/config` also gained
+    `config_pending` for the same staged-vs-applied disambiguation the status
+    route needs.
+
+    **Proof owed, stated honestly: none of (a)–(c) has a host test.** All three
+    live in `firmware/src/optical_main.cpp`, and no native suite compiles that
+    file — `optical-app` and `runtime-target` drive the dispatcher against
+    *fake* application callbacks, and `optical-cutover` reads the file as text.
+    The only automated proof today is the `teensy41-optical` cross-build
+    (`[SUCCESS]`, 2026-09-02). Owed: a live carrier-less two-PUT sequence
+    showing `staged_generation` advancing 1 → 2 with `config_generation` pinned
+    at 0 and both documents agreeing on `source`/`model_origin`. Closing the
+    structural gap (a host-visible seam for these serializers) is a larger
+    change than this correction and is not attempted here.
 23. **`AIUS_NET_DHCP_DEADLINE_MS` at 9,000 ms bought one mode, not headroom.** The
     DHCP window is quantised by `FNET_CFG_DHCP_CLN_RESPONSE_TIMEOUT_MS`:
     **4,003–4,005 ms on 27 of 29 boots, 8,005 ms on 2** — one lost `DISCOVER` and its
@@ -1912,13 +1964,44 @@ table.
     a single mid-response loss cannot be recovered before it fires.
 
 39. ~~**The upgrade page reads six `/api/ota` fields the firmware does not emit,
-    and its regression pins the stale contract.**~~ **FIXED 2026-09-01.**
-    `firmware/sd/www/upgrade.js` now reads the real `OtaStatus` shape and
-    `test/sd-editor/upgrade.test.js`'s device stub emits it, so the fixture no
-    longer encodes the bug; 50/50 vitest green, and the corrected field set was
-    checked against a live `GET /api/ota` off the deployed board (`3824579`).
-    It was seven reads, not six — the page also read a top-level `test_key` the
-    firmware nests under `key.test_key`. The `fault` field needed one extra
+    and its regression pins the stale contract.**~~ **FIXED IN TWO PASSES —
+    names 2026-09-01, semantics 2026-09-02.**
+
+    **The 2026-09-01 fix was a RENAME.** It made the page read the field names
+    `ota_status_document()` publishes, and re-pinned the stub to them; 50/50
+    vitest green, the corrected field set checked against a live `GET /api/ota`
+    off the deployed board (`3824579`). What it did not do was ask what the
+    renamed numbers MEAN, so the page went on reading correct fields with the
+    wrong units.
+
+    **The 2026-09-02 fix is the semantic half. THE RULE, once:
+    `/api/ota`'s three byte counts are CONTAINER-ABSOLUTE** — once a container
+    is offered, `app_ota_status()` publishes `total_bytes = image_length + 256`,
+    `staged_bytes = staged_length + 256` and `next_offset = the session's next
+    payload offset + 256` (`firmware/src/optical_main.cpp:4706-4709`), all three
+    reading 0 before an offer. That is the same coordinate `Content-Range` uses,
+    which is the point: one number resumes a transfer whichever half it stopped
+    in. Two page bugs followed from reading them as payload counts:
+
+    - **Resume was dead.** `resumeOffset()` required
+      `total_bytes === header.imageLength`, which no real device can satisfy, so
+      every re-upload silently restarted at offset 0 while the log told the
+      operator it would resume from the device's `next_offset`. Now compared
+      against `containerLength`.
+    - **The staged figure read 256 bytes high** wherever it was shown as a
+      payload size. One `payloadBytes()` helper subtracts the header, once.
+
+    **The fixture was the reason the rename shipped incomplete**, and it is
+    fixed at the root cause rather than at the symptom: `upgrade.test.js`'s stub
+    now derives `total_bytes` / `staged_bytes` / `next_offset` from the
+    firmware's own formula over payload counts, with the `optical_main.cpp`
+    citation beside it, so it states the FIRMWARE's shape rather than the page's
+    expectation. A stub written to agree with the page cannot catch the page
+    disagreeing with the device — that co-drift is this defect, twice.
+
+    Original 2026-09-01 note, kept: it was seven reads, not six — the page also
+    read a top-level `test_key` the firmware nests under `key.test_key`.
+    The `fault` field needed one extra
     touch beyond the rename: the route spells no-fault as the literal `"none"`
     (kOtaVerdicts row 0), so `faultName()` now maps `"none"` to empty like `ok`.
     Original entry, found 2026-08-05 while rendering the UI screenshots; static,
@@ -1944,6 +2027,10 @@ table.
       fixture encodes the bug. Fixing this means changing the page's reads AND
       re-pinning that fixture to `OtaStatus`, otherwise the suite fails on the
       corrected page.
+    - **And no runner ran it either** (found 2026-09-02): `test/sd-editor/` was
+      collected by nothing — the root `vitest.config.js` included only
+      `src/**/*.test.js`, and `CONTRIBUTING.md` pointed at a path that does not
+      exist. Both fixed; the suite is now in the root include.
 
 40. **`/api/status` emits no `target_id`, so the upgrade page never learns the
     device identity in the idle state.** Found 2026-09-01 while fixing defect 39.
@@ -1978,9 +2065,16 @@ table.
     stall witness fires at a 100 µs threshold and did not) — not the 1.79 s
     FlexSPI2 bus-hold lineage. Root cause is therefore in the FNET send/RTO path
     (a lost segment whose retransmissions do not recover within 5 s), not audio
-    starvation. Not a regression: a clean drop the client retries through, and
-    the acceptance runner now retries transient drops for exactly this reason
-    (`aius_rate_bench.py` `HttpTransport.get_json`).
+    starvation. **No evidence artifact is retained**: both watches ran ad hoc
+    against the live board on 2026-09-01 with output in session scratch, which
+    is GC'd after 7 days, so every count above (869, 4,889 polls; 4 and 23
+    drops; `stall_diag.events` flat at 2) is as the poller reported it at the
+    time and is not re-derivable from this repository. Not a regression: a clean
+    drop the client retries through, and the acceptance runner retries transient
+    drops for exactly this reason (`aius_rate_bench.py`
+    `HttpTransport.get_json`, five attempts over a 0.25 / 1 / 2 / 3 s backoff so
+    the retry budget outlasts a 5 s stall instead of expiring inside it, and
+    each sample records the `attempts` it cost).
 
 #### Decisions taken, so they are not re-opened
 

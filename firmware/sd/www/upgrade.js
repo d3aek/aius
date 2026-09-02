@@ -42,8 +42,19 @@
  *                          shape (aius_optical_app.cpp) -- the OtaStatus schema,
  *                          not a flat record. `state` is the AiusOtaState name;
  *                          `fault` is a kOtaVerdicts token, "none" when there is
- *                          no fault and an `ota_`-prefixed word otherwise, and a
- *                          numeric encoding is decoded through the same enums.
+ *                          no fault and an `ota_`-prefixed word otherwise.
+ *                          ITS THREE BYTE COUNTS ARE CONTAINER-ABSOLUTE, the
+ *                          same coordinate PUT /api/ota/image uses:
+ *                          app_ota_status() publishes total_bytes =
+ *                          image_length + 256, staged_bytes = staged_length +
+ *                          256 and next_offset = the session's next payload
+ *                          offset + 256 once a container is offered
+ *                          (optical_main.cpp:4706-4709), and all three read 0
+ *                          before an offer. So `total_bytes` is the CONTAINER
+ *                          length, never the payload length, and next_offset is
+ *                          a file offset a resuming client can seek to
+ *                          unchanged. Anything this page shows as a payload
+ *                          size subtracts the header exactly once.
  *   PUT  /api/ota/image    one Content-Range chunk per request, answering
  *                          {"ok":true,"next_offset":N} exactly as the replay
  *                          upload does. OFFSETS ARE CONTAINER-ABSOLUTE: the
@@ -73,6 +84,17 @@
 
   const OTA_POLL_MS = 1000; /* the OTA record is an epoch-latched snapshot */
   const CHUNK_BYTES = 4096; /* AIUS_OTA_MAX_CHUNK_BYTES, one flash sector */
+
+  /* 503 sd_busy is the device's RETRYABLE refusal, not a stopped run: a
+   * mid-stream chunk legitimately collides with a root SD job holding the
+   * volume, and the one-epoch ota_pending window after every accepted chunk
+   * answers the same way (aius_optical_app.cpp:1712-1730 -- "a plain retry
+   * resolves"). Bounded, because a card that is busy for over a second is a
+   * different problem and the operator should see it. */
+  const SD_BUSY_RETRIES = 5;
+  const SD_BUSY_RETRY_MS = 250;
+
+  const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
   /* ---- the published container layout (aius_ota.h) ------------------------ */
 
@@ -108,8 +130,24 @@
    * an unknown one is refused rather than read as a scheme from the future. */
   const SCHEME_NAMES = Object.freeze({ 0: 'none', 1: 'ed25519' });
 
-  /* AiusOtaState and AiusOtaStatus, in declaration order, so a numeric wire
-   * encoding decodes to the same word the string encoding uses. */
+  /* reserved0's LOW byte is the image's linked-for slot (AIUS_OTA_SLOT_*,
+   * aius_ota.c:223-231): 0 = untagged, the single-image and slot-agnostic
+   * posture; 1 = slot A; 2 = slot B. It is inside the authenticated prefix, so
+   * a signed tag cannot be rewritten. The HIGH byte stays reserved-must-be-zero.
+   * The device compares this against its own expected slot at offer time
+   * (aius_ota.c:433) and answers UNSUPPORTED on a mismatch, so the page reports
+   * the tag rather than judging it -- only the device knows which it wants. */
+  const SLOT_B = 2; /* AIUS_OTA_SLOT_B, the top of the tag domain */
+  const SLOT_NAMES = Object.freeze({ 0: 'untagged (slot-agnostic)', 1: 'slot A', 2: 'slot B' });
+
+  /* AiusOtaState, in declaration order, so a numeric wire encoding decodes to
+   * the same word the string encoding uses. There is deliberately no companion
+   * fault table: `fault` is a kOtaVerdicts TOKEN on every route
+   * (aius_optical_app.cpp:1457-1469 pairs each AiusOpticalAppOtaResult with its
+   * HTTP status and its wire word, and ota_status_document() prints the word),
+   * so a numeric fault never reaches this page. The table that used to sit here
+   * decoded AiusOtaStatus -- the core library's enum, not the wire's -- and so
+   * would have named the wrong fault for every index had anything ever hit it. */
   const STATE_NAMES = Object.freeze([
     'idle',
     'offered',
@@ -120,27 +158,12 @@
     'activation_requested',
     'failed',
   ]);
-  const STATUS_NAMES = Object.freeze([
-    'ok',
-    'invalid_arg',
-    'disarmed',
-    'state',
-    'malformed',
-    'unsupported',
-    'range',
-    'overflow',
-    'digest',
-    'signature',
-    'corrupt',
-    'no_space',
-    /* Appended by the activation sequencer, never renumbered: the staging
-     * record persists fail_reason as a byte, so a renumber would re-read every
-     * record already written as a different reason. */
-    'geometry',
-    'primitive',
-    'verify',
-    'interrupted',
-  ]);
+
+  /* One wire byte count, converted once: every /api/ota byte field is
+   * container-absolute (header + payload) once a container is offered, and 0
+   * before one is, so the payload figure is the count minus the header and
+   * never negative. Nothing else on this page subtracts HEADER_BYTES. */
+  const payloadBytes = (containerAbsolute) => Math.max(0, (Number(containerAbsolute) || 0) - HEADER_BYTES);
 
   /* ---- the step log's vocabulary ------------------------------------------
    * The whole narration, in the order the device performs it. A step is
@@ -209,14 +232,12 @@
     return true;
   }
 
-  /* A wire fault name, whichever encoding the route used: the AiusOtaStatus
-   * word, its numeric value, or an `ota_`-prefixed error token. The OTA poll's
-   * `fault` field spells no-fault as the literal "none" (kOtaVerdicts row 0),
-   * which reads the same as an empty field -- no fault to name. */
+  /* A wire fault name: the `ota_`-prefixed kOtaVerdicts token, or one of the
+   * SD vocabulary's own tokens, stripped to the bare word the log prints. The
+   * OTA poll's `fault` field spells no-fault as the literal "none"
+   * (kOtaVerdicts row 0), which reads the same as an empty field -- no fault to
+   * name. Strings only: see STATE_NAMES on why no numeric fault exists. */
   function faultName(value) {
-    if (typeof value === 'number' && Number.isInteger(value)) {
-      return STATUS_NAMES[value] || `status ${value}`;
-    }
     const text = String(value || '').trim();
     if (text === '' || text === 'none') return '';
     return text.startsWith('ota_') ? text.slice(4) : text;
@@ -241,7 +262,9 @@
   }
 
   /* The refusals the OTA routes and the SD staging path can emit, said in
-   * operator terms. Anything else falls back to the shared HTTP description
+   * operator terms. One row per kOtaVerdicts token
+   * (aius_optical_app.cpp:1457-1469) plus the dispatcher's own request-shape
+   * and SD tokens; anything else falls back to the shared HTTP description
    * rather than being guessed at. */
   function describeOtaFailure(result) {
     const token = faultName(result.body && result.body.error ? result.body.error : '');
@@ -257,8 +280,23 @@
     if (token === 'corrupt') return 'the persisted staging record failed its own CRC';
     if (token === 'no_space') return 'the device has no room for the staging record';
     if (token === 'invalid_arg') return 'the device rejected the request arguments';
+    /* 507 STORAGE: the genuine staging-medium refusal, as opposed to the
+     * transient 503 sd_busy this page retries through. */
+    if (token === 'storage') return 'the device could not write the staging record to the card';
+    if (token === 'activation_disabled') {
+      return 'activation is disabled on this device; POST /api/ota/enable-activation to set the runtime latch';
+    }
+    if (token === 'self_test_failed') return 'the device flash self-test failed; nothing was programmed';
+    /* The dispatcher's own request-shape refusals, ahead of any verdict. */
+    if (token === 'chunk') return `that chunk is larger than the ${CHUNK_BYTES} bytes the device accepts per request`;
+    if (token === 'header') return 'the chunk at offset 0 must carry the whole 256-byte container header';
+    if (token === 'status') return 'the device could not read its own OTA status';
     if (token === 'sd_auth') return 'the SD auth token was rejected';
-    if (token === 'sd_busy') return 'the SD volume is busy (replay refill or upload in flight); retry shortly';
+    /* An upload has already spent its bounded retry by the time this prints;
+     * any other step has not, so it is worth pressing again. */
+    if (token === 'sd_busy') {
+      return `the SD volume is busy (replay refill or upload in flight); an upload retries ${SD_BUSY_RETRIES} times on its own, any other step is worth retrying by hand`;
+    }
     if (token === 'sd_capacity') return 'the card is full';
     if (token === 'sd_unavailable') return 'no SD card is mounted';
     return describe(result);
@@ -357,7 +395,16 @@
     if (scheme === 0) return refuse('signature_scheme', 'the container is unsigned (signature scheme 0)');
     if (!SCHEME_NAMES[scheme]) return refuse('signature_scheme', `unknown signature scheme ${scheme}`);
 
-    if (view.getUint16(OFFSET.RESERVED0, true) !== 0 || !isZeroBlock(bytes.subarray(OFFSET.RESERVED1, OFFSET.RESERVED1 + RESERVED1_BYTES))) {
+    /* reserved0 is NOT reserved-must-be-zero: its low byte is the slot tag
+     * (aius_ota.c:229-233), so refusing a non-zero word here would refuse every
+     * slot-tagged container the legacy per-slot rule produces. Same three rules
+     * the device applies, in its order: the tag's domain, then the high byte,
+     * then reserved1. */
+    const slotId = bytes[OFFSET.RESERVED0];
+    if (slotId > SLOT_B) {
+      return refuse('slot_id', `container slot tag ${slotId}; the domain is 0 (untagged), 1 (slot A), 2 (slot B)`);
+    }
+    if (bytes[OFFSET.RESERVED0 + 1] !== 0 || !isZeroBlock(bytes.subarray(OFFSET.RESERVED1, OFFSET.RESERVED1 + RESERVED1_BYTES))) {
       return refuse('reserved', 'a reserved field is non-zero');
     }
 
@@ -404,6 +451,8 @@
         containerLength,
         signatureScheme: scheme,
         signatureSchemeName: SCHEME_NAMES[scheme],
+        slotId,
+        slotName: SLOT_NAMES[slotId],
         buildUtc,
         targetId: target.value,
         buildRevision: revision.value,
@@ -421,7 +470,7 @@
       $(id).textContent = text;
     };
     if (!header) {
-      for (const id of ['hdr-target', 'hdr-revision', 'hdr-built', 'hdr-image-length', 'hdr-container', 'hdr-scheme', 'hdr-digest', 'hdr-signature', 'hdr-crc']) {
+      for (const id of ['hdr-target', 'hdr-revision', 'hdr-built', 'hdr-image-length', 'hdr-container', 'hdr-scheme', 'hdr-slot', 'hdr-digest', 'hdr-signature', 'hdr-crc']) {
         put(id, '--');
       }
       return;
@@ -432,6 +481,7 @@
     put('hdr-image-length', `${formatBytes(header.imageLength)} (${header.imageLength} bytes)`);
     put('hdr-container', `${formatBytes(header.containerLength)} (${header.containerLength} bytes)`);
     put('hdr-scheme', `${header.signatureSchemeName} (${header.signatureScheme})`);
+    put('hdr-slot', `${header.slotName} (${header.slotId})`);
     put('hdr-digest', header.payloadDigestHex);
     put('hdr-signature', header.signatureHex);
     put('hdr-crc', `0x${header.headerCrc32.toString(16).padStart(8, '0')}`);
@@ -504,7 +554,7 @@
   }
 
   /* The final entry: rendered as soon as an image is armed, and disabled until
-   * /api/ota says the activation slice's verb exists on this build. */
+   * /api/ota says this device's runtime activation latch is set. */
   function ensureActivateStep() {
     if (state.steps.has('activate')) return state.steps.get('activate');
     const entry = logStep('activate', STEP_TEXT.activate);
@@ -532,9 +582,15 @@
     const action = entry.querySelector('.ota-log__action');
     const caption = entry.querySelector('.ota-log__caption');
     action.disabled = !available;
+    /* activation_available is the device's RUNTIME LATCH, not a missing
+     * feature: it is false at every boot and true only after an operator sends
+     * POST /api/ota/enable-activation following the bench recovery proof
+     * (aius_optical_app.cpp:1567-1571, optical_main.cpp:4727-4730). So the
+     * caption tells the operator the act that enables this button, rather than
+     * describing an unshipped slice. */
     caption.textContent = available
       ? 'The device will program flash and reboot into the new image.'
-      : 'Activation is pending: the activation slice ships this verb, and /api/ota reports activation_available false.';
+      : 'Activation is disabled on this device: /api/ota reports activation_available false. Send POST /api/ota/enable-activation (with the SD auth token) to set the runtime latch, then this step enables.';
   }
 
   /* ---- /api/ota poll ------------------------------------------------------- */
@@ -594,10 +650,14 @@
     put('ota-state', name);
     put('ota-latch', ota.armed === true ? 'armed' : 'disarmed');
 
-    const staged = Number(ota.staged_bytes) || 0;
-    const total = Number(ota.total_bytes) || 0;
+    /* Container-absolute in, payload out: the grid's Staged row is what the
+     * operator compares against the container's "Payload length" cell, so both
+     * counts drop the header the device counted in. Next offset stays in the
+     * device's own coordinate -- it is the number a resume seeks to. */
+    const staged = payloadBytes(ota.staged_bytes);
+    const total = payloadBytes(ota.total_bytes);
     put('ota-staged', total > 0 ? `${formatBytes(staged)} of ${formatBytes(total)}` : formatBytes(staged));
-    put('ota-next', `${Number(ota.next_offset) || 0} bytes`);
+    put('ota-next', `${Number(ota.next_offset) || 0} bytes (container-absolute)`);
 
     const fault = faultName(ota.fault);
     const verifierFault = Number(ota.verifier_fault) || 0;
@@ -610,7 +670,7 @@
     const image = ota.image || {};
     const fingerprint = typeof key.fingerprint === 'string' && key.fingerprint !== '' ? key.fingerprint : 'unreported';
     put('ota-key', key.test_key === true ? `${fingerprint} (TEST KEY)` : fingerprint);
-    put('ota-activation', ota.activation_available === true ? 'available' : 'pending activation slice');
+    put('ota-activation', ota.activation_available === true ? 'available' : 'disabled (enable-activation not sent)');
     if (typeof image.target_id === 'string' && image.target_id !== '' && state.deviceTargetId === '') {
       state.deviceTargetId = image.target_id;
     }
@@ -699,7 +759,7 @@
       'ok',
       `Selected ${file.name}: ${parsed.header.buildRevision} for ${parsed.header.targetId}, ${formatBytes(
         parsed.header.imageLength,
-      )} payload, ${parsed.header.signatureSchemeName} signature.`,
+      )} payload, ${parsed.header.signatureSchemeName} signature, ${parsed.header.slotName}.`,
     );
     setCardStatus('log', 'Ready to upload.');
     renderControls();
@@ -712,12 +772,18 @@
    * only for THIS container: a next_offset belonging to a different image
    * would resume a digest nobody can satisfy, so a mismatch restarts at 0 and
    * the operator's escape hatch for a device mid-staging something else is
-   * Abort. */
+   * Abort.
+   *
+   * THE "SAME CONTAINER" TEST IS AGAINST containerLength, NOT imageLength.
+   * total_bytes is image_length + AIUS_OTA_HEADER_BYTES
+   * (optical_main.cpp:4706-4709); comparing it to the payload length made the
+   * test fail for every real device, so every re-run silently restarted at 0
+   * while the log promised a resume (defect 39's semantic half). */
   function resumeOffset(ota, header) {
     if (!ota) return 0;
     const name = stateName(ota.state);
     if (name !== 'offered' && name !== 'staging') return 0;
-    if (Number(ota.total_bytes) !== header.imageLength) return 0;
+    if (Number(ota.total_bytes) !== header.containerLength) return 0;
     const next = Number(ota.next_offset) || 0;
     if (!Number.isFinite(next) || next < HEADER_BYTES) return 0;
     if (next >= header.containerLength) return 0;
@@ -767,6 +833,41 @@
     }
   }
 
+  /* Is this refusal the device's "come back in a moment"? Exactly one shape
+   * qualifies: 503 with the sd_busy token. A 503 carrying any other token (an
+   * ota_status read failure, say) is a stopped run like every other refusal --
+   * retrying a fault the device latched only spends chunks. */
+  const isTransientBusy = (result) =>
+    result.status === 503 && faultName(result.body && result.body.error ? result.body.error : '') === 'sd_busy';
+
+  /* One chunk, with the bounded sd_busy retry around it. Always answers a
+   * result -- the last one seen -- so the caller's refusal handling is
+   * unchanged and a run that exhausts the retries stops exactly where it did
+   * before, at the SAME offset (nothing was absorbed, so the device's
+   * next_offset is still the one the loop is standing on). */
+  async function putChunk(offset, end, total, chunk) {
+    let result = null;
+    for (let attempt = 0; attempt <= SD_BUSY_RETRIES; attempt++) {
+      if (attempt > 0) {
+        updateStep(
+          'upload',
+          `Device busy at ${formatBytes(offset)} of ${formatBytes(total)}; retry ${attempt} of ${SD_BUSY_RETRIES}`,
+        );
+        await sleep(SD_BUSY_RETRY_MS);
+      }
+      result = await request('/api/ota/image', {
+        method: 'PUT',
+        headers: mutationHeaders({
+          'Content-Type': 'application/octet-stream',
+          'Content-Range': `bytes ${offset}-${end - 1}/${total}`,
+        }),
+        body: chunk,
+      });
+      if (result.ok || !isTransientBusy(result)) return result;
+    }
+    return result;
+  }
+
   async function uploadContainer(ota) {
     const header = state.header;
     const file = state.file;
@@ -795,14 +896,7 @@
         setPill($('log-pill'), 'error');
         return false;
       }
-      const result = await request('/api/ota/image', {
-        method: 'PUT',
-        headers: mutationHeaders({
-          'Content-Type': 'application/octet-stream',
-          'Content-Range': `bytes ${offset}-${end - 1}/${total}`,
-        }),
-        body: chunk,
-      });
+      const result = await putChunk(offset, end, total, chunk);
       if (!result.ok) {
         settleStep(
           'upload',
@@ -837,7 +931,7 @@
       setPill($('log-pill'), 'error');
       return false;
     }
-    settleStep('staged', 'ok', `Staged ${formatBytes(Number(ota.staged_bytes) || 0)}; the device holds the whole payload.`);
+    settleStep('staged', 'ok', `Staged ${formatBytes(payloadBytes(ota.staged_bytes))}; the device holds the whole payload.`);
     return true;
   }
 

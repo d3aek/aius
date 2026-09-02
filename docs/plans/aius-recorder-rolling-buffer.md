@@ -3,9 +3,9 @@ title: Aius flight recorder — debounce + rolling multi-slot buffer
 type: plans
 scope: component
 component: aius
-status: shipped
+status: in-progress
 tags: [aius, firmware, audio, recorder, psram, ota]
-updated: 2026-09-01
+updated: 2026-09-02
 ---
 
 # Aius flight recorder — debounce + rolling multi-slot buffer
@@ -125,10 +125,38 @@ overlapping ones.
   path, re-targeted at a different base pointer. This keeps the reinit a
   single epoch-side writer, consistent with the header's existing "ONE
   WRITER PER TRANSITION" discipline; the producer never detects
-  DRAINING/FROZEN itself or reaches into the next slot's state. The active-
-  slot indicator the producer reads is one `volatile` word, written only
-  from this epoch-side reinit — the same shape as today's single-writer
-  `state` field, just one level up.
+  DRAINING/FROZEN itself or reaches into the next slot's state. The
+  active-slot indicator the producer reads is a plain `uint32_t`
+  (`AiusRecorderBank.active`), written only from this epoch-side advance:
+  both the producer tap (the AUDIO checkpoint) and the advance (the
+  epoch/replay checkpoint) are main-loop checkpoints, not interrupt
+  contexts, so the single-writer discipline is what makes it safe and no
+  `volatile` or atomic is needed. (An earlier draft of this bullet claimed
+  the field was `volatile`; it never was.)
+- **The incoming slot inherits the outgoing slot's epoch-side edge
+  history.** The bank forwards each epoch to the active slot ONLY, so a
+  re-armed slot would otherwise edge-detect the carrier against its own
+  stale past: a slot last active while locked keeps `carrier_prev == 1` and
+  fires a spurious `CARRIER_LOSS` on its first epoch under a carrier that
+  has been gone for seconds, while a virgin slot (`carrier_prev == 0`)
+  silently drops a real falling edge on that same first epoch.
+  `aius_recorder_inherit_epoch_state()` copies the three epoch-owned words
+  (`carrier_prev`, `gate_open`, `underrun_base_epoch`) at every advance,
+  recycle included; `reset_capture()` deliberately leaves them alone, since
+  a thaw in place has not moved the recorder to a different point in the
+  stream.
+- **The underrun trigger is blind for the settle window after every
+  advance, by design.** A re-armed slot starts with `settled_blocks == 0`,
+  so it cannot arm the underrun trigger until it has staged
+  `AIUS_RECORDER_SETTLE_BLOCKS` consecutive clean blocks (~85 ms at the
+  production block size, longer on a dirty stream). That is the same
+  debounce a boot or a manual thaw gets, for the same reason — an underrun
+  seen in the first blocks after a capture re-arms says more about the
+  transition than about the stream — and the cost is real: a second burst
+  arriving inside that window is not captured by the incoming slot (the
+  outgoing slot's capture already holds the first). Named here and in
+  `aius_recorder_bank.h`, and pinned by
+  `test_bank_underrun_blind_window_after_advance`.
 - **A slot cannot recycle while an HTTP read against its current generation
   is outstanding.** `aius_recorder_read()` today returns a raw pointer into
   ring PSRAM, documented stable "for as long as the state stays FROZEN...
@@ -141,12 +169,29 @@ overlapping ones.
   where the recorder matters most. Fix: a per-slot `reads_in_flight` count,
   incremented when `AIUS_HTTP_APP_IMMEDIATE` borrows the pointer and
   decremented when that response completes; the epoch-side reinit of a
-  FROZEN slot with a nonzero count defers one epoch at a time (bounded,
-  same shape as the existing reclaim-epochs wait) rather than recycling out
-  from under a live response. This is new state this plan owns — not
-  optional, and not covered by the generation check alone (which stops a
-  *new* request from reading stale data but does nothing for a chunk
-  already in flight).
+  FROZEN slot with a nonzero count defers one epoch at a time rather than
+  recycling out from under a live response. This is new state this plan owns
+  — not optional, and not covered by the generation check alone (which stops
+  a *new* request from reading stale data but does nothing for a chunk
+  already in flight). **The deferral is bounded, and the bound is the
+  existing reclaim-epochs window.** After `AIUS_RECORDER_RECLAIM_EPOCHS`
+  deferred drains the advance skips *past* the leased slot to the first
+  candidate that is not leased — the leased capture stays intact for its
+  reader and recording resumes one slot further on — and only when every
+  candidate is leased does it keep deferring. `deferred_epochs` (cumulative
+  deferred drains) and `lease_skips` are bank counters for the status
+  document, so a stall is visible rather than inferred. The operator thaw
+  (`aius_recorder_bank_thaw()`) honours the same lease and refuses with
+  `AIUS_REFUSED` while the active slot is leased: it recycles exactly the
+  bytes the deferral protects.
+- **A config a slot refuses mid-capture is replayed, not dropped.**
+  `aius_recorder_set_config()` refuses in POSTROLL/DRAINING by design ("a
+  capture in flight keeps its config"), which in a bank means an operator
+  reconfigure silently fails to reach whichever slot happened to be
+  capturing, and that slot then re-arms with the *previous* settings. The
+  bank remembers the refused config per slot and applies it when that slot
+  next thaws or is recycled; `config_pending` reports the in-between state
+  for the status document.
 - **Recycling is counted honestly as recycling, not as "unpulled."**
   Nothing marks a generation as having been read — `aius_recorder_read()`
   is `const` and non-mutating, deliberately (the read-lease counter above
@@ -163,11 +208,16 @@ overlapping ones.
   ceiling.** A postroll longer than the slot's own capacity is nonsensical
   once slots shrink from ~21.8 s to ~5.46 s; `aius_recorder_set_config`
   gains a slot-capacity-aware clamp alongside the existing
-  `AIUS_RECORDER_POSTROLL_MAX_BLOCKS` one.
-- **`park()`/`unpark()` operate on the whole bank.** A parked bank forgets
-  every slot's FROZEN metadata on the next init (the underlying PSRAM bytes
-  are gone once OTA staging has written over pad-1 — no different from
-  today's single-ring park contract, just applied N times over). The
+  `AIUS_RECORDER_POSTROLL_MAX_BLOCKS` one. The clamp applies to the
+  **default** post-roll installed at init as well, not only to an operator's
+  value — 188 blocks is as capable of overrunning a short slot as 500 is,
+  and nothing would otherwise correct it until someone called set_config.
+- **`park()` operates on the whole bank; there is no `unpark()`.** A parked
+  bank forgets every slot's FROZEN metadata on the next init (the underlying
+  PSRAM bytes are gone once OTA staging has written over pad-1 — no
+  different from today's single-ring park contract, just applied N times
+  over). Park is ONE-WAY by contract: a reset, and the `bank_init()` that
+  runs at boot, is the only way back to RECORDING. The
   trickier case or a new one: park() firing while the active slot is
   mid-POSTROLL or mid-DRAINING, not just RECORDING — today's contract
   already covers this (`park()` is any-state → ABSENT), Phase B's proof
@@ -200,24 +250,33 @@ overlapping ones.
   already resets `baseline_sync`; gate the epoch-fallback underrun branch
   on `settled_blocks >= AIUS_RECORDER_SETTLE_BLOCKS`.
   `aius_recorder_producer_block()` — gate the block-evaluable underrun
-  branch the same way, and increment `settled_blocks` (capped) on any
-  block that evaluates with no trigger firing while the gate is open.
-  `reset_capture()` — zero `settled_blocks` on init/thaw, same as
-  `baseline_sync`. This is a two-writer field (producer increments, epoch
-  resets on the edge) — same "KNOWN, ACCEPTED interleaving" shape the
-  header already documents for `freeze_token`/`suppressed_triggers`: a
-  collision costs at most one block's delay in arming, never a corrupt
-  transition, because the state word each writer touches has exactly one
-  writer per edge.
+  branch the same way, and advance `settled_blocks` (capped) on a CLEAN
+  block under an open gate: one that fired no trigger, carried no underrun
+  delta of its own, and actually reached staging. A dirty block (its own
+  underrun delta, or a gap) resets the window to zero — the contract is N
+  *consecutive* clean blocks, so a stream that is stalling the whole time
+  never settles. `reset_capture()` — zero `settled_blocks` on init/thaw,
+  same as `baseline_sync`. This is a two-writer field (producer advances and
+  resets on the block, epoch resets on the gate edge) — same "KNOWN,
+  ACCEPTED interleaving" shape the header already documents for
+  `freeze_token`/`suppressed_triggers`, and asymmetric: a lost producer
+  increment costs one block's delay in arming, while a lost *epoch reset*
+  leaves the pre-edge count standing and can arm up to N-1 blocks EARLY — a
+  spurious trigger, not a delay. Accepted because both writers run from
+  main-loop checkpoints on this firmware, never an interrupt, so the
+  interleaving is theoretical.
 - targeted-proof: new host rows in `firmware/test/recorder/test_recorder.c`
   — underrun before N clean blocks does not trigger, on both paths, even
   when the gate has been open for a while first (the case the edge-only
   design missed): `test_underrun_suppressed_before_settled` and
-  `test_underrun_epoch_fallback_suppressed_before_settled`, new. On-device
-  (bench, not listening-room): `/api/recorder` reports `trigger.which: none`
-  through the bring-up window instead of freezing at ~3 s — **still owed**,
-  no device touched yet per this plan's no-implementation-before-Phase-D
-  gate on the flash step specifically (host-only work is unblocked).
+  `test_underrun_epoch_fallback_suppressed_before_settled`, new; plus
+  `test_settle_requires_consecutive_clean_blocks` (added 2026-09-02 with the
+  clean-block fix below). On-device (bench, not listening-room): `/api/recorder`
+  reports no bring-up freeze at ~3 s — **delivered 2026-09-01** as part of
+  the Phase C/D bench run, not as a separate Phase A exercise: the recorder
+  froze at `at_block 416` rather than `at_block 1` (see Phase C's
+  bench-proven note). The evidence is that run's own observation recorded in
+  this plan; no separate artifact was retained.
 - unit: parent-only
 - **shipped 2026-08-28, host-only:** implemented as designed above.
   Correction against the pre-implementation assumption in the previous
@@ -230,10 +289,26 @@ overlapping ones.
   assumed. `test_underrun_epoch_fallback_and_reclaim`'s small 4-slot test
   fixture also needed draining inside the new settle loop (unrelated to
   the debounce logic itself): without it, the fixture's own staging
-  capacity gaps most of an 8-block burst, which the settle counter doesn't
-  care about (it counts evaluated blocks, not staged ones) but the test's
-  `end_frame` assertion does. Native `recorder` suite green, 27 rows
-  (23 existing + 2 new), ASan/UBSan, `-Werror`.
+  capacity gaps most of an 8-block burst, which the settle counter did not
+  care about at the time (it counted evaluated blocks, not staged ones) but
+  the test's `end_frame` assertion does. Native `recorder` suite green, 25
+  rows (23 existing + 2 new), ASan/UBSan, `-Werror`. (An earlier revision of
+  this bullet said 27; `test_recorder.c`'s `main()` listed 25.)
+- **Corrected 2026-09-02 (review finding).** The shipped code counted an
+  underrun-bearing or gapped block as clean, so `settled_blocks` reached the
+  threshold on a stream that was stalling continuously — the window
+  measured elapsed blocks, not clean ones, and armed the very trigger it
+  exists to hold off. The producer now advances the counter only on a block
+  with no underrun delta and no gap, and resets it on a dirty one; header,
+  this plan and the code now state the same rule. Two existing rows
+  (`test_underrun_gate_qualification`, `test_second_trigger_first_wins`)
+  needed a drain inside their settle loops, for the same fixture-capacity
+  reason `test_underrun_epoch_fallback_and_reclaim` already did — their
+  loops were gapping, which is now dirty. New row:
+  `test_settle_requires_consecutive_clean_blocks`. The two-writer note in
+  `aius_recorder.h` was also inverted (it claimed a collision costs "one
+  block's delay"; a lost epoch reset arms EARLY) and is corrected there and
+  in the seams above.
 
 ### Phase B — N-slot rolling bank at unchanged PSRAM footprint ✓ SHIPPED 2026-08-28
 
@@ -250,8 +325,10 @@ overlapping ones.
   `firmware/lib/aius_recorder/src/aius_recorder_bank.c` — rather than the
   originally-planned in-place rework of `aius_recorder.h`/`.c` themselves.
   This is a stronger form of "reused unmodified": the existing single-ring
-  core (27 host rows, Phase A's debounce included) is untouched byte-for-
-  byte, and `AiusRecorderBank` owns `N` `AiusRecorder` slot contexts plus
+  core (25 host rows at the time, Phase A's debounce included) was untouched
+  byte-for-byte — the 2026-09-02 review corrections below are the first
+  change to it since — and `AiusRecorderBank` owns `N` `AiusRecorder` slot
+  contexts plus
   the new per-slot `reads_in_flight` lease count and `slots_recycled`,
   forwarding producer/epoch/drain to `bank->slots[bank->active]` unchanged.
   The reinit-next-slot step lives in `aius_recorder_bank_drain()`, called
@@ -297,7 +374,7 @@ overlapping ones.
   capacity. **Scoped down from "re-run the 23 existing per-ring rows
   parametrized over the active slot"**: the underlying per-ring state
   machine is unmodified code reached only through an unmodified API, so its
-  27 existing host rows (Phase A included) already prove it: the deletion
+  25 existing host rows (Phase A included) already prove it: the deletion
   test says re-running them here would prove the bank's *forwarding*, which
   one lifecycle smoke test already covers, not re-prove the state machine
   itself. 12 host rows (the wiring commit added `aius_recorder_bank_thaw()`'s
@@ -318,14 +395,66 @@ overlapping ones.
   rehearsal against the bank) belonging to Phase D's bench proof, not
   here. Host-only — no device flash in this phase.
 - unit: parent-only
+- **Review corrections 2026-09-02 (host-only, no device).** A findings pass
+  over the bank turned up five real defects and one undocumented behaviour,
+  all fixed in `aius_recorder_bank.{h,c}` (plus one new core entry point) and
+  pinned by new rows in `firmware/test/recorder/test_recorder_bank.c`:
+  - **Recycled slot fired a spurious `CARRIER_LOSS`** from stale per-slot
+    epoch history, and a virgin slot dropped a real falling edge on its first
+    epoch — the Design section's inheritance bullet. New core API
+    `aius_recorder_inherit_epoch_state()`, called on every advance;
+    `test_bank_recycled_slot_inherits_carrier_state`,
+    `test_bank_advance_captures_first_epoch_carrier_edge`.
+  - **`aius_recorder_bank_thaw()` ignored the read lease** that `drain()`
+    honours, so an operator thaw could recycle a slot mid-response. It now
+    returns `AIUS_REFUSED` while the active slot is leased;
+    `test_bank_thaw_refused_while_active_slot_leased`.
+  - **The read-lease deferral was unbounded** despite the Design section
+    calling it bounded. It now skips past a leased slot after
+    `AIUS_RECORDER_RECLAIM_EPOCHS` deferred drains, and exposes
+    `aius_recorder_bank_deferred_epochs()` / `aius_recorder_bank_lease_skips()`;
+    `test_bank_lease_deferral_is_bounded`,
+    `test_bank_lease_deferral_when_every_slot_leased`.
+  - **Config skew after a recycle was silent.** A refused config is now
+    remembered per slot and applied on that slot's next thaw or recycle, with
+    `aius_recorder_bank_config_pending()` for the status document;
+    `test_bank_pending_config_applies_on_recycle`,
+    `test_bank_pending_config_applies_on_thaw`.
+  - **`bank_init()` never clamped the default post-roll** (188 blocks)
+    against slot capacity, only `set_config`'s operator value;
+    `test_bank_init_clamps_default_postroll`.
+  - **The post-advance underrun blindness window** is now a stated contract
+    in `aius_recorder_bank.h` and the Design section rather than an
+    accident; `test_bank_underrun_blind_window_after_advance`.
+  - **New for the Phase C status/data surface:**
+    `aius_recorder_bank_newest_frozen()` — `active` advances inside the same
+    drain that freezes, so "read the active slot" always lands on a RECORDING
+    one; this reports the most recently frozen slot that is still frozen,
+    falling back to the highest freeze generation once it isn't
+    (`test_bank_newest_frozen_tracks_and_falls_back`). Per-capture
+    `rate_change_frames[AIUS_RECORDER_RATE_CHANGE_MAX]` +
+    `rate_change_count` in the core snapshot, so a host can count the
+    old-rate frames a switch left behind rather than only reject the capture
+    (`test_rate_change_fiducials`).
+
+  Native `recorder` suite green — `recorder` 27 rows, `recorder-bank` 22
+  rows, `-Wall -Wextra -Werror`, ASan/UBSan, plus `test_no_extmem_heap.py`.
+  Per-slot `AiusRecorder` grew 16 bytes (the fiducial array alone);
+  `AiusRecorderBank` grew 120 bytes in total (4 × 16 for the slots, 56 for
+  the bank's own new fields) — DTCM, allocation-free, no new statics.
 
 ### Phase C — HTTP surface + egress tool for multi-slot addressing ✓ SHIPPED 2026-09-01
 
 - outcome: `GET /api/recorder` reports the bank (active slot index +
   per-slot summaries: state, trigger, generation, valid/gap counts,
   `slots_recycled`); `GET /api/recorder/data` gains a `slot` parameter
-  (default: active slot, preserving today's single-shot mental model for an
-  unmodified client), acquires that slot's read lease
+  (**default: the NEWEST FROZEN slot**, `aius_recorder_bank_newest_frozen()`,
+  409 when nothing is frozen — this preserves today's single-shot mental
+  model, "read the capture that just froze", for an unmodified client. The
+  default was originally written as "active slot" and shipped that way; that
+  is dead on arrival, because the bank advances `active` inside the same
+  drain that sets FROZEN, so an unmodified client got 409 for every fresh
+  capture. Corrected 2026-09-02), acquires that slot's read lease
   (`reads_in_flight++`) for the response's lifetime and releases it on
   completion, and still refuses a stale/evicted generation with 409;
   `firmware/tools/aius-recorder-pull.py` gains `--slot`. Swagger schema +
@@ -358,13 +487,16 @@ overlapping ones.
   since the drift gate had to actually run to verify the new schema.
   Real cross-build (`teensy41-optical`) `[SUCCESS]`; `itcm-placement` (29
   rows) and `optical-app` (35 rows, `test_recorder_routes` included) green
-  against it. `aius-recorder-pull.py`'s new `--slot` logic (default-to-
-  active, matching-slot success, mismatched-slot refusal, out-of-range
-  refusal) verified against a mocked bank response shaped exactly like the
-  C emitter's actual output — no existing test harness to extend, so this
-  was direct functional verification, not a committed regression (the
-  puller has no prior test coverage either). Host/bench-only — no device
-  flash.
+  against it. `aius-recorder-pull.py`'s `--slot` logic was originally
+  verified only by hand, against a mocked bank response shaped like the C
+  emitter's output, because no harness existed to extend. **Both halves of
+  that sentence are now stale (corrected 2026-09-02):** the tool defaults to
+  the **newest frozen** slot, not the active one — it reads the device's own
+  `newest_frozen_slot`, scans `slots[]` for the highest `freeze_generation`
+  against pre-`newest_frozen_slot` firmware, and only falls back to
+  `active_slot` when nothing is frozen — and it now has committed coverage,
+  `firmware/test/rate-runner/test_recorder_pull.py` (18 rows). Host/bench-only
+  — no device flash.
 - **Shipped host-only (2026-09-01):** the `GET /api/recorder/data` `slot`
   parameter through `aius_http.c` / `aius_optical_app.{h,cpp}` /
   `optical_main.cpp` (default = active slot, response byte-identical);
@@ -379,7 +511,78 @@ overlapping ones.
   slot forever once the ring wrapped onto it; the `sd_settle` release fixes
   it and matches this plan's "release on completion" contract. Host proof:
   `http`, `http-transaction` (43 rows), `optical-app` (37 rows), `recorder`
-  (27+12), `runtime-target` green; `teensy41-optical` cross-build green.
+  (27+22), `runtime-target` green; `teensy41-optical` cross-build green.
+- **Review corrections 2026-09-02 (host-only, no device).** A second findings
+  pass over the shipped Phase-C diff turned up two more HIGH defects in the
+  HTTP surface itself, plus the status document's missing observables:
+  - **The read lease leaked permanently on a network teardown mid-stream.**
+    `aius_runtime_network_http.cpp`'s `http_init()` handles
+    `AIUS_NET_ACTION_TEARDOWN` by calling `aius_http_transaction_init()`,
+    which `memset`s `sd_settle` **without firing it** — only
+    `reset_client`/`restart_idle` fire it, and a teardown reaches neither.
+    `reads_in_flight[slot]` then stayed 1 for the rest of the boot and the
+    bank deferred forever once its round-robin reached that slot: recording
+    stopped until reboot. So "releasing exactly once at send-completion /
+    recycle / abort" above was **incomplete — teardown is a fourth terminal**.
+    Fixed both halves: new `aius_http_transaction_discard()` fires an armed
+    hook uncommitted and is called by `http_init()` *before* the re-init
+    (refusing a not-yet-`valid` transaction, so the construction-time call is
+    a no-op); and `dispatch_recorder()` now releases any still-active lease
+    before acquiring a new one, counting it in
+    `AiusOpticalAppDispatcher::recorder_lease_leaks` — a diagnostic for a path
+    that should not exist, not a supported mode.
+  - **The "no `&slot` = active slot" default was dead** (see the corrected
+    outcome bullet). Now `aius_recorder_bank_newest_frozen()`, 409 only when
+    nothing is frozen. The three source comments claiming a "byte-identical
+    pre-bank contract" (`optical_main.cpp`, `aius_optical_app.h`,
+    `aius_http.c`) were corrected with it, as was the stale
+    "released at the next dispatch" comment on `app_recorder_read_release`.
+  - **Status document gained the bank's own observables:**
+    `newest_frozen_slot` (int|null — the slot a defaulted read resolves to),
+    `deferred_epochs`, `lease_skips`, `config_pending`, `lease_leaks` (the
+    dispatcher's repair counter, which should stay 0 forever), and per slot
+    `stream_end_frame`, `rate_change_count` + `rate_change_frames[]` (clamped to
+    `AIUS_RECORDER_RATE_CHANGE_MAX`; `rate_change_count` may exceed it, and a
+    short array is the client's signal that the positions are incomplete). A
+    `static_assert` now bounds the worst-case body against
+    `AIUS_RECORDER_BANK_SLOTS` × `AIUS_RECORDER_RATE_CHANGE_MAX` and
+    `AIUS_RUNTIME_TEENSY_APP_BODY`, so raising either constant cannot silently
+    outgrow the buffer.
+  - **`stream_end_frame` makes every other stream-indexed field usable.**
+    `rate_change_frames` and `trigger.at_frame` are indices in the capture's
+    free-running stream, but the pulled WAV is the ring unrolled from
+    `oldest_frame` for `valid_frames` frames, so a host could not place a
+    fiducial in the file it had just downloaded. With the slot's stream end
+    published, `wav_index = stream_index - (stream_end_frame - valid_frames)`,
+    and a negative result is a fiducial the ring has already overwritten.
+    Emitted from `AiusRecorder::frames_drained` — **not** `end_frame` or
+    `frames_staged`, deliberately: `valid_frames`/`oldest_frame` are derived
+    from `frames_drained`, so only that counter makes the identity true in
+    every state. For a FROZEN slot all three are equal (DRAINING exits to
+    FROZEN only once staging is empty); for a still-recording slot
+    `frames_staged` would overshoot by the undrained staging depth and place
+    every fiducial too early.
+  - Malformed `slot` (`-1`, `1abc`, empty, non-numeric, >u32) stays
+    ROUTE_UNKNOWN rather than 400 — unchanged behaviour, matching
+    `offset`/`length`, now pinned as a stated contract by a five-row table in
+    `test_http.c`.
+
+  Host proof: `http` (44 transaction oracle rows, +1: the settle hook on
+  re-init/discard, on RESPONSE_TIMEOUT mid-send, and on the **stream** path
+  both to completion and to a mid-stream abort — the pre-existing row covered
+  only a 2-byte copied body), `optical-app` (38 rows, +1 for the
+  double-acquire release), `runtime-target` (+1 registry key,
+  `teardown.recorder-lease-released`, end-to-end through the real composition
+  with the borrowed body still streaming when the link drops — mutation-checked
+  by removing the discard call, which fails it). `teensy41-optical` cross-build
+  `[SUCCESS]`. **`optical-cutover` fails identically to its pre-change
+  baseline** (a `micros()` in `AiusAudioProcessor::update()`, commit 225253d,
+  unrelated) — byte-identical output, no new failure.
+  **Owed, not evidenced:** the `newest_frozen_slot` default and every new
+  status field live in `optical_main.cpp`, which no native suite compiles;
+  only the cross-build proves them. Live re-verification of a defaulted
+  `GET /api/recorder/data` against a fresh capture is owed before the next
+  deploy.
 - **Bench-proven 2026-09-01:** recorder OTA'd as one agnostic image and
   self-committed (auto-rollback unneeded). Phase A debounce suppressed the
   boot-transient underrun (froze at `at_block 416`, not `at_block 1`); the
@@ -391,9 +594,24 @@ overlapping ones.
   honoured `slot` on-device (out-of-range → 400). One gap the bench surfaced
   and closed: `aius-recorder-pull.py` was stale (never sent `&slot`, refused
   any non-active slot) — fixed to send the param and pull any frozen slot.
+  **Its default-slot contract has since changed**: the tool no longer defaults
+  to `active_slot` (on a bank that just froze and auto-advanced, that is the
+  slot still recording) but to the newest frozen slot — `newest_frozen_slot`
+  from the bank header, falling back to the highest-`freeze_generation` frozen
+  entry in `slots[]` on firmware without the field, and only then to
+  `active_slot`. **No evidence artifact is retained** for this bench run: it
+  was recorded to session scratch on 2026-09-01 and `.scratch/` is GC'd after
+  7 days, so `at_block 416`, `gaps=0` and the two distinct WAV sha256s are as
+  the tools reported them at the time and are not reproducible from this
+  repository.
 - unit: parent-only
 
-### Phase D — adversarial review + bench proof ✓ SHIPPED 2026-09-01
+### Phase D — adversarial review + bench proof IN-PROGRESS
+
+**Reopened 2026-09-02.** Its targeted-proof items are owed, not done (the list
+is in the last bullet below), and its own fix carried this review's H1: the
+`sd_settle` read-lease release it introduced never fired on a network
+teardown, so the lease still leaked permanently mid-stream.
 
 - outcome: a first design-level adversarial review already ran (2026-08-28,
   see the Design section's read-lease/reinit-context/recycle-naming
@@ -422,7 +640,9 @@ overlapping ones.
   bank shape with a rehearsal activation mid-cycle. Then: full native suite
   green (`recorder`, `memory`, `runtime-target`), `teensy41-optical` build,
   bench-only flash to a spare/available slot, on-device proof of one full
-  N-slot wrap, one park()/unpark() cycle mid-POSTROLL, one read-lease-
+  N-slot wrap, one `park()`-then-reboot cycle entered mid-POSTROLL (there is
+  no `unpark()` — park is one-way by contract and `bank_init()` at boot is the
+  only way back to RECORDING; see the Design section), one read-lease-
   deferred recycle (hold a slow pull open across a trigger that would
   otherwise recycle its slot), and the Phase A debounce — all before the
   listening-room board is touched.
@@ -437,6 +657,34 @@ overlapping ones.
   branch needed), and the full on-device cycle passed (see Phase C's
   bench-proven note). The mid-window power-cut and the DSP transfer-function
   battery were not part of this recorder proof.
+- **⚠ Proof still owed — corrected 2026-09-02.** The Done bullet above cited
+  Phase C's bench-proven note as evidence for "the full on-device cycle". That
+  note records a 4-slot auto-advance, two triggers, two distinct WAVs, the
+  read-lease holding through two live pulls, `slot` honoured on-device, and the
+  Phase A debounce. It records **none** of the following, and no other evidence
+  for them exists in this repository. Each is therefore **not evidenced;
+  owed**, not done:
+  - `park()` entered **mid-POSTROLL** on device, then the reboot that
+    re-arms the bank (there is no `unpark()`).
+  - A **read-lease-deferred recycle across a trigger** — holding a slow pull
+    open through a trigger that would otherwise recycle its slot. (The bench
+    note's "read-lease holding both slots through their live HTTP pulls"
+    is the *lease held* case, not the *recycle deferred by it* case.)
+  - `park()`/`ota_psram_staging()` re-verified against the bank shape with a
+    **rehearsal activation mid-cycle** — proof-item (3). The Phase B note
+    already flagged this as target-only code no host suite reaches and
+    deferred it here; it was not then carried out.
+  - Proof-item (2)'s branch-isolation check is **moot, not met**: the build
+    shipped from master after the slot-agnostic cutover went live, which is a
+    deliberate supersession of that requirement, not a satisfaction of it.
+  In addition, this pass **missed a HIGH defect in its own fix**: the
+  `sd_settle` release it introduced does not fire on a network teardown
+  (`aius_http_transaction_init()` zeroes the hook without calling it), so the
+  lease still leaked permanently mid-stream. Found and fixed 2026-09-02 — see
+  Phase C's review-corrections bullet. A review that ships a fix should carry a
+  test for the fix's own terminals; the four that exist now
+  (`response.settle-hook-abort-paths`, `teardown.recorder-lease-released`) are
+  that test, added after the fact.
 
 ## Residual risks / non-goals
 
@@ -444,9 +692,10 @@ overlapping ones.
   4 × ~5.46 s), not extended.** This plan trades one long window for
   several shorter independent ones; it does not add PSRAM budget.
 - **Auto-eviction of an unpulled capture after N wraps is an accepted
-  trade**, not eliminated — counted (`slots_overwritten_unpulled`), not
-  silent. An operator who wants zero eviction risk still needs to pull
-  promptly; this only dilutes the single-shot risk by a factor of N.
+  trade**, not eliminated — counted (`slots_recycled`; the Design section
+  explains why it is not named `slots_overwritten_unpulled`), not silent. An
+  operator who wants zero eviction risk still needs to pull promptly; this
+  only dilutes the single-shot risk by a factor of N.
 - **`N` is compile-time, not runtime-configurable**, to keep Phase B's
   blast radius bounded. A configurable `N` (mirroring how `postroll_blocks`
   is already runtime-configurable) is a plausible follow-up, not scoped
@@ -454,14 +703,26 @@ overlapping ones.
 - **The slow-drift diagnostic class (the 1.4-semitone pitch error
   precedent) is explicitly out of scope** — it wants a slower-sampled trend
   log, not more ring depth or more slots.
-- **A slot with an outstanding read lease defers its own recycling.** Under
-  a burst of triggers faster than an operator (or a slow network path) can
-  finish pulling, the round-robin can stall waiting for a lease to clear
-  rather than silently overwriting a slot mid-response. This is the
-  correct trade for correctness over liveness, but worth naming: a
-  pathological stuck HTTP client (never closes the response) could hold a
-  lease indefinitely. Not fixed here; if it becomes real, the lease needs a
-  bounded timeout, same shape as the existing reclaim-epochs bound.
+- **A slot with an outstanding read lease defers its own recycling, for a
+  bounded window.** Under a burst of triggers faster than an operator (or a
+  slow network path) can finish pulling, the round-robin waits for the lease
+  rather than overwriting a slot mid-response — correctness over liveness —
+  but only for `AIUS_RECORDER_RECLAIM_EPOCHS` drains, after which the
+  advance skips past the leased slot (fixed 2026-09-02; the earlier
+  implementation deferred indefinitely despite this plan calling it
+  bounded). Residual: while every slot is leased at once there is nowhere to
+  skip to and the bank keeps deferring, so a set of pathological stuck HTTP
+  clients can still stall recording. That is now visible rather than silent
+  (`deferred_epochs`, `lease_skips`); a per-lease timeout is the next step
+  if it becomes real.
+- **The underrun trigger is blind for the settle window after every
+  auto-advance** (~85 ms of clean blocks, longer on a dirty stream). By
+  design and now documented in `aius_recorder_bank.h` and the Design
+  section, but it is a real gap: a second underrun burst arriving inside
+  that window goes uncaptured by the incoming slot. A shorter window for a
+  re-armed slot than for a boot would need its own justification: the
+  transient a re-arm produces is the same shape as a boot's, so it keeps the
+  same window until evidence says otherwise.
 - **`slots_recycled` answers "how many wraps happened," not "was evidence
   lost."** Distinguishing those needs a "read at least once" bit this plan
   deliberately does not add (see Design). If that distinction becomes

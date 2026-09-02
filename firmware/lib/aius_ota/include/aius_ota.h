@@ -230,12 +230,21 @@ typedef struct {
  *   7. image_length <= AIUS_OTA_MAX_IMAGE_BYTES ................... UNSUPPORTED
  *   8. signature_scheme != NONE ..................................... MALFORMED
  *   9. signature_scheme is a known scheme ......................... UNSUPPORTED
- *  10. reserved0 and reserved1[68] are all zero ..................... MALFORMED
+ *  10. slot_id (reserved0's LOW byte) is NONE, A or B .............. MALFORMED
+ *  10a. reserved0's HIGH byte and reserved1[68] are all zero ........ MALFORMED
  *  11. target_id: non-empty, printable ASCII, NUL-padded to the end . MALFORMED
  *  12. build_revision: same three rules ............................. MALFORMED
  *  13. build_utc in [2020-01-01, 2100-01-01) ....................... MALFORMED
  *  14. payload_digest is not all-zero .............................. MALFORMED
  *  15. signature is not all-zero ................................... MALFORMED
+ *
+ * Rule 10 is NOT "reserved0 is zero", and the difference is load-bearing for
+ * anything that re-implements this parse: the A/B scheme claimed reserved0's
+ * low byte as the slot tag, so 0, 1 and 2 are all valid values there and only
+ * the high byte kept the reserved-must-be-zero rule. Reading the whole word as
+ * reserved refuses every slot-tagged container ever signed. Whether a valid tag
+ * is the one THIS board wants is a separate question, asked at offer time
+ * against the session's expected slot and answered UNSUPPORTED, not MALFORMED.
  *
  * Rules 14 and 15 reject the "nobody filled this in" header: an all-zero
  * digest or signature is not a value, it is an omission, and a build pipeline
