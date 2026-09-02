@@ -511,6 +511,62 @@ class AnalyzerTests(unittest.TestCase):
             "invalid-interval-evidence",
             {failure["code"] for failure in result["failures"]})
 
+    def test_waveform_passes_when_declared_windows_are_not_visible(self):
+        # Owner ruling 2026-09-02: the board may absorb its invalid windows
+        # without any externally visible artifact. Twelve declared windows,
+        # none captured, no discontinuity anywhere: pass.
+        samples = [
+            sample(0, output_blocks=1),
+            sample(1, output_blocks=2),
+            sample(2, output_blocks=3),
+        ]
+        samples[1]["status"]["clock"]["trim_updates"] = 6
+        samples[2]["status"]["clock"]["trim_updates"] = 12
+        samples[1]["status"]["clock"]["invalid_windows"] = 6
+        samples[2]["status"]["clock"]["invalid_windows"] = 12
+        external = {
+            "capture_frame_gaps": 0,
+            "discontinuities_outside_invalid": 0,
+            "invalid_intervals_frames": [],
+            "correlated_trim_updates": 0,
+            "correlated_invalid_windows": 0,
+        }
+        result = BENCH.analyze_samples(samples, [], "waveform", {
+            "minimum_duration_s": 0,
+            "settle_s": 0,
+            "max_follow_error_millihz": 1000,
+        }, external)
+        self.assertEqual(result["verdict"], "pass", result["failures"])
+
+    def test_waveform_rejects_more_captured_windows_than_declared(self):
+        # The capture may see fewer windows than status declares, never more:
+        # an undeclared artifact is the failure the gate exists to catch.
+        samples = [
+            sample(0, output_blocks=1),
+            sample(1, output_blocks=2),
+            sample(2, output_blocks=3),
+        ]
+        samples[1]["status"]["clock"]["trim_updates"] = 1
+        samples[2]["status"]["clock"]["trim_updates"] = 1
+        samples[1]["status"]["clock"]["invalid_windows"] = 1
+        samples[2]["status"]["clock"]["invalid_windows"] = 1
+        external = {
+            "capture_frame_gaps": 0,
+            "discontinuities_outside_invalid": 0,
+            "invalid_intervals_frames": [512, 512],
+            "correlated_trim_updates": 2,
+            "correlated_invalid_windows": 2,
+        }
+        result = BENCH.analyze_samples(samples, [], "waveform", {
+            "minimum_duration_s": 0,
+            "settle_s": 0,
+            "max_follow_error_millihz": 1000,
+        }, external)
+        self.assertEqual(result["verdict"], "fail")
+        codes = {failure["code"] for failure in result["failures"]}
+        self.assertIn("trim-correlation", codes)
+        self.assertIn("invalid-correlation", codes)
+
 
 class ExitSemanticsTests(unittest.TestCase):
     def run_main(self, argv):

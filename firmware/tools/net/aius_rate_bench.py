@@ -637,12 +637,20 @@ def check_waveform(external, trim_delta, invalid_delta, failures, metrics):
             add_failure(failures, "external-observation",
                         f"waveform observation {field} is missing or invalid")
             return
+    # Gate 7 contract (design decision 2026-09-02): no discontinuity outside the
+    # board-declared invalid windows; the windows need NOT be externally
+    # visible. An empty interval list is therefore a valid observation, and
+    # the capture may correlate FEWER events than status declares -- never
+    # more, since a captured artifact the board did not declare is exactly
+    # the failure the gate exists to catch. Every window that IS visible must
+    # still be the exact 512-frame hold and must pair with a correlated
+    # window.
     intervals = external.get("invalid_intervals_frames")
-    if not isinstance(intervals, list) or not intervals or any(
+    if not isinstance(intervals, list) or any(
             isinstance(value, bool) or not isinstance(value, int)
             for value in intervals):
         add_failure(failures, "external-observation",
-                    "waveform invalid_intervals_frames must be a non-empty integer array")
+                    "waveform invalid_intervals_frames must be an integer array")
         return
     metrics["waveform"] = external
     if external["capture_frame_gaps"] != 0:
@@ -654,12 +662,12 @@ def check_waveform(external, trim_delta, invalid_delta, failures, metrics):
     if any(value != 512 for value in intervals):
         add_failure(failures, "invalid-window-length",
                     "every captured invalid interval must be exactly 512 frames")
-    if external["correlated_trim_updates"] != trim_delta:
+    if external["correlated_trim_updates"] > trim_delta:
         add_failure(failures, "trim-correlation",
-                    "captured trim count differs from status trim_updates delta")
-    if external["correlated_invalid_windows"] != invalid_delta:
+                    "captured trim count exceeds status trim_updates delta")
+    if external["correlated_invalid_windows"] > invalid_delta:
         add_failure(failures, "invalid-correlation",
-                    "captured invalid-window count differs from status delta")
+                    "captured invalid-window count exceeds status delta")
     if len(intervals) != external["correlated_invalid_windows"]:
         add_failure(failures, "invalid-interval-evidence",
                     "captured invalid-interval count differs from correlated windows")

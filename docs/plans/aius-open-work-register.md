@@ -86,6 +86,37 @@ ends left open:
 
 ## Waiting on the operator
 
+- **Loose ends from the 2026-09-02 review-fix series (handover retired
+  2026-09-02; proposals, not agreed).** Everything decided that day lives in
+  its plan: H2 / defect 22 device evidence
+  ([`aius-recorder-rolling-buffer.md`](aius-recorder-rolling-buffer.md) Phase
+  D, [`aius-network-hardening.md`](aius-network-hardening.md) defect 22),
+  gate 7 / gate 2 rulings ([`aius-rate-gate-capture-tool.md`](aius-rate-gate-capture-tool.md)
+  §Operator rulings (2026-09-02)), the gate-2 dropout root cause
+  ([`aius-sample-rate-following.md`](aius-sample-rate-following.md) §Device
+  evidence — 2026-09-02) and its fix phase
+  ([`aius-output-jitter.md`](aius-output-jitter.md) Phase F, designed, not
+  built). Still the owner's call:
+  - `GET /api/recorder` wants `X-Aius-SD-Auth` while `CLAUDE.md` says reads
+    need nothing: correct the rule or the route (the gotcha is noted in
+    `CLAUDE.md` meanwhile).
+  - `staged_generation` bumps at PUT accept (`optical_main.cpp:5577`), before
+    the SD commit, so a PUT that fails to commit still advances it while
+    `config_pending` stays false. Proposed: bump at commit.
+  - `CONTRIBUTING.md` carries ~12 stale `…` paths (lines
+    20, 47, 84–86, 124, 204, 214–219). Proposed: sweep to submodule-relative.
+  - `test/sd-editor/fixtures/dsp-config-default.json` (the swagger
+    `DspConfig` example) lacks `staged_generation` / `config_pending`.
+    Proposed: refresh from a live GET.
+  - H1 (teardown lease release) is host-proven only; provoking it needs an
+    Ethernet unplug mid-pull. Proposed: accept the host proof.
+  - ITCM has 1108 B free and the cold recorder-bank helpers landed there; a
+    placement pass is owed before anything else grows.
+  - The `optical-cutover` suite fails at HEAD on a pre-existing `micros()` in
+    `update()` (commit `225253d`), unrelated to the series.
+  - A gate-4 *pass* is unreachable with the aplay stimulus (idle gaps between
+    phases): needs a source that cuts the carrier between phases or an
+    analyzer decision (tool plan §Follow-on work).
 - ~~**Two deploys owed for the 2026-08-16 status-page rework.**~~ **BOTH DONE
   the same evening, owner-directed ("sync and flash"), with audio playing and
   the interruption accepted after it was costed.**

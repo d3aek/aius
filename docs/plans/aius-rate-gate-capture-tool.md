@@ -110,9 +110,11 @@ defective tool and must be re-run** before any of it is treated as evidence.
   is the gate-7 correlation fiducial (implemented, unit-tested).
 - **Live integration (step 6) — re-run with the fixed tool on
   `e746cf952dd6+teensy41-optical` (2026-09-02): gate 2 FAIL (real board
-  dropout), gate 7 FAIL on the contract question, gate 4 FAIL on the
-  aplay-stimulus grounds with `old_rate_output_frames` genuinely measured
-  at 0.** Each with its digest in §Live-run results — 2026-09-02.
+  dropout, root-caused the same day), gate 7 PASS under the contract the
+  owner redefined on 2026-09-02 (the saved evidence re-analyzes clean), gate
+  4 FAIL on the aplay-stimulus grounds with `old_rate_output_frames`
+  genuinely measured at 0.** Each with its digest in §Live-run results —
+  2026-09-02.
 
 ## Live-run results — 2026-09-02 (fixed tool, image `e746cf952dd6`)
 
@@ -133,20 +135,36 @@ are the citation. Every verdict is a real bench verdict, not a tool error.
   invalid windows, `http_client_drops` 0. Tool and board agree: a single
   2.9 ms dropout at ~19 s into the run. Last week's PASS came from a
   detector blind at the ±410 stimulus (F3). Opened as a board defect in
-  [`aius-sample-rate-following.md`](aius-sample-rate-following.md).
-- **Gate 7 (`waveform`, 48 kHz): FAIL — on the contract, not the output.**
+  [`aius-sample-rate-following.md`](aius-sample-rate-following.md) and
+  root-caused there the same day (post-relock transmit-ring floor is phase
+  luck; fix phase in [`aius-output-jitter.md`](aius-output-jitter.md)
+  Phase F). **Owner ruling 2026-09-02 on the rate field:** `audio_rate_hz`
+  stays in the evidence with its `capture-clock-locked` /
+  `self_referential` label and asserts nothing on this hardware; gate 2 is
+  judged on continuity and the harmful counters, which is exactly where this
+  run fails.
+- **Gate 7 (`waveform`, 48 kHz): PASS under the contract redefined
+  2026-09-02 (was FAIL on the old contract, output clean either way).**
   `evidence-sha256: 87e9ef415af946d9320808b4391f6c81817593c797acf038f36f70bc55b0ae7b`.
+  Owner ruling: gate 7 is "no discontinuity outside the board-declared
+  invalid windows; the windows need not be externally visible". The bench's
+  `waveform` check now accepts an empty `invalid_intervals_frames` and
+  requires the correlated counts to be at most the status deltas (never
+  more: an undeclared artifact is the failure); every visible window must
+  still be the exact 512-frame hold. Re-analyzing this run's saved
+  `evidence.jsonl` offline with the updated bench gives `verdict pass`,
+  `failures []` (same digest). On the old contract it failed only
+  `external-observation` ("must be a non-empty integer array"); the detail
+  below is unchanged.
   External: `discontinuities_outside_invalid 0`, `capture_frame_gaps 0`,
   `correlated_invalid_windows 0`, `correlated_trim_updates 0`,
   `invalid_intervals_frames []`; the fixed detector (jump threshold 85 LSB,
   held-run floor 4.3 LSB, phase-slip 0.065 rad, `capture_start_offset_s`
   1.75) saw no zero run, held run, spike or phase slip anywhere in 120 s
   while the board logged 12 trims / 12 invalid windows. Every counter
-  delta 0. Bench: `external-observation` ("waveform invalid_intervals_frames
-  must be a non-empty integer array"). This time the "output is continuous
-  through the invalid windows" reading is supported — the detector is
-  proven at the documented stimulus — so the open question is purely the
-  contract (§Follow-on work, decision 1).
+  delta 0. This time the "output is continuous through the invalid windows"
+  reading is supported — the detector is proven at the documented stimulus
+  — and the contract question is closed (§Operator rulings).
 - **Gate 4 (`transitions`, 48→44.1→48, `--phase-seconds 2`, no replay
   leg): FAIL on the aplay-stimulus grounds; `old_rate_output_frames = 0`
   is now a real measurement.**
@@ -470,6 +488,20 @@ is producing that JSON faithfully.
   reads (`hw:0,0` IEC958 In), and per-write USB-deauth approval for gate 4's
   loss→replay leg.
 
+## Operator rulings (2026-09-02)
+
+- **Gate 7 contract: RESOLVED — (b).** Gate 7 is "no discontinuity outside
+  the board-declared invalid windows; the windows need not be externally
+  visible". The bench `waveform` check accepts an empty interval list and
+  bounds the correlated counts by the status deltas from above; visible
+  windows must still be exactly 512 frames and pair with a correlated
+  window. The 2026-09-02 evidence passes.
+- **Gate 2 rate field: RESOLVED — keep `audio_rate_hz`, labelled.** It is
+  capture-clock-locked on this hardware and asserts nothing; the evidence
+  keeps it with `audio_rate_hz_source` / `self_referential`, and gate 2 is
+  judged on continuity plus the harmful counters. No channel-status decode
+  is sought on other hardware.
+
 ## Acceptance for this tool
 
 - The three reducer field-groups are unit-tested against synthetic WAVs.
@@ -482,9 +514,10 @@ is producing that JSON faithfully.
   board with the produced JSON (a real verdict, not a tool error), on one exact
   committed image with `--expect-build`. **Met 2026-09-02** on
   `e746cf952dd6+teensy41-optical` with the fixed tool (§Live-run results —
-  2026-09-02): gate 2 fail (real dropout), gate 7 fail (contract), gate 4 fail
-  (stimulus grounds) with `old_rate_output_frames = 0` measured through
-  resolved fiducials.
+  2026-09-02): gate 2 fail (real dropout), gate 7 pass (under the contract
+  redefined the same day; fail on the old one), gate 4 fail (stimulus
+  grounds) with `old_rate_output_frames = 0` measured through resolved
+  fiducials.
 - The transitions descope lands with its tests green in the same change set.
   **Done** (aius `93610f6`).
 - Every recorded live result cites an `evidence.jsonl` path and SHA-256.
@@ -617,19 +650,10 @@ Three more, found by the first live gate-4 run with the fixed tool
 
 - ~~Re-run gates 2, 4 and 7 with the fixed tool~~ **Done 2026-09-02**
   (§Live-run results — 2026-09-02).
-- **Gate 7 contract (decision owed).** The fixed detector, proven at the
-  documented stimulus, sees no artifact at all through 12 board-declared
-  invalid windows. Either (a) keep the contract — gate 7 stays red until the
-  U24's handling of the validity bit is characterised — or (b) redefine gate 7
-  as "no discontinuity outside the board-declared windows; the windows need
-  not be externally visible", which passes on the 2026-09-02 evidence.
-  Recommendation: (b); the trims are sub-sample and the capture proves it.
-- **Gate 2 scope (decision owed).** `audio_rate_hz` is capture-clock-locked on
-  this hardware and cannot be an independent measurement. Options: drop the
-  field, keep it labelled self-referential (as the tool now does) and judge
-  gate 2 on continuity + harmful counters, or measure via a channel-status
-  decode on other hardware. Recommendation: keep it labelled; the 2026-09-02
-  gate-2 fail is on continuity and is a real board defect regardless.
+- ~~Gate 7 contract (decision owed)~~ **Resolved 2026-09-02: (b)** — see
+  §Operator rulings (2026-09-02); the bench check and its tests carry it.
+- ~~Gate 2 scope (decision owed)~~ **Resolved 2026-09-02: keep
+  `audio_rate_hz`, labelled** — see §Operator rulings (2026-09-02).
 - ~~Gate 4 `old_rate_output_frames` fiducial — measurement pending
   firmware~~ **Done**: the firmware emits `slots[].rate_change_frames`,
   `rate_change_count` and `stream_end_frame` (recorder Phase C/D fixes), and

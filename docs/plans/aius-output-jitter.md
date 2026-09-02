@@ -86,6 +86,14 @@ nothing for the whole boot; it has been thawed and is recording. Its
 will burn the one-shot freeze — an open question in the input-recovery plan's
 §Pending decisions.
 
+**Update 2026-09-02 — Phase F opened.** The rate-gate capture tool's gate-2
+run root-caused a 128-frame dropout to the post-relock transmit-ring floor
+being phase luck (the gate-open target only trims down; nothing pads up).
+Phase F below makes the floor deterministic at the gate-open edge; it is
+designed and owner-approved to open, not built. The deployed image is now
+the plain single-image `e746cf952dd6+teensy41-optical` (no A/B), so the
+"slot B" statements above are historical.
+
 **Decisions taken this session (owner, in chat):**
 - Jitter is fixed by removing sources, never by widening the transmit
   cushion: added latency is unacceptable; 13 ms is below the perception
@@ -387,6 +395,68 @@ Two incidental finds, both registered: the flight recorder's underrun
 trigger spends its one-shot freeze on the boot bring-up underrun (blind
 witness every boot until thawed by hand), and rapid recorder-data reads can
 wedge HTTP for a few seconds (server recovered unaided, audio unaffected).
+
+### Phase F — deterministic transmit-ring floor at the gate-open edge
+
+**Finding, 2026-09-02 (rate-gate capture tool, gate 2 at 44.1 kHz, image
+`e746cf952dd6`; full trace in
+[`aius-sample-rate-following.md`](aius-sample-rate-following.md) §Device
+evidence — 2026-09-02):** the "128-frame gate-open target" is a ceiling,
+not a floor. `clock_apply_desired_plan` empties the ring on every rate
+change (`optical_main.cpp:7884`) and `tx_gate_actuate(true)` only ever
+trims DOWN to `AIUS_TX_GATE_OPEN_TARGET_FRAMES` (`:2165`); nothing pads it
+up, and the open happens at whatever instant `tx_gate_service` runs, not at
+a producer-commit boundary. So the pre-commit floor a session settles at is
+the phase the producer's first 512-frame burst happened to have against the
+transmit ISR: anywhere from 0 to one block. In gate 2 it was 0
+(`tx_high_water 512`, the bare quantum) and 18 s of clock following walked
+the commit one block past the fill — a 128-frame dropout, after which the
+floor sat at 128. The same lottery explains the gate-4 idle-gap underruns
+(+896, +768), the +256 at the 2026-09-02 U24 re-auth relock, and why the
+48 kHz floor reads 1536 after 23 unsupported episodes: every underrun
+ratchets the floor up one block, and the governor (HELD) would only ever
+bring it down. Phase E's decomposition assumed the structural floor was
+"128-frame target + in-flight block"; it is that only by luck.
+
+**Design cut (owner decision 2026-09-02: record and open the phase; no
+flash that session):** execute the gate-open edge at the producer's
+pre-commit tap, not in `tx_gate_service`. `tx_gate_actuate(true)` arms a
+pending-open flag; in `enqueue()`, immediately before staging a block
+(where the governor tap already reads the pre-commit level), a pending open
+sets the ring to exactly the target — trim down as today, or pad UP with
+digital silence when the level is short (the pad is dark, so padded frames
+are unheard, exactly the argument the trim already makes) — then flips
+`gate_open` and lights the pad inside the same masked section. The floor
+after the block commits is then `target` by construction, every session,
+every relock. The ISR-side underrun arm and the governor's window contract
+are untouched; `aius_spdif_tx24_trim_to` grows a `set_level` sibling that
+zero-fills the deficit (the ring buffer is deliberately never cleared, so
+padding must write zeros). A relock with no producer resumption leaves the
+gate closed and dark, which is the current behaviour minus the counted
+silence. Whether the target should be 128 (one block, this env) or the
+source default 256 (two blocks of service-jitter margin) is the same knob
+as the held governor's target policy and is decided with it; the change
+here makes the knob mean what it says.
+
+- outcome: after any relock or gate reopen the pre-commit ring floor equals
+  `AIUS_TX_GATE_OPEN_TARGET_FRAMES` exactly; gate 2 (44.1 kHz, 120 s)
+  repeats with `tx_underrun_frames` delta 0 and `max_clock_tx_level_frames`
+  = 512 + target; the relock after a U24 re-auth counts no underrun; the
+  48 kHz floor no longer ratchets across unsupported episodes.
+- seams: `firmware/lib/aius_audio/src/aius_spdif_tx24.h` (`set_level`
+  sibling of `trim_to`, zero-fill), `firmware/src/optical_main.cpp`
+  (`tx_gate_actuate` → pending flag; `enqueue()` pre-stage tap executes the
+  open; `tx_gate_service` bookkeeping), clock JSON `gate_open_trims` /
+  `gate_open_trimmed_frames` plus a new `gate_open_padded_frames` counter
+  and its swagger row.
+- targeted-proof: `tx-gate` host suite rows for pad-up, trim-down and
+  exact-target floors at the pre-commit instant; `optical-app` /
+  `runtime-target` green; `teensy41-optical` cross-build; then on device:
+  gate 2 re-run with the capture tool (`--expect-build`), the U24 de-auth /
+  re-auth relock reading `tx_underrun_frames` delta 0, and one e2e latency
+  row (`bench.py --expect-build`) proving the standing latency did not move
+  beyond `target − 128` frames.
+- unit: parent-only
 
 ## Acceptance
 

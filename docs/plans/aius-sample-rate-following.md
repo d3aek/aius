@@ -570,8 +570,12 @@ live optical transmit or channel status is fixed at 48 kHz.
    `trim_updates`/`invalid_windows`; after the first 30 seconds, no more than
    two further trim updates may occur during the run.
 2. **44.1 kHz PCM, at least 120 seconds.** Require accepted nominal 44,100,
-   output target following the measured carrier, continuous output, correct
-   channel-status rate, bounded ring levels and zero harmful deltas.
+   output target following the measured carrier, continuous output, bounded
+   ring levels and zero harmful deltas. The external `audio_rate_hz` field is
+   recorded but asserts nothing on the U24 loop (design decision 2026-09-02): the
+   capture clock locks to the carrier under test, so the field is
+   self-referential there and the gate is judged on continuity plus the
+   harmful counters.
 3. **32 kHz PCM, at least 120 seconds.** Same gates, using an external optical
    PCM source because this CM6206 USB profile exposes only 44.1/48 kHz.
    **Deferred 2026-07-31 by owner decision:** 32 kHz is long-tail scope with
@@ -597,11 +601,14 @@ live optical transmit or channel status is fixed at 48 kHz.
    advances.
 7. **Trim-boundary waveform.** Feed a constant PCM tone through the complete
    CM6206→Teensy→CM6206 loop and force at least one production same-nominal
-   trim. Require carrier lock and capture-frame cadence to remain continuous,
-   no sample discontinuity outside the declared invalid interval, and any
-   affected run to be bounded by the exact 512-frame hold. Correlate the capture with
-   `trim_updates` and `invalid_windows`; do not infer mute behavior from
-   `VALCTRL` alone.
+   trim. Require carrier lock and capture-frame cadence to remain continuous
+   and no sample discontinuity outside the board-declared invalid windows.
+   The windows need not be externally visible (design decision 2026-09-02: the
+   board may absorb a trim without any output artifact); any window that IS
+   visible must be bounded by the exact 512-frame hold and correlate with
+   `trim_updates` / `invalid_windows`, and the capture may never show more
+   windows than status declares. Do not infer mute behavior from `VALCTRL`
+   alone.
 
 ### Device evidence in progress
 
@@ -826,21 +833,49 @@ The first gate runs with the fixed external capture tool
   Tool and board agree:
   a single 2.9 ms dropout at 44.1 kHz that the 2026-09-01 tool could not see
   (its detector was blind at the ±410 stimulus). The flight recorder froze it
-  on its own (`underrun` trigger, slot at 44100). Cause not yet investigated;
-  the `unsupported`/relock at the 44.1 kHz stimulus start and the
-  transmit-ring level at the moment of the underrun are the first two things
-  to read from that frozen slot. `audio_rate_hz 44100` is capture-clock-locked
-  (self-referential) on this hardware; gate 2's rate wording is an owner
-  decision recorded in the tool plan.
-- **Gate 7 (trim-boundary waveform, 48 kHz): FAIL on the contract, output
-  clean.** `discontinuities_outside_invalid 0`, `capture_frame_gaps 0`, no
+  on its own (`underrun` trigger, slot at 44100), but the slot was recycled
+  by two later freezes before it was pulled, so no waveform survives; the
+  run's status samples and the firmware are the evidence. `audio_rate_hz
+  44100` is capture-clock-locked (self-referential) on this hardware and
+  asserts nothing (design decision 2026-09-02, gate 2 above).
+
+  **Root cause (2026-09-02, same day): the transmit-ring floor after a
+  relock is producer/ISR phase luck, and in this run it was zero.**
+  `clock_apply_desired_plan` flushes the ring to empty on a rate change
+  (`firmware/src/optical_main.cpp:7884`, `aius_spdif_tx24_flush_preserve_diag`),
+  and the gate's closed→open edge can only trim DOWN to
+  `AIUS_TX_GATE_OPEN_TARGET_FRAMES` (128 on the `teensy41-optical` env;
+  `tx_gate_actuate`, `optical_main.cpp:2165`) — nothing ever pads the ring
+  up, so the pre-commit floor a session settles at is whatever phase the
+  producer's first 512-frame burst had against the transmit ISR. The run's
+  1 s status polls show it: `tx_fills` advanced 348.5 per 1.011 s poll, so
+  each poll landed half a 128-frame block further into the 4-block producer
+  cycle and the polled `tx_level_frames` walked 512, 384, 256, 128, 0 in
+  pairs with an 8-sample period — an alias of the real 512→0 cycle, not a
+  drain — with `tx_high_water_frames 512`, i.e. the bare PCM quantum on a
+  zero floor (`max_clock_tx_level_frames 512` in the analysis). Reads of 0
+  at 2.7 s, 9.8 s and 15.8–17.9 s are the empty interval widening as the
+  clock following walked the producer's commit toward the ISR fill; at
+  ~18.5 s the commit lost the race by one block: `tx_underrun_frames` +128,
+  after which the floor ratcheted to 128 (`tx_high_water` 640, the polled
+  level never read 0 again). The same mechanism produced the gate-4
+  idle-gap underruns (+896, +768), the +256 at the 2026-09-02 14:24 UTC
+  relock after the U24 re-auth (`gate_open_trims` +1 trimming 256, then the
+  underrun 8.3 s later, recorder freeze on it), and the 48 kHz floor of
+  1536 after 23 unsupported episodes. Fix: make the floor deterministic at
+  the gate-open edge —
+  [`aius-output-jitter.md`](aius-output-jitter.md) Phase F (owner decision
+  2026-09-02: record and open the phase; no flash that session). Gate 2
+  stays FAIL until that phase ships and the run repeats clean.
+- **Gate 7 (trim-boundary waveform, 48 kHz): PASS under the contract
+  redefined 2026-09-02 (FAIL on the old wording; output clean either
+  way).** `discontinuities_outside_invalid 0`, `capture_frame_gaps 0`, no
   zero run, held run, spike or phase slip in 120 s at a detector proven at the
-  documented stimulus, while the board logged 12 trims / 12 invalid windows;
-  the bench fails only because `invalid_intervals_frames` is empty
-  (evidence-sha256
+  documented stimulus, while the board logged 12 trims / 12 invalid windows
+  and none was visible (`invalid_intervals_frames []`) (evidence-sha256
   `87e9ef415af946d9320808b4391f6c81817593c797acf038f36f70bc55b0ae7b`).
-  Whether the windows must be externally visible is the
-  owner decision recorded in the tool plan.
+  Owner ruling: the windows need not be externally visible (gate 7 above);
+  the updated bench re-analyzes the saved evidence to `pass`, `failures []`.
 - **Gate 4 (48→44.1→48, aplay stimulus, no replay leg): FAIL on the
   stimulus grounds already recorded; `old_rate_output_frames = 0` is now a
   real measurement.** Both rate changes stamped, both fiducials resolved
