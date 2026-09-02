@@ -76,7 +76,14 @@ def sample(elapsed, **status_args):
     return {"elapsed_s": elapsed, "status": make_status(**status_args)}
 
 
-def transition_fixture():
+def transition_fixture(with_replay=True):
+    """The transitions stimulus as status samples + events.
+
+    `with_replay=False` is the aplay-driven stimulus that never cuts the
+    carrier: three phases, 48 -> 44.1 -> 48, and no loss->replay leg. Both
+    shapes carry the same dark-gap artifacts (one unsupported episode and
+    one underrun burst per rate change), so the no-replay fixture is what
+    the analyzer must accept against `expected_phases` of three labels."""
     samples = []
     events = []
     output_blocks = 0
@@ -89,8 +96,9 @@ def transition_fixture():
         (48000, False),
         (44100, False),
         (48000, False),
-        (48000, True),
     ]
+    if with_replay:
+        phases.append((48000, True))
     unsupported_details = (40000, 42000)
     for phase_index, (rate, replay) in enumerate(phases):
         if phase_index:
@@ -164,7 +172,7 @@ def analyze_48(samples, **options):
 
 
 def evidence_file(path, samples, scenario="48k-10m", analysis_options=None,
-                  external=None, attempts=None):
+                  external=None, attempts=None, events=None):
     identity = BENCH.build_identity(samples[0]["status"])
     records = [{
         "kind": "metadata",
@@ -177,13 +185,18 @@ def evidence_file(path, samples, scenario="48k-10m", analysis_options=None,
         records[0]["raw_external_observation_json"] = json.dumps(external)
     empty_events = json.dumps({"cursor": 0, "next": 0, "events": []},
                               separators=(",", ":"))
+    # The run's events ride on the first sample; load_evidence keys them by
+    # sequence, so one carrier record is the whole event list.
+    all_events = json.dumps(
+        {"cursor": 0, "next": len(events or []), "events": events or []},
+        separators=(",", ":"))
     for index, entry in enumerate(samples):
         record = {
             "kind": "sample",
             "elapsed_s": entry["elapsed_s"],
             "raw_status_json": json.dumps(
                 entry["status"], separators=(",", ":")),
-            "raw_events_json": empty_events,
+            "raw_events_json": all_events if index == 0 else empty_events,
         }
         # attempts=None writes the pre-retry-counter evidence shape.
         if attempts is not None:
@@ -460,6 +473,155 @@ class AnalyzerTests(unittest.TestCase):
         self.assertIn("external-observation", codes)
         self.assertNotIn("old-rate-output", codes)
 
+    def test_transitions_accept_the_declared_no_replay_sequence(self):
+        # F13 + expected_phases: the aplay stimulus drives 48 -> 44.1 -> 48
+        # and never cuts the carrier, so there is no replay leg. Both
+        # transition windows are live, so the dark unsupported episode of
+        # the SECOND one is attributed rather than reported unattributed.
+        samples, events = transition_fixture(with_replay=False)
+        result = BENCH.analyze_samples(samples, events, "transitions", {
+            "minimum_duration_s": 0,
+            "settle_s": 0,
+            "phase_samples": 2,
+            "max_follow_error_millihz": 1000,
+            "expected_phases": ["48000", "44100", "48000"],
+        }, {"old_rate_output_frames": 0})
+        self.assertEqual(result["verdict"], "pass", result["failures"])
+        self.assertEqual(result["metrics"]["observed_phase_sequence"],
+                         ["48000", "44100", "48000"])
+        self.assertEqual(result["metrics"]["transition_windows"],
+                         [(1, 3), (4, 6)])
+        self.assertEqual(result["metrics"]["live_transition_windows"],
+                         [(1, 3), (4, 6)])
+        self.assertEqual(
+            result["metrics"]["live_transition_rate_change_deltas"], [1, 1])
+        self.assertEqual(
+            result["metrics"]["transition_reset_deltas"], [1, 1])
+        self.assertEqual(
+            result["metrics"]["counter_deltas"][
+                "clock.unsupported_episodes"], 2)
+
+    def test_transitions_no_replay_run_still_fails_the_default_sequence(self):
+        # Without the option the analyzer keeps asserting the replay leg, so
+        # the same run is a sequence failure: the default is unchanged.
+        samples, events = transition_fixture(with_replay=False)
+        result = BENCH.analyze_samples(samples, events, "transitions", {
+            "minimum_duration_s": 0,
+            "settle_s": 0,
+            "phase_samples": 2,
+            "max_follow_error_millihz": 1000,
+        }, {"old_rate_output_frames": 0})
+        self.assertEqual(result["verdict"], "fail")
+        self.assertIn("transition-sequence",
+                      {failure["code"] for failure in result["failures"]})
+        self.assertEqual(result["metrics"]["expected_phase_sequence"],
+                         ["48000", "44100", "48000", "replay"])
+
+    def test_transitions_reject_unsupported_episode_before_replay(self):
+        # The window leading INTO replay is not a live rate transition, so a
+        # dark unsupported episode there is still unattributed -- the F13 fix
+        # widens attribution to real live windows only.
+        samples, events = transition_fixture()
+        for entry in samples[8:]:
+            entry["status"]["clock"]["unsupported_episodes"] += 1
+        events.append({
+            "sequence": len(events) + 1,
+            "uptime_ms": 8000,
+            "type": 12,
+            "state": 3,
+            "detail": 40000,
+        })
+        result = BENCH.analyze_samples(samples, events, "transitions", {
+            "minimum_duration_s": 0,
+            "settle_s": 0,
+            "phase_samples": 2,
+            "max_follow_error_millihz": 1000,
+        }, {"old_rate_output_frames": 0})
+        codes = {failure["code"] for failure in result["failures"]}
+        self.assertIn("transition-unattributed-unsupported", codes)
+        self.assertNotIn("transition-open-gate-unsupported", codes)
+        self.assertEqual(result["metrics"]["live_transition_windows"],
+                         [(1, 3), (4, 6)])
+
+    def test_transitions_report_event_overflows_without_gating_them(self):
+        # Plan defect F8: an event_overflows-only harmful-counter failure is
+        # the capture tool's poll cadence, not a board fault. Reported in
+        # transitions, harmful everywhere else.
+        samples, events = transition_fixture(with_replay=False)
+        for entry in samples[3:]:
+            entry["status"]["event_overflows"] = 10
+        result = BENCH.analyze_samples(samples, events, "transitions", {
+            "minimum_duration_s": 0,
+            "settle_s": 0,
+            "phase_samples": 2,
+            "max_follow_error_millihz": 1000,
+            "expected_phases": ["48000", "44100", "48000"],
+        }, {"old_rate_output_frames": 0})
+        self.assertEqual(result["verdict"], "pass", result["failures"])
+        self.assertEqual(result["metrics"]["event_overflows_delta"], 10)
+        self.assertEqual(
+            result["metrics"]["counter_deltas"]["event_overflows"], 10)
+
+    def test_event_overflows_stay_harmful_outside_transitions(self):
+        smoke = [
+            sample(0, rate=48000, output_blocks=1),
+            sample(60, rate=48000, output_blocks=2),
+            sample(120, rate=48000, output_blocks=3),
+        ]
+        for entry in smoke:
+            entry["status"]["pipeline_diag"]["pcm_confirmed"] = 1
+        smoke[-1]["status"]["event_overflows"] = 10
+        result = BENCH.analyze_samples(smoke, [], "pcm-48k-smoke", {
+            "minimum_duration_s": 120,
+            "settle_s": 30,
+            "max_follow_error_millihz": 1000,
+        })
+        self.assertEqual(result["verdict"], "fail")
+        self.assertIn(
+            "event_overflows advanced by 10",
+            {failure["message"] for failure in result["failures"]})
+        self.assertNotIn("event_overflows_delta", result["metrics"])
+
+        pcm = [
+            sample(0, rate=44100, output_blocks=1),
+            sample(1, rate=44100, output_blocks=2),
+            sample(2, rate=44100, output_blocks=3),
+        ]
+        pcm[-1]["status"]["event_overflows"] = 4
+        result = BENCH.analyze_samples(pcm, [], "pcm-120s", {
+            "minimum_duration_s": 0,
+            "settle_s": 0,
+            "rate_hz": 44100,
+            "max_follow_error_millihz": 1000,
+        }, {"audio_rate_hz": 44100, "continuous_output": True})
+        self.assertEqual(result["verdict"], "fail")
+        self.assertIn("harmful-counter",
+                      {failure["code"] for failure in result["failures"]})
+
+    def test_expected_phases_option_is_validated(self):
+        samples, events = transition_fixture(with_replay=False)
+        options = {
+            "minimum_duration_s": 0,
+            "settle_s": 0,
+            "phase_samples": 2,
+            "max_follow_error_millihz": 1000,
+        }
+        rejected = (
+            ["48000", "replay"],          # no live rate transition
+            ["replay", "48000", "44100"],  # replay is not the final phase
+            [],                            # empty
+            ["48000", "96000"],            # label outside the supported set
+        )
+        for phases in rejected:
+            result = BENCH.analyze_samples(
+                samples, events, "transitions",
+                {**options, "expected_phases": phases},
+                {"old_rate_output_frames": 0})
+            codes = {failure["code"] for failure in result["failures"]}
+            self.assertIn("rate-option", codes, phases)
+            # An unjudgeable option must not also claim a sequence verdict.
+            self.assertNotIn("transition-sequence", codes, phases)
+
     def test_waveform_requires_exact_capture_correlation(self):
         samples = [
             sample(0, output_blocks=1),
@@ -635,6 +797,71 @@ class ExitSemanticsTests(unittest.TestCase):
                 })
             code, stdout, stderr = self.run_main([
                 "analyze", "pcm-120s", "--evidence", str(path),
+            ])
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(json.loads(stdout)["verdict"], "pass")
+
+
+class ExpectedPhasesCliTests(unittest.TestCase):
+    def run_main(self, argv):
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with contextlib.redirect_stdout(stdout), \
+                contextlib.redirect_stderr(stderr):
+            code = BENCH.main(argv)
+        return code, stdout.getvalue(), stderr.getvalue()
+
+    @staticmethod
+    def _options(expected_phases=None):
+        options = {
+            "settle_s": 0,
+            "phase_samples": 2,
+            "max_follow_error_millihz": 1000,
+        }
+        if expected_phases is not None:
+            options["expected_phases"] = expected_phases
+        return options
+
+    def _evidence(self, directory, expected_phases=None):
+        samples, events = transition_fixture(with_replay=False)
+        path = pathlib.Path(directory) / "transitions.jsonl"
+        evidence_file(
+            path, samples, scenario="transitions",
+            analysis_options=self._options(expected_phases),
+            external={"old_rate_output_frames": 0}, events=events)
+        return path
+
+    def test_analyze_reads_expected_phases_from_stored_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self._evidence(
+                directory, ["48000", "44100", "48000"])
+            code, stdout, stderr = self.run_main([
+                "analyze", "transitions", "--evidence", str(path),
+            ])
+        self.assertEqual(code, 0, stderr)
+        result = json.loads(stdout)
+        self.assertEqual(result["verdict"], "pass", result["failures"])
+        self.assertEqual(result["metrics"]["expected_phase_sequence"],
+                         ["48000", "44100", "48000"])
+
+    def test_analyze_without_stored_or_flagged_phases_keeps_the_default(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self._evidence(directory)
+            code, stdout, stderr = self.run_main([
+                "analyze", "transitions", "--evidence", str(path),
+            ])
+        self.assertEqual(code, 1, stderr)
+        result = json.loads(stdout)
+        self.assertIn("transition-sequence",
+                      {failure["code"] for failure in result["failures"]})
+
+    def test_expected_phases_flag_overrides_stored_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self._evidence(
+                directory, ["48000", "44100", "48000", "replay"])
+            code, stdout, stderr = self.run_main([
+                "analyze", "transitions", "--evidence", str(path),
+                "--expected-phases", "48000,44100,48000",
             ])
         self.assertEqual(code, 0, stderr)
         self.assertEqual(json.loads(stdout)["verdict"], "pass")

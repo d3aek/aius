@@ -540,6 +540,20 @@ def stimulus_followed(polls: list[dict], rate: int) -> bool:
     return any(rate == entry[1] for entry in stream_rate_timeline(polls))
 
 
+def driven_phase_labels(with_replay: bool) -> list[str]:
+    """The bench phase sequence this run actually drives, recorded into the
+    evidence metadata as the `expected_phases` analysis option.
+
+    The stimulus is 48 -> 44.1 -> 48; the loss->replay leg is driven only
+    under `--with-replay`. Without it the run plays three phases, and a
+    bench that asserts a fourth fails the gate for a phase the stimulus
+    never played rather than for anything the board did."""
+    labels = [str(REFERENCE_RATE), str(TRANSITION_RATE), str(REFERENCE_RATE)]
+    if with_replay:
+        labels.append("replay")
+    return labels
+
+
 def slot_capacity_frames(header: dict, meta: dict | None) -> int:
     """Frames one slot's ring holds. `ring_frames` is the direct statement;
     the fitted_mb/slot_count/frame_bytes arithmetic is the fallback."""
@@ -828,6 +842,7 @@ def main(argv: list[str] | None = None) -> int:
         "phase_seconds": args.phase_seconds,
         "phase_frames": tone_frames,
         "phases": phases,
+        "driven_phase_labels": driven_phase_labels(args.with_replay),
         "stream_rate_timeline": stream_rate_timeline(polls),
         "stimulus_followed": followed,
         "status_poll_interval_s": STATUS_POLL_INTERVAL_S,
@@ -854,7 +869,8 @@ def main(argv: list[str] | None = None) -> int:
     })
     if polls:
         options = {"settle_s": 0.0, "phase_samples": 2,
-                   "max_follow_error_millihz": 1000}
+                   "max_follow_error_millihz": 1000,
+                   "expected_phases": driven_phase_labels(args.with_replay)}
         if args.expect_build:
             options["expect_build"] = args.expect_build
         capture.write_evidence(output / "evidence.jsonl", "transitions",

@@ -149,9 +149,20 @@ ends left open:
   - ~~The `optical-cutover` suite fails at HEAD on a pre-existing `micros()` in
     `update()`.~~ **Fixed**: the suite's `update()` allow-list admits the
     input-fault cadence watermark's `micros()`, which moves no samples.
-  - A gate-4 *pass* is unreachable with the aplay stimulus (idle gaps between
+  - ~~A gate-4 *pass* is unreachable with the aplay stimulus (idle gaps between
     phases): needs a source that cuts the carrier between phases or an
-    analyzer decision (tool plan §Follow-on work).
+    analyzer decision.~~ **Owner ruling (d) 2026-09-02: adapt the
+    `transitions` analyzer, thresholds untouched — done** (tool plan F13 +
+    §Operator rulings (d)): live windows come from the observed labels, not
+    the positional "last window is replay" rule (a real bug that produced the
+    false `transition-unattributed-unsupported`); the analyzer judges the
+    phase sequence the capture tool declares it drove (`expected_phases` in
+    the evidence metadata); `event_overflows` is reported, not gated, in
+    `transitions` only (F8). The saved run 2 re-analyzes offline to ONE
+    remaining failure, `transition-reset-count [2, 1]`: the first aplay blip
+    cost two `service_requested_resets` (rate → unsupported at 2.10 s, then
+    carrier gone at 3.15 s), a genuine threshold left alone. Remaining: a
+    live `--with-replay` run on `b38e8448f5c8` (tool plan §Follow-on work).
 - ~~**Two deploys owed for the 2026-08-16 status-page rework.**~~ **BOTH DONE
   the same evening, owner-directed ("sync and flash"), with audio playing and
   the interruption accepted after it was costed.**

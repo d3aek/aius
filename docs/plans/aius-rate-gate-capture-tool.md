@@ -21,9 +21,10 @@ fields, the coupled analyzer fix, and the live bench/repo state as of
 2026-09-01, revised 2026-09-02.
 
 **Read §Tool defects found in review before using any recorded live number.**
-A 2026-09-02 review found nine confirmed defects in the shipped tool, and the
-first live re-run found three more in the gate-4 path (F10–F12). All are fixed
-and unit-tested. §Live-run results — 2026-09-02 carries the only results
+A 2026-09-02 review found nine confirmed defects in the shipped tool, the
+first live re-run found three more in the gate-4 path (F10–F12), and adapting
+the `transitions` analyzer to the aplay stimulus found one more (F13). All are
+fixed and unit-tested. §Live-run results — 2026-09-02 carries the only results
 produced by the fixed tool, each with its evidence digest; the 2026-09-01
 section is kept for comparison only and none of it is evidence.
 
@@ -82,7 +83,8 @@ defective tool and must be re-run** before any of it is treated as evidence.
 
 - **Shipped: the transitions descope** (aius `93610f6`). The analyzer no longer
   asserts the 32 kHz leg; `firmware/test/rate-runner/test_rate_bench.py` is
-  green (53 tests as of 2026-09-02; it was 24 when this line was first
+  green (46 cases in the file as of 2026-09-02, 64 through the suite's own
+  discovery of `test_recorder_pull.py`; it was 24 when this line was first
   written). Coupled blocker #1 below is cleared.
 - **Shipped: the capture tool** `firmware/tools/rate_gate_capture/capture.py`
   plus `firmware/test/rate-gate-capture/test_capture.py`. It implements the
@@ -91,10 +93,10 @@ defective tool and must be re-run** before any of it is treated as evidence.
   bounded-local-alignment correlation (`correlated_trim_updates`,
   `correlated_invalid_windows`, `discontinuities_outside_invalid`), the
   inferred gate-2 rate, and `old_rate_output_frames` via the flight recorder.
-  Build-sequence steps 1–5 are done. The suite is **69 tests green**
+  Build-sequence steps 1–5 are done. The suite is **72 tests green**
   (2026-09-02, `scripts/test.sh --environment native --suite
-  rate-gate-capture`); it was 19 before the review fixes and 59 before the
-  gate-4 live-run fixes (F10–F12).
+  rate-gate-capture`); it was 19 before the review fixes, 59 before the
+  gate-4 live-run fixes (F10–F12) and 69 before the stimulus adaptation.
 - **Hard part 2 resolved (design decision 2026-09-01).** `amixer -c0 controls` on
   the U24 XL shows no IEC958 capture-status control, so a true channel-status
   decode is not available on this interface. Owner ruling: **redefine the
@@ -196,6 +198,36 @@ are the citation. Every verdict is a real bench verdict, not a tool error.
   unresolved — that was F12, fixed and re-run. The earlier run at
   `--phase-seconds 1.2` (`a289bf3c…`) failed `no-transition-captured` for
   F10 and F11, not the board.
+- **Offline re-analysis (analyzer F13 + `expected_phases` +
+  `event_overflows` reported), 2026-09-02: both saved gate-4 runs still
+  FAIL, each now on one failure, and both are real.** The evidence files
+  are untouched and their digests are unchanged
+  (`6dc5f172e0ad2ea91d83da54187b5649e865606dc8e7af22803dd5e12740fda8` for
+  run 2, `132c94e1850ace90b860b9ae9d8b74250279b536193d692b0739853b41095d25`
+  for the `ce84850` run); only the analyzer changed.
+  Run 2 with `--expected-phases 48000,44100,48000`: the three baseline
+  failures (`harmful-counter` on `event_overflows` +10,
+  `transition-unattributed-unsupported`, `transition-sequence`) are gone,
+  leaving `transition-reset-count` — "per-transition requested reset deltas
+  are [2, 1], expected one each". That is a real observation, not a bench
+  artifact: `audio_diag.service_requested_resets` advances **twice** across
+  the first rate change (7→8 when the stream goes `unsupported` at 2.10 s,
+  8→9 at 3.15 s when the U24 carrier disappears entirely,
+  `stream_rate_hz 0`) and once across the second, where no carrier-gone
+  sample was polled. The one-reset-per-transition bound is an acceptance
+  threshold and was left alone. Everything else is clean:
+  `live_transition_windows [[7,13],[15,20]]` (both attributed),
+  `transition_reset_deltas [2,1]`,
+  `live_transition_rate_change_deltas [1,1]`, `rate_changes_delta 2`,
+  rate events `[44100, 48000]`, phase output blocks `[172, 45, 147]`,
+  `event_overflows_delta 10` reported. Without the flag the same run fails
+  `transition-sequence` alone.
+  The earlier `ce84850` run, same flag: fails `transition-open-gate-underrun`
+  alone — `tx_underrun_frames` +128 between two **open-gate** samples at
+  5.50→5.76 s, after the final relock, on the pre-Phase-F image. That is the
+  same post-relock transmit-ring floor gate 2 caught, i.e. the defect
+  output-jitter Phase F fixes, so the fail is legitimate; its reset deltas
+  are `[1, 1]`.
 
 ## Live-run results — 2026-09-01 (INVALIDATED, re-run required)
 
@@ -467,10 +499,16 @@ sample-builder (~lines 60-152) and ~5 `test_transition_*` cases bake the 5-phase
 sequence and `phase_index <= 3` / `unsupported_details` triple. Descope to the
 4-phase sequence, keeping the open-gate-underrun and unsupported-event cases
 meaningful. Run `scripts/test.sh --environment native --suite rate-runner` to
-green (24 tests when this was written; 53 as of 2026-09-02).
+green (24 tests when this was written; 64 as of 2026-09-02).
 
 Do NOT weaken the ≤2 trim bound or any acceptance threshold as part of this — the
 descope only removes a leg the owner already removed from scope.
+
+**Superseded in shape by operator ruling (d), 2026-09-02.** The edits above
+landed and then stopped being literal: the sequence is no longer a constant in
+the analyzer but the `expected_phases` option (default
+`48000,44100,48000,replay`), and the live transitions are derived from those
+labels rather than from `range(1, 3)`. Do not re-hard-code either.
 
 ## Integration
 
@@ -511,13 +549,25 @@ is producing that JSON faithfully.
   keeps it with `audio_rate_hz_source` / `self_referential`, and gate 2 is
   judged on continuity plus the harmful counters. No channel-status decode
   is sought on other hardware.
+- **Gate 4 stimulus: RESOLVED — (d) adapt the `transitions` analyzer to the
+  aplay-blip stimulus, thresholds untouched.** No programmable S/PDIF
+  generator is bought. The analyzer stops asserting things the stimulus never
+  declared: the phase sequence is an `expected_phases` analysis option the
+  capture tool records per run (three labels without `--with-replay`, four
+  with it), live rate windows come from the observed labels (F13), and
+  `event_overflows` is reported rather than gated **in `transitions` only**
+  (F8 — it measures the tool's poll cadence against the transition's event
+  burst; `unsupported-event-count` remains the real guard against lost events
+  breaking attribution). Every acceptance threshold inside every check is
+  unchanged, and every other scenario still gates `event_overflows`.
 
 ## Acceptance for this tool
 
 - The three reducer field-groups are unit-tested against synthetic WAVs.
-  **Done** — 69 tests in `firmware/test/rate-gate-capture/` (2026-09-02;
-  19 before the review fixes), including three that round-trip a synthetic
-  `evidence.jsonl` through the real bench analyzer and two that drive the real
+  **Done** — 72 tests in `firmware/test/rate-gate-capture/` (2026-09-02;
+  19 before the review fixes), including five that round-trip a synthetic
+  `evidence.jsonl` through the real bench analyzer (two of them the
+  recorder tool's recorded `expected_phases`) and two that drive the real
   bench `transitions` check. Run as `scripts/test.sh --environment native
   --suite rate-gate-capture`.
 - Each of gates 2, 4, 7 reaches a `pass`/`fail` verdict end-to-end on the live
@@ -554,8 +604,8 @@ tool is fixed.
 
 ## Tool defects found in review — 2026-09-02
 
-Nine confirmed findings against the shipped tool. All are fixed and
-unit-tested off-board; none has been re-proven on the board.
+Nine confirmed findings against the shipped tool (F10–F13 follow). All are
+fixed and unit-tested off-board; none has been re-proven on the board.
 
 - **F1 — inverted gate-2 rate model.** `reduce_pcm` computed
   `expected_rate × f_measured / 997`; the physical inverse is
@@ -656,6 +706,24 @@ Three more, found by the first live gate-4 run with the fixed tool
   `unresolved_fiducials` and marks the count `lower_bound: true` rather than
   contributing a silent 0.
 
+One more, found while adapting the `transitions` analyzer to the aplay-blip
+stimulus (2026-09-02, operator ruling (d) in §Operator rulings (2026-09-02)):
+
+- **F13 — live transition windows taken by position, not by label.**
+  `check_transition_dark_effects()` computed
+  `live_windows = transition_windows[:-1]`, which assumes the last window
+  always leads into `replay`. On a run that drives no replay leg the real
+  44.1→48 window is the last one, so it was dropped from the live set and its
+  dark `unsupported_episodes` advance was reported as
+  `transition-unattributed-unsupported` — a false failure for a window the
+  board handled exactly like the one before it (run 2: the 15→16 episode sits
+  in window `[15, 20]`). A window is now live iff **both** bounding observed
+  phases are numeric rates (`live_transition_positions`), so a window into or
+  out of `replay` stays non-live and every genuine rate window is attributed.
+  The live set is reported as `metrics.live_transition_windows`. No threshold
+  moved: the open-gate rules and the unsupported-event accounting are
+  unchanged.
+
 ## Follow-on work (owner input needed)
 
 - ~~Re-run gates 2, 4 and 7 with the fixed tool~~ **Done 2026-09-02**
@@ -668,11 +736,18 @@ Three more, found by the first live gate-4 run with the fixed tool
   firmware~~ **Done**: the firmware emits `slots[].rate_change_frames`,
   `rate_change_count` and `stream_end_frame` (recorder Phase C/D fixes), and
   the 2026-09-02 run measured 0 through two resolved fiducials.
-- **Gate 4 green pass.** Reached a real fail verdict end-to-end. A pass needs
-  either a stimulus source that cuts the S/PDIF carrier cleanly between rate
-  phases (a programmable generator; the aplay-on-U24 idle at ~48.02 kHz
-  between phases produces the unsupported/underrun artifacts that trip the
-  analyzer), or an owner decision to adapt the `transitions` analyzer to the
-  aplay-blip stimulus — without weakening any acceptance threshold. Note that
-  the recorded `harmful-counter` failure cited `event_overflows`, which is
-  partly the tool's own poll cadence (F8).
+- ~~Gate 4 green pass — stimulus decision owed~~ **Resolved 2026-09-02: (d)**
+  — adapt the `transitions` analyzer to the aplay-blip stimulus, no threshold
+  weakened (§Operator rulings (2026-09-02)). Shipped: `expected_phases`
+  (analysis option, `--expected-phases`, recorded per run by
+  `recorder_transitions.py`), label-derived live windows (F13), and
+  `event_overflows` reported rather than gated in `transitions` alone (F8).
+  Offline re-analysis of the two saved runs is in §Live-run results —
+  2026-09-02.
+- **Gate 4 green pass — remaining step: one live re-run.** Re-run
+  `recorder_transitions.py --with-replay` on the new image (`b38e8448f5c8`,
+  output-jitter Phase F aboard, so the reopen underruns should be 0) and
+  re-analyze. Open questions the re-run answers: whether the pre-Phase-F
+  open-gate underrun (`ce84850`) is gone, and whether the first rate change
+  still requests two service resets (run 2's only remaining failure,
+  `transition-reset-count`; the bound is a threshold and stays).

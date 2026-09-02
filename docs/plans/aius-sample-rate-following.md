@@ -897,8 +897,15 @@ The first gate runs with the fixed external capture tool
   `6dc5f172e0ad2ea91d83da54187b5649e865606dc8e7af22803dd5e12740fda8`).
   The bench's `transition-sequence` (no replay leg
   driven), `transition-unattributed-unsupported` (aplay idle gaps) and
-  `event_overflows`-only `harmful-counter` (tool poll cadence) stand as the
-  aplay-stimulus limitation, not a board finding.
+  `event_overflows`-only `harmful-counter` (tool poll cadence) stood as the
+  aplay-stimulus limitation, not a board finding. **Owner ruling (d), later
+  the same day: the analyzer now judges the sequence the stimulus declared
+  (F13 fixed the false unattributed episode; `event_overflows` reported, not
+  gated, in `transitions`), and the same evidence re-analyzes to ONE failure,
+  `transition-reset-count [2, 1]`** — the first blip cost two
+  `service_requested_resets` (rate → unsupported at 2.10 s, carrier gone at
+  3.15 s), a real threshold kept. A live `--with-replay` run on
+  `b38e8448f5c8` is the remaining step (tool plan §Follow-on work).
 
 ### Resume checkpoint after the hypervisor restart
 

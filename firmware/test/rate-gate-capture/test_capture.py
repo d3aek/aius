@@ -855,5 +855,70 @@ class RecorderAggregationTests(unittest.TestCase):
         self.assertEqual(len(result["evidence"]["slots"]), 2)
 
 
+class RecorderDrivenPhaseMetadataTests(unittest.TestCase):
+    """The recorder tool must record the phase sequence it actually drove
+    into the evidence metadata, so `analyze` judges the stimulus that ran
+    rather than the historic four-phase one."""
+
+    @staticmethod
+    def _polls(samples, events):
+        empty_events = json.dumps({"cursor": 0, "next": 0, "events": []})
+        all_events = json.dumps(
+            {"cursor": 0, "next": len(events), "events": events})
+        polls = []
+        for index, entry in enumerate(samples):
+            polls.append({
+                "elapsed_s": float(entry["elapsed_s"]),
+                "status": entry["status"],
+                "raw_status_json": json.dumps(entry["status"]),
+                "raw_events_json": all_events if index == 0 else empty_events,
+            })
+        return polls
+
+    def _analyze(self, path):
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout), \
+                contextlib.redirect_stderr(io.StringIO()):
+            code = BENCH_TEST.BENCH.main(
+                ["analyze", "transitions", "--evidence", str(path)])
+        return code, json.loads(stdout.getvalue())
+
+    def test_replay_label_only_when_the_leg_is_driven(self):
+        self.assertEqual(REC.driven_phase_labels(False),
+                         ["48000", "44100", "48000"])
+        self.assertEqual(REC.driven_phase_labels(True),
+                         ["48000", "44100", "48000", "replay"])
+
+    def test_recorded_sequence_drives_the_bench_verdict(self):
+        samples, events = BENCH_TEST.transition_fixture(with_replay=False)
+        polls = self._polls(samples, events)
+        external = json.dumps({"old_rate_output_frames": 0})
+        options = {"settle_s": 0.0, "phase_samples": 2,
+                   "max_follow_error_millihz": 1000,
+                   "expected_phases": REC.driven_phase_labels(False)}
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "evidence.jsonl"
+            CAP.write_evidence(path, "transitions", polls, options, external)
+            code, result = self._analyze(path)
+        self.assertEqual(code, 0, result.get("failures"))
+        self.assertEqual(result["metrics"]["expected_phase_sequence"],
+                         ["48000", "44100", "48000"])
+
+    def test_claiming_a_replay_leg_that_never_ran_still_fails(self):
+        samples, events = BENCH_TEST.transition_fixture(with_replay=False)
+        polls = self._polls(samples, events)
+        external = json.dumps({"old_rate_output_frames": 0})
+        options = {"settle_s": 0.0, "phase_samples": 2,
+                   "max_follow_error_millihz": 1000,
+                   "expected_phases": REC.driven_phase_labels(True)}
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "evidence.jsonl"
+            CAP.write_evidence(path, "transitions", polls, options, external)
+            code, result = self._analyze(path)
+        self.assertEqual(code, 1)
+        self.assertIn("transition-sequence",
+                      {failure["code"] for failure in result["failures"]})
+
+
 if __name__ == "__main__":
     unittest.main()

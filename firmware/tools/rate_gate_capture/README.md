@@ -200,6 +200,12 @@ reads the captured slot and reduces. Operational contracts:
   across the polls) and `stimulus_followed`; when no slot was captured and
   the polls never saw 44100, `failure_reason` is `stimulus-not-followed`
   (lengthen `--phase-seconds`), distinct from a freeze that failed to land.
+- **The run records the phase sequence it actually drove.** The evidence
+  metadata carries `analysis_options.expected_phases` — `["48000", "44100",
+  "48000"]`, plus `"replay"` only under `--with-replay` — and the bench's
+  `analyze` reads it back when `--expected-phases` is absent. Without it the
+  analyzer asserts the historic four-phase sequence and a run that never drove
+  the loss→replay leg fails `transition-sequence` for a phase nobody played.
 - **Ring capacity is checked against what the measurement needs.** The
   frames from just before the *first* rate boundary to the freeze must
   survive: `--phase-seconds × 2 + 1 s margin` against the slot's
@@ -218,7 +224,12 @@ reads the captured slot and reduces. Operational contracts:
   The poll interval is 0.25 s and is recorded as
   `status_poll_interval_s`; a `harmful-counter` failure citing
   `event_overflows` **alone** is tool-induced, not a board defect, and the
-  evidence carries that sentence verbatim in `event_overflows_note`.
+  evidence carries that sentence verbatim in `event_overflows_note`. Since
+  operator ruling (d) (2026-09-02) the bench excludes `event_overflows` from
+  the harmful gate **in `transitions` only** and reports it as
+  `metrics.event_overflows_delta`; every other scenario still fails on it,
+  and `unsupported-event-count` remains the guard against lost events
+  breaking attribution.
 
 ## Usage
 

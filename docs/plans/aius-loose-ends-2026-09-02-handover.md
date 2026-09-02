@@ -27,9 +27,9 @@ except the ITCM placement pass, whose state is below.
 **Status.** DONE: recorder-auth rule corrected, CONTRIBUTING path sweep, SD fixture,
 H1 accepted on host proof, optical-cutover and registry suites green, `staged_generation`
 advancing at SD commit, ITCM placement pass (headroom 1,108 → 5,844 B), the flash
-(`b38e8448f5c8` on the board, both firmware changes verified live). IN PROGRESS: the
-gate-4 `transitions` analyzer adaptation (design decision (d), host-side + offline
-re-analysis of the saved runs). Nothing is blocked on the operator.
+(`b38e8448f5c8` on the board, both firmware changes verified live), the gate-4
+`transitions` analyzer adaptation (design decision (d); saved run 2 re-analyzes to one
+real threshold failure). Nothing is in flight; one live step is pending the owner.
 
 ### What landed (all pushed)
 
@@ -43,13 +43,9 @@ re-analysis of the saved runs). Nothing is blocked on the operator.
 
 ### Uncommitted tree state
 
-`git_modules/aius`: the gate-4 analyzer adaptation is in flight in
-`firmware/tools/net/aius_rate_bench.py`, `firmware/tools/rate_gate_capture/capture.py`,
-`firmware/test/rate-runner/test_rate_bench.py`, `firmware/test/rate-gate-capture/
-test_capture.py` and `docs/plans/aius-rate-gate-capture-tool.md`; if those are dirty
-when you resume, the sub-agent's report never reached a commit — check the two suites
-before trusting them. `CLAUDE.md`'s deployed-image line (`b38e8448f5c8`) is a queued
-`the release-promotion step` if still clean.
+`git_modules/aius`: clean. `CLAUDE.md`'s deployed-image line (`b38e8448f5c8`) is a
+queued `the release-promotion step` if `git -C git_modules/aius status --short CLAUDE.md` is clean;
+dirty means it landed and wants a one-path `docs(aius)` commit.
 
 upstream repository root: the `git_modules/aius` pointer is bumped in the commit that carries this
 document. Every other dirty path (`.claude/**`, `data/*.sqlite`, `docs/plans/almanac.md`,
@@ -59,15 +55,14 @@ was run directly (`pnpm exec vitest run <file>`).
 
 ### Next action
 
-Land the gate-4 analyzer adaptation (design decision (d)) once its host proof is green:
-`firmware/scripts/test.sh --environment native --suite rate-runner` and
-`--suite rate-gate-capture`, plus the offline re-analysis of the saved run-2 evidence
-(`aius_rate_bench.py analyze transitions --evidence
-.scratch/9b96cdc1-b48a-4ff1-943a-37bbd052f84e/gate4-run2/evidence.jsonl
---expected-phases 48000,44100,48000` → `pass`). Then the one remaining live step: a
-gate-4 run with `--with-replay` on `b38e8448f5c8` (U24 de-auth + replay start, so an
-audio interruption the owner must accept first), recorded in
-`aius-rate-gate-capture-tool.md` §Live-run results. Retire this document with that.
+The one remaining live step: a gate-4 run with `--with-replay` on `b38e8448f5c8`
+(`firmware/tools/rate_gate_capture/recorder_transitions.py`, `--phase-seconds 2`; U24
+de-auth + replay start, so an audio interruption the owner must accept first), then
+`aius_rate_bench.py analyze transitions --evidence <run>/evidence.jsonl` (the driven
+sequence is in the metadata). Watch `transition_reset_deltas`: run 2 read `[2, 1]`
+offline (two service resets in the first blip), and whether that recurs decides if it
+is a stimulus property worth a declared allowance or a board question. Record in
+`aius-rate-gate-capture-tool.md` §Live-run results and retire this document.
 
 ### Decisions taken this session
 
@@ -134,6 +129,16 @@ audio interruption the owner must accept first), recorded in
 - `aius_codec_api` (`aius_arena.c`) and `aius_dts` stay in `ITCM_ALLOWED_LDF_LIBS`;
   `aius_dts` because its tree carries the vendored dcadec core, not a first-party
   annotation job.
+- **`transition-reset-count [2, 1]` on the saved gate-4 run 2.** The first aplay blip
+  advanced `audio_diag.service_requested_resets` twice inside one transition window
+  (stream → `unsupported` at 2.10 s, then `stream_rate_hz 0` at 3.15 s); the second
+  window polled no carrier-gone sample and advanced once; the earlier `ce84850` run read
+  `[1, 1]`. Proposed (not agreed): leave the one-reset threshold; let the live
+  `--with-replay` run say whether two edges per blip is the stimulus's shape, and only
+  then decide whether the declared stimulus may carry an allowance.
+- `final_replay_output_blocks_delta` (bench metric) keeps its name although the final
+  phase is no longer necessarily `replay`; renaming churns a published evidence field.
+  Proposed: leave.
 - `aius-open-work-register.md` is 1646 lines; the 2026-08 defect narratives dominate.
   Proposed: leave — it is the authoritative home and the doc-index tolerates it.
 

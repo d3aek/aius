@@ -34,6 +34,14 @@ SUPPORTED_RATES = (32000, 44100, 48000)
 # records `attempts` == 2 and anything above that is a transport retry.
 SAMPLE_REQUESTS = 2
 
+# Every phase label `stable_phase_labels` can emit, and the historic
+# transitions sequence. The sequence a run actually drove is an analysis
+# option (`expected_phases`): the stimulus decides whether the loss->replay
+# leg was played, and asserting a phase the stimulus never drove fails the
+# gate for the bench's own assumption rather than for the board.
+TRANSITION_PHASE_LABELS = ("32000", "44100", "48000", "replay")
+DEFAULT_TRANSITION_PHASES = ("48000", "44100", "48000", "replay")
+
 SCENARIOS = {
     "48k-10m": {"duration": 600.0, "minimum": 600.0, "settle": 30.0},
     "pcm-48k-smoke": {"duration": 120.0, "minimum": 120.0, "settle": 30.0},
@@ -436,20 +444,67 @@ def stable_phase_labels(samples, minimum_samples, max_follow_error_millihz):
     return labels, indexes
 
 
+def live_transition_positions(labels):
+    """Positions in `labels` reached by a live rate change.
+
+    A transition is live when BOTH of its bounding phases are numeric rates:
+    the board followed a carrier from one rate to another. A transition into
+    `replay` is not -- the carrier went away -- and neither is one out of it.
+    Everything the transitions scenario attributes to a live rate change
+    (dark unsupported episodes, per-window rate_changes, the rate-change
+    event list) is derived from this, so a run that drove no replay leg is
+    judged on the transitions it actually drove."""
+    return [
+        position for position in range(1, len(labels))
+        if labels[position] != labels[position - 1] and
+        labels[position] != "replay" and labels[position - 1] != "replay"
+    ]
+
+
+def expected_phases_error(labels):
+    """Why `expected_phases` is not a stimulus the transitions gate can
+    judge, or None when it is."""
+    if not isinstance(labels, (list, tuple)) or not labels:
+        return "expected_phases must be a non-empty phase-label sequence"
+    if any(not isinstance(label, str) or label not in TRANSITION_PHASE_LABELS
+           for label in labels):
+        return (f"expected_phases labels must be drawn from "
+                f"{list(TRANSITION_PHASE_LABELS)}, got {list(labels)}")
+    if any(label == "replay" for label in labels[:-1]):
+        return "expected_phases may name replay only as the final phase"
+    if not live_transition_positions(labels):
+        return ("expected_phases must contain at least one live rate "
+                "transition (two adjacent differing numeric rates)")
+    return None
+
+
 def check_common(samples, failures, metrics, allow_clock_mismatch=False,
                  allow_generation_change=False,
                  allow_dark_tx_underrun=False,
-                 allow_unsupported_episodes=False):
+                 allow_unsupported_episodes=False,
+                 allow_event_overflows=False):
     deltas = {}
     for path in COMMON_HARMFUL_COUNTERS:
         deltas[path] = accumulated_delta(samples, path)
         allowed = (
-            allow_dark_tx_underrun and
-            path == "clock.tx_underrun_frames"
+            (allow_dark_tx_underrun and
+             path == "clock.tx_underrun_frames") or
+            (allow_event_overflows and path == "event_overflows")
         )
         if deltas[path] != 0 and not allowed:
             add_failure(failures, "harmful-counter",
                         f"{path} advanced by {deltas[path]}")
+    if allow_event_overflows:
+        # Transitions only (plan defect F8): the capture tool polls
+        # /api/events on a fixed cadence, and events the board rings out
+        # between two polls are lost and counted as an overflow -- so the
+        # counter measures the tool's cadence against the transition's event
+        # burst, not a board fault. It is reported here the way
+        # transport_metrics reports http_client_drops_delta, never read as a
+        # clean zero. Lost events still cannot break attribution silently:
+        # `unsupported-event-count` fails when the event list no longer
+        # accounts for the unsupported_episodes delta.
+        metrics["event_overflows_delta"] = deltas["event_overflows"]
     if not allow_generation_change:
         for path in ("audio_diag.ingress_generation",
                      "audio_diag.service_generation_resets"):
@@ -507,13 +562,24 @@ def interval_in_transition_window(interval, windows):
     )
 
 
-def check_transition_dark_effects(samples, events, indexes, failures, metrics):
+def check_transition_dark_effects(samples, events, labels, indexes, failures,
+                                  metrics):
     transition_windows = [
         (indexes[index - 1][1], indexes[index][0])
         for index in range(1, len(indexes))
     ]
-    live_windows = transition_windows[:-1]
+    # A window is live iff both phases bounding it are numeric rates. This
+    # used to be `transition_windows[:-1]`, which assumed the last window
+    # always led into `replay`; on a stimulus that drives no replay leg that
+    # drops the final live rate window and reports its dark unsupported
+    # episode as unattributed (plan defect F13).
+    live_positions = set(live_transition_positions(labels))
+    live_windows = [
+        window for position, window in enumerate(transition_windows, start=1)
+        if position in live_positions
+    ]
     metrics["transition_windows"] = transition_windows
+    metrics["live_transition_windows"] = live_windows
 
     underruns = counter_advance_intervals(
         samples, "clock.tx_underrun_frames")
@@ -741,7 +807,8 @@ def analyze_samples(samples, events, scenario, options=None, external=None):
     check_common(samples, failures, metrics, allow_mismatch, allow_generation,
                  allow_dark_tx_underrun=(
                      allow_mismatch or allow_transition_effects),
-                 allow_unsupported_episodes=allow_transition_effects)
+                 allow_unsupported_episodes=allow_transition_effects,
+                 allow_event_overflows=allow_transition_effects)
     trim_delta = accumulated_delta(samples, "clock.trim_updates")
     invalid_delta = accumulated_delta(samples, "clock.invalid_windows")
     metrics["trim_updates_delta"] = trim_delta
@@ -862,62 +929,80 @@ def analyze_samples(samples, events, scenario, options=None, external=None):
         labels, indexes = stable_phase_labels(
             samples, minimum_samples, follow_bound)
         metrics["observed_phase_sequence"] = labels
-        expected = ["48000", "44100", "48000", "replay"]
+        # The sequence the stimulus declared it drove, not a fixed one: an
+        # aplay-driven run without the loss->replay leg plays three phases,
+        # and asserting a fourth fails the gate for a phase nobody played.
+        expected = options.get("expected_phases")
+        if expected is None:
+            expected = list(DEFAULT_TRANSITION_PHASES)
+        metrics["expected_phase_sequence"] = (
+            list(expected) if isinstance(expected, (list, tuple)) else expected)
         check_transition_dark_effects(
-            samples, events, indexes, failures, metrics)
-        if labels != expected:
-            add_failure(failures, "transition-sequence",
-                        f"observed {labels}, expected {expected}")
-        elif len(indexes) == len(expected):
-            phase_progress = []
-            for start, end in indexes:
-                phase_progress.append(accumulated_delta(
-                    samples[start:end + 1],
-                    "audio_diag.committed_output_blocks"))
-            metrics["phase_output_blocks_deltas"] = phase_progress
-            if any(delta == 0 for delta in phase_progress):
-                add_failure(failures, "transition-no-progress",
-                            "one or more accepted phases made no output progress")
+            samples, events, labels, indexes, failures, metrics)
+        phases_error = expected_phases_error(expected)
+        if phases_error:
+            add_failure(failures, "rate-option", phases_error)
+        else:
+            expected = list(expected)
+            live_positions = live_transition_positions(expected)
+            live_transitions = [
+                int(expected[position]) for position in live_positions
+            ]
+            if labels != expected:
+                add_failure(failures, "transition-sequence",
+                            f"observed {labels}, expected {expected}")
+            elif len(indexes) == len(expected):
+                phase_progress = []
+                for start, end in indexes:
+                    phase_progress.append(accumulated_delta(
+                        samples[start:end + 1],
+                        "audio_diag.committed_output_blocks"))
+                metrics["phase_output_blocks_deltas"] = phase_progress
+                if any(delta == 0 for delta in phase_progress):
+                    add_failure(
+                        failures, "transition-no-progress",
+                        "one or more accepted phases made no output progress")
 
-            reset_deltas = []
-            for transition in range(1, len(indexes)):
-                previous_end = indexes[transition - 1][1]
-                current_end = indexes[transition][1]
-                reset_deltas.append(accumulated_delta(
-                    samples[previous_end:current_end + 1],
-                    "audio_diag.service_requested_resets"))
-            metrics["transition_reset_deltas"] = reset_deltas
-            if any(delta != 1 for delta in reset_deltas):
-                add_failure(failures, "transition-reset-count",
-                            f"per-transition requested reset deltas are "
-                            f"{reset_deltas}, expected one each")
+                reset_deltas = []
+                for transition in range(1, len(indexes)):
+                    previous_end = indexes[transition - 1][1]
+                    current_end = indexes[transition][1]
+                    reset_deltas.append(accumulated_delta(
+                        samples[previous_end:current_end + 1],
+                        "audio_diag.service_requested_resets"))
+                metrics["transition_reset_deltas"] = reset_deltas
+                if any(delta != 1 for delta in reset_deltas):
+                    add_failure(failures, "transition-reset-count",
+                                f"per-transition requested reset deltas are "
+                                f"{reset_deltas}, expected one each")
 
-            rate_window_deltas = []
-            for transition in range(1, 3):
-                previous_end = indexes[transition - 1][1]
-                current_end = indexes[transition][1]
-                rate_window_deltas.append(accumulated_delta(
-                    samples[previous_end:current_end + 1],
-                    "clock.rate_changes"))
-            metrics["live_transition_rate_change_deltas"] = rate_window_deltas
-            if any(delta != 1 for delta in rate_window_deltas):
-                add_failure(failures, "rate-change-attribution",
-                            f"per-live-transition rate deltas are "
-                            f"{rate_window_deltas}, expected one each")
-        live_transitions = [44100, 48000]
-        rate_delta = accumulated_delta(samples, "clock.rate_changes")
-        metrics["rate_changes_delta"] = rate_delta
-        if rate_delta != len(live_transitions):
-            add_failure(failures, "rate-change-count",
-                        f"rate_changes advanced by {rate_delta}, expected "
-                        f"{len(live_transitions)}")
-        event_details = [
-            event["detail"] for event in events if event["type"] == 11
-        ]
-        metrics["rate_change_event_details"] = event_details
-        if event_details != live_transitions:
-            add_failure(failures, "rate-change-events",
-                        f"rate events {event_details}, expected {live_transitions}")
+                rate_window_deltas = []
+                for transition in live_positions:
+                    previous_end = indexes[transition - 1][1]
+                    current_end = indexes[transition][1]
+                    rate_window_deltas.append(accumulated_delta(
+                        samples[previous_end:current_end + 1],
+                        "clock.rate_changes"))
+                metrics[
+                    "live_transition_rate_change_deltas"] = rate_window_deltas
+                if any(delta != 1 for delta in rate_window_deltas):
+                    add_failure(failures, "rate-change-attribution",
+                                f"per-live-transition rate deltas are "
+                                f"{rate_window_deltas}, expected one each")
+            rate_delta = accumulated_delta(samples, "clock.rate_changes")
+            metrics["rate_changes_delta"] = rate_delta
+            if rate_delta != len(live_transitions):
+                add_failure(failures, "rate-change-count",
+                            f"rate_changes advanced by {rate_delta}, expected "
+                            f"{len(live_transitions)}")
+            event_details = [
+                event["detail"] for event in events if event["type"] == 11
+            ]
+            metrics["rate_change_event_details"] = event_details
+            if event_details != live_transitions:
+                add_failure(
+                    failures, "rate-change-events",
+                    f"rate events {event_details}, expected {live_transitions}")
         if isinstance(external, dict):
             old_rate_frames = external.get("old_rate_output_frames")
             if (isinstance(old_rate_frames, bool) or
@@ -1190,8 +1275,23 @@ def load_evidence(path):
     return metadata, samples, events
 
 
+def parse_expected_phases(value):
+    """Accept the CLI's comma-separated text or an already-parsed sequence
+    read back from evidence metadata; None stays None so the analyzer keeps
+    its historic default. Anything else is passed through untouched for
+    expected_phases_error to reject with a gate failure rather than a
+    traceback."""
+    if isinstance(value, str):
+        return [part.strip() for part in value.split(",")]
+    if isinstance(value, (list, tuple)):
+        return [part.strip() if isinstance(part, str) else part
+                for part in value]
+    return value
+
+
 def analysis_options_from_args(args):
     return {
+        "expected_phases": parse_expected_phases(args.expected_phases),
         "settle_s": args.settle,
         "minimum_duration_s": SCENARIOS[args.scenario]["minimum"],
         "max_follow_error_millihz": args.max_follow_error_millihz,
@@ -1250,6 +1350,12 @@ def add_analysis_arguments(parser):
     parser.add_argument("--stream-rate", type=int, choices=SUPPORTED_RATES)
     parser.add_argument("--codec", choices=("dts", "ac3"))
     parser.add_argument("--phase-samples", type=int)
+    parser.add_argument(
+        "--expected-phases",
+        help="transitions: comma-separated phase sequence the stimulus "
+             "drives, from 32000/44100/48000/replay (default "
+             "48000,44100,48000,replay; drop the replay leg when it is not "
+             "driven)")
     parser.add_argument("--max-follow-error-millihz", type=int)
     parser.add_argument("--expect-build")
     parser.add_argument("--external-observation")
@@ -1315,6 +1421,7 @@ def main(argv=None):
                     ("stream_rate", "stream_rate_hz", None),
                     ("codec", "codec", None),
                     ("phase_samples", "phase_samples", 2),
+                    ("expected_phases", "expected_phases", None),
                     ("max_follow_error_millihz",
                      "max_follow_error_millihz", 1000),
                     ("expect_build", "expect_build", None)):
