@@ -181,13 +181,35 @@ reads the captured slot and reduces. Operational contracts:
 
 - **The captured slot is the header's `newest_frozen_slot`** (fallback: the
   frozen slot with the highest `freeze_generation`), and its
-  `freeze_generation` must be newer than the pre-run baseline. The old
-  `(active_slot − 1) % slot_count` guess assumed the bank's auto-advance had
-  landed within a 0.6 s sleep, which is a race, not a fact.
-- **Ring capacity is checked against the phase budget.** `--phase-seconds ×
-  3 phases + aplay latency` must fit the slot's `ring_frames`, or the first
-  phase and its rate change roll off the front before the freeze; the tool
-  refuses (exit 3) unless `--allow-rolloff`.
+  `(slot, freeze_generation)` identity must not already have been frozen at
+  the pre-run baseline. `freeze_generation` is **per slot** (it counts that
+  slot's thaws and starts at 0), so a generation compared across slots says
+  nothing: on a fresh boot every frozen slot reads 0, and the earlier
+  "newer than the baseline generation" check rejected every real capture.
+  The evidence records `baseline_frozen_identities` and `captured_trigger`.
+  The old `(active_slot − 1) % slot_count` guess assumed the bank's
+  auto-advance had landed within a 0.6 s sleep, which is a race, not a fact.
+- **Phases are played by frame count, not whole seconds.** `aplay -d`
+  truncates `--phase-seconds 1.2` to 1 s, which is shorter than the board's
+  follow latency: the board sits in `unsupported` for the whole 44.1 kHz
+  phase and stamps no rate change (observed 2026-09-02). The tool reads each
+  tone's rate from its WAV header and passes `aplay --samples`; the frame
+  counts are in the evidence as `phase_frames`.
+- **A phase the board never followed is named as such.** The evidence
+  carries `stream_rate_timeline` (every change of `clock.stream_rate_hz`
+  across the polls) and `stimulus_followed`; when no slot was captured and
+  the polls never saw 44100, `failure_reason` is `stimulus-not-followed`
+  (lengthen `--phase-seconds`), distinct from a freeze that failed to land.
+- **Ring capacity is checked against what the measurement needs.** The
+  frames from just before the *first* rate boundary to the freeze must
+  survive: `--phase-seconds × 2 + 1 s margin` against the slot's
+  `ring_frames` (the first phase's body is not needed, only its last block).
+  The tool refuses (exit 3) unless `--allow-rolloff`. Against the board's
+  262144-frame slot this admits 2 s phases (240000 frames).
+- **A fiducial with no measurable change is a lower bound, not a 0.** When
+  the output never changes within the search window after a declared rate
+  change (or the pre-fiducial rate cannot be classified), the slot lists it
+  in `unresolved_fiducials` and the evidence marks `lower_bound: true`.
 - **The recorder config is restored.** `disable_auto_triggers` mutates the
   board's *persistent* recorder config; the previous config is read from the
   header before the run and re-PUT in a `finally`.

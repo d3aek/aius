@@ -73,6 +73,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import wave
 from pathlib import Path
 
 import numpy as np
@@ -114,9 +115,15 @@ STATUS_POLL_NOTE = (
     "cites event_overflows ALONE is therefore tool-induced and not a board "
     "defect; any other harmful counter, or event_overflows alongside one, is "
     "a real finding.")
-# aplay start-up plus the board's follow latency, added to the phase budget
-# when checking the recorder ring can hold the whole transition.
-APLAY_LATENCY_S = 1.5
+# Margin added to the retention budget when checking the recorder ring can
+# hold the transition: aplay start-up per phase plus the freeze delay. The
+# board's follow latency is NOT in it -- a slow follow puts the first
+# fiducial later, i.e. nearer the freeze, so ignoring it is conservative.
+STIMULUS_MARGIN_S = 1.0
+# The rate the middle phase is played at; the run is REFERENCE -> this ->
+# REFERENCE, and the status polls must show the board reaching it or the
+# phase was shorter than the board's follow latency.
+TRANSITION_RATE = 44100
 
 
 def samples_per_cycle(segment: np.ndarray) -> float | None:
@@ -265,17 +272,32 @@ def reduce_slot(frames: np.ndarray, fiducials) -> dict:
     if supplied["fiducials_usable"] and supplied["fiducial_frames"]:
         stale = 0
         detected: list[int | None] = []
+        unresolved: list[int] = []
         for fiducial in supplied["fiducial_frames"]:
             change = rate_change_frame(mono, int(fiducial))
             detected.append(None if change is None else int(change))
             if change is not None:
                 stale += max(0, int(change) - int(fiducial))
+            else:
+                unresolved.append(int(fiducial))
         record.update({
             "method": "fiducial (slots[].rate_change_frames)",
-            "lower_bound": False,
+            "lower_bound": bool(unresolved),
             "rate_change_frames_detected": detected,
+            "unresolved_fiducials": unresolved,
             "stale_frames": int(stale),
         })
+        if unresolved:
+            # A fiducial with no measurable change contributes 0 above, which
+            # is the one value it must not silently read as: either the
+            # pre-fiducial rate could not be classified or the output never
+            # changed within the search window (the stale run then exceeds
+            # the window). Say so rather than report a clean 0.
+            record["lower_bound_note"] = (
+                f"{len(unresolved)} fiducial(s) had no measurable output-rate "
+                f"change within {FIDUCIAL_SEARCH_FRAMES} frames (or no "
+                f"classifiable pre-fiducial rate) and contributed 0; the "
+                f"count is a lower bound, not a measurement")
         return record
     stale = stale_old_rate_frames(runs)
     record.update({
@@ -324,6 +346,7 @@ def reduce_recorder_transitions(slots: list[np.ndarray],
     total_stale = 0
     evidence = []
     lower_bound = False
+    methods: list[str] = []
     for index, frames in enumerate(slots):
         fiducials = None
         if fiducial_sets is not None and index < len(fiducial_sets):
@@ -332,6 +355,8 @@ def reduce_recorder_transitions(slots: list[np.ndarray],
         record["slot_index"] = index
         total_stale += record["stale_frames"]
         lower_bound = lower_bound or record["lower_bound"]
+        if record["method"] not in methods:
+            methods.append(record["method"])
         evidence.append(record)
     return {
         "external": {
@@ -343,8 +368,7 @@ def reduce_recorder_transitions(slots: list[np.ndarray],
             "reference_rate_hz": REFERENCE_RATE,
             "captured_slots": len(slots),
             "lower_bound": lower_bound,
-            "method": ("run-length (no fiducial)" if lower_bound
-                       else "fiducial (slots[].rate_change_frames)"),
+            "method": methods[0] if len(methods) == 1 else " + ".join(methods),
             "slots": evidence,
         },
     }
@@ -436,6 +460,67 @@ def newest_frozen_slot(header: dict) -> dict | None:
     return max(frozen, key=lambda slot: int(slot.get("freeze_generation") or 0))
 
 
+def frozen_identities(header: dict) -> set[tuple[int, int]]:
+    """(slot, freeze_generation) of every frozen slot in a header.
+
+    `freeze_generation` is PER SLOT: it counts that slot's own thaws
+    (aius_recorder.h:56) and starts at 0, so comparing it across slots says
+    nothing -- on a fresh boot every frozen slot reads 0 and a "newer than
+    the baseline generation" check rejects every real capture. The pair is
+    the identity of one frozen capture: a slot refrozen after a thaw carries
+    the next generation, and a slot that was not frozen at baseline is new
+    by construction."""
+    identities: set[tuple[int, int]] = set()
+    for slot in header.get("slots") or []:
+        if slot.get("state") != "frozen":
+            continue
+        identities.add((int(slot.get("slot")),
+                        int(slot.get("freeze_generation") or 0)))
+    return identities
+
+
+def captured_slot(header: dict,
+                  baseline: set[tuple[int, int]]) -> dict | None:
+    """The slot this run's freeze produced: the newest frozen slot, unless
+    it is a capture that already existed before the run (its identity is in
+    `baseline`), in which case the freeze never landed and there is nothing
+    to measure."""
+    meta = newest_frozen_slot(header)
+    if meta is None:
+        return None
+    identity = (int(meta.get("slot")),
+                int(meta.get("freeze_generation") or 0))
+    if identity in baseline:
+        return None
+    return meta
+
+
+def stream_rate_timeline(polls: list[dict]) -> list[list]:
+    """(elapsed_s, stream_rate_hz) at every change of the board's reported
+    stream rate across the run's status polls -- the run's own record of
+    whether the board followed each stimulus phase."""
+    timeline: list[list] = []
+    last = None
+    for poll in polls:
+        clock = (poll.get("status") or {}).get("clock") or {}
+        rate = clock.get("stream_rate_hz")
+        if rate is None or rate == last:
+            continue
+        timeline.append([round(float(poll.get("elapsed_s") or 0.0), 3),
+                         int(rate)])
+        last = rate
+    return timeline
+
+
+def stimulus_followed(polls: list[dict], rate: int) -> bool:
+    """Whether any status poll saw the board's stream rate reach `rate`. A
+    run whose middle phase is shorter than the board's follow latency never
+    switches (the board sits in `unsupported` for the whole phase), stamps
+    no fiducial, and must be reported as a stimulus problem rather than a
+    freeze that failed to land."""
+    return any(rate == entry[1] for entry in stream_rate_timeline(polls))
+
+
 def slot_capacity_frames(header: dict, meta: dict | None) -> int:
     """Frames one slot's ring holds. `ring_frames` is the direct statement;
     the fitted_mb/slot_count/frame_bytes arithmetic is the fallback."""
@@ -448,12 +533,28 @@ def slot_capacity_frames(header: dict, meta: dict | None) -> int:
 
 
 def required_capture_frames(phase_seconds: float, phases: int, rate: int,
-                            latency_s: float = APLAY_LATENCY_S) -> int:
-    """Frames the recorder must hold for the whole transition to stay in the
-    ring. A shorter ring rolls the first phase (and its rate change) off the
-    front, and the reduction then measures a transition that is no longer
-    there."""
-    return int((phase_seconds * phases + latency_s) * rate)
+                            latency_s: float = STIMULUS_MARGIN_S) -> int:
+    """Frames the recorder must still hold at the freeze for every rate
+    change to be measurable: from just before the FIRST rate boundary to
+    the freeze, i.e. the last `phases - 1` phases plus the stimulus margin.
+    The body of the first phase need not survive -- the measurement only
+    reads one classify block before each fiducial -- but a ring shorter
+    than this rolls the first fiducial off the front before the freeze and
+    the reduction then measures a transition that is no longer there."""
+    return int((phase_seconds * (phases - 1) + latency_s) * rate)
+
+
+def tone_rate_hz(path: Path) -> int:
+    """Sample rate of a stimulus WAV, so a phase can be expressed to aplay
+    in frames (`--samples`) rather than whole seconds (`--duration`
+    truncates 1.2 s to 1 s, which is shorter than the board's follow
+    latency and produces a run with no rate change at all)."""
+    with wave.open(str(path), "rb") as tone:
+        return int(tone.getframerate())
+
+
+def phase_frames(phase_seconds: float, rate: int) -> int:
+    return int(round(phase_seconds * rate))
 
 
 def usb_authorize(path: str, value: int) -> None:
@@ -582,9 +683,7 @@ def main(argv: list[str] | None = None) -> int:
     # first boundary rolls off the front before the freeze.
     phases = 3
     baseline_header = client.header()
-    baseline_slot = newest_frozen_slot(baseline_header)
-    baseline_generation = int(
-        (baseline_slot or {}).get("freeze_generation") or 0)
+    baseline = frozen_identities(baseline_header)
     capacity = slot_capacity_frames(
         baseline_header,
         (baseline_header.get("slots") or [None])[0])
@@ -592,13 +691,19 @@ def main(argv: list[str] | None = None) -> int:
                                        REFERENCE_RATE)
     if capacity and required > capacity and not args.allow_rolloff:
         print(
-            f"recorder slot holds {capacity} frames; the "
-            f"{args.phase_seconds:g}s x {phases}-phase transition plus "
-            f"{APLAY_LATENCY_S:g}s stimulus latency needs {required}. The "
-            f"first phase and its rate change would roll off the ring "
+            f"recorder slot holds {capacity} frames; the last "
+            f"{phases - 1} of the {args.phase_seconds:g}s x {phases}-phase "
+            f"transition plus {STIMULUS_MARGIN_S:g}s stimulus margin needs "
+            f"{required}. The first rate change would roll off the ring "
             f"before the freeze. Shorten --phase-seconds or pass "
             f"--allow-rolloff to run anyway.", file=sys.stderr)
         return 3
+    tone_frames = {
+        str(args.tone_48): phase_frames(args.phase_seconds,
+                                        tone_rate_hz(args.tone_48)),
+        str(args.tone_44): phase_frames(args.phase_seconds,
+                                        tone_rate_hz(args.tone_44)),
+    }
 
     previous_config = dict(baseline_header.get("config") or {})
 
@@ -626,8 +731,10 @@ def main(argv: list[str] | None = None) -> int:
             time.sleep(STATUS_POLL_INTERVAL_S)
 
     def aplay(tone: Path) -> None:
+        # --samples, not --duration: aplay's -d is whole seconds and would
+        # truncate a fractional phase below the board's follow latency.
         subprocess.run(["aplay", "-D", args.device,
-                        "-d", str(int(args.phase_seconds)), str(tone)],
+                        "-s", str(tone_frames[str(tone)]), str(tone)],
                        capture_output=True, check=False)
 
     poller = threading.Thread(target=poll_loop, daemon=True)
@@ -645,14 +752,12 @@ def main(argv: list[str] | None = None) -> int:
         time.sleep(0.6)
 
         # Identify the captured slot NOW, before the replay leg perturbs the
-        # bank, and only accept one whose freeze_generation is newer than the
-        # pre-run baseline -- otherwise a freeze that never landed reads back
-        # as somebody else's older capture.
+        # bank, and only accept one that did not already exist at baseline
+        # -- otherwise a freeze that never landed reads back as somebody
+        # else's older capture. Identity is the per-slot (slot,
+        # freeze_generation) pair; see frozen_identities.
         header = client.header()
-        meta = newest_frozen_slot(header)
-        if meta is not None and int(
-                meta.get("freeze_generation") or 0) <= baseline_generation:
-            meta = None
+        meta = captured_slot(header, baseline)
 
         if args.with_replay:
             try:
@@ -690,20 +795,35 @@ def main(argv: list[str] | None = None) -> int:
             meta["valid_frames"], meta["oldest_frame"]))
         fiducial_sets.append(fiducials_from_slot(meta))
     reduced = reduce_recorder_transitions(slots, fiducial_sets)
+    followed = stimulus_followed(polls, TRANSITION_RATE)
     reduced["evidence"].update({
         "captured_slot": None if meta is None else meta.get("slot"),
+        "captured_trigger": None if meta is None
+        else (meta.get("trigger") or {}).get("which"),
         "slot_rate_changes": None if meta is None else meta.get("rate_changes"),
-        "baseline_freeze_generation": baseline_generation,
+        "baseline_frozen_identities": sorted(list(pair) for pair in baseline),
         "freeze_generation": None if meta is None
         else meta.get("freeze_generation"),
         "slot_capacity_frames": capacity,
         "required_capture_frames": required,
         "phase_seconds": args.phase_seconds,
+        "phase_frames": tone_frames,
         "phases": phases,
+        "stream_rate_timeline": stream_rate_timeline(polls),
+        "stimulus_followed": followed,
         "status_poll_interval_s": STATUS_POLL_INTERVAL_S,
         "event_overflows_note": STATUS_POLL_NOTE,
         "recorder_config_restored": bool(previous_config),
     })
+    if not slots and not followed:
+        reduced["evidence"]["failure_reason"] = "stimulus-not-followed"
+        reduced["evidence"]["failure_reason_note"] = (
+            f"the status polls never saw stream_rate_hz reach "
+            f"{TRANSITION_RATE}: the {args.phase_seconds:g}s middle phase "
+            f"was shorter than the board's follow latency, so no rate change "
+            f"was stamped and there was nothing to freeze. Lengthen "
+            f"--phase-seconds; this is a stimulus problem, not a freeze that "
+            f"failed to land")
 
     external_raw = json.dumps(reduced["external"])
     capture.write_json(output / "external-observation.json", reduced["external"])
@@ -723,9 +843,11 @@ def main(argv: list[str] | None = None) -> int:
         capture.announce_evidence(output / "evidence.jsonl")
     print(json.dumps(reduced["external"], indent=2, sort_keys=True))
     if not slots:
-        print("transitions FAILED: no-transition-captured "
-              "(no frozen slot with a rate change newer than the pre-run "
-              "baseline)", file=sys.stderr)
+        reason = reduced["evidence"].get("failure_reason_note") or (
+            "no frozen slot with a rate change that did not already exist "
+            "at the pre-run baseline")
+        print(f"transitions FAILED: no-transition-captured ({reason})",
+              file=sys.stderr)
         return 2
     return 0
 

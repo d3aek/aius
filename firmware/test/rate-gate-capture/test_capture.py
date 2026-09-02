@@ -556,6 +556,18 @@ class RecorderFiducialTests(unittest.TestCase):
         runs = REC.output_rate_runs(REC.classify_output_rates(stream[:, 0]))
         self.assertEqual(REC.stale_old_rate_frames(runs), 0)
 
+    def test_unresolved_fiducial_marks_the_count_a_lower_bound(self):
+        """A fiducial after which the output never changes contributes 0,
+        which is the one value it must not silently read as."""
+        stream = output_stream([(48000, 60000)])
+        result = REC.reduce_recorder_transitions([stream], [[20000]])
+        self.assertEqual(result["external"]["old_rate_output_frames"], 0)
+        self.assertTrue(result["evidence"]["lower_bound"])
+        slot = result["evidence"]["slots"][0]
+        self.assertEqual(slot["unresolved_fiducials"], [20000])
+        self.assertEqual(slot["rate_change_frames_detected"], [None])
+        self.assertIn("lower bound", slot["lower_bound_note"])
+
     def test_missing_fiducial_marks_the_count_a_lower_bound(self):
         stream = output_stream([(48000, 24096), (44100, 20000)])
         result = REC.reduce_recorder_transitions([stream], [[]])
@@ -716,11 +728,91 @@ class RecorderSlotSelectionTests(unittest.TestCase):
             REC.slot_capacity_frames(header, {"ring_frames": 0}),
             8 * 1024 * 1024 // 3 // 8)
 
-    def test_required_frames_cover_every_phase_plus_latency(self):
-        required = REC.required_capture_frames(2.0, 3, 48000, latency_s=1.5)
-        self.assertEqual(required, int((2.0 * 3 + 1.5) * 48000))
+    def test_required_frames_cover_the_last_phases_plus_margin(self):
+        """Only the frames from just before the FIRST rate boundary to the
+        freeze must survive: the last phases - 1 phases plus the margin,
+        not the whole stimulus. Demanding all three phases refused every
+        2 s run against the board's 262144-frame slot for no reason."""
+        required = REC.required_capture_frames(2.0, 3, 48000, latency_s=1.0)
+        self.assertEqual(required, int((2.0 * 2 + 1.0) * 48000))
+        self.assertLessEqual(required, 262144)
         self.assertGreater(required, REC.required_capture_frames(
-            1.0, 3, 48000, latency_s=1.5))
+            1.0, 3, 48000, latency_s=1.0))
+
+    def test_frozen_identities_are_per_slot_pairs(self):
+        header = self._header()
+        self.assertEqual(REC.frozen_identities(header), {(0, 4), (2, 9)})
+
+    def test_captured_slot_accepts_a_fresh_slot_at_generation_zero(self):
+        """The live 2026-09-02 failure: on a fresh boot every slot's
+        freeze_generation is 0 (it is per slot and counts thaws), so a
+        "newer generation than baseline" check rejected the run's own
+        freeze. A slot that was not frozen at baseline is new whatever its
+        generation reads."""
+        before = self._header(newest_frozen_slot=0, slots=[
+            {"slot": 0, "state": "frozen", "freeze_generation": 0},
+            {"slot": 1, "state": "frozen", "freeze_generation": 0},
+            {"slot": 2, "state": "recording", "freeze_generation": 0},
+        ])
+        after = self._header(newest_frozen_slot=2, slots=[
+            {"slot": 0, "state": "frozen", "freeze_generation": 0},
+            {"slot": 1, "state": "frozen", "freeze_generation": 0},
+            {"slot": 2, "state": "frozen", "freeze_generation": 0},
+        ])
+        meta = REC.captured_slot(after, REC.frozen_identities(before))
+        self.assertIsNotNone(meta)
+        self.assertEqual(meta["slot"], 2)
+
+    def test_captured_slot_rejects_a_capture_that_existed_at_baseline(self):
+        header = self._header(newest_frozen_slot=2)
+        self.assertIsNone(
+            REC.captured_slot(header, REC.frozen_identities(header)))
+
+    def test_captured_slot_accepts_a_refrozen_slot_by_generation(self):
+        before = self._header(newest_frozen_slot=2)
+        after = self._header(newest_frozen_slot=2, slots=[
+            {"slot": 0, "state": "frozen", "freeze_generation": 4},
+            {"slot": 1, "state": "armed", "freeze_generation": 0},
+            {"slot": 2, "state": "frozen", "freeze_generation": 10},
+        ])
+        meta = REC.captured_slot(after, REC.frozen_identities(before))
+        self.assertEqual((meta["slot"], meta["freeze_generation"]), (2, 10))
+
+    def test_phase_frames_keep_fractional_seconds(self):
+        """aplay -d truncates 1.2 s to 1 s; the phase is expressed in
+        frames (--samples) so a fractional phase plays in full."""
+        self.assertEqual(REC.phase_frames(1.2, 48000), 57600)
+        self.assertEqual(REC.phase_frames(1.2, 44100), 52920)
+
+    def test_tone_rate_is_read_from_the_wav_header(self):
+        import wave
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "tone.wav"
+            with wave.open(str(path), "wb") as handle:
+                handle.setnchannels(2)
+                handle.setsampwidth(2)
+                handle.setframerate(44100)
+                handle.writeframes(b"\x00" * 16)
+            self.assertEqual(REC.tone_rate_hz(path), 44100)
+
+    def _polls(self, rates):
+        return [{"elapsed_s": float(index) * 0.25,
+                 "status": {"clock": {"stream_rate_hz": rate}}}
+                for index, rate in enumerate(rates)]
+
+    def test_stream_rate_timeline_collapses_to_changes(self):
+        polls = self._polls([48000, 48000, 44100, 44100, 48000])
+        self.assertEqual(REC.stream_rate_timeline(polls),
+                         [[0.0, 48000], [0.5, 44100], [1.0, 48000]])
+
+    def test_stimulus_followed_needs_the_target_rate_in_the_polls(self):
+        """The 2026-09-02 1 s-phase run: the board sat in `unsupported` at
+        48000 for the whole 44.1 kHz phase, so nothing was stamped. That
+        is a stimulus problem and must be named as one."""
+        self.assertFalse(REC.stimulus_followed(
+            self._polls([48000, 48000, 48000, 0, 48000]), 44100))
+        self.assertTrue(REC.stimulus_followed(
+            self._polls([48000, 44100, 48000]), 44100))
 
 
 class RecorderAggregationTests(unittest.TestCase):
