@@ -847,6 +847,14 @@ struct AppFake {
 	unsigned status_calls;
 	unsigned reboot_calls;
 	unsigned usb_payload_calls;
+	/* Recorder read lease. `recorder_read_ok` flips the read from its
+	 * default refusal to a 200 that borrows recorder_body, which is what
+	 * arms the response's completion hook; the counters then prove the
+	 * borrow is given back. */
+	bool recorder_read_ok;
+	unsigned recorder_acquires;
+	unsigned recorder_releases;
+	unsigned recorder_release_slot;
 };
 
 static AppFake g_app;
@@ -1059,26 +1067,39 @@ static bool app_recorder_config(void *context, uint32_t mask,
 	return true;
 }
 
+/* The bytes a 200 borrows. Static so the pointer the response hands the
+ * transport outlives every step of the send, exactly as the PSRAM ring does on
+ * target, and AIUS_HTTP_MAX_BODY-sized so it takes the STREAM path
+ * (> AIUS_HTTP_MAX_RESPONSE, so no copy) and needs many AIUS_HTTP_TX_QUOTA
+ * writes to drain -- both true of a real recorder chunk, which runs to
+ * AIUS_RECORDER_READ_MAX_BYTES. The many-writes part is what lets a test drop
+ * the link with the borrow still genuinely outstanding. */
+static uint8_t g_recorder_chunk[AIUS_HTTP_MAX_BODY];
+
 static AiusOpticalAppRecorderReadResult app_recorder_read(
 	void *context, bool has_slot, uint32_t slot, uint32_t offset_bytes,
 	uint32_t length_bytes, uint32_t generation, const uint8_t **data,
 	uint32_t *length, uint32_t *resolved_slot)
 {
-	(void)context;
+	AppFake *fake = (AppFake *)context;
 	(void)has_slot;
 	(void)offset_bytes;
 	(void)length_bytes;
 	(void)generation;
-	(void)data;
-	(void)length;
 	*resolved_slot = slot;
-	return AIUS_OPTICAL_APP_RECORDER_READ_REFUSED;
+	if (!fake->recorder_read_ok)
+		return AIUS_OPTICAL_APP_RECORDER_READ_REFUSED;
+	*data = g_recorder_chunk;
+	*length = (uint32_t)sizeof(g_recorder_chunk);
+	fake->recorder_acquires++;
+	return AIUS_OPTICAL_APP_RECORDER_READ_OK;
 }
 
 static void app_recorder_read_release(void *context, uint32_t slot)
 {
-	(void)context;
-	(void)slot;
+	AppFake *fake = (AppFake *)context;
+	fake->recorder_releases++;
+	fake->recorder_release_slot = slot;
 }
 
 static AiusOpticalApp app_table(void)
@@ -3532,13 +3553,17 @@ static void test_storage_diagnostics(void)
 static void test_teardown_ordering(void)
 {
 	static const char *const keys[] = {
-		"teardown.http-discarded-first", "teardown.storage-released"
+		"teardown.http-discarded-first", "teardown.storage-released",
+		"teardown.recorder-lease-released"
 	};
 	uint32_t now_ms = 1u;
 	static const char *const download_request =
 		"GET /sd/www/data.bin HTTP/1.1\r\nHost: aius\r\n\r\n";
+	static const char *const recorder_request =
+		"GET /api/recorder/data?offset=0&length=8&generation=0 HTTP/1.1\r\n"
+		"Host: aius\r\nX-Aius-SD-Auth: token\r\n\r\n";
 
-	validate_unique_keys("registry.teardown", keys, ARRAY_COUNT(keys), 2u);
+	validate_unique_keys("registry.teardown", keys, ARRAY_COUNT(keys), 3u);
 
 	current_key = "teardown.http-discarded-first";
 	reset_world(false);
@@ -3580,6 +3605,74 @@ static void test_teardown_ordering(void)
 		CHECK(g_runtime.storage.terminal_seen);
 		CHECK(!g_sd.file_open);
 	}
+
+	/* A recorder-data 200 borrows a pointer into a bank slot and takes that
+	 * slot's read lease, released only by the response's completion hook. A
+	 * teardown mid-stream reaches none of the hook's ordinary terminals --
+	 * no send completes, nothing recycles, no close arrives -- so before
+	 * aius_http_transaction_discard() the lease leaked for the rest of the
+	 * boot, and the bank stopped recording once its round-robin reached the
+	 * pinned slot. End-to-end through the real composition: the response is
+	 * still draining when the link drops. */
+	current_key = "teardown.recorder-lease-released";
+	reset_world(false);
+	now_ms = 1u;
+	bring_online(&now_ms);
+	g_app.recorder_read_ok = true;
+	g_net.client_pending = true;
+	g_net.rx = (const uint8_t *)recorder_request;
+	g_net.rx_length = strlen(recorder_request);
+	g_net.rx_offset = 0u;
+	{
+		unsigned guard = 0u;
+
+		while (guard < 40u && g_app.recorder_acquires == 0u) {
+			CHECK(run_epoch(now_ms++));
+			guard++;
+		}
+	}
+	CHECK(g_app.recorder_acquires == 1u);
+	CHECK(g_app.recorder_releases == 0u);
+	CHECK(g_runtime.app.recorder_lease_active);
+	/* The acquire happens inside the DISPATCH; the transaction accepts the
+	 * response on a later epoch. Drive to the point the borrowed body is
+	 * actually on the wire. */
+	{
+		unsigned guard = 0u;
+
+		while (guard < 40u &&
+		       !g_runtime.network_http.http.response_streams_body) {
+			CHECK(run_epoch(now_ms++));
+			guard++;
+		}
+	}
+	/* The borrow is genuinely mid-flight: the streamed body has not drained,
+	 * so no ordinary terminal is anywhere near. */
+	CHECK(g_runtime.network_http.http.response_streams_body);
+	CHECK(g_runtime.network_http.http.stream_body_offset <
+	      g_runtime.network_http.http.stream_body_length);
+	CHECK(g_app.recorder_releases == 0u);
+
+	g_net.link = AIUS_NETWORK_TEENSY_LINK_DOWN;
+	{
+		/* The teardown is applied when the adapter leaves the published
+		 * generation; http_discarded itself is a one-epoch flag the runtime
+		 * consumes, so it cannot be polled. */
+		unsigned guard = 0u;
+
+		while (guard < 20u && g_runtime.network_http.target.online) {
+			CHECK(run_epoch(now_ms++));
+			guard++;
+		}
+	}
+	CHECK(!g_runtime.network_http.target.online);
+	/* The transaction was thrown away mid-stream, so no ordinary terminal
+	 * ran -- yet the borrow came back, exactly once. */
+	CHECK(!g_runtime.network_http.http.response_streams_body);
+	CHECK(g_app.recorder_releases == 1u);
+	CHECK(!g_runtime.app.recorder_lease_active);
+	/* Repaired at the teardown, so a later read finds no leak to clean up. */
+	CHECK(g_runtime.app.recorder_lease_leaks == 0u);
 }
 
 /* ------------------------------------------------------------------ */

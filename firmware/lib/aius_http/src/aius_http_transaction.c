@@ -1612,6 +1612,17 @@ static FLASHMEM void drive_cleanup(AiusHttpTransaction *transaction,
 	restart_idle(transaction);
 }
 
+/* See the header: the teardown path's terminal, for a transaction that will
+ * never reach one of its own. Refusing a not-yet-valid object is what makes it
+ * safe to call from the same http_init() that runs at construction, where the
+ * struct has only just been memset and carries no hook. */
+FLASHMEM void aius_http_transaction_discard(AiusHttpTransaction *transaction)
+{
+	if (transaction == NULL || !transaction->valid)
+		return;
+	settle_sd(transaction, false);
+}
+
 FLASHMEM void aius_http_transaction_init(AiusHttpTransaction *transaction,
 	                            uint8_t *request, size_t request_capacity,
 	                            uint8_t *response, size_t response_capacity,

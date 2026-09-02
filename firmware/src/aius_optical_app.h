@@ -280,15 +280,18 @@ typedef struct {
 	 * necessarily a later transaction under the single-transaction HTTP
 	 * model.
 	 *
-	 * recorder_read addresses one bank slot: has_slot false reads the
-	 * active slot (the pre-bank single-shot contract), true reads
-	 * slots[slot] (out-of-range slot -> READ_INVALID -> 400). On READ_OK it
-	 * writes the resolved slot index to *resolved_slot AND takes that
-	 * slot's read lease (aius_recorder_bank_read_acquire), so the FROZEN
-	 * slot cannot be recycled out from under the borrowed pointer while the
-	 * response streams. The lease is dropped by recorder_read_release,
-	 * which the dispatcher calls on the NEXT dispatch -- the borrow
-	 * invariant's end-of-life for every immediate response (see the
+	 * recorder_read addresses one bank slot: has_slot true reads
+	 * slots[slot] (out-of-range slot -> READ_INVALID -> 400); has_slot
+	 * false reads the NEWEST FROZEN slot, and answers READ_REFUSED (409)
+	 * when no slot is frozen. It is deliberately NOT the active slot: the
+	 * bank advances `active` in the same drain that freezes a slot, so an
+	 * "active slot" default would refuse every fresh capture the moment it
+	 * became readable. On READ_OK it writes the resolved slot index to
+	 * *resolved_slot AND takes that slot's read lease
+	 * (aius_recorder_bank_read_acquire), so the FROZEN slot cannot be
+	 * recycled out from under the borrowed pointer while the response
+	 * streams. The lease is dropped by recorder_read_release, which the
+	 * dispatcher calls from the response's own completion hook (see the
 	 * dispatcher struct's borrow note). resolved_slot / the acquire are set
 	 * only on READ_OK; the other two verdicts borrow nothing and take no
 	 * lease. */
@@ -660,9 +663,18 @@ typedef struct {
 	 * drops the lease. `recorder_lease_slot` carries the borrowed slot to
 	 * that hook (only one read is ever in flight -- the transaction is
 	 * single-shot per request); `recorder_lease_active` guards it so the
-	 * hook releases at most once and never when no borrow is live. */
+	 * hook releases at most once and never when no borrow is live.
+	 *
+	 * `recorder_lease_leaks` counts the times a data read found a lease
+	 * STILL active and had to drop it itself. That must not happen: the
+	 * previous response's hook fires at its own terminal, teardown
+	 * included (aius_http_transaction_discard). A nonzero count therefore
+	 * names a path that bypassed the hook -- diagnostic, not a normal
+	 * mode -- while the drop itself keeps the leaked slot from pinning the
+	 * bank's round-robin for the rest of the boot. */
 	bool recorder_lease_active;
 	uint32_t recorder_lease_slot;
+	uint32_t recorder_lease_leaks;
 	bool valid;
 } AiusOpticalAppDispatcher;
 

@@ -89,12 +89,13 @@ typedef struct {
 	uint32_t last_recorder_generation;
 	/* Slot addressing + read-lease bookkeeping (Phase C). The read records
 	 * what the dispatcher asked for and which slot it resolved to (the fake
-	 * echoes an explicit slot and falls back to recorder_active_slot for a
-	 * defaulted read), and the lease acquire/release land in these counters
-	 * so a test can prove the borrow's lease is taken then dropped. */
+	 * echoes an explicit slot and falls back to recorder_default_slot for a
+	 * defaulted read -- on the real board that default is the NEWEST FROZEN
+	 * slot, not the active one), and the lease acquire/release land in these
+	 * counters so a test can prove the borrow's lease is taken then dropped. */
 	bool last_recorder_has_slot;
 	uint32_t last_recorder_slot;
-	uint32_t recorder_active_slot;
+	uint32_t recorder_default_slot;
 	uint32_t recorder_lease_slot;
 	uint32_t recorder_lease_acquires;
 	uint32_t recorder_lease_releases;
@@ -405,7 +406,7 @@ static AiusOpticalAppRecorderReadResult fake_recorder_read(
 	uint32_t *length, uint32_t *resolved_slot)
 {
 	Fake *fake = (Fake *)context;
-	uint32_t target = has_slot ? slot : fake->recorder_active_slot;
+	uint32_t target = has_slot ? slot : fake->recorder_default_slot;
 	record(fake, "recorder_read");
 	fake->last_recorder_has_slot = has_slot;
 	fake->last_recorder_slot = slot;
@@ -2566,8 +2567,8 @@ static void test_recorder_routes(void)
 		assert(fixture.fake.last_recorder_offset == 4096u);
 		assert(fixture.fake.last_recorder_length == 512u);
 		assert(fixture.fake.last_recorder_generation == 7u);
-		/* No &slot= -- the default read addresses the active slot, so the
-		 * handler is told has_slot is false (its own default resolution). */
+		/* No &slot= -- the handler is told has_slot is false and owns the
+		 * default resolution (on the board: the newest frozen slot). */
 		assert(!fixture.fake.last_recorder_has_slot);
 	}
 	fixture.fake.recorder_read_result =
@@ -2593,7 +2594,7 @@ static void test_recorder_slot_addressing_and_lease(void)
 	Fixture fixture;
 	static const char *const auth = "X-Aius-SD-Auth: token\r\n";
 	fixture_init(&fixture);
-	fixture.fake.recorder_active_slot = 1u;
+	fixture.fake.recorder_default_slot = 1u;
 
 	/* An explicit slot is threaded verbatim: has_slot set, slot echoed. The
 	 * 200 borrows the ring, the addressed slot's lease is taken, and the
@@ -2667,9 +2668,9 @@ static void test_recorder_slot_addressing_and_lease(void)
 		assert(fixture.fake.recorder_lease_releases == 3u);
 	}
 
-	/* A defaulted read (no &slot=) resolves to the active slot in the handler:
-	 * has_slot is false and the fake echoes recorder_active_slot into the
-	 * lease; its own hook releases it. */
+	/* A defaulted read (no &slot=) is resolved by the handler, not the
+	 * dispatcher: has_slot is false and the fake echoes recorder_default_slot
+	 * into the lease; its own hook releases it. */
 	{
 		const AiusHttpApplicationResponse *response = dispatch_request(
 			&fixture,
@@ -2698,6 +2699,69 @@ static void test_recorder_slot_addressing_and_lease(void)
 	}
 	assert(fixture.fake.recorder_lease_acquires == 4u);
 	assert(fixture.fake.recorder_lease_releases == 4u);
+	assert(fixture.fake.recorder_lease_balance == 0);
+}
+
+/* A data read that finds a lease STILL active releases it before taking the
+ * new one, and counts the occurrence.
+ *
+ * This is the second half of the teardown leak: the transaction's completion
+ * hook is the normal release path, but a path that bypasses it (a network
+ * teardown that discarded the transaction before the fix, or any future
+ * equivalent) leaves recorder_lease_active set. Overwriting recorder_lease_slot
+ * on the next read would strand the old slot's reads_in_flight at 1 forever --
+ * the bank then defers its round-robin when it reaches that slot and recording
+ * stops until reboot. So the dispatcher repairs it, and records that it had to:
+ * recorder_lease_leaks is a diagnostic for a path that should not exist, not a
+ * supported mode. */
+static void test_recorder_lease_double_acquire_releases(void)
+{
+	Fixture fixture;
+	static const char *const auth = "X-Aius-SD-Auth: token\r\n";
+	fixture_init(&fixture);
+
+	const AiusHttpApplicationResponse *first = dispatch_request(
+		&fixture,
+		"GET /api/recorder/data?offset=0&length=8&generation=1&slot=1",
+		auth, NULL, -1);
+	assert(first->status == 200u);
+	assert(fixture.fake.recorder_lease_slot == 1u);
+	assert(fixture.fake.recorder_lease_balance == 1);
+	assert(fixture.dispatcher.recorder_lease_leaks == 0u);
+
+	/* The hook is deliberately NEVER fired -- exactly what a teardown
+	 * mid-stream did. The next read must repair the leak, not compound it.
+	 * (`first` is invalidated by this dispatch: the response lives in the
+	 * dispatcher's single slot.) */
+	const AiusHttpApplicationResponse *second = dispatch_request(
+		&fixture,
+		"GET /api/recorder/data?offset=0&length=8&generation=2&slot=3",
+		auth, NULL, -1);
+	assert(second->status == 200u);
+	assert(fixture.dispatcher.recorder_lease_leaks == 1u);
+	/* The OLD slot was released, not the new one, and exactly once. */
+	assert(fixture.fake.recorder_lease_releases == 1u);
+	assert(fixture.fake.last_recorder_release_slot == 1u);
+	assert(fixture.fake.recorder_lease_acquires == 2u);
+	assert(fixture.fake.recorder_lease_slot == 3u);
+	assert(fixture.fake.recorder_lease_balance == 1);
+
+	/* The second response's own hook still closes it out normally, and the
+	 * repair counter does not move again. */
+	second->sd_settle(second->sd_settle_ctx, false);
+	assert(fixture.fake.last_recorder_release_slot == 3u);
+	assert(fixture.fake.recorder_lease_releases == 2u);
+	assert(fixture.fake.recorder_lease_balance == 0);
+	assert(fixture.dispatcher.recorder_lease_leaks == 1u);
+
+	/* A clean read after a clean release is not counted as a leak. */
+	const AiusHttpApplicationResponse *third = dispatch_request(
+		&fixture,
+		"GET /api/recorder/data?offset=0&length=8&generation=3&slot=0",
+		auth, NULL, -1);
+	assert(third->status == 200u);
+	assert(fixture.dispatcher.recorder_lease_leaks == 1u);
+	third->sd_settle(third->sd_settle_ctx, false);
 	assert(fixture.fake.recorder_lease_balance == 0);
 }
 
@@ -3641,6 +3705,7 @@ int main(void)
 	RUN_TEST(test_unreachable_method_defaults);
 	RUN_TEST(test_recorder_routes);
 	RUN_TEST(test_recorder_slot_addressing_and_lease);
+	RUN_TEST(test_recorder_lease_double_acquire_releases);
 	RUN_TEST(test_ota_absent_gate);
 	RUN_TEST(test_ota_table_registration);
 	RUN_TEST(test_ota_routes_are_authenticated);

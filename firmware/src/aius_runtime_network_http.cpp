@@ -21,6 +21,15 @@ namespace {
 
 FLASHMEM void http_init(AiusRuntimeNetworkHttp *service, uint32_t now_ms)
 {
+	/* Discard BEFORE init, or a response's completion hook is zeroed without
+	 * ever firing. This function is the teardown path's only terminal: the
+	 * socket is about to be released, so no send completes, nothing recycles
+	 * and no close arrives -- the three places settle_sd would otherwise run.
+	 * A recorder read lease armed on an in-flight 200 would then stay held
+	 * for the rest of the boot and eventually stall recording when the bank's
+	 * round-robin reached the leaked slot. Refuses a not-yet-valid
+	 * transaction, so the construction-time call is a no-op. */
+	aius_http_transaction_discard(&service->http);
 	aius_http_transaction_init(&service->http, service->http_request,
 	                           sizeof(service->http_request),
 	                           service->http_response,

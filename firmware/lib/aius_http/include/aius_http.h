@@ -149,8 +149,10 @@ typedef struct {
 	uint32_t recorder_length;
 	uint32_t recorder_generation;
 	/* Optional trailing &slot=<n> selecting one bank slot to read. Absent
-	 * (recorder_has_slot == false) means the handler reads the active slot,
-	 * preserving the pre-bank single-shot request shape byte-for-byte. */
+	 * (recorder_has_slot == false) means the handler reads the NEWEST FROZEN
+	 * slot, refusing with 409 when none is frozen. The pre-bank single-shot
+	 * request shape is preserved byte-for-byte; what it resolves to is the
+	 * newest capture, not the active (still-recording) slot. */
 	bool recorder_has_slot;
 	uint32_t recorder_slot;
 } AiusHttpRequest;

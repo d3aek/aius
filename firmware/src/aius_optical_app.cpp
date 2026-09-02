@@ -732,24 +732,38 @@ static FLASHMEM bool recorder_config_body(const AiusHttpRequest *request,
 	return true;
 }
 
+/* Give back an outstanding recorder read lease, if there is one. Returns
+ * whether it released, so a caller that should never have found one can count
+ * the occurrence. Clearing the flag before the callback keeps it single-shot:
+ * a double release would underflow the bank's reads_in_flight. */
+static FLASHMEM bool recorder_lease_drop(AiusOpticalAppDispatcher *dispatcher)
+{
+	if (!dispatcher->recorder_lease_active)
+		return false;
+	dispatcher->recorder_lease_active = false;
+	dispatcher->app.recorder_read_release(dispatcher->app.context,
+	                                      dispatcher->recorder_lease_slot);
+	return true;
+}
+
 /* The transaction's completion hook for a recorder-data read (registered on the
  * READ_OK immediate response). The 200 borrows a pointer into one bank slot's
- * PSRAM ring for the streamed body's lifetime; this fires EXACTLY ONCE when the
- * response has drained and the transaction recycles -- or when a mid-stream
- * abort tears the connection down -- and drops that slot's read lease. That is
- * the true end of the borrow, reached with no follow-up request, which is what a
- * one-shot client (a single curl / pull-tool GET that closes after its 200)
- * needs: the round-robin must be able to recycle the slot again. `committed` is
- * meaningless for an immediate response and ignored. */
+ * PSRAM ring for the streamed body's lifetime; this fires EXACTLY ONCE at the
+ * borrow's true end -- the response has drained and the transaction recycles, a
+ * mid-stream abort tore the connection down, the send deadline expired, or a
+ * network teardown discarded the transaction outright
+ * (aius_http_transaction_discard) -- and drops that slot's read lease. Reached
+ * with no follow-up request, which is what a one-shot client (a single curl /
+ * pull-tool GET that closes after its 200) needs: the round-robin must be able
+ * to recycle the slot again. `committed` is meaningless for an immediate
+ * response and ignored. */
 static FLASHMEM void recorder_read_settle(void *ctx, bool committed)
 {
 	AiusOpticalAppDispatcher *dispatcher = (AiusOpticalAppDispatcher *)ctx;
 	(void)committed;
-	if (dispatcher == NULL || !dispatcher->recorder_lease_active)
+	if (dispatcher == NULL)
 		return;
-	dispatcher->recorder_lease_active = false;
-	dispatcher->app.recorder_read_release(dispatcher->app.context,
-	                                      dispatcher->recorder_lease_slot);
+	(void)recorder_lease_drop(dispatcher);
 }
 
 static FLASHMEM const AiusHttpApplicationResponse *dispatch_recorder(
@@ -804,6 +818,17 @@ static FLASHMEM const AiusHttpApplicationResponse *dispatch_recorder(
 		 * completion hook (recorder_read_settle) drops it when the borrow
 		 * ends -- at genuine completion/close, no follow-up request
 		 * required. */
+		/* A lease still held at the START of a new data read is a leak, not
+		 * a live borrow: the single-transaction model means the previous
+		 * response is over by the time a second dispatch arrives, so its
+		 * hook should already have fired. Release it here rather than
+		 * overwrite recorder_lease_slot and strand the old slot's count at
+		 * 1 forever -- the bank then defers its round-robin on that slot and
+		 * recording stops until reboot. Counted, because reaching this arm
+		 * means some path bypassed the completion hook and that is worth
+		 * seeing rather than silently repairing. */
+		if (recorder_lease_drop(dispatcher))
+			dispatcher->recorder_lease_leaks++;
 		switch (app->recorder_read(app->context, request->recorder_has_slot,
 		                           request->recorder_slot,
 		                           request->recorder_offset,

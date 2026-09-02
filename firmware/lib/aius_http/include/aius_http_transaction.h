@@ -237,6 +237,22 @@ typedef struct {
 	bool action_ids_exhausted;
 } AiusHttpTransaction;
 
+/* Abandon an in-flight transaction WITHOUT a terminal, firing any armed
+ * completion hook uncommitted first. The one caller is a network teardown
+ * (aius_runtime_network_http.cpp), which throws the whole transaction away and
+ * re-inits it against a socket that no longer exists: there is no send
+ * completion, no recycle and no close, so nothing else would ever reach
+ * settle_sd, and a borrow released only by that hook -- the recorder read
+ * lease -- would leak for the rest of the boot.
+ *
+ * Call this BEFORE aius_http_transaction_init on the same object, never
+ * after: init zeroes the hook without firing it. Safe on an uninitialised
+ * object only in the sense that it refuses one -- an object whose `valid` is
+ * not already true is left completely alone, because its hook pointer is
+ * indistinguishable from garbage. Idempotent: the hook is nulled before it is
+ * called, so a second discard fires nothing. */
+void aius_http_transaction_discard(AiusHttpTransaction *transaction);
+
 void aius_http_transaction_init(AiusHttpTransaction *transaction,
 	                            uint8_t *request, size_t request_capacity,
 	                            uint8_t *response, size_t response_capacity,

@@ -752,6 +752,54 @@ int main(void)
 		       AIUS_HTTP_ERR_ROUTE);
 	}
 	{
+		/* A malformed `slot` value is ROUTE_UNKNOWN (a 404-class refusal),
+		 * NOT a 400. That is deliberate and matches what `offset`, `length`
+		 * and `generation` have always done: this parser is a fixed grammar,
+		 * so a token it cannot read means the request did not match the
+		 * route at all, and there is no half-parsed request to report a
+		 * field error against. A client that wants the 400 must send a
+		 * well-formed decimal slot; an out-of-RANGE one (slot=99 above)
+		 * parses fine and the handler answers 400. Stated here as a
+		 * contract rather than left as an accident of the parser's shape.
+		 *
+		 * Negative is included on purpose: recorder_slot is u32, so "-1" has
+		 * no representation and must never wrap to 4294967295. */
+		struct SlotRow {
+			const char *key;
+			const char *raw;
+		};
+		static const struct SlotRow rows[] = {
+			{ "slot.negative",
+			  "GET /api/recorder/data?offset=0&length=8&generation=0&slot=-1"
+			  " HTTP/1.0\r\n\r\n" },
+			{ "slot.trailing-garbage",
+			  "GET /api/recorder/data?offset=0&length=8&generation=0&slot=1abc"
+			  " HTTP/1.0\r\n\r\n" },
+			{ "slot.empty",
+			  "GET /api/recorder/data?offset=0&length=8&generation=0&slot="
+			  " HTTP/1.0\r\n\r\n" },
+			{ "slot.non-numeric",
+			  "GET /api/recorder/data?offset=0&length=8&generation=0&slot=x"
+			  " HTTP/1.0\r\n\r\n" },
+			{ "slot.overflow",
+			  "GET /api/recorder/data?offset=0&length=8&generation=0"
+			  "&slot=99999999999 HTTP/1.0\r\n\r\n" },
+		};
+		assert(ARRAY_LENGTH(rows) == 5);
+		for (size_t i = 0; i < ARRAY_LENGTH(rows); ++i) {
+			for (size_t j = 0; j < i; ++j)
+				assert(strcmp(rows[i].key, rows[j].key) != 0);
+			AiusHttpResult actual =
+				aius_http_parse((const uint8_t *)rows[i].raw,
+				                strlen(rows[i].raw), &request);
+			if (actual != AIUS_HTTP_ERR_ROUTE)
+				fprintf(stderr,
+				        "%s: expected ERR_ROUTE, actual %d\n",
+				        rows[i].key, (int)actual);
+			assert(actual == AIUS_HTTP_ERR_ROUTE);
+		}
+	}
+	{
 		/* Missing generation, reordered params, bare data path, non-GET
 		 * on data, GET on freeze, POST on config: all refused. */
 		const char *missing =

@@ -179,9 +179,11 @@ static FLASHMEM AiusHttpRoute route_for(const uint8_t *path, size_t length,
 	if (has_prefix(path, length, "/api/recorder/data?offset=")) {
 		/* Fixed parameter order: offset, length, generation all required,
 		 * an optional &slot=<n> last -- the events cursor's rigidity: a
-		 * bounded parser, not a query engine. Absent slot resolves to the
-		 * active slot in the handler, so an unmodified single-shot client's
-		 * request shape is byte-for-byte unchanged. */
+		 * bounded parser, not a query engine. An unmodified single-shot
+		 * client's request shape is byte-for-byte unchanged; the handler
+		 * resolves an absent slot to the NEWEST FROZEN slot (409 when none
+		 * is frozen), which is what "read the capture that just froze"
+		 * means once a bank replaces the single ring. */
 		const uint8_t *value = path + strlen("/api/recorder/data?offset=");
 		size_t remaining = length - strlen("/api/recorder/data?offset=");
 		const uint8_t *amp = memchr(value, '&', remaining);

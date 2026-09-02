@@ -607,6 +607,17 @@ typedef enum {
 } DspModelOrigin;
 static DspModelOrigin g_dsp_model_origin = DSP_ORIGIN_DEFAULT;
 static uint32_t g_config_generation;
+/* How many models this boot session has been STAGED for apply, incremented by
+ * every stager (an accepted PUT, an SD load) at the moment it writes
+ * g_pending_dsp_model. Separate from g_config_generation on purpose (defect
+ * 22c): that one counts models APPLIED at a block boundary and is the token a
+ * PUT's base_generation is checked against, so it must keep meaning "what is
+ * running". On a carrier-less board nothing ever applies, so it stays 0 across
+ * successive PUTs and a client cannot tell its second PUT from its first --
+ * this counter is that missing signal, and it is reported beside the applied
+ * one in both GET /api/dsp/config and GET /api/status rather than replacing
+ * it. Written only from loop/HTTP context, never from the block boundary. */
+static uint32_t g_staged_generation;
 
 /* Staged model awaiting a block-boundary-safe apply. Written from loop/HTTP
  * context (a validated PUT, or an SD (re)load); consumed once, at the top of
@@ -2399,11 +2410,24 @@ static FLASHMEM const char *dsp_origin_name(DspModelOrigin origin)
  * never reaches the block-boundary apply, so reporting only g_active_model would
  * answer "default"/generation 0 for a PUT it has already accepted (defect 22).
  * Cold path, fixed buffer, capacity-checked; returns 0 (deterministic error) if
- * the model cannot fit the response budget. `source`/`config_generation` are
- * runtime-reported, not part of the model struct itself. `config_generation`
- * stays the applied value on purpose: it is the single-writer optimistic-
- * concurrency token (the audio ISR owns it), so a PUT's base_generation is
- * checked against the same counter whether or not a block has run. */
+ * the model cannot fit the response budget. `source`, `config_generation`,
+ * `staged_generation` and `config_pending` are runtime-reported, not part of
+ * the model struct itself.
+ *
+ * `config_generation` stays the APPLIED value on purpose, and the reason is
+ * semantic rather than a data race: it is the optimistic-concurrency token a
+ * PUT's base_generation is checked against, and that check means "the model
+ * you edited is the model that is running". Bumping it at SD-commit time would
+ * make it mean two things at once. (It is NOT unsafe to write from here: the
+ * one other writer is AiusAudioProcessor::enqueue(), which runs at the runtime
+ * AUDIO checkpoint, and checkpoints never overlap -- an earlier note in this
+ * file claimed an audio-ISR race that does not exist, defect 22b.)
+ *
+ * `staged_generation` is the counter that DOES advance per staging, so a
+ * carrier-less board -- where nothing ever applies and config_generation is
+ * pinned at 0 -- can still tell one accepted PUT from the next.
+ * `config_pending` says which of the two the rest of this document describes:
+ * true means these are the staged bytes awaiting a block boundary. */
 static FLASHMEM size_t http_dsp_config_json(uint8_t *body, size_t capacity)
 {
 	static const char *const channel_names[6] = {"fl", "fr", "fc", "lfe", "sl", "sr"};
@@ -2420,9 +2444,11 @@ static FLASHMEM size_t http_dsp_config_json(uint8_t *body, size_t capacity)
 	char *output = (char *)body;
 	size_t length = 0;
 	if (!http_json_append(output, capacity, &length,
-	                      "{\"source\":\"%s\",\"config_generation\":%lu,\"sample_rate_hz\":%lu,",
+	                      "{\"source\":\"%s\",\"config_generation\":%lu,\"staged_generation\":%lu,\"config_pending\":%s,\"sample_rate_hz\":%lu,",
 	                      dsp_source_name(origin),
 	                      (unsigned long)g_config_generation,
+	                      (unsigned long)g_staged_generation,
+	                      apply_pending ? "true" : "false",
 	                      (unsigned long)cfg.sample_rate_hz))
 		return 0;
 	if (!http_json_append(output, capacity, &length,
@@ -4662,7 +4688,16 @@ static FLASHMEM bool http_ota_dark_json(char *output, size_t capacity,
 /* The ab object on GET /api/status (aius-ota-resilience.md Phase 3): which
  * slot is running, what the boot record says, and what the chooser's ledger
  * carried into this boot. null on the single-image build (AIUS_AB_SLOT 0)
- * and on a slot build whose retained-ledger address contract failed. */
+ * and on a slot build whose retained-ledger address contract failed.
+ *
+ * `booted_slot` is the ledger's own stamp, 0 (AIUS_AB_SLOT_NONE) when the
+ * ledger is invalid or the OLD per-slot chooser wrote it. It is published
+ * because the slot-agnostic acceptance gate in ab_compose() is exactly
+ * `ledger_valid && booted_slot != NONE`, and until now an operator could see
+ * only the first half: `ledger_valid` true with a NONE stamp still means the
+ * old chooser, and the difference decides whether a container must be signed
+ * with --slot. Distinct from `slot` (g_ab_running_slot), which falls back to
+ * the compile-time slot precisely when this field is NONE. */
 static FLASHMEM bool http_ab_json(char *output, size_t capacity,
 	                              size_t *length)
 {
@@ -4672,7 +4707,8 @@ static FLASHMEM bool http_ab_json(char *output, size_t capacity,
 			",\"ab\":{\"slot\":%u,\"record_valid\":%s,"
 			"\"active_slot\":%u,\"pending_slot\":%u,"
 			"\"sequence\":%lu,\"trial_budget\":%u,"
-			"\"ledger_valid\":%s,\"ledger_boots\":%lu,"
+			"\"ledger_valid\":%s,\"booted_slot\":%u,"
+			"\"ledger_boots\":%lu,"
 			"\"ledger_fell_back\":%s,\"rollback_observed\":%s}",
 			(unsigned)g_ab_running_slot,
 			g_ab_record_valid ? "true" : "false",
@@ -4681,6 +4717,8 @@ static FLASHMEM bool http_ab_json(char *output, size_t capacity,
 			(unsigned long)g_ab_record.sequence,
 			(unsigned)g_ab_record.trial_budget,
 			g_ab_ledger_valid ? "true" : "false",
+			(unsigned)(g_ab_ledger_valid ? g_ab_ledger.booted_slot
+			                             : (uint8_t)AIUS_AB_SLOT_NONE),
 			(unsigned long)g_ab_ledger.boots_attempted,
 			g_ab_ledger.fell_back != 0u ? "true" : "false",
 			g_ab_rollback_observed ? "true" : "false");
@@ -5012,7 +5050,19 @@ static FLASHMEM void ota_compose(void)
  * the longest value, "default", quoted). It sits beside `source` rather than at
  * the end because the two are one fact at two resolutions and no key's VALUE
  * moves -- only positions in the literal, which no reader of this document can
- * observe. */
+ * observe.
+ *
+ * `source` / `model_origin` are STAGED-AWARE, exactly as http_dsp_config_json's
+ * are (defect 22a): a board with no carrier never reaches the block-boundary
+ * apply, so reporting only the applied origin made this route answer "default"
+ * for a PUT the other route was already reporting as "put" -- two documents
+ * from one firmware disagreeing about one fact. `dsp_config_pending` says which
+ * of the two a reader is looking at (true = staged, awaiting a block boundary)
+ * so the staged-aware answer is never mistaken for an applied one, and
+ * `dsp_staged_generation` carries the per-staging counter that
+ * config_generation deliberately is not. The `dsp_` prefix is load-bearing on
+ * THIS route: its existing config_valid / config_error / config_error_count
+ * keys describe the public aius.json config, not the DSP model. */
 static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
 {
 	uint8_t status[71];
@@ -5024,8 +5074,15 @@ static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
 	aius_runtime_teensy_status(&g_runtime, &recovery);
 	const AiusNetworkTeensy *network = &g_runtime.network_http.target;
 	const char *network_mode = status[1] == 1u ? "dhcp" : "offline";
+	/* Same staged-aware selection http_dsp_config_json makes, and for the
+	 * same reason: g_pending_dsp_origin is written by this HTTP thread and
+	 * fully populated before the volatile flag is armed, so the read is
+	 * race-free. */
+	const bool dsp_apply_pending = g_dsp_apply_pending;
+	const DspModelOrigin reported_origin =
+		dsp_apply_pending ? g_pending_dsp_origin : g_dsp_model_origin;
 	int written = snprintf((char *)body, capacity,
-		"{\"version\":%u,\"state\":%u,\"carrier\":%u,\"format\":%u,\"sample_rate\":%lu,\"blocks\":%lu,\"overruns\":%lu,\"source\":\"%s\",\"model_origin\":\"%s\",\"sd_present\":%u,\"sd_filesystem\":\"%s\",\"sd_total_bytes\":%llu,\"sd_used_bytes\":%llu,\"sd_free_bytes\":%llu,\"config_valid\":%u,\"config_error_code\":%u,\"config_error\":\"%s\",\"config_error_count\":%lu,\"network_mode\":\"%s\",\"ip\":\"%u.%u.%u.%u\",\"link\":%u,\"network_restarts\":%lu,\"dhcp_pending\":%u,\"dhcp_discovers\":%lu,\"dhcp_updates\":%lu,\"reset_source\":%lu,\"http_server_rebinds\":%lu,\"cpu_temp_c\":%.2f,\"cpu_temp_valid\":%u,\"cpu_temp_max_c\":%.2f,\"cpu_temp_age_ms\":%lu,\"build_revision\":\"%s\",\"build_utc\":\"%s\",\"event_sequence\":%lu,\"event_overflows\":%lu,\"network_drops\":%lu,\"network_budget_overruns\":%lu,\"http_requests\":%lu,\"http_rejections\":%lu,\"http_client_drops\":%lu,\"http_service_overruns\":%lu,\"network_state\":%u,\"recovery_safe\":%u,\"network_last_fault\":%u,\"last_checkpoint\":%u,\"network_generation\":%lu,\"boot_generation\":%lu,\"watchdog_early_resets\":%u,\"loop_epoch\":%lu,\"psram_mb\":%u,\"psram_pad2_mb\":%u,\"tx_gate\":{\"open\":%u,\"carrier_locked\":%u,\"replay_running\":%u}}",
+		"{\"version\":%u,\"state\":%u,\"carrier\":%u,\"format\":%u,\"sample_rate\":%lu,\"blocks\":%lu,\"overruns\":%lu,\"source\":\"%s\",\"model_origin\":\"%s\",\"dsp_config_pending\":%u,\"dsp_staged_generation\":%lu,\"sd_present\":%u,\"sd_filesystem\":\"%s\",\"sd_total_bytes\":%llu,\"sd_used_bytes\":%llu,\"sd_free_bytes\":%llu,\"config_valid\":%u,\"config_error_code\":%u,\"config_error\":\"%s\",\"config_error_count\":%lu,\"network_mode\":\"%s\",\"ip\":\"%u.%u.%u.%u\",\"link\":%u,\"network_restarts\":%lu,\"dhcp_pending\":%u,\"dhcp_discovers\":%lu,\"dhcp_updates\":%lu,\"reset_source\":%lu,\"http_server_rebinds\":%lu,\"cpu_temp_c\":%.2f,\"cpu_temp_valid\":%u,\"cpu_temp_max_c\":%.2f,\"cpu_temp_age_ms\":%lu,\"build_revision\":\"%s\",\"build_utc\":\"%s\",\"event_sequence\":%lu,\"event_overflows\":%lu,\"network_drops\":%lu,\"network_budget_overruns\":%lu,\"http_requests\":%lu,\"http_rejections\":%lu,\"http_client_drops\":%lu,\"http_service_overruns\":%lu,\"network_state\":%u,\"recovery_safe\":%u,\"network_last_fault\":%u,\"last_checkpoint\":%u,\"network_generation\":%lu,\"boot_generation\":%lu,\"watchdog_early_resets\":%u,\"loop_epoch\":%lu,\"psram_mb\":%u,\"psram_pad2_mb\":%u,\"tx_gate\":{\"open\":%u,\"carrier_locked\":%u,\"replay_running\":%u}}",
 		status[0], status[2], status[3] & 1u, status[23],
 		(unsigned long)aius_net_get_u32(status + 25),
 		(unsigned long)aius_net_get_u32(status + 29),
@@ -5037,9 +5094,12 @@ static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
 		 * vocabulary is two words and "an override is applied" is all it has
 		 * ever meant. A model uploaded by PUT /api/dsp/config reports
 		 * source "sd" (it is durable on the card by the time it applies) and
-		 * model_origin "put". */
-		dsp_source_name(g_dsp_model_origin),
-		dsp_origin_name(g_dsp_model_origin),
+		 * model_origin "put". Both report the STAGED origin while a commit is
+		 * pending -- see this function's header. */
+		dsp_source_name(reported_origin),
+		dsp_origin_name(reported_origin),
+		dsp_apply_pending ? 1u : 0u,
+		(unsigned long)g_staged_generation,
 		g_sd_ready ? 1u : 0u, sd_filesystem(),
 		(unsigned long long)g_sd_total_bytes,
 		(unsigned long long)g_sd_used_bytes,
@@ -5511,6 +5571,10 @@ static FLASHMEM AiusOpticalAppStoreResult app_store_dsp_config(
 		return AIUS_OPTICAL_APP_STORE_BUSY;
 	g_pending_dsp_model = parsed;
 	g_pending_dsp_origin = DSP_ORIGIN_PUT;
+	/* Advanced here, at accept, not at the SD commit or the block-boundary
+	 * apply: it is the "this staging is a different one from the last"
+	 * signal, and on a carrier-less board the apply never comes. */
+	g_staged_generation++;
 	g_dsp_upload_pending = true;
 	g_sd_commit_target = SD_COMMIT_DSP_MODEL;
 	g_sd_commit_writing = false;
@@ -6442,14 +6506,96 @@ static FLASHMEM const char *recorder_trigger_name(uint32_t trigger)
 	}
 }
 
+/* Worst-case GET /api/recorder body, so the response is fixed-size by
+ * construction rather than by hope -- the same discipline
+ * AIUS_METERS_MAX_JSON_BYTES applies to the meters document, and the reason
+ * this one needs it more: the body scales with AIUS_RECORDER_BANK_SLOTS and,
+ * within each slot, with AIUS_RECORDER_RATE_CHANGE_MAX, so raising either
+ * constant silently grows the document. Every %lu is allowed a full 10 digits
+ * and every enum its longest spelling ("recording", "carrier_loss").
+ *
+ *   per slot: the 14 scalar keys (slot..rate_change_count) plus the
+ *             trigger object                                        476
+ *             "rate_change_frames":[ ... ] envelope                   23
+ *             each frame position, 10 digits + separator          11 x M
+ *                                                                 ------
+ *                                                        499 + 11 x M
+ *
+ *   envelope: 15 bank scalars + the config object + "slots":[]       574
+ *             rounded up for arithmetic drift                        640
+ *
+ * Every append is still capacity-checked, so exceeding the real buffer would
+ * be a deterministic 0 (-> 500) rather than an overrun; this assert exists so
+ * that never becomes reachable by raising a slot count. */
+static constexpr size_t AIUS_RECORDER_SLOT_MAX_JSON_BYTES =
+	499u + 11u * (size_t)AIUS_RECORDER_RATE_CHANGE_MAX;
+static constexpr size_t AIUS_RECORDER_MAX_JSON_BYTES =
+	640u + (size_t)AIUS_RECORDER_BANK_SLOTS *
+		AIUS_RECORDER_SLOT_MAX_JSON_BYTES;
+static_assert(AIUS_RECORDER_MAX_JSON_BYTES <= AIUS_RUNTIME_TEENSY_APP_BODY,
+	"the recorder bank body must fit the runtime's application response buffer");
+
+/* One slot's `rate_change_frames`: the frame positions at which the staged
+ * rate disagreed with its predecessor. `rate_changes` has always said HOW MANY
+ * transitions a ring spans; this says WHERE, which is the difference between
+ * "reject this capture" and "cut it at the last transition and write a correct
+ * WAV header over the remainder".
+ *
+ * The core stores only the first AIUS_RECORDER_RATE_CHANGE_MAX positions while
+ * rate_change_count keeps counting, so `count` may EXCEED the array -- clamp
+ * here rather than trust it. A client compares the two: a served array shorter
+ * than rate_change_count means the positions are incomplete, and that capture
+ * has to be rejected rather than cut. */
+static FLASHMEM bool recorder_rate_change_array(char *output, size_t capacity,
+                                                size_t *length,
+                                                const uint32_t *frames,
+                                                uint32_t count)
+{
+	if (count > AIUS_RECORDER_RATE_CHANGE_MAX)
+		count = AIUS_RECORDER_RATE_CHANGE_MAX;
+	if (!http_json_append(output, capacity, length, "["))
+		return false;
+	for (uint32_t index = 0; index < count; index++) {
+		if (!http_json_append(output, capacity, length, "%s%lu",
+		                      index == 0u ? "" : ",",
+		                      (unsigned long)frames[index]))
+			return false;
+	}
+	return http_json_append(output, capacity, length, "]");
+}
+
 /* The `slots` array within GET /api/recorder (aius-recorder-rolling-buffer.md
  * Phase C): the per-capture fields that genuinely vary slot to slot --
- * geometry, valid extent, generation, gaps and trigger metadata. Bank-wide
- * facts (encoding, fitted_mb, config, ...) are emitted once by the caller,
- * never duplicated per slot. Mirrors http_dsp_eq_array's shape (one static
- * call site inside the loop is what the swagger format-string extractor
- * needs to see, not N of them -- it validates the item shape once, not the
- * loop's runtime iteration count). */
+ * geometry, valid extent, generation, gaps, rate-change positions and trigger
+ * metadata. Bank-wide facts (encoding, fitted_mb, config, ...) are emitted
+ * once by the caller, never duplicated per slot. Mirrors http_dsp_eq_array's
+ * shape (one static call site inside the loop is what the swagger
+ * format-string extractor needs to see, not N of them -- it validates the item
+ * shape once, not the loop's runtime iteration count).
+ *
+ * `stream_end_frame` closes a gap that made every other stream-indexed field
+ * unusable. `rate_change_frames` and `trigger.at_frame` are indices in the
+ * capture's free-running STREAM (frames since arm), but the pulled WAV is the
+ * ring unrolled from `oldest_frame` for `valid_frames` frames, so a host had
+ * no way to map one to the other. With this the map is exact:
+ *
+ *   wav_index = stream_index - (stream_end_frame - valid_frames)
+ *
+ * and a fiducial with a negative wav_index is one the ring has already
+ * overwritten.
+ *
+ * It is read directly off the slot (`AiusRecorder::frames_drained`) rather
+ * than from the snapshot, which exposes no stream end, and it is
+ * DELIBERATELY frames_drained rather than `end_frame`/`frames_staged`:
+ * `valid_frames` and `oldest_frame` are themselves derived from
+ * frames_drained (aius_recorder.c aius_recorder_snapshot), so only that
+ * counter makes the identity above true in every state. For a FROZEN slot the
+ * three are equal anyway -- DRAINING exits to FROZEN only once staging is
+ * empty (aius_recorder_drain), so frames_drained == end_frame there -- and for
+ * a still-recording slot frames_staged would overshoot by whatever is staged
+ * but not yet in the ring, placing every fiducial too early. The direct field
+ * read is the same seam app_recorder_read already uses for `state` /
+ * `freeze_generation`, and runs in the same epoch context. */
 static FLASHMEM bool recorder_slot_array(char *output, size_t capacity,
                                          size_t *length,
                                          const AiusRecorderBank *bank)
@@ -6466,8 +6612,8 @@ static FLASHMEM bool recorder_slot_array(char *output, size_t capacity,
 			"\"oldest_frame\":%lu,\"freeze_generation\":%lu,"
 			"\"gap_count\":%lu,\"last_gap_frame\":%lu,"
 			"\"suppressed_triggers\":%lu,\"postroll_captured\":%lu,"
-			"\"trigger\":{\"which\":\"%s\",\"at_frame\":%lu,"
-			"\"at_block\":%lu,\"at_ms\":%lu}}",
+			"\"stream_end_frame\":%lu,"
+			"\"rate_change_count\":%lu,\"rate_change_frames\":",
 			slot == 0u ? "" : ",",
 			(unsigned long)slot, recorder_state_name(s.state),
 			(unsigned long)s.sample_rate_hz,
@@ -6480,6 +6626,16 @@ static FLASHMEM bool recorder_slot_array(char *output, size_t capacity,
 			(unsigned long)s.last_gap_frame,
 			(unsigned long)s.suppressed_triggers,
 			(unsigned long)s.postroll_captured,
+			(unsigned long)bank->slots[slot].frames_drained,
+			(unsigned long)s.rate_change_count))
+			return false;
+		if (!recorder_rate_change_array(output, capacity, length,
+		                                s.rate_change_frames,
+		                                s.rate_change_count))
+			return false;
+		if (!http_json_append(output, capacity, length,
+			",\"trigger\":{\"which\":\"%s\",\"at_frame\":%lu,"
+			"\"at_block\":%lu,\"at_ms\":%lu}}",
 			recorder_trigger_name(s.trigger.trigger),
 			(unsigned long)s.trigger.at_frame,
 			(unsigned long)s.trigger.at_block,
@@ -6503,13 +6659,35 @@ static FLASHMEM bool recorder_slot_array(char *output, size_t capacity,
  * frames actually in that slot's ring, not the build's nominal constant --
  * for the same reason the single-slot document used to state this: an
  * accepted 44.1 kHz stream would otherwise read 48000 and every pulled WAV
- * would play about 8.8% fast. */
+ * would play about 8.8% fast.
+ *
+ * `newest_frozen_slot` is the slot a defaulted GET /api/recorder/data reads,
+ * published so a client never has to guess it from the slots array (and null
+ * when nothing is frozen, which is exactly when that read answers 409).
+ * `deferred_epochs` / `lease_skips` / `config_pending` are the bank's own
+ * liveness record: how many epochs the round-robin has been unable to advance,
+ * how many times a read lease was the reason, and whether a config PUT is
+ * still waiting on a mid-capture slot. Without them a stalled round-robin --
+ * the documented correctness-over-liveness trade -- looks identical to an idle
+ * board.
+ *
+ * `lease_leaks` comes from the HTTP dispatcher, not the bank: the number of
+ * times a data read found the PREVIOUS read's lease still held and had to drop
+ * it itself. It should stay 0 forever -- every terminal fires the response's
+ * completion hook -- so a nonzero value names a path that bypasses that hook,
+ * which is exactly the class of bug that silently stops recording. Reading
+ * g_runtime.app here is the same plain field load http_status_json makes of
+ * g_runtime.storage; this is the composition root, so both are in scope. */
 static FLASHMEM size_t app_write_recorder(void *, uint8_t *body,
                                           size_t capacity)
 {
 	AiusRecorderSnapshot active;
 	(void)aius_recorder_bank_snapshot_slot(&g_recorder_bank,
 	                                       g_recorder_bank.active, &active);
+	uint32_t newest_frozen_slot = 0u;
+	const bool has_newest_frozen =
+		aius_recorder_bank_newest_frozen(&g_recorder_bank,
+		                                 &newest_frozen_slot);
 	char *output = (char *)body;
 	size_t length = 0;
 	if (!http_json_append(output, capacity, &length,
@@ -6517,14 +6695,30 @@ static FLASHMEM size_t app_write_recorder(void *, uint8_t *body,
 		"\"significant_bits\":24,\"interleave\":\"lr\","
 		"\"frame_bytes\":%u,\"boot_generation\":%lu,"
 		"\"chunk_max_bytes\":%lu,\"active_slot\":%lu,"
-		"\"slot_count\":%u,\"slots_recycled\":%lu,",
+		"\"slot_count\":%u,\"slots_recycled\":%lu,"
+		"\"deferred_epochs\":%lu,\"lease_skips\":%lu,"
+		"\"lease_leaks\":%lu,\"config_pending\":%s,",
 		(unsigned long)active.fitted_mb,
 		(unsigned)AIUS_RECORDER_FRAME_BYTES,
 		(unsigned long)g_boot_ledger.boot_generation,
 		(unsigned long)AIUS_RECORDER_READ_MAX_BYTES,
 		(unsigned long)g_recorder_bank.active,
 		(unsigned)AIUS_RECORDER_BANK_SLOTS,
-		(unsigned long)g_recorder_bank.slots_recycled))
+		(unsigned long)g_recorder_bank.slots_recycled,
+		(unsigned long)aius_recorder_bank_deferred_epochs(&g_recorder_bank),
+		(unsigned long)aius_recorder_bank_lease_skips(&g_recorder_bank),
+		(unsigned long)g_runtime.app.recorder_lease_leaks,
+		aius_recorder_bank_config_pending(&g_recorder_bank) ? "true"
+		                                                    : "false"))
+		return 0;
+	/* int|null, so two appends: a JSON null is not a printf conversion, and
+	 * the same shape http_ab_json uses for its own nullable object. */
+	if (!(has_newest_frozen
+		? http_json_append(output, capacity, &length,
+		                   "\"newest_frozen_slot\":%lu,",
+		                   (unsigned long)newest_frozen_slot)
+		: http_json_append(output, capacity, &length,
+		                   "\"newest_frozen_slot\":null,")))
 		return 0;
 	if (!http_json_append(output, capacity, &length,
 		"\"config\":{\"overrun\":%s,\"underrun\":%s,"
@@ -6586,28 +6780,42 @@ static FLASHMEM AiusOpticalAppRecorderReadResult app_recorder_read(
 	uint32_t length_bytes, uint32_t generation, const uint8_t **data,
 	uint32_t *length, uint32_t *resolved_slot)
 {
-	/* Addresses one bank slot: no slot param reads the ACTIVE slot (the
-	 * pre-bank single-slot contract, byte-identical), an explicit slot reads
-	 * that one. The 400/409 split the dispatcher serves: an out-of-range
-	 * slot or a bad offset/length shape is INVALID (fix the request); a slot
-	 * that is not FROZEN or whose generation has moved on is REFUSED (retry
-	 * after freeze / re-read the header). The lib folds an out-of-range slot
-	 * and a bad window both into INVALID_ARG, so the state/generation split
-	 * lives here where both facts are readable.
+	/* Addresses one bank slot: an explicit slot reads that one; no slot
+	 * param reads the NEWEST FROZEN slot.
+	 *
+	 * The default is NOT the active slot. It was, and that default was dead
+	 * on arrival: the bank advances `active` in the same drain() that puts
+	 * the just-captured slot into FROZEN, so by the time a capture is
+	 * readable the active slot is its RECORDING successor and every
+	 * unmodified single-shot client got 409 for a capture that was sitting
+	 * right there. "Newest frozen" is the pre-bank mental model actually
+	 * preserved -- "read the capture that just froze" -- and it is the only
+	 * default a client with no knowledge of slots can use.
+	 *
+	 * The 400/409 split the dispatcher serves: an out-of-range EXPLICIT slot
+	 * or a bad offset/length shape is INVALID (fix the request); a slot that
+	 * is not FROZEN or whose generation has moved on is REFUSED, as is a
+	 * defaulted read when no slot is frozen at all (retry after freeze /
+	 * re-read the header). The lib folds an out-of-range slot and a bad
+	 * window both into INVALID_ARG, so the state/generation split lives here
+	 * where both facts are readable.
 	 *
 	 * On READ_OK the response borrows a pointer into slots[slot]'s ring for
 	 * its whole lifetime, so take that slot's read lease now; the dispatcher
-	 * drops it via app_recorder_read_release at the next dispatch (the
-	 * borrow invariant's end-of-life). */
-	const uint32_t target = has_slot ? slot : g_recorder_bank.active;
-	*resolved_slot = target;
+	 * drops it from the response's own completion hook, at send-completion,
+	 * close, abort or network teardown (the borrow invariant's end-of-life). */
+	*resolved_slot = 0u;
 	/* An explicit slot outside the bank is a malformed request (400),
-	 * independent of board state; the default (active) slot is always in
-	 * range by the bank invariant. */
+	 * independent of board state. */
 	if (has_slot && slot >= AIUS_RECORDER_BANK_SLOTS)
 		return AIUS_OPTICAL_APP_RECORDER_READ_INVALID;
 	if (!g_recorder_present)
 		return AIUS_OPTICAL_APP_RECORDER_READ_REFUSED;
+	uint32_t target = slot;
+	if (!has_slot &&
+	    !aius_recorder_bank_newest_frozen(&g_recorder_bank, &target))
+		return AIUS_OPTICAL_APP_RECORDER_READ_REFUSED;
+	*resolved_slot = target;
 	const AiusRecorder *addressed = &g_recorder_bank.slots[target];
 	if (addressed->state != AIUS_RECORDER_FROZEN ||
 	    generation != addressed->freeze_generation)
@@ -6620,9 +6828,12 @@ static FLASHMEM AiusOpticalAppRecorderReadResult app_recorder_read(
 	return AIUS_OPTICAL_APP_RECORDER_READ_OK;
 }
 
-/* Drops the read lease app_recorder_read took on a READ_OK. Called by the
- * dispatcher on the dispatch that follows the borrowed response, once its bytes
- * have certainly drained -- the point a recycled slot is safe again. */
+/* Drops the read lease app_recorder_read took on a READ_OK. The dispatcher
+ * calls it from the response's OWN completion hook (sd_settle), so the drop
+ * happens at the borrow's real end -- send-completion, connection recycle,
+ * mid-stream abort, or a network teardown that discards the transaction
+ * (aius_http_transaction_discard) -- never at "the next dispatch", which a
+ * one-shot client that GETs and closes would never produce. */
 static FLASHMEM void app_recorder_read_release(void *, uint32_t slot)
 {
 	if (g_recorder_present && slot < AIUS_RECORDER_BANK_SLOTS)
@@ -7074,6 +7285,9 @@ static FLASHMEM bool platform_publish_config(void *, const uint8_t *data,
 		/* The origin goes with the model and BEFORE the volatile flag
 		 * below, which is the whole handoff rule. */
 		g_pending_dsp_origin = DSP_ORIGIN_SD;
+		/* Every stager advances it, this one included -- the count is
+		 * "models staged this boot", not "PUTs accepted". */
+		g_staged_generation++;
 		/* Staged, not applied: the block-boundary swap in
 		 * AiusAudioProcessor::enqueue() remains the only place the
 		 * active model changes, where config_generation increments and

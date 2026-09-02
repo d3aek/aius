@@ -1795,6 +1795,186 @@ static void test_sd_settle_hook_terminals(void)
 	}
 }
 
+/* The completion hook on the three terminals an immediate response can reach
+ * WITHOUT a normal send-completion: a network teardown that discards the
+ * transaction outright, an expired send deadline, and a streamed body (one too
+ * large to copy, so it drains through stream_body rather than the response
+ * buffer). Each one is a live borrow the recorder read lease would otherwise
+ * never get back -- the two-byte-body/close case already covered above proves
+ * none of them. */
+static void test_settle_hook_abort_paths(void)
+{
+	static const uint8_t ok[] = "{}";
+	/* The recorder data route is the real caller; any GET reaches the same
+	 * immediate-response machinery, so the URL is documentation. */
+	static const char *const data_get =
+		"GET /api/recorder/data?offset=0&length=8&generation=1 HTTP/1.0\r\n\r\n";
+
+	/* TEARDOWN. aius_runtime_network_http.cpp's http_init() throws the whole
+	 * transaction away and re-inits it against a socket that is about to be
+	 * released: no send completes, nothing recycles, no close arrives. The
+	 * discard is the only thing that can fire the hook, and it must run
+	 * BEFORE the init that zeroes it. */
+	{
+		Fixture fixture;
+		init_fixture(&fixture);
+		AiusHttpAction action = feed_request(&fixture, data_get);
+		AiusHttpApplicationResponse response =
+			immediate(200, "application/octet-stream", ok,
+			          sizeof(ok) - 1u);
+		response.sd_settle = settle_probe;
+		response.sd_settle_ctx = &fixture;
+		settle_arm(&fixture, 0u, ok, 0u);
+		action = call_step(&fixture, 0,
+		                   application_result(&action, &response));
+		assert(action.kind == AIUS_HTTP_ACTION_WRITE);
+		assert(g_settle.calls == 0);
+
+		aius_http_transaction_discard(&fixture.transaction);
+		assert(g_settle.calls == 1);
+		assert(!g_settle.last_committed);
+
+		/* Re-init after the discard fires nothing further, and the
+		 * transaction comes back usable. */
+		aius_http_transaction_init(&fixture.transaction, fixture.request,
+		                           sizeof(fixture.request),
+		                           fixture.response,
+		                           sizeof(fixture.response), 0);
+		assert(fixture.transaction.valid);
+		assert(fixture.transaction.state == AIUS_HTTP_TX_IDLE);
+		assert(fixture.transaction.sd_settle == NULL);
+		assert(g_settle.calls == 1);
+		/* Idempotent: a second discard has nothing armed to fire. */
+		aius_http_transaction_discard(&fixture.transaction);
+		assert(g_settle.calls == 1);
+
+		/* And a transaction that was never made valid is left strictly
+		 * alone -- its hook pointer is indistinguishable from garbage, so
+		 * the discard must refuse rather than call it. */
+		AiusHttpTransaction never_inited;
+		memset(&never_inited, 0, sizeof(never_inited));
+		never_inited.sd_settle = settle_probe;
+		never_inited.sd_settle_ctx = &fixture;
+		aius_http_transaction_discard(&never_inited);
+		assert(g_settle.calls == 1);
+		aius_http_transaction_discard(NULL);
+		assert(g_settle.calls == 1);
+	}
+
+	/* RESPONSE_TIMEOUT mid-send. The peer stops ACKing, the send deadline
+	 * expires, and the transaction tears the connection down. The borrow
+	 * ends at the recycle, not at the fault. */
+	{
+		static const uint8_t partial[700] = { 4 };
+		const uint32_t response_timeout_ms = 5000u;
+		Fixture fixture;
+		init_fixture(&fixture);
+		AiusHttpAction action = feed_request(&fixture, data_get);
+		AiusHttpApplicationResponse response =
+			immediate(200, "application/octet-stream", partial,
+			          sizeof(partial));
+		response.sd_settle = settle_probe;
+		response.sd_settle_ctx = &fixture;
+		settle_arm(&fixture, 0u, partial, 0u);
+		action = call_step(&fixture, 10,
+		                   application_result(&action, &response));
+		assert(action.kind == AIUS_HTTP_ACTION_WRITE);
+		assert(fixture.transaction.deadline_ms ==
+		       10u + response_timeout_ms);
+		assert(g_settle.calls == 0);
+
+		action = call_step(&fixture, 10u + response_timeout_ms,
+		                   io_result(&action, AIUS_IO_WOULD_BLOCK, 0, 0));
+		assert(action.kind == AIUS_HTTP_ACTION_CLOSE);
+		assert(fixture.transaction.last_fault ==
+		       AIUS_HTTP_FAULT_RESPONSE_TIMEOUT);
+		/* Still not fired: the response is faulted, but the transaction
+		 * has not recycled, so the borrow is formally still out. */
+		assert(g_settle.calls == 0);
+		finish_close(&fixture, action);
+		assert(g_settle.calls == 1);
+		assert(!g_settle.last_committed);
+	}
+
+	/* THE STREAM PATH. A body larger than AIUS_HTTP_MAX_RESPONSE cannot be
+	 * copied into the response buffer, so format_stream_response keeps the
+	 * application's pointer and drains it in place -- which is precisely the
+	 * shape a recorder chunk read takes. Prove the hook survives that route,
+	 * both to a clean completion and to a mid-stream abort. */
+	{
+		static uint8_t chunk[AIUS_HTTP_MAX_BODY];
+		for (size_t i = 0; i < sizeof(chunk); ++i)
+			chunk[i] = (uint8_t)(i & 0xffu);
+		assert(sizeof(chunk) > AIUS_HTTP_MAX_RESPONSE);
+
+		Fixture fixture;
+		init_fixture(&fixture);
+		AiusHttpAction action = feed_request(&fixture, data_get);
+		AiusHttpApplicationResponse response =
+			immediate(200, "application/octet-stream", chunk,
+			          sizeof(chunk));
+		response.sd_settle = settle_probe;
+		response.sd_settle_ctx = &fixture;
+		settle_arm(&fixture, 0u, chunk, 0u);
+		action = call_step(&fixture, 0,
+		                   application_result(&action, &response));
+		assert(action.kind == AIUS_HTTP_ACTION_WRITE);
+		assert(fixture.transaction.response_streams_body);
+		assert(fixture.transaction.stream_body == chunk);
+		assert(g_settle.calls == 0);
+		action = finish_all_writes(&fixture, action);
+		assert(action.kind == AIUS_HTTP_ACTION_CLOSE);
+		assert(fixture.transaction.stream_body_offset == sizeof(chunk));
+		assert(g_settle.calls == 0);
+		finish_close(&fixture, action);
+		assert(g_settle.calls == 1);
+		assert(!g_settle.last_committed);
+
+		/* Same route, aborted partway: the peer closes after the headers
+		 * and some of the borrowed body have gone out. */
+		Fixture aborted;
+		init_fixture(&aborted);
+		AiusHttpAction abort_action = feed_request(&aborted, data_get);
+		AiusHttpApplicationResponse abort_response =
+			immediate(200, "application/octet-stream", chunk,
+			          sizeof(chunk));
+		abort_response.sd_settle = settle_probe;
+		abort_response.sd_settle_ctx = &aborted;
+		settle_arm(&aborted, 0u, chunk, 0u);
+		abort_action = call_step(
+			&aborted, 0,
+			application_result(&abort_action, &abort_response));
+		/* Drain the headers and at least one slice of the borrowed body,
+		 * so the abort lands genuinely mid-stream. */
+		abort_action = finish_response_headers(&aborted, abort_action);
+		assert(abort_action.kind == AIUS_HTTP_ACTION_WRITE);
+		assert(abort_action.data == chunk);
+		abort_action = call_step(&aborted, 0,
+		                         io_result(&abort_action,
+		                                   AIUS_IO_PROGRESS,
+		                                   abort_action.length, 0));
+		assert(abort_action.kind == AIUS_HTTP_ACTION_WRITE);
+		assert(aborted.transaction.stream_body_offset != 0u);
+		assert(aborted.transaction.stream_body_offset <
+		       aborted.transaction.stream_body_length);
+		/* settle_arm above reset the probe, so this counts only the
+		 * aborted transaction's own hook. */
+		assert(g_settle.calls == 0);
+
+		abort_action = call_step(&aborted, 0,
+		                         io_result(&abort_action, AIUS_IO_CLOSED,
+		                                   0, 0));
+		for (int i = 0; i < 8 &&
+		                abort_action.kind != AIUS_HTTP_ACTION_NONE &&
+		                abort_action.kind != AIUS_HTTP_ACTION_ACCEPT; ++i)
+			abort_action = call_step(&aborted, 0,
+			                         io_result(&abort_action,
+			                                   AIUS_IO_PROGRESS, 0, 0));
+		assert(g_settle.calls == 1);
+		assert(!g_settle.last_committed);
+	}
+}
+
 static void test_immediate_stream_body(void)
 {
 	static uint8_t model[AIUS_HTTP_MAX_BODY];
@@ -4769,6 +4949,8 @@ int main(void)
 		  test_upload_invalid_completion_cancels },
 		{ "upload.buffered-admission", test_buffered_upload_admission },
 	{ "upload.sd-settle-hook", test_sd_settle_hook_terminals },
+		{ "response.settle-hook-abort-paths",
+		  test_settle_hook_abort_paths },
 		{ "response.immediate-stream-body",
 		  test_immediate_stream_body },
 		{ "download.chunk-stability-ack",
@@ -4805,7 +4987,7 @@ int main(void)
 		{ "recorder.data-slot-parses-through-dispatch",
 		  test_recorder_data_slot_parses_through_dispatch },
 	};
-	assert(ARRAY_LENGTH(registry) == 43);
+	assert(ARRAY_LENGTH(registry) == 44);
 	for (size_t i = 0; i < ARRAY_LENGTH(registry); ++i) {
 		assert(registry[i].key[0] != '\0');
 		for (size_t j = 0; j < i; ++j)
