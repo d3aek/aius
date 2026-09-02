@@ -10,13 +10,52 @@ preserve 997 Hz across every rate, erasing the signature.
 
 The flight recorder (`/api/recorder`) solves this. It stages the board's own
 OUTPUT frames (s32le, 24-bit, stereo) into a PSRAM ring with a per-slot rate
-stamp, WITHOUT resampling. Reading that flat frame stream at a fixed
-reference rate makes the output rate visible as the captured tone frequency:
-a 997 Hz tone output at 48 kHz reads 997 Hz, but output at 44.1 kHz reads
-997 * 48000/44100 = 1085 Hz. So the board's output-rate timeline is
-recoverable from the recorded frames, and stale old-rate frames after a
-switch show as an out-of-place frequency segment. A clean board yields
-`old_rate_output_frames == 0`, corroborated by the slot's own `rate_changes`.
+stamp, WITHOUT resampling. The recorded frames therefore carry the output
+rate directly as SAMPLES PER CYCLE of the 997 Hz tone: 48.14 at 48 kHz,
+44.23 at 44.1 kHz, 32.10 at 32 kHz, independent of the rate the stream is
+read back at.
+
+MEASUREMENT MODEL -- the fiducial matters.
+
+Stale old-rate frames emitted after a switch are CONTIGUOUS with the
+pre-switch run and carry the same samples-per-cycle, so no run-length
+analysis can separate them: the two merge into one long run and the answer
+is always 0 whatever the board did. The quantity gate 4 asks for is a
+DISTANCE, and a distance needs an origin the board itself declares.
+
+That origin is the per-slot fiducial in the recorder header:
+
+    slots[].rate_change_frames  STREAM frame indexes -- frames staged since
+                                the slot armed (aius_recorder.h:163-171) --
+                                at which the board changed output rate, up
+                                to 4. NOT ring indexes.
+    slots[].rate_change_count   how many of them are populated
+    slots[].stream_end_frame    frames staged at POSTROLL exit
+
+The pulled frames are a different index space: read_slot unrolls the ring
+from `oldest_frame`, so the array is indexed 0..valid_frames-1 with 0 = the
+oldest RETAINED frame. Converting a fiducial is therefore a subtraction of
+the stream index of that oldest retained frame:
+
+    wav_index = fiducial - (stream_end_frame - valid_frames)
+
+    old_rate_output_frames = sum over converted fiducials of
+        max(0, (frame where samples-per-cycle actually changes) - wav_index)
+
+A fiducial converting outside [0, valid_frames) rolled off the front of the
+ring before the freeze; it is dropped and listed in `fiducials_rolled_off`.
+
+When the header has no fiducial, or has fiducials but no `stream_end_frame`
+(their origin is then unknown and guessing one would fabricate the answer),
+the reducer falls back to run-length analysis and marks the evidence
+`"method": "run-length (no fiducial)"` with `lower_bound: true` -- the number
+is then a LOWER BOUND, not the measurement, and must not be read as a clean
+pass on its own.
+
+Zero captured slots is a FAILURE, never a clean 0: the reducer emits
+`old_rate_output_frames: null`, `captured_slots: 0` and
+`failure: "no-transition-captured"`, which the bench's gate-4 check rejects
+as a non-integer external observation rather than accepting as clean.
 
 The reducers here are pure and unit-tested; the live orchestration drives
 48->44.1->48 via aplay while polling /api/status and /api/events (for the
@@ -29,6 +68,7 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
+import sys
 import threading
 import time
 import urllib.error
@@ -41,40 +81,86 @@ FRAME_BYTES = 8
 READ_CHUNK_BYTES = 65536
 TONE_HZ = 997.0
 REFERENCE_RATE = 48000
-CANDIDATE_RATES = (48000, 44100)
-# Frequency classification tolerance and per-block analysis size. 512 frames
-# spans ~10 tone periods at these rates -- enough crossings for a few-Hz
-# estimate, fine enough to localise a stale-frame artifact.
-CLASSIFY_BLOCK = 512
-CLASSIFY_TOLERANCE_HZ = 30.0
+# Every nominal rate the classifier will name. A block at a rate outside the
+# 48/44.1 pair is COUNTED at that rate, never discarded as ambiguous: a
+# transient third rate in the output is exactly the artifact gate 4 exists
+# to see.
+NOMINAL_RATES = (32000, 44100, 48000, 88200, 96000)
+# Samples-per-cycle classification. 256 frames spans ~5 tone periods at
+# these rates -- enough crossings for a ~0.2 samples-per-cycle estimate,
+# fine enough to localise the rate-change frame to within a block. The
+# nearest-nominal snap tolerance is in samples per cycle; 48000/997 and
+# 44100/997 are 3.9 apart, so 1.5 is a wide margin that still rejects noise.
+CLASSIFY_BLOCK = 256
+SPC_TOLERANCE = 1.5
 RMS_FLOOR = 1000.0
 # A real transition phase is ~seconds; any classified run shorter than this
 # that interrupts the monotonic phase structure is stale old-rate output.
+# Only used by the no-fiducial fallback.
 MIN_PHASE_FRAMES = 4096
+# How far past a fiducial to look for the samples-per-cycle change before
+# giving up (2 s at 48 kHz; a board that has not switched by then has not
+# switched).
+FIDUCIAL_SEARCH_FRAMES = 96000
+# The status poller's cadence. The board's event ring can overflow between
+# polls, and `event_overflows` is one of the transitions gate's harmful
+# counters, so the cadence is part of the measurement -- see
+# STATUS_POLL_NOTE.
+STATUS_POLL_INTERVAL_S = 0.25
+STATUS_POLL_NOTE = (
+    "clock.event_overflows is sensitive to this tool's own status/events "
+    "poll cadence: events the board rings out between two polls are lost and "
+    "counted as an overflow. A transitions `harmful-counter` failure that "
+    "cites event_overflows ALONE is therefore tool-induced and not a board "
+    "defect; any other harmful counter, or event_overflows alongside one, is "
+    "a real finding.")
+# aplay start-up plus the board's follow latency, added to the phase budget
+# when checking the recorder ring can hold the whole transition.
+APLAY_LATENCY_S = 1.5
 
 
-def classify_output_rates(mono: np.ndarray, reference_rate: int = REFERENCE_RATE,
-                          block: int = CLASSIFY_BLOCK) -> list[tuple[int, int, int | None]]:
-    """Per-block output rate, inferred from the tone frequency read at the
-    reference rate. Returns (start_frame, frames, rate|None); None marks a
-    silent or ambiguous block (boundary blocks, gaps)."""
+def samples_per_cycle(segment: np.ndarray) -> float | None:
+    """Samples per tone cycle in a block of recorded OUTPUT frames, from
+    positive-going zero crossings. This is a property of the frames
+    themselves (rate_out / 997), not of the rate they are read back at, so
+    it names the board's output rate directly."""
+    if len(segment) < 4:
+        return None
+    rms = float(np.sqrt(np.mean(segment.astype(np.float64) ** 2)))
+    crossings = np.flatnonzero((segment[:-1] <= 0) & (segment[1:] > 0)) + 1
+    if rms < RMS_FLOOR or len(crossings) < 3:
+        return None
+    span = int(crossings[-1] - crossings[0])
+    if span <= 0:
+        return None
+    return float(span / (len(crossings) - 1))
+
+
+def rate_from_samples_per_cycle(spc: float | None,
+                                tolerance: float = SPC_TOLERANCE
+                                ) -> int | None:
+    """Nearest nominal output rate for a samples-per-cycle estimate, or None
+    when nothing is close enough. Every NOMINAL_RATES entry is a candidate,
+    so a block at a third rate is named rather than dropped."""
+    if spc is None or spc <= 0:
+        return None
+    nearest = min(NOMINAL_RATES, key=lambda rate: abs(spc - rate / TONE_HZ))
+    if abs(spc - nearest / TONE_HZ) <= tolerance:
+        return int(nearest)
+    return None
+
+
+def classify_output_rates(mono: np.ndarray,
+                          block: int = CLASSIFY_BLOCK
+                          ) -> list[tuple[int, int, int | None]]:
+    """Per-block output rate from the block's samples-per-cycle. Returns
+    (start_frame, frames, rate|None); None marks a silent or unclassifiable
+    block (boundary blocks, gaps)."""
     labels: list[tuple[int, int, int | None]] = []
     for start in range(0, len(mono) - block + 1, block):
         segment = mono[start:start + block]
-        rms = float(np.sqrt(np.mean(segment.astype(np.float64) ** 2)))
-        crossings = np.flatnonzero(
-            (segment[:-1] <= 0) & (segment[1:] > 0)) + 1
-        if rms < RMS_FLOOR or len(crossings) < 3:
-            labels.append((start, block, None))
-            continue
-        span = int(crossings[-1] - crossings[0])
-        frequency = (len(crossings) - 1) * reference_rate / span
-        best = min(CANDIDATE_RATES,
-                   key=lambda rate: abs(frequency - TONE_HZ * reference_rate / rate))
-        expected = TONE_HZ * reference_rate / best
         labels.append((start, block,
-                       best if abs(frequency - expected) < CLASSIFY_TOLERANCE_HZ
-                       else None))
+                       rate_from_samples_per_cycle(samples_per_cycle(segment))))
     return labels
 
 
@@ -93,53 +179,291 @@ def output_rate_runs(labels: list[tuple[int, int, int | None]]
     return [(rate, frames) for rate, frames in runs]
 
 
+def rate_change_frame(mono: np.ndarray, fiducial: int,
+                      block: int = CLASSIFY_BLOCK,
+                      search_frames: int = FIDUCIAL_SEARCH_FRAMES
+                      ) -> int | None:
+    """First frame at or after `fiducial` whose samples-per-cycle differs
+    from the rate in force just before the fiducial.
+
+    The board declares WHEN it changed rate (the fiducial); this finds when
+    the OUTPUT actually changed. The gap between them is the stale old-rate
+    output. Returns None when the pre-fiducial rate cannot be established or
+    no change is found within search_frames."""
+    if fiducial < block or fiducial >= len(mono):
+        before = mono[max(0, fiducial - block):fiducial]
+    else:
+        before = mono[fiducial - block:fiducial]
+    old_rate = rate_from_samples_per_cycle(samples_per_cycle(before))
+    if old_rate is None:
+        return None
+    limit = min(len(mono), fiducial + search_frames)
+    start = fiducial
+    while start + block <= limit:
+        rate = rate_from_samples_per_cycle(
+            samples_per_cycle(mono[start:start + block]))
+        if rate is not None and rate != old_rate:
+            return start
+        start += block
+    return None
+
+
 def stale_old_rate_frames(runs: list[tuple[int, int]],
                           min_phase_frames: int = MIN_PHASE_FRAMES) -> int:
-    """Frames of stale old-rate output: any interior run shorter than a real
-    transition phase interrupts the monotonic 48->44.1->48 structure and is
-    old-rate leakage. A clean board's runs are all long -> 0."""
+    """FALLBACK ONLY (no fiducial in the header): frames of stale old-rate
+    output read as any interior run shorter than a real transition phase.
+
+    This is a LOWER BOUND and structurally blind to the common case: stale
+    old-rate frames immediately after a switch are contiguous with the
+    pre-switch run at the same samples-per-cycle, so they merge into it and
+    this returns 0 however many there were. Use the fiducial path."""
     if len(runs) <= 2:
         return 0
     stale = 0
     for index in range(1, len(runs) - 1):
-        rate, frames = runs[index]
+        _rate, frames = runs[index]
         if frames < min_phase_frames:
             stale += frames
     return stale
 
 
-def reduce_recorder_transitions(slots: list[np.ndarray]) -> dict:
-    """old_rate_output_frames across every captured slot. Each slot's raw
-    output frames are classified independently; a clean per-slot transition
-    contributes 0. Cross-slot boundaries are themselves the rate changes."""
+def normalize_fiducials(entry) -> dict:
+    """Accept either a fiducials_from_slot() record, a bare list of already
+    converted WAV indexes, or None, and return the record shape."""
+    if entry is None:
+        return {"fiducial_frames": [], "fiducials_rolled_off": [],
+                "fiducials_usable": False,
+                "fiducial_note": "no fiducials supplied"}
+    if isinstance(entry, dict):
+        record = dict(entry)
+        record.setdefault("fiducial_frames", [])
+        record.setdefault("fiducials_rolled_off", [])
+        record.setdefault("fiducials_usable", bool(record["fiducial_frames"]))
+        return record
+    frames = [int(value) for value in entry]
+    return {"fiducial_frames": frames, "fiducials_rolled_off": [],
+            "fiducials_usable": bool(frames)}
+
+
+def reduce_slot(frames: np.ndarray, fiducials) -> dict:
+    """One slot's stale-frame count plus its evidence. With usable fiducials
+    the count is a real measurement; without, it is the run-length lower
+    bound."""
+    mono = frames[:, 0]
+    runs = output_rate_runs(classify_output_rates(mono))
+    supplied = normalize_fiducials(fiducials)
+    record = {
+        "frames": int(len(frames)),
+        "output_rate_runs": [[rate, count] for rate, count in runs],
+        "fiducial_frames": list(supplied["fiducial_frames"]),
+        "fiducials_rolled_off": list(supplied["fiducials_rolled_off"]),
+    }
+    if supplied.get("stream_end_frame") is not None:
+        record["stream_end_frame"] = supplied["stream_end_frame"]
+        record["oldest_retained_stream_frame"] = supplied[
+            "oldest_retained_stream_frame"]
+    if supplied["fiducials_usable"] and supplied["fiducial_frames"]:
+        stale = 0
+        detected: list[int | None] = []
+        for fiducial in supplied["fiducial_frames"]:
+            change = rate_change_frame(mono, int(fiducial))
+            detected.append(None if change is None else int(change))
+            if change is not None:
+                stale += max(0, int(change) - int(fiducial))
+        record.update({
+            "method": "fiducial (slots[].rate_change_frames)",
+            "lower_bound": False,
+            "rate_change_frames_detected": detected,
+            "stale_frames": int(stale),
+        })
+        return record
+    stale = stale_old_rate_frames(runs)
+    record.update({
+        "method": "run-length (no fiducial)",
+        "lower_bound": True,
+        "lower_bound_note": (
+            supplied.get("fiducial_note")
+            or "no usable slots[].rate_change_frames fiducial remained after "
+               "converting stream indexes to pulled-frame indexes")
+        + "; stale old-rate frames contiguous with the pre-switch run cannot "
+          "be separated from it, so this count is a lower bound, not a "
+          "measurement",
+        "stale_frames": int(stale),
+    })
+    return record
+
+
+def reduce_recorder_transitions(slots: list[np.ndarray],
+                                fiducial_sets: list | None = None) -> dict:
+    """old_rate_output_frames across every captured slot.
+
+    ZERO captured slots is a failure, not a clean 0: the field is emitted as
+    null with a `no-transition-captured` marker so the bench's gate-4 check
+    rejects it ("old_rate_output_frames must be an unsigned integer") rather
+    than reading a vacuous pass."""
+    if not slots:
+        return {
+            "external": {
+                "old_rate_output_frames": None,
+                "captured_slots": 0,
+                "failure": "no-transition-captured",
+            },
+            "evidence": {
+                "detection": "flight-recorder output-rate segmentation",
+                "reference_rate_hz": REFERENCE_RATE,
+                "captured_slots": 0,
+                "failure": "no-transition-captured",
+                "failure_note": (
+                    "no frozen slot with a rate change was captured, so "
+                    "nothing was measured; old_rate_output_frames is null "
+                    "rather than 0 so the gate fails visibly instead of "
+                    "passing on absent evidence"),
+                "slots": [],
+            },
+        }
     total_stale = 0
     evidence = []
+    lower_bound = False
     for index, frames in enumerate(slots):
-        runs = output_rate_runs(classify_output_rates(frames[:, 0]))
-        stale = stale_old_rate_frames(runs)
-        total_stale += stale
-        evidence.append({
-            "slot_index": index,
-            "frames": int(len(frames)),
-            "output_rate_runs": [[rate, count] for rate, count in runs],
-            "stale_frames": stale,
-        })
+        fiducials = None
+        if fiducial_sets is not None and index < len(fiducial_sets):
+            fiducials = fiducial_sets[index]
+        record = reduce_slot(frames, fiducials)
+        record["slot_index"] = index
+        total_stale += record["stale_frames"]
+        lower_bound = lower_bound or record["lower_bound"]
+        evidence.append(record)
     return {
-        "external": {"old_rate_output_frames": int(total_stale)},
+        "external": {
+            "old_rate_output_frames": int(total_stale),
+            "captured_slots": len(slots),
+        },
         "evidence": {
             "detection": "flight-recorder output-rate segmentation",
             "reference_rate_hz": REFERENCE_RATE,
+            "captured_slots": len(slots),
+            "lower_bound": lower_bound,
+            "method": ("run-length (no fiducial)" if lower_bound
+                       else "fiducial (slots[].rate_change_frames)"),
             "slots": evidence,
         },
     }
 
 
+def fiducials_from_slot(meta: dict) -> dict:
+    """Per-slot fiducials converted from STREAM indexes to WAV indexes.
+
+    `slots[].rate_change_frames` are STREAM indexes -- frames staged since the
+    slot armed (aius_recorder.h:163-171) -- NOT ring indexes. The array
+    read_slot returns is already unrolled from `oldest_frame` and is indexed
+    0..valid_frames-1 with 0 = the oldest RETAINED frame, so the conversion is
+    a subtraction of the stream index of that oldest retained frame:
+
+        wav_index = fiducial - (stream_end_frame - valid_frames)
+
+    where `stream_end_frame` is the slot's frames-staged count at POSTROLL
+    exit. A fiducial landing outside [0, valid_frames) rolled off the front of
+    the ring before the freeze; it is dropped and recorded in
+    `fiducials_rolled_off` so a short ring is visible rather than silently
+    shrinking the measurement.
+
+    When `stream_end_frame` is ABSENT the origin is unknown and the fiducials
+    are unusable -- there is no safe guess, so the caller must take the
+    run-length fallback with `lower_bound: true`."""
+    raw = meta.get("rate_change_frames")
+    valid = int(meta.get("valid_frames") or 0)
+    stream_end = meta.get("stream_end_frame")
+    if not isinstance(raw, list) or not raw:
+        return {
+            "fiducial_frames": [],
+            "fiducials_rolled_off": [],
+            "fiducials_usable": False,
+            "fiducial_note": ("the recorder header carries no "
+                              "slots[].rate_change_frames fiducial"),
+        }
+    if isinstance(stream_end, bool) or not isinstance(stream_end, int):
+        return {
+            "fiducial_frames": [],
+            "fiducials_rolled_off": [],
+            "fiducials_usable": False,
+            "fiducial_note": (
+                "slots[].rate_change_frames are stream indexes but the header "
+                "carries no slots[].stream_end_frame, so their origin in the "
+                "pulled frames is unknown; guessing one would fabricate the "
+                "measurement, so the run-length lower bound is used instead"),
+        }
+    count = meta.get("rate_change_count")
+    if isinstance(count, int) and not isinstance(count, bool) and (
+            0 <= count <= len(raw)):
+        raw = raw[:count]
+    base = int(stream_end) - valid
+    usable: list[int] = []
+    rolled_off: list[int] = []
+    for value in raw:
+        if isinstance(value, bool) or not isinstance(value, int):
+            continue
+        wav_index = int(value) - base
+        if 0 <= wav_index < valid:
+            usable.append(wav_index)
+        else:
+            rolled_off.append(int(value))
+    return {
+        "fiducial_frames": sorted(usable),
+        "fiducials_rolled_off": sorted(rolled_off),
+        "fiducials_usable": bool(usable),
+        "stream_end_frame": int(stream_end),
+        "oldest_retained_stream_frame": base,
+    }
+
+
+def newest_frozen_slot(header: dict) -> dict | None:
+    """The slot this run's freeze captured.
+
+    Prefers the header's own `newest_frozen_slot` pointer; falls back to the
+    frozen slot with the highest `freeze_generation`. The old
+    `(active_slot - 1) % slot_count` guess assumed the bank's auto-advance
+    had already landed within the tool's 0.6 s sleep, which is a race, not a
+    fact."""
+    slots = header.get("slots") or []
+    pointer = header.get("newest_frozen_slot")
+    if isinstance(pointer, int):
+        for slot in slots:
+            if slot.get("slot") == pointer:
+                return slot
+    frozen = [slot for slot in slots if slot.get("state") == "frozen"]
+    if not frozen:
+        return None
+    return max(frozen, key=lambda slot: int(slot.get("freeze_generation") or 0))
+
+
+def slot_capacity_frames(header: dict, meta: dict | None) -> int:
+    """Frames one slot's ring holds. `ring_frames` is the direct statement;
+    the fitted_mb/slot_count/frame_bytes arithmetic is the fallback."""
+    if meta and int(meta.get("ring_frames") or 0) > 0:
+        return int(meta["ring_frames"])
+    fitted_mb = int(header.get("fitted_mb") or 0)
+    slot_count = int(header.get("slot_count") or 1) or 1
+    frame_bytes = int(header.get("frame_bytes") or FRAME_BYTES) or FRAME_BYTES
+    return (fitted_mb * 1024 * 1024) // slot_count // frame_bytes
+
+
+def required_capture_frames(phase_seconds: float, phases: int, rate: int,
+                            latency_s: float = APLAY_LATENCY_S) -> int:
+    """Frames the recorder must hold for the whole transition to stay in the
+    ring. A shorter ring rolls the first phase (and its rate change) off the
+    front, and the reduction then measures a transition that is no longer
+    there."""
+    return int((phase_seconds * phases + latency_s) * rate)
+
+
 def usb_authorize(path: str, value: int) -> None:
     """Set a USB device's `authorized` flag. Deauthorizing the U24 (3-1.1)
     drops the board's source carrier, inducing the loss->replay leg; 0 = down,
-    1 = up. The file is group-writable to plugdev (the operator's group)."""
-    subprocess.run(["sh", "-c", f"echo {value} > {path}"],
-                   capture_output=True, check=True)
+    1 = up. The file is group-writable to plugdev (the operator's group).
+
+    Written directly rather than through `sh -c "echo ... > path"`: the shell
+    form interpolates a CLI-supplied path into a command string."""
+    Path(path).write_text(str(int(value)), encoding="utf-8")
 
 
 def board_post(base: str, auth: str, path: str, body: str) -> int:
@@ -160,6 +484,9 @@ class RecorderClient:
     """Minimal /api/recorder client: header read, freeze/thaw, PUT config,
     and slot data reads reassembled to logical (oldest-first) frame order."""
 
+    CONFIG_KEYS = ("overrun", "underrun", "carrier_loss", "limiter_gr",
+                   "gr_threshold_db", "gr_hold_blocks", "postroll_blocks")
+
     def __init__(self, base: str, auth: str):
         self.base = base
         self.auth = auth
@@ -176,12 +503,19 @@ class RecorderClient:
     def header(self) -> dict:
         return json.loads(self._request("/api/recorder")[1].decode("utf-8"))
 
+    def set_config(self, config: dict) -> None:
+        body = {key: config[key] for key in self.CONFIG_KEYS if key in config}
+        self._request("/api/recorder/config", "PUT", json.dumps(body))
+
     def disable_auto_triggers(self) -> None:
-        self._request("/api/recorder/config", "PUT", json.dumps({
+        """Silence every auto-trigger so the run's own freeze is the only
+        capture. This MUTATES the board's persistent recorder config; the
+        caller restores the previous config in a finally."""
+        self.set_config({
             "overrun": False, "underrun": False, "carrier_loss": False,
             "limiter_gr": False, "gr_threshold_db": 0.0,
             "gr_hold_blocks": 1, "postroll_blocks": 0,
-        }))
+        })
 
     def freeze(self) -> None:
         self._request("/api/recorder/freeze", "POST")
@@ -214,25 +548,59 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--tone-48", required=True, type=Path)
     parser.add_argument("--tone-44", required=True, type=Path)
     parser.add_argument("--phase-seconds", type=float, default=2.0)
-    parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--output", type=Path,
+                        help="evidence directory (default: a timestamped dir "
+                             "under firmware/test/evidence/rate-gate-capture/)")
     parser.add_argument("--expect-build")
     parser.add_argument("--with-replay", action="store_true",
                         help="drive the loss->replay leg (USB-deauths the U24)")
     parser.add_argument("--replay-id", default="channel_id_51")
     parser.add_argument("--usb-path",
                         default="/sys/bus/usb/devices/3-1.1/authorized")
+    parser.add_argument("--allow-rolloff", action="store_true",
+                        help="run even when the recorder ring is too small to "
+                             "hold the whole transition (the capture will "
+                             "roll the first phase off the front)")
     args = parser.parse_args(argv)
 
-    import capture  # sibling module: reuse polling + evidence emission
+    # Sibling module: reuse polling + evidence emission. Add this file's own
+    # directory so the tool runs by absolute path, not only from its dir.
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import capture
 
     auth = Path(args.auth_file).read_text(encoding="utf-8").strip()
     client = RecorderClient(args.base, auth)
+    if args.output is None:
+        args.output = capture.default_output_dir("transitions")
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
     status_url = f"{args.base}/api/status"
     events_base = capture.events_url(status_url)
 
-    client.disable_auto_triggers()
+    # The three aplay phases are 48 -> 44.1 -> 48 (two rate boundaries); the
+    # ring must hold all three plus the stimulus start-up latency or the
+    # first boundary rolls off the front before the freeze.
+    phases = 3
+    baseline_header = client.header()
+    baseline_slot = newest_frozen_slot(baseline_header)
+    baseline_generation = int(
+        (baseline_slot or {}).get("freeze_generation") or 0)
+    capacity = slot_capacity_frames(
+        baseline_header,
+        (baseline_header.get("slots") or [None])[0])
+    required = required_capture_frames(args.phase_seconds, phases,
+                                       REFERENCE_RATE)
+    if capacity and required > capacity and not args.allow_rolloff:
+        print(
+            f"recorder slot holds {capacity} frames; the "
+            f"{args.phase_seconds:g}s x {phases}-phase transition plus "
+            f"{APLAY_LATENCY_S:g}s stimulus latency needs {required}. The "
+            f"first phase and its rate change would roll off the ring "
+            f"before the freeze. Shorten --phase-seconds or pass "
+            f"--allow-rolloff to run anyway.", file=sys.stderr)
+        return 3
+
+    previous_config = dict(baseline_header.get("config") or {})
 
     polls: list[dict] = []
     stop = threading.Event()
@@ -255,60 +623,87 @@ def main(argv: list[str] | None = None) -> int:
                 })
             except RuntimeError:
                 pass
-            time.sleep(0.7)
-
-    poller = threading.Thread(target=poll_loop, daemon=True)
-    poller.start()
+            time.sleep(STATUS_POLL_INTERVAL_S)
 
     def aplay(tone: Path) -> None:
         subprocess.run(["aplay", "-D", args.device,
                         "-d", str(int(args.phase_seconds)), str(tone)],
-                       capture_output=True)
+                       capture_output=True, check=False)
 
-    aplay(args.tone_48)
-    aplay(args.tone_44)
-    aplay(args.tone_48)
-    time.sleep(0.2)
-    client.freeze()
-    time.sleep(0.6)
+    poller = threading.Thread(target=poll_loop, daemon=True)
+    meta = None
+    header = baseline_header
+    try:
+        client.disable_auto_triggers()
+        poller.start()
 
-    # Remember the captured slot NOW, before the replay leg perturbs the bank.
-    # The bank freezes the ACTIVE slot then advances, so the slot this run
-    # captured is the one just behind the new active pointer.
-    header = client.header()
-    captured = (header["active_slot"] - 1) % header["slot_count"]
-    meta = next(s for s in header["slots"] if s["slot"] == captured)
+        aplay(args.tone_48)
+        aplay(args.tone_44)
+        aplay(args.tone_48)
+        time.sleep(0.2)
+        client.freeze()
+        time.sleep(0.6)
 
-    if args.with_replay:
-        try:
-            print("loss->replay: deauthorizing U24", flush=True)
-            usb_authorize(args.usb_path, 0)          # drop the source carrier
-            time.sleep(2.5)                           # >=2 unlocked samples
-            for _ in range(6):
-                status = board_post(
-                    args.base, auth, "/api/replays/start",
-                    json.dumps({"id": args.replay_id, "loop": False}))
-                print(f"replays/start -> {status}", flush=True)
-                if status == 200:
-                    break
-                time.sleep(0.8)                       # carrier not gone yet
-            time.sleep(3.5)                           # dwell in replay
-        finally:
-            print("loss->replay: reauthorizing U24", flush=True)
-            usb_authorize(args.usb_path, 1)           # ALWAYS restore the U24
-            time.sleep(1.5)
+        # Identify the captured slot NOW, before the replay leg perturbs the
+        # bank, and only accept one whose freeze_generation is newer than the
+        # pre-run baseline -- otherwise a freeze that never landed reads back
+        # as somebody else's older capture.
+        header = client.header()
+        meta = newest_frozen_slot(header)
+        if meta is not None and int(
+                meta.get("freeze_generation") or 0) <= baseline_generation:
+            meta = None
 
-    stop.set()
-    poller.join(timeout=5)
+        if args.with_replay:
+            try:
+                print("loss->replay: deauthorizing U24", flush=True)
+                usb_authorize(args.usb_path, 0)      # drop the source carrier
+                time.sleep(2.5)                       # >=2 unlocked samples
+                for _ in range(6):
+                    status = board_post(
+                        args.base, auth, "/api/replays/start",
+                        json.dumps({"id": args.replay_id, "loop": False}))
+                    print(f"replays/start -> {status}", flush=True)
+                    if status == 200:
+                        break
+                    time.sleep(0.8)                   # carrier not gone yet
+                time.sleep(3.5)                       # dwell in replay
+            finally:
+                print("loss->replay: reauthorizing U24", flush=True)
+                usb_authorize(args.usb_path, 1)       # ALWAYS restore the U24
+                time.sleep(1.5)
+    finally:
+        stop.set()
+        poller.join(timeout=5)
+        if previous_config:
+            # disable_auto_triggers mutates the board's PERSISTENT recorder
+            # config; leaving it applied silently disarms every auto-trigger
+            # for whoever uses the board next.
+            client.set_config(previous_config)
 
     slots = []
-    if meta["state"] == "frozen" and meta["rate_changes"] >= 1:
+    fiducial_sets: list[list[int]] = []
+    if meta is not None and meta.get("state") == "frozen" and int(
+            meta.get("rate_changes") or 0) >= 1:
         slots.append(client.read_slot(
-            captured, meta["freeze_generation"], meta["valid_frames"],
-            meta["oldest_frame"]))
-    reduced = reduce_recorder_transitions(slots)
-    reduced["evidence"]["captured_slot"] = captured
-    reduced["evidence"]["slot_rate_changes"] = meta["rate_changes"]
+            int(meta["slot"]), meta["freeze_generation"],
+            meta["valid_frames"], meta["oldest_frame"]))
+        fiducial_sets.append(fiducials_from_slot(meta))
+    reduced = reduce_recorder_transitions(slots, fiducial_sets)
+    reduced["evidence"].update({
+        "captured_slot": None if meta is None else meta.get("slot"),
+        "slot_rate_changes": None if meta is None else meta.get("rate_changes"),
+        "baseline_freeze_generation": baseline_generation,
+        "freeze_generation": None if meta is None
+        else meta.get("freeze_generation"),
+        "slot_capacity_frames": capacity,
+        "required_capture_frames": required,
+        "phase_seconds": args.phase_seconds,
+        "phases": phases,
+        "status_poll_interval_s": STATUS_POLL_INTERVAL_S,
+        "event_overflows_note": STATUS_POLL_NOTE,
+        "recorder_config_restored": bool(previous_config),
+    })
 
     external_raw = json.dumps(reduced["external"])
     capture.write_json(output / "external-observation.json", reduced["external"])
@@ -325,7 +720,13 @@ def main(argv: list[str] | None = None) -> int:
             options["expect_build"] = args.expect_build
         capture.write_evidence(output / "evidence.jsonl", "transitions",
                                polls, options, external_raw)
+        capture.announce_evidence(output / "evidence.jsonl")
     print(json.dumps(reduced["external"], indent=2, sort_keys=True))
+    if not slots:
+        print("transitions FAILED: no-transition-captured "
+              "(no frozen slot with a rate change newer than the pre-run "
+              "baseline)", file=sys.stderr)
+        return 2
     return 0
 
 

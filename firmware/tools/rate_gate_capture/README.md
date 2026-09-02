@@ -21,26 +21,104 @@ the gate reducers and their JSON schema are new.
 | 4 | `transitions` | `old_rate_output_frames` |
 | 7 | `waveform` | `capture_frame_gaps`, `discontinuities_outside_invalid`, `invalid_intervals_frames`, `correlated_trim_updates`, `correlated_invalid_windows` |
 
-## Two pinned design choices
+A hard capture fault adds `capture_failure` (a list of markers) and
+neutralises the scenario's gate-critical field — see §Capture health.
 
-- **Gate 2's rate is `audio_rate_hz`, inferred not decoded.** The U24 XL
-  exposes no IEC958 capture-status control (`amixer -c0 controls` — none
-  present), so the incoming S/PDIF channel-status word is not readable via
-  ALSA on this interface. The rate is inferred from the captured tone
-  frequency (`rate ≈ expected_rate × f_measured / 997`); since that is an
-  audio-rate inference and not a channel-status decode, the field is named
-  `audio_rate_hz` (design decision 2026-09-01), with
-  `audio_rate_hz_source: "inferred-from-tone"` in the evidence. A true decode
-  needs a dedicated S/PDIF protocol analyzer.
+## Gate 2 — the rate model, and when it measures nothing
 
-- **Capture↔status correlation uses bounded local alignment.** Each status
-  counter increment (`trim_updates`, `invalid_windows`) is matched to the
-  nearest capture event inside a drift-padded wall-time window around the
-  poll interval, not a global frame→wall-time map (which accumulates
-  output-vs-capture clock-drift error over a 600 s run). `ALIGNMENT_MARGIN_S`
-  bounds the padding.
+**The physical model is `R_out = 997 × R_capture / f_measured`.** Frames the
+board rendered at `R_out`, read back at `R_capture`, carry
+`997 × R_capture / R_out` Hz; the output rate is recovered by inverting that.
+(The inverse form `R_expected × f_measured / 997` reports 52245 Hz for a
+44.1 kHz stream read at 48 kHz, and was the defect this replaced.)
 
-## Gate 4 — flight-recorder capture
+The raw estimate is snapped to the nearest `NOMINAL_RATES` entry
+(32000/44100/48000/88200/96000) within `NOMINAL_RATE_TOLERANCE` (2 %). Both
+numbers reach the evidence: `audio_rate_hz_raw` is the estimate,
+`audio_rate_hz` is the snapped value, and `capture_rate_hz` is the rate
+`arecord` was actually opened at. An estimate no nominal rate is close to is
+reported as `null` rather than rounded, so gate 2's exact-equality check
+cannot pass on a rate nothing ran at.
+
+**The inference is self-referential whenever `arecord` is opened at the rate
+under test.** The U24 capture clock locks to the carrier under test, so
+`f_measured` is 997 Hz *by construction* and the reported rate is just the
+rate `arecord` was opened at — the measurement carries no independent
+information about the board's output rate. The evidence says so explicitly:
+
+```json
+{
+  "audio_rate_hz_source": "capture-clock-locked",
+  "self_referential": true,
+  "rate_measurement_note": "audio_rate_hz is capture-clock-locked, not independently measured: ..."
+}
+```
+
+A gate-2 pass on a self-referential run is therefore **not** evidence that
+the output ran at the declared rate; it only says the capture did not fail
+and the output was continuous. An independent reading needs `--rate`
+different from `--expected-rate` (the tone then genuinely carries the rate),
+or a channel-status decode. The U24 XL exposes no IEC958 capture-status
+control (`amixer -c0 controls` — none present), so a true decode needs a
+dedicated S/PDIF protocol analyzer; that is why the field is named
+`audio_rate_hz` rather than `channel_status_rate_hz` (design decision
+2026-09-01).
+
+## Gate 7 — two time origins and an amplitude-derived detector
+
+**Capture↔status correlation uses bounded local alignment.** Each status
+counter increment (`trim_updates`, `invalid_windows`) is matched to the
+nearest capture event inside a drift-padded wall-time window around the poll
+interval, not a global frame→wall-time map (which accumulates
+output-vs-capture clock-drift error over a 600 s run). `ALIGNMENT_MARGIN_S`
+bounds the padding at 1.5 s.
+
+**Two origins separate the status domain from the capture domain and both are
+subtracted.** For the board→U24 loop, `aplay` must start and the board must
+lock to the target rate *before* `arecord` opens, so the run clock is up to
+`lock_budget_s` (20 s) ahead of capture frame 0; and `active_bounds()` then
+trims the silent lead-in, so active frame 0 is further in again. The tool
+takes its capture origin from the moment `arecord`'s WAV first grows past its
+header (`capture_start_offset_s`, `capture_start_source`) and passes both
+offsets into the alignment. Dropping either offsets every increment by
+seconds and nothing inside a 1.5 s margin can ever correlate.
+
+**The discontinuity detector is derived from the measured stimulus, never
+from a fixed LSB floor.** `tone_gen.py` defaults to peak ±410, whose largest
+adjacent-sample jump at 997 Hz / 48 kHz is only ~54 LSB — an absolute floor
+above that is blind to every artifact by construction. Three signatures, all
+scaled from the measured amplitude `A` and the tone's own peak slope
+`S = 2A·sin(πf/Fs)`:
+
+- **Held block** — a run of near-zero first difference against a
+  known-nonzero expected slope (`held_slope_floor`, `held_min_frames`). This
+  is what a repeated / sample-and-hold PCM block looks like; its interior is
+  flat and no amplitude threshold sees it.
+- **Spike / splice edge** — an adjacent jump over `JUMP_SLOPE_FACTOR × S`.
+- **Sample slip** — a step in the fitted tone's phase. A dropped or repeated
+  sample steps the demodulated phase by `2πf/Fs` wherever in the cycle it
+  lands, which is why 1- and 2-sample slips near the waveform's turning
+  points are invisible to any amplitude test.
+
+Every threshold plus `stimulus_amplitude` and `expected_peak_slope` is
+written into `capture-analysis.json`, so a reader can see what the detector
+was actually able to see on that run.
+
+## Capture health
+
+`arecord`'s exit status and its log are inspected, not discarded:
+
+- ALSA `overrun`/`xrun` notices in `arecord.log` are counted
+  (`alsa_overruns`) and added to `capture_frame_gaps` — they are capture
+  frame gaps by definition.
+- A non-zero `arecord` exit, or a WAV shorter than `--seconds` by more than
+  `CAPTURE_SHORTFALL_TOLERANCE_S`, is a hard failure: the tool records the
+  marker in `capture_failure`, neutralises the scenario's gate-critical
+  field (`audio_rate_hz: null` + `continuous_output: false` for gate 2,
+  extra `capture_frame_gaps` for gate 7), prints the failure to stderr and
+  exits 2.
+
+## Gate 4 — flight-recorder capture with a fiducial
 
 `old_rate_output_frames` cannot be measured through the U24 ALSA path: the
 capture clock locks to the incoming carrier (a fixed-rate `hw:0,0` arecord
@@ -48,29 +126,83 @@ errors when the carrier rate changes) and `plughw` resampling would preserve
 997 Hz across every rate, erasing the signature. `recorder_transitions.py`
 uses the board's flight recorder (`/api/recorder`) instead — it stages the
 board's own OUTPUT frames (s32le/24-bit) into a PSRAM ring WITHOUT
-resampling, so reading that flat stream at a fixed 48 kHz reference makes the
-output rate visible as the tone frequency: a 997 Hz tone output at 44.1 kHz
-reads 997 × 48000/44100 = 1085 Hz (calibrated live), at 48 kHz reads 997 Hz.
-The reducer classifies each block's output rate and counts stale old-rate
-frames trailing a switch; a clean board yields 0.
+resampling, so the recorded frames carry the output rate directly as
+**samples per cycle** of the 997 Hz tone: 48.14 at 48 kHz, 44.23 at
+44.1 kHz, 32.10 at 32 kHz, whatever rate they are read back at. A block at a
+third rate is *counted at that rate*, never discarded as ambiguous.
+
+**The measurement needs a fiducial, and run-length analysis cannot substitute
+for one.** Stale old-rate frames emitted after a switch are contiguous with
+the pre-switch run and carry the same samples-per-cycle, so run-length
+analysis merges the two and always answers 0 whatever the board did. Gate 4
+asks for a *distance*, and a distance needs an origin the board declares:
+
+```text
+wav_index              = fiducial − (stream_end_frame − valid_frames)
+old_rate_output_frames = Σ over converted fiducials of
+    max(0, (frame where samples-per-cycle actually changes) − wav_index)
+```
+
+The fiducial is the recorder header's per-slot `slots[].rate_change_frames`
+(up to 4) with `slots[].rate_change_count`. **Those are STREAM indexes** —
+frames staged since the slot armed (`aius_recorder.h:163-171`) — **not ring
+indexes.** The pulled array is a different index space: `read_slot` unrolls
+the ring from `oldest_frame`, so it runs `0..valid_frames-1` with 0 = the
+oldest *retained* frame. `slots[].stream_end_frame` (frames staged at
+POSTROLL exit) gives the origin, and the conversion is the subtraction above.
+
+A fiducial converting outside `[0, valid_frames)` rolled off the front of the
+ring before the freeze; it is dropped and listed in `fiducials_rolled_off`, so
+a ring too short for the transition is visible in the evidence instead of
+silently shrinking the measurement.
+
+The reducer falls back to run-length analysis — `"method": "run-length (no
+fiducial)"`, `"lower_bound": true` — in three cases: the header carries no
+fiducial at all; it carries fiducials but no `stream_end_frame` (their origin
+is then unknown, and guessing one would fabricate the answer); or every
+fiducial rolled off. **That number is a lower bound, not a measurement**, and
+a 0 from it is not a clean pass.
+
+**Zero captured slots is a failure, not a clean 0.** The reducer emits
+`old_rate_output_frames: null`, `captured_slots: 0` and
+`failure: "no-transition-captured"`; the bench's gate-4 check rejects the
+non-integer ("old_rate_output_frames must be an unsigned integer") rather
+than reading a vacuous pass, and the tool exits 2.
 
 ```bash
 python3 recorder_transitions.py \
     --tone-48 /tmp/tone-997-48000.wav --tone-44 /tmp/tone-997-44100.wav \
-    --output <outdir> --expect-build fc674c60f06c+teensy41-optical
+    --phase-seconds 2 --expect-build <revision>+teensy41-optical
 ```
 
 It drives 48→44.1→48 via aplay while polling `/api/status` and `/api/events`
-in a background thread (for `evidence.jsonl`), operator-freezes the recorder
-(the captured slot is the one just behind the advanced active pointer), reads
-it, and reduces. Live result 2026-09-01: output-rate runs
-`[48000, 44100, 48000]`, `old_rate_output_frames = 0` — the board transitions
-cleanly. A full bench PASS additionally needs the loss→replay leg (USB
-deauth), which the status poller spans over the network.
+in a background thread (for `evidence.jsonl`), operator-freezes the recorder,
+reads the captured slot and reduces. Operational contracts:
+
+- **The captured slot is the header's `newest_frozen_slot`** (fallback: the
+  frozen slot with the highest `freeze_generation`), and its
+  `freeze_generation` must be newer than the pre-run baseline. The old
+  `(active_slot − 1) % slot_count` guess assumed the bank's auto-advance had
+  landed within a 0.6 s sleep, which is a race, not a fact.
+- **Ring capacity is checked against the phase budget.** `--phase-seconds ×
+  3 phases + aplay latency` must fit the slot's `ring_frames`, or the first
+  phase and its rate change roll off the front before the freeze; the tool
+  refuses (exit 3) unless `--allow-rolloff`.
+- **The recorder config is restored.** `disable_auto_triggers` mutates the
+  board's *persistent* recorder config; the previous config is read from the
+  header before the run and re-PUT in a `finally`.
+- **`clock.event_overflows` is partly this tool's own poll cadence.** Events
+  the board rings out between two polls are lost and counted as an overflow.
+  The poll interval is 0.25 s and is recorded as
+  `status_poll_interval_s`; a `harmful-counter` failure citing
+  `event_overflows` **alone** is tool-induced, not a board defect, and the
+  evidence carries that sentence verbatim in `event_overflows_note`.
 
 ## Usage
 
-Generate the 997 Hz stimulus with the source-qualification tone generator:
+Generate the 997 Hz stimulus with the source-qualification tone generator
+(default peak amplitude 410 — the level the detector thresholds are proven
+at):
 
 ```bash
 python3 ../source_qualification/tone_gen.py --rate 44100 --seconds 130 --output /tmp/tone-997-44100.wav
@@ -87,15 +219,31 @@ Run a gate capture, then hand the verdict to the bench's offline analyzer:
 
 ```bash
 python3 capture.py --scenario pcm-120s --rate 44100 --seconds 130 \
-    --tone /tmp/tone-997-44100.wav --output <outdir> \
+    --tone /tmp/tone-997-44100.wav \
     --status-url http://192.0.2.66/api/status \
-    --expect-build fc674c60f06c+teensy41-optical
+    --expect-build <revision>+teensy41-optical
 python3 ../net/aius_rate_bench.py analyze pcm-120s --evidence <outdir>/evidence.jsonl
 ```
 
 A single capture run owns the board: it drives the stimulus, records the
-waveform, and polls `/api/status` and `/api/events` in lockstep. It writes
-three artifacts to `<outdir>`:
+waveform, and polls `/api/status` and `/api/events` in lockstep.
+
+## Evidence retention
+
+`--output` defaults to a timestamped directory under
+`firmware/test/evidence/rate-gate-capture/` (gitignored, so a run's artifacts
+never enter a commit). Both tools print the evidence file's absolute path and
+its SHA-256 on completion:
+
+```text
+evidence: /.../firmware/test/evidence/rate-gate-capture/pcm-120s-20260902T101500Z/evidence.jsonl
+evidence-sha256: <64 hex>
+```
+
+**Cite that digest whenever a live result is recorded in a plan.** A result
+with no digest is an unverifiable claim.
+
+Each run directory holds:
 
 - `external-observation.json` — the exact per-gate fields.
 - `evidence.jsonl` — a bench-format evidence file (schema 1) of the same
@@ -103,16 +251,21 @@ three artifacts to `<outdir>`:
   `aius_rate_bench.py analyze` reaches a verdict offline. This avoids two
   processes polling the one-client-at-a-time board concurrently and the
   read-external-at-start race of `run`.
-- `capture-analysis.json` — the full supporting evidence (zero-run lengths,
-  discontinuity frames, correlation counts).
+- `capture-analysis.json` — the full supporting evidence (rate model and
+  self-referential marking, detector thresholds and measured amplitude,
+  zero-run lengths, discontinuity frames, correlation counts, capture
+  health).
+- `capture.wav`, `arecord.log`, `aplay.log` — the raw capture and its ALSA
+  logs.
 
 `--expect-build` pins the gate to the exact deployed `build_revision`.
 
 ## Tests
 
-`../../test/rate-gate-capture/test_capture.py` drives the reducers against
-synthetic gap-injected, 512-run-injected and frequency-step waveforms:
+`../../test/rate-gate-capture/test_capture.py` drives the real reducers
+against synthetic gap-injected, 512-run-injected, held-block, sample-slip and
+rate-step waveforms, plus the flight-recorder fiducial fixtures:
 
 ```bash
-python3 ../../test/rate-gate-capture/test_capture.py
+scripts/test.sh --environment native --suite rate-gate-capture
 ```
