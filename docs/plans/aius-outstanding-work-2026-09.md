@@ -32,12 +32,13 @@ Check *What landed* against `git -C git_modules/aius log` first; anything
 after `afce6a5` is invisible here.
 
 **Status.** DONE: Phase 0, Phase 1 (both steps, deployed), Phase 2 (recorder
-plan shipped), Phase 5 (A/B posture restored, OTA path proven), Phase 6 code
-(committed, host-proven, NOT yet deployed or bench-proven). IN PROGRESS:
+plan shipped), Phase 5 (A/B posture restored, OTA path proven), Phase 8 (D3
+docs default applied, register entry amended), Phase 6 code (committed,
+host-proven, NOT yet deployed or bench-proven). IN PROGRESS:
 Phase 3 (leg A done: 53 trims; leg B blocked only on a chooser-restore image,
 now buildable from clean HEAD). NOT STARTED: the rehearsal-reset fix (register
 proposal, default implement; its implementer died on the rate limit before
-touching a file), Phase 4, Phase 7, Phase 8 (docs default), Phase 9.
+touching a file), Phase 4, Phase 7, Phase 9.
 
 **Board:** `25109fca3f97+teensy41-optical-slot-a`, slot 2, `rollback_observed
 false`, tracking, OTA idle, recorder recording. The deployed image does NOT
@@ -124,7 +125,8 @@ worktree remove <path>` when Phase 3 is done.
 4. Then Phase 4 (one-image acceptance re-run: gates 1, 2, 4, 5, 6, 7 on the
    then-deployed image; the gate-5 fixture and bench command are in
    `firmware/tools/ac3_vectors/README.md`; the U24 IEC passthrough smoke
-   first), Phase 7 after D8, Phase 8's docs default, Phase 9 rulings.
+   first), Phase 7 after D8, Phase 9 rulings. (Phase 8's docs default is
+   applied — SHIPPED 2026-09-03.)
 
 ### Decisions taken this session (with why)
 
@@ -179,7 +181,8 @@ entry); plain-posture FCB word0 (`FCFB`) check (this plan §Phase 6 outcome);
 (recorder plan Phase D side observation); one slow-read ended in a board-side
 RST with 374 B undelivered (same bullet); ledger 21/25 read resolved without a
 close statement; `docs/reference/project-scale.md:167-171` and
-`aius-ota-resilience.md:48-50,75-78` carry stale 36/37/38 / drill wording;
+`aius-ota-resilience.md:48-50,75-78` carried stale 36/37/38 / drill wording
+(fixed 2026-09-03);
 gate-1 carrier estimate hops 9 bins on the current image — hypothesis: the
 carrier-measurement path in `optical_main.cpp` (33 commits since `405ce97`),
 since `aius_clock` / `aius_audio_clock.cpp` are untouched (SRF §Device
@@ -774,17 +777,32 @@ firmware phase deploys over OTA.
 - dependencies: Phase 4 (the acceptance image), D8 ruled
 - commit-checkpoint: tool commit, then docs commit with the rows.
 
-### Phase 8 — Receive-DMA gating during dark replay (proposal, not built by default)
+### Phase 8 — Receive-DMA gating during dark replay (proposal, not built by default) ✓ SHIPPED 2026-09-03
+
+**Shipped 2026-09-03.** D3 applied by default: leave as recorded, no firmware
+change. The register's receive-DMA entry — the RX-pool-corruption entry's
+closing proposal line, `aius-open-work-register.md` §Open defects — runtime — is
+amended with the risk that makes leaving it the default: the storm is already
+harmless, since with `update_responsibility` false the RX ISR only clears the
+interrupt and stages-or-drops one half
+(`firmware/lib/aius_audio/src/aius_spdif_sources.cpp:274-306`), while gating the
+DMA request would let the receiver FIFO overrun and latch SIS error bits on
+every dark replay — a new false board fault in `input_diag`. The entry now
+carries the disposition ("leave as recorded, build only on owner request"), the
+`DMA_CERQ` / `DMA_SERQ` primitive `spdif_engine_reacquire()` already uses
+(`optical_main.cpp:340-341`, `:355-356`), and the four measurements that would
+prove a build, so an owner request starts from a specified change rather than a
+re-derivation. Docs only; no build, no flash.
 
 - outcome: D3 applied. Default (review finding 5): leave as recorded — the
-  storm is harmless (register `:328-331`), the RX ISR with
+  storm is harmless (register `:346-348`, amended at `:349-365`), the RX ISR with
   `update_responsibility` false only clears the interrupt and stages-or-drops
-  (`firmware/lib/aius_audio/src/aius_spdif_sources.cpp:274-300`), and gating
+  (`firmware/lib/aius_audio/src/aius_spdif_sources.cpp:274-306`), and gating
   the DMA request would let the receiver FIFO overrun and latch SIS error
   bits on every dark replay — a new false board fault in `input_diag`. The
   register entry's proposal line is amended with that risk. Only on owner
   request: implement with the `DMA_CERQ`/`SERQ` primitive that already exists
-  in `spdif_engine_reacquire()` (`optical_main.cpp:338-354`), FLASHMEM
+  in `spdif_engine_reacquire()` (`optical_main.cpp:340-341`, `:355-356`), FLASHMEM
   checkpoint-7 code (ITCM ≈ 0), and prove `rx_dropped_halves` flat through a
   dark replay, `audio_update_calls` at the block rate, carrier return still
   relocks (`[1,1,1]`), AND the SIS error latch unchanged through the replay.

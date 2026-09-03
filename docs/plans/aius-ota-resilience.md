@@ -5,7 +5,7 @@ scope: component
 component: aius
 status: shipped
 tags: [aius, firmware, ota, flash, reliability]
-updated: 2026-08-16
+updated: 2026-09-03
 toc: true
 ---
 
@@ -45,9 +45,11 @@ Bench evidence, all on `a0969892a9d6` HalfKay-flashed at 14:37Z:
   client resumed from the device's `next_offset`; the session stayed
   verifiable and the upgrade completed. 4b's client drove every staging
   above. Scratch-sector self-test: pass.
-- **Still owed:** Phase 4c's lit-carrier boot row (the bench RX is dark;
-  needs an optical source plugged and one reboot — §ACTION for the owner)
-  and Phase 3's power-cut row.
+- **Still owed:** Phase 3's power-cut row, an owner-hands drill. Phase 4c's
+  lit-carrier boot row is DONE by evidence 2026-09-02 — the `b38e8448f5c8`
+  flash was a fresh boot with the carrier lit and its SD dashboard mounted and
+  served on that boot. (Register is authoritative; snapshot updated
+  2026-09-03.)
 
 **PHASE 3 BENCH CYCLE PASSED, same day.** The benched board was migrated to
 the A/B layout (recovery.hex = chooser + slot A over HalfKay; the chooser
@@ -73,9 +75,10 @@ rule below, struck): under A/B the activation window never touches the head
 region or the running slot, and a failure at any point — including the
 halt-into-WDOG path — lands in the chooser, which boots the still-active
 old slot. The remaining assurance drills are operator-hands items in the
-open-work register: a mid-window power cut, a real crash-loop trial
-(watching the chooser's budget fall back), and Phase 4c's lit-carrier boot
-row.
+open-work register, now owner-scheduled: a mid-window power cut and a real
+crash-loop trial (watching the chooser's budget fall back). Phase 4c's
+lit-carrier boot row is no longer among them — it was done by evidence
+2026-09-02. (Register is authoritative; snapshot updated 2026-09-03.)
 
 **Deployment note:** the device leaves the bench running slot A of
 `1dc7cbb80397`; releases now build with `scripts/build_ab.sh` and upgrades

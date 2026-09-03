@@ -346,7 +346,23 @@ ends left open:
   Not changed, recorded: the unlocked-receiver DMA storm itself (the
   receiver falls back to `tx_clk` under `SPDIF_SRPC_CLKSRC_SEL(1)`); it costs
   ~6.5x ISR entries while dark and is now harmless. Proposal (not agreed):
-  gate the receive DMA request while the output drives the graph.
+  gate the receive DMA request while the output drives the graph. **Risk, and
+  why the default is to leave it: the storm is already harmless** — with
+  `update_responsibility` false the RX ISR only clears the interrupt and then
+  stages-or-drops a single half
+  (`firmware/lib/aius_audio/src/aius_spdif_sources.cpp:274-306`) — **while
+  gating the DMA request would let the receiver FIFO overrun and latch SIS
+  error bits on every dark replay, a new false board fault in `input_diag`.**
+  Disposition: leave as recorded, build only on owner request (D3 applied by
+  default 2026-09-03;
+  [`aius-outstanding-work-2026-09.md`](aius-outstanding-work-2026-09.md)
+  Phase 8). If built, the primitive is the `DMA_CERQ` / `DMA_SERQ` pair
+  `spdif_engine_reacquire()` already uses to gate both S/PDIF channels across
+  the soft reset (`firmware/src/optical_main.cpp:340-341` and `:355-356`), and
+  the proof is the four measurements that phase names, through one
+  `--with-replay` gate-4 run: `rx_dropped_halves` flat through the dark replay,
+  `audio_update_calls` at the block rate, carrier return still relocking
+  (`[1,1,1]`), and the SIS error latch unchanged across the replay.
 
 - **FIXED 2026-09-03 — replay start could open the gate on an empty ring
   and underrun one block (1 of 3 live runs).** Gate-4 run 4 on `1e4224a7e3c3`:

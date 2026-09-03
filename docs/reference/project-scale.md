@@ -5,7 +5,7 @@ scope: component
 component: aius
 status: current
 tags: [aius, measurement, provenance]
-updated: 2026-08-05
+updated: 2026-09-03
 toc: true
 ---
 
@@ -165,10 +165,12 @@ git log --name-only --format='' -- src/hardware/aius | sort -u | wc -l
 6 remaining. 4 of the 6 remaining carry no closure language.
 
 Three further defects, 36–38, were opened on 2026-08-05 from static analysis of
-an 8 h bench log, putting the current count at 38. Two of them, 37 and 38, were
-fixed the same day with a host regression and a linking target build, but are
-not yet flashed; 36, the symptom that led to them, stays open and unconfirmed
-because the board is disconnected.
+an 8 h bench log, putting the count at that measurement at 38. All three are
+closed now. Two of them, 37 and 38, were fixed the same day with a host
+regression and a linking target build, and are deployed and verified live on
+image `3824579` (2026-09-01); 36, the symptom that led to them, closed the same
+day when its watch re-ran clean. (Register is authoritative; snapshot updated
+2026-09-03.)
 
 The authoritative list is the §Open defects section of
 [`aius-network-hardening.md`](../plans/aius-network-hardening.md);
