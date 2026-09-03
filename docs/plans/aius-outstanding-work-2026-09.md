@@ -22,6 +22,188 @@ entry this plan does not account for. Inventory sources: the register, every
 tool plan's follow-on list, swept 2026-09-03 and adversarially reviewed the same
 day (17 findings folded; the review's corrections are cited inline as "review").
 
+## State — resume here
+
+**Transient baton inside this plan** (handover 2026-09-03 evening, written when
+the session hit its API rate limit mid-Phase 3). Delete this section in the
+commit that lands the last item under *Next action* and *Pending decisions*,
+after promoting anything durable per the handover skill's retirement rule.
+Check *What landed* against `git -C git_modules/aius log` first; anything
+after `afce6a5` is invisible here.
+
+**Status.** DONE: Phase 0, Phase 1 (both steps, deployed), Phase 2 (recorder
+plan shipped), Phase 5 (A/B posture restored, OTA path proven), Phase 6 code
+(committed, host-proven, NOT yet deployed or bench-proven). IN PROGRESS:
+Phase 3 (leg A done: 53 trims; leg B blocked only on a chooser-restore image,
+now buildable from clean HEAD). NOT STARTED: the rehearsal-reset fix (register
+proposal, default implement; its implementer died on the rate limit before
+touching a file), Phase 4, Phase 7, Phase 8 (docs default), Phase 9.
+
+**Board:** `25109fca3f97+teensy41-optical-slot-a`, slot 2, `rollback_observed
+false`, tracking, OTA idle, recorder recording. The deployed image does NOT
+carry Phase 6 (`afce6a5`).
+
+### What landed (all pushed; aius SHAs unless noted)
+
+| Commit | Contents | Proof |
+|---|---|---|
+| `40a47c1` … `7e1e3da` | this plan + its reviews; Phase 0 record reconcile (`6626c82`, `e90ad5c`, `d56352e`, `a6f7e07`); Phase 1 step 1 (`f28a347`) | docs; reviewers' evidence cited inline |
+| `a4341cb`, `fef681f`, `8211708` | Phase 5: canonical-by-default `build_ab.sh`, `--slot` deprecated, re-cutover record | ota suite; live A→B→A over OTA, refusal artifact retained |
+| `6325896` | gate-5 IEC stream generator + `ac3-vectors` suite (15) | parser-verified 130 s fixture in scratch |
+| `f0a2005` (+ upstream repository `02b64b681`) | input-recovery Phase 1 instrumentation | audit folded (6); event-ring, input-dark, cutover 44/44, swagger 11/11; ITCM 0 B |
+| `5275183`, `25109fc`, `4638913` | recorder Phase D evidence; post-roll reclaim fix (`RECLAIM_MS 280`); Phases 1/2 shipped records | recorder 32+22 rows; live `postroll_captured 188`; rehearsal park mid-POSTROLL proven |
+| `a0fde15` | gate-1 leg A record | digest `ebc7a4c9…`, copy at scratch `gate1-legA-ebc7a4c9.jsonl` |
+| `afce6a5` (+ upstream repository `a661f5296`) | Phase 6 IVT-bounds check (`409 ota_ivt`) | audit folded (4); ota core/activation/ed25519, signer 20, flash 7, ab, optical-app, cutover, sd-editor 360, swagger 11; both envs ITCM unchanged |
+| upstream pointers through `e82cea5a0` | | |
+
+### Uncommitted tree state
+
+`git_modules/aius` and the upstream repository aius paths: clean. A `the release-promotion step` of
+`CLAUDE.md` is queued (A/B object = deployed posture, OTA is
+the deploy path, USB only for `recovery.hex`, `booted_slot` on the wire,
+`--link-window boot` signing note); `git -C git_modules/aius status --short
+CLAUDE.md` clean means still queued, dirty means it landed and wants a
+one-path `docs(aius)` commit + pointer bump. Do not restate the approval;
+check. Session scratch (7-day GC, `.scratch/ca959a0b-d32c-48a4-8a8d-ad0634c7ab96/`):
+`canonical-25109fc.aiuo` (sha256 `84be788d…`), `canonical-1/2/-corrupt.aiuo`,
+`gate1-legA*.jsonl`, `gate5-ac3-44100.wav` (sha256 `34a22851…`),
+`smoke-ac3-48000.wav`, `deferral_probe.py`, `slow_reader.py`,
+`u24_authorize.py`, `trim_timeline.py`, `freeze-then-rehearse.py`, the
+detached worktree `aius-405ce97/` with its built leg-B hex
+(`…/firmware/.pio/build/teensy41-optical/firmware.hex`, sha256 `7b70c1e3…`,
+stamp `405ce9768532`). Remove the worktree with `git -C git_modules/aius
+worktree remove <path>` when Phase 3 is done.
+
+### Next action
+
+1. **Rehearsal-reset fix** (register §Open defects — runtime, "OTA rehearsal
+   ends in a watchdog reset"): in `firmware/src/optical_main.cpp`
+   `service_ota_rehearsal()` (~:9015-9060, ~:9144-9190), after the COMPLETED
+   `ota_dark` stamp and `ota_diag.rehearsal "pass"`, end with
+   `reset_application()` (~:4613, SYSRESETREQ) like real activation; keep the
+   A/B record untouched; a bounded epoch-side grace (≤ 2 s, feeding the
+   watchdog) only if an operator poll must see the verdict first. Rows in
+   `test/ota/test_ota_activate.c`; cutover pins re-pinned; slot-a build ITCM
+   191,308 / 5,300. Commit, push, pointer.
+2. **Build from clean HEAD:** `firmware/scripts/build_ab.sh`
+   → `.pio/build/aius-ab/recovery.hex` (chooser + canonical HEAD) and
+   `.pio/build/teensy41-optical-slot-a/firmware.hex`. `sha256sum` both. Sign:
+   `python3 firmware/tools/ota/aius_ota_sign.py sign --image
+   <slot-a hex> --secret firmware/config/ota-home-signing-key.sec
+   --build-revision <12-char HEAD> --output <scratch>/good-<sha>.aiuo`
+   (evidence must show `link_window=0x60010000+0x003d8000`), and the
+   refusal fixture: `build.sh teensy41-optical` then the same sign with
+   `--image <plain hex> --link-window boot --output <scratch>/plain-<sha>.aiuo`;
+   `aius_ota_sign.py verify --container <plain> --public …key.pub` must print
+   `refusal=verify status=IVT`.
+3. **One bench pass, in this order** (`flash_optical.sh` is USB HalfKay; each
+   flash reboots; start gate-1 legs within 2 min of boot):
+   (a) leg B: `flash_optical.sh <aius-405ce97 hex>`; `aius_rate_bench.py run
+   48k-10m --target 192.0.2.66 --evidence <scratch>/gate1-legB.jsonl
+   --expect-build 405ce9768532+teensy41-optical` (exact-string compare; if
+   `validate_status` rejects the old payload, capture raw `/api/status` 1 Hz
+   for 600 s and count post-settle `clock.trim_updates` offline with
+   `trim_timeline.py`); note `tx_underrun_frames` counts idle silence on that
+   image (non-fault) and `dsp.json` `config_error` (cosmetic).
+   (b) `flash_optical.sh <recovery.hex>` → `/api/status` `ab` object,
+   `ledger_valid true`, `build_revision` = HEAD stamp.
+   (c) Phase 6 good path: `aius_ota_flash.py --device http://192.0.2.66 --auth
+   <token> --activate <good.aiuo>` → slot flips, `rollback_observed false`.
+   (d) Phase 6 refusal: `aius_ota_flash.py … <plain.aiuo>` (no `--activate`)
+   → verify answers `409 ota_ivt`; `GET /api/ota` `failed`/`ota_ivt`; `POST
+   /api/ota/abort` → idle; `ab` and `build_revision` unchanged. The upgrade
+   page shows digest ✓, signature ✓, ivt ✗.
+   (e) rehearsal-reset proof: stage good.aiuo again (no activate),
+   `enable-activation`, operator freeze, `POST /api/ota/rehearse`; after the
+   reset `prev_boot.reset_source` ≠ 16 (software reset), `ab` unchanged.
+   (f) record: SRF §Device evidence (leg B + A/B verdict a/b/c; then D4 to the
+   owner if (b)), register gate-1 entry, register OTA-verify entry → FIXED
+   with the refusal transcript, register rehearsal entry → live-proven,
+   this plan's Phase 3 / Phase 6 headings; `amixer -c 0 cset numid=5 110,110`
+   is only needed if the U24 re-enumerates (it did not today).
+4. Then Phase 4 (one-image acceptance re-run: gates 1, 2, 4, 5, 6, 7 on the
+   then-deployed image; the gate-5 fixture and bench command are in
+   `firmware/tools/ac3_vectors/README.md`; the U24 IEC passthrough smoke
+   first), Phase 7 after D8, Phase 8's docs default, Phase 9 rulings.
+
+### Decisions taken this session (with why)
+
+- Owner rulings D1, D9, D10, D12 as recorded in §Decisions; their
+  consequences (re-cutover first, OTA-only deploys, governor retired, plain
+  posture judged not refused) are applied throughout.
+- Record corrections land one commit per concern, not per file (four Phase 0
+  commits); the ground-rule text still says "per plan file" — harmless.
+- Phase 6 deviations (capture-at-absorb; boot window judged; staging record
+  v2; `ACTIVATE_MIN_IMAGE_BYTES 0x1020`) — recorded in its outcome text.
+- Post-roll reclaim is wall-clock (280 ms) because the epoch rate is not a
+  design constant; the bank's defer budget stays a drain count (harmless).
+- The rehearsal watchdog reset is a proposal with default "implement"; the
+  register entry says why.
+- Leg B image = aius `405ce97` built in a detached scratch worktree (the
+  upstream repository-era stamp `5151bb21f8be` does not resolve in aius history).
+
+### Traps
+
+- **Every PlatformIO build in the main tree deletes `.pio/build/aius-ab/` and
+  `aius-chooser/`** (`build.sh` sweeps env dirs it does not own): build
+  `recovery.hex` LAST, immediately before the bench pass, and `sha256sum` it
+  before flashing.
+- A dirty tree stamps the parent commit; the Phase 6 host builds were dirty —
+  rebuild from clean HEAD before signing anything.
+- `--expect-build` is an exact string compare against `build_revision`
+  (`aius_rate_bench.py:788-792`): pass the full `<stamp>+<env>`.
+- The classifier blocks a scratch script writing the U24 sysfs `authorized`
+  flag for agents; the committed `recorder_transitions.py` performs the same
+  write and is allowed. The deferral probe (`deferral_probe.py`) therefore
+  needs the owner's hand or promotion to a committed tool.
+- A Bash `run_in_background` call still blocks the turn for up to 120 s; a
+  lease that must span a de-auth needs the whole sequence in one script.
+- `--slot` and `--link-window` together are a usage error since `afce6a5`; a
+  plain image signs with `--link-window boot`, otherwise sign refuses it.
+- `test.sh` suites `event-ring` / `input-dark` print a `RESULT` line since
+  `f0a2005`; `recorder` and `ab` print only on failure (`set -e` carries the
+  exit status).
+- `/api/events` serves the OLDEST page after `cursor` since `f0a2005`;
+  readers must chain on `next`.
+- Rehearsal on `25109fc` still ends in a WDOG reset ~8 s after `pass`
+  (`reset_source 16`); do not read that as a crash until item 1 lands.
+- API session limit hit at ~19:15 UTC, resets 21:00 UTC (rate_limit 429).
+
+### Findings and loose ends
+
+All recorded in the register or the plans; listed so nothing is inherited as
+a commitment: bank lease-deferral budget is a drain count, a wall-clock bound
+needs `now_ms` threaded into `aius_recorder_bank_drain()` (register post-roll
+entry); plain-posture FCB word0 (`FCFB`) check (this plan §Phase 6 outcome);
+`/api/ota` `activation_available true` on the boot after a rehearsal
+(recorder plan Phase D side observation); one slow-read ended in a board-side
+RST with 374 B undelivered (same bullet); ledger 21/25 read resolved without a
+close statement; `docs/reference/project-scale.md:167-171` and
+`aius-ota-resilience.md:48-50,75-78` carry stale 36/37/38 / drill wording;
+gate-1 carrier estimate hops 9 bins on the current image — hypothesis: the
+carrier-measurement path in `optical_main.cpp` (33 commits since `405ce97`),
+since `aius_clock` / `aius_audio_clock.cpp` are untouched (SRF §Device
+evidence 2026-09-03); slot-agnostic Phase 7 (retire the dual-slot path) with
+its (d) decision.
+
+### Pending decisions
+
+- **Deferral probe (recorder Phase D item 2).** Exact words: *"Run
+  `deferral_probe.py` yourself after the bench pass, let me commit it as
+  `firmware/tools/recorder/lease_deferral_probe.py` and run the committed
+  tool, or leave item 2 as owner-hands?"* Options: run (≈40 s, drops the U24
+  15 s, then `amixer -c 0 cset numid=5 110,110`) / commit-as-tool (the
+  classifier allowed the committed tool's identical write) / park.
+  Recommendation: commit-as-tool — it is a reproducible bench workflow, which
+  `CLAUDE.md` asks to persist anyway. The owner's last message said
+  "approved" without naming which; treat that as approval of the queued
+  `CLAUDE.md` promote unless the owner says it was this.
+- **D4 (gate-1 bound)** — only after leg B: if both images hop bins, the
+  owner chooses a source-qualified bound vs a different source.
+- **D5, D7, D8, D11** unchanged (§Decisions); **slot-agnostic Phase 7 (d)**
+  (keep the legacy `booted_slot == NONE` branch, default keep + compile-time
+  guard).
+
 ## Ground rules for this plan
 
 - **One board, one bench.** Every phase with a bench leg serializes on the
