@@ -1,16 +1,22 @@
 #!/usr/bin/env bash
-# Build the whole A/B release set (aius-ota-resilience.md Phase 3):
-# both slot images, the first-stage chooser, and the merged HalfKay
-# recovery image (chooser + slot A).
+# Build the A/B release set (aius-ota-slot-agnostic.md Phase 5): the one
+# canonical image (the slot-A env, linked at AIUS_AB_CANONICAL_BASE), the
+# first-stage chooser, and the merged HalfKay recovery image (chooser +
+# canonical image). The canonical image is what every OTA release signs,
+# WITHOUT --slot; the chooser remaps it into whichever physical slot it lands
+# in. The slot-B-linked image is the retired per-slot chooser's second build
+# (aius-ota-resilience.md Phase 3); it is no longer in the default set and
+# builds only on request, until Phase 7 retires the env itself.
 #
-#   scripts/build_ab.sh                # build everything
+#   scripts/build_ab.sh                # canonical image + chooser + recovery
+#   scripts/build_ab.sh --with-slot-b  # also the retired slot-B-linked image
 #   scripts/build_ab.sh --chooser-only # just the chooser + size check
 #
 # Outputs, under .pio/build/:
-#   teensy41-optical-slot-a/firmware.hex   slot A image (linked at 0x60010000)
-#   teensy41-optical-slot-b/firmware.hex   slot B image (linked at 0x603E8000)
+#   teensy41-optical-slot-a/firmware.hex   canonical image (0x60010000)
 #   aius-chooser/chooser.hex               the first stage (0x60000000)
-#   aius-ab/recovery.hex                   chooser + slot A, for HalfKay
+#   aius-ab/recovery.hex                   chooser + canonical image, HalfKay
+#   teensy41-optical-slot-b/firmware.hex   --with-slot-b only (0x603E8000)
 #
 # The chooser is a freestanding image built directly with the platform
 # toolchain: no framework, no libc, just chooser/chooser.c + lib/aius_ab.
@@ -37,19 +43,34 @@ if [[ ! -x "$gcc" || ! -x "$objcopy" ]]; then
 fi
 
 chooser_only=0
-if [[ "${1:-}" == "--chooser-only" ]]; then
-	chooser_only=1
-elif [[ $# -gt 0 ]]; then
-	echo "usage: build_ab.sh [--chooser-only]" >&2
+with_slot_b=0
+for argument in "$@"; do
+	case "$argument" in
+	--chooser-only)
+		chooser_only=1
+		;;
+	--with-slot-b)
+		with_slot_b=1
+		;;
+	*)
+		echo "usage: build_ab.sh [--chooser-only] [--with-slot-b]" >&2
+		exit 4
+		;;
+	esac
+done
+if [[ "$chooser_only" -eq 1 && "$with_slot_b" -eq 1 ]]; then
+	echo "usage: --chooser-only and --with-slot-b are exclusive" >&2
 	exit 4
 fi
 
 slot_a_dir="$fw_root/.pio/build/teensy41-optical-slot-a"
 if [[ "$chooser_only" -eq 0 ]]; then
-	echo "==> Building slot A image..."
+	echo "==> Building the canonical image (slot-A env)..."
 	"$here/build.sh" teensy41-optical-slot-a
-	echo "==> Building slot B image..."
-	"$here/build.sh" teensy41-optical-slot-b
+	if [[ "$with_slot_b" -eq 1 ]]; then
+		echo "==> Building the retired slot-B-linked image (--with-slot-b)..."
+		"$here/build.sh" teensy41-optical-slot-b
+	fi
 fi
 
 bootdata_obj="$slot_a_dir/FrameworkArduino/bootdata.c.o"
@@ -98,7 +119,7 @@ if [[ "$chooser_only" -eq 1 ]]; then
 	exit 0
 fi
 
-echo "==> Merging the HalfKay recovery image (chooser + slot A)..."
+echo "==> Merging the HalfKay recovery image (chooser + canonical image)..."
 ab_dir="$fw_root/.pio/build/aius-ab"
 mkdir -p "$ab_dir"
 python3 "$here/merge_hex.py" "$ab_dir/recovery.hex" \
@@ -106,7 +127,9 @@ python3 "$here/merge_hex.py" "$ab_dir/recovery.hex" \
 	"$slot_a_dir/firmware.hex"
 
 echo "==> A/B release set complete:"
-echo "    chooser:  $chooser_dir/chooser.hex"
-echo "    slot A:   $slot_a_dir/firmware.hex"
-echo "    slot B:   $fw_root/.pio/build/teensy41-optical-slot-b/firmware.hex"
-echo "    recovery: $ab_dir/recovery.hex"
+echo "    chooser:   $chooser_dir/chooser.hex"
+echo "    canonical: $slot_a_dir/firmware.hex  (sign WITHOUT --slot)"
+if [[ "$with_slot_b" -eq 1 ]]; then
+	echo "    slot B:    $fw_root/.pio/build/teensy41-optical-slot-b/firmware.hex  (retired per-slot chooser only)"
+fi
+echo "    recovery:  $ab_dir/recovery.hex"

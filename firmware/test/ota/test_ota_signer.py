@@ -252,6 +252,48 @@ class SignTests(SignerTestCase):
         self.assertEqual(evidence["payload_sha256"],
                          hashlib.sha256(expected).hexdigest())
 
+    def test_default_container_is_untagged_for_the_slot_agnostic_chooser(self):
+        """One build, one signature (aius-ota-slot-agnostic.md Phase 5): the
+        deployed chooser accepts only a `slot_id = NONE` container, so the
+        signer's default must be the untagged one, and it must say so in the
+        evidence rather than leave the operator to infer it."""
+        _, container, evidence = self.sign_sample()
+        self.assertEqual(evidence["slot_id"], "none")
+        code, verify_evidence, stdout, stderr = run_signer(
+            "verify", "--container", str(container),
+            "--public", str(COMMITTED_PUBLIC), "--target-id", TARGET_ID,
+        )
+        self.assertEqual(code, EXIT_OK, f"{stdout}\n{stderr}")
+        self.assertEqual(verify_evidence["slot_id"], "none")
+
+    def test_slot_tag_is_deprecated_but_still_honoured(self):
+        """`--slot` serves only the retired per-slot chooser. It keeps
+        working, so a board somehow back on that chooser can be served, but
+        every use is announced as deprecated on stderr and the tag lands in
+        the evidence, because the deployed chooser refuses the tagged
+        container at chunk 0 and the operator must be able to see why."""
+        image = sample_image(self.work / "image.bin")
+        container = self.work / "tagged.aiuo"
+        code, evidence, stdout, stderr = run_signer(
+            "sign",
+            "--image", str(image),
+            "--secret", str(COMMITTED_SECRET),
+            "--target-id", TARGET_ID,
+            "--build-revision", REVISION,
+            "--build-utc", BUILD_UTC,
+            "--slot", "a",
+            "--output", str(container),
+        )
+        self.assertEqual(code, EXIT_OK, f"sign failed:\n{stdout}\n{stderr}")
+        self.assertEqual(evidence["slot_id"], "a")
+        self.assertIn("DEPRECATED", stderr)
+        code, verify_evidence, stdout, stderr = run_signer(
+            "verify", "--container", str(container),
+            "--public", str(COMMITTED_PUBLIC), "--target-id", TARGET_ID,
+        )
+        self.assertEqual(code, EXIT_OK, f"{stdout}\n{stderr}")
+        self.assertEqual(verify_evidence["slot_id"], "a")
+
     def test_sign_refuses_to_overwrite_a_container(self):
         image, container, _ = self.sign_sample()
         before = container.read_bytes()

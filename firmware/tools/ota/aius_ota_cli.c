@@ -116,6 +116,23 @@ static const char *state_name(AiusOtaState state)
 	return "UNKNOWN";
 }
 
+/* The signed slot tag as evidence. "none" is the slot-agnostic container
+ * the deployed chooser accepts (aius-ota-slot-agnostic.md Phase 5); "a"/"b"
+ * are the retired per-slot chooser's tags, still emitted so an operator can
+ * see at a glance why a container was refused at chunk 0. */
+static const char *slot_name(uint8_t slot_id)
+{
+	switch (slot_id) {
+	case AIUS_OTA_SLOT_NONE:
+		return "none";
+	case AIUS_OTA_SLOT_A:
+		return "a";
+	case AIUS_OTA_SLOT_B:
+		return "b";
+	}
+	return "UNKNOWN";
+}
+
 static void print_hex(const char *key, const uint8_t *bytes, size_t length)
 {
 	size_t index;
@@ -411,6 +428,7 @@ static int drive_session(const uint8_t *container, size_t container_length,
 	printf("target_id=%s\n", header.target_id);
 	printf("build_revision=%s\n", header.build_revision);
 	printf("build_utc=%llu\n", (unsigned long long)header.build_utc);
+	printf("slot_id=%s\n", slot_name(header.slot_id));
 	printf("signature_scheme=%u\n",
 	       (unsigned int)header.signature_scheme);
 	printf("image_length=%u\n", (unsigned int)header.image_length);
@@ -574,6 +592,7 @@ static int command_sign(int argc, char **argv)
 	printf("target_id=%s\n", header.target_id);
 	printf("build_revision=%s\n", header.build_revision);
 	printf("build_utc=%llu\n", (unsigned long long)header.build_utc);
+	printf("slot_id=%s\n", slot_name(header.slot_id));
 	printf("signature_scheme=%u\n",
 	       (unsigned int)header.signature_scheme);
 	printf("image_length=%u\n", (unsigned int)header.image_length);

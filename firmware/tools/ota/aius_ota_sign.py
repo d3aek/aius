@@ -288,6 +288,12 @@ def command_sign(args, cli: Path) -> int:
             args.target_id, args.build_revision, str(build_utc),
             str(args.output)]
     if args.slot:
+        # Still honoured so a board that is somehow back on the old per-slot
+        # chooser can be served, but the deployed chooser refuses a tagged
+        # container at chunk 0 (400 ota_unsupported), so say so every time.
+        print("==> --slot is DEPRECATED: the slot-agnostic chooser accepts "
+              "only the untagged container; this tagged container is for "
+              "the retired per-slot chooser", file=sys.stderr)
         argv.append(args.slot)
     completed = subprocess.run(argv, text=True, capture_output=True)
     return relay(completed)
@@ -349,8 +355,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sign.add_argument(
         "--slot", choices=("a", "b"),
-        help="A/B slot this image was LINKED for (the signed slot tag; omit "
-             "for the untagged single-image container)",
+        help="DEPRECATED (aius-ota-slot-agnostic.md Phase 5): the signed A/B "
+             "slot tag for the retired per-slot chooser. The slot-agnostic "
+             "chooser deployed since 2026-09-03 accepts only the untagged "
+             "container -- omit this flag, which is the default",
     )
 
     verify = commands.add_parser(
