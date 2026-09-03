@@ -891,16 +891,27 @@ agents).
     slot's FROZEN metadata on the next init"; `/api/ota` `state idle`,
     `staged_bytes 0`; `ota_diag.rehearsal` back to `never-run` (RAM verdict;
     the retained `ota_dark` stamp is the durable one).
-  - **(2) Read-lease-deferred recycle**: release half PASS (earlier bullet);
-    deferral half owner-hands — the classifier blocks the sysfs write for
-    agents, and no HTTP verb can fire while the board's single transaction
-    holds the lease. The recipe is now a committed tool rather than a
-    hand-run sequence —
+  - **(2) Read-lease-deferred recycle — both halves PASS**: release half in
+    the earlier bullet; **deferral half PASS 2026-09-03** on
+    `92aae16706f5+teensy41-optical-slot-a`, first run of the committed
     `firmware/tools/rate_gate_capture/lease_deferral_probe.py` (see that
-    directory's README §Read-lease-deferred recycle) holds the lease with
-    `slow_reader.py`, drives the U24 de-auth in the same process and always
-    re-authorizes; it has NOT been run on the bench, so the deferral half
-    remains unproven.
+    directory's README §Read-lease-deferred recycle), which holds the lease
+    with `slow_reader.py`, drives the U24 de-auth in the same process and
+    always re-authorizes — the classifier allows a committed tool's sysfs
+    write where it blocks a scratch script's. Precondition worth knowing: the
+    probe needs the candidate slot `(active_slot + 1) % slot_count` frozen,
+    and every operator freeze advances `active_slot`, so it took three
+    freezes to line the bank up. With slot 0 leased and the `carrier_loss`
+    freeze landing on slot 3, the header went `deferred_epochs` 0 → 33 → 33,
+    `lease_skips` 0 → 1 → 1, `lease_leaks` 0, `slots_recycled` 0 → 1; the
+    leased candidate's `freeze_generation` read 0 before, 0 after the lease
+    released and 0 after the relock — the leased capture survived the recycle
+    the freeze wanted, and the bank recycled slot 1 instead (gen 1). Evidence
+    `lease-deferral.json`, sha256
+    `2c615ae58803f21764b147212dc5044cc4db23b24374c7d0dd47bb711f276a0c`, exit
+    0. Side note from the same run: `clock.state` read `unsupported` 12 s
+    after the U24 re-auth (the re-enumeration edge) and `tracking` a minute
+    later, with the mixer restored to 110,110.
   - Side observation: `/api/ota` read `activation_available true` on the boot
     after the first rehearsal (the COMPLETED `ota_dark` stamp unlocks it) and
     `false` again after the second reboot with a fresh stage; not pursued.

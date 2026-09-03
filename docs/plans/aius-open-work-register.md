@@ -461,8 +461,9 @@ ends left open:
   `postroll_captured 33` (33 × 10.67 ms). This unblocked the rolling-buffer
   plan's Phase D `park()`-mid-POSTROLL items, run the same day.
 
-- **OTA rehearsal ends in a watchdog reset, not a deliberate one (found
-  2026-09-03, `25109fca3f97`; proposal, default to implement).** Both
+- ~~**OTA rehearsal ends in a watchdog reset, not a deliberate one (found
+  2026-09-03, `25109fca3f97`; proposal, default to implement).**~~ **FIXED
+  2026-09-03 (aius `92aae16`), live-proven the same day.** Both
   rehearsals of the recorder Phase D bench proof
   ([`aius-recorder-rolling-buffer.md`](aius-recorder-rolling-buffer.md)
   §Phase D, device evidence 2026-09-03 evening) rebooted ~8 s after
@@ -480,12 +481,39 @@ ends left open:
   once `service_ota_rehearsal()` stamps the COMPLETED `ota_dark`, end with the
   same `reset_application()` (`:4613`, `SCB_AIRCR` SYSRESETREQ) the real
   activation uses — the rehearsal then rehearses the reset too and
-  `reset_source` reads software reset. Alternative: keep feeding the watchdog
-  while parked and leave the reboot to `POST /api/reboot`. Default (owner may
-  override): implement the software reset; one live rehearsal reading
-  `reset_source` ≠ 16 is the proof.
+  `reset_source` reads software reset. **Shipped exactly that (aius
+  `92aae16`), with no grace window** — the verdict an operator poll would wait
+  for survives the reset in the retained `ota_dark` stamp, so nothing is owed
+  to a poll. **Live proof 2026-09-03** on `92aae16706f5+teensy41-optical-slot-a`:
+  good container re-staged to ARMED, activation enabled, an operator freeze,
+  then `POST /api/ota/rehearse` → 200 `rehearsing true` at t=0.41 s; the board
+  went unreachable at ~0.4 s ("No route to host" through 15.5 s) and answered
+  again at 18.0 s with `boot_generation` 21 → 22. After it:
+  `prev_boot.reset_source 2` (`SRC_SRSR_LOCKUP_SYSRESETREQ` →
+  `AIUS_RESET_SOFTWARE`, `firmware/src/aius_boot_teensy.cpp:401-403`), not 16;
+  `prev_boot {final_checkpoint 10, first_abort 254}` — a completed epoch, no
+  abort; `ota_dark {rehearsal true, state 4 COMPLETED, phase 4
+  READY_TO_RESET, fault 0, programmed 577,536, verified 577,536, steps
+  2397/2397, digest `e51756bba1d585c5`, dark_window_cycles 3,856,086,376}`;
+  `ab` unchanged (`slot 2`, `active_slot 2`, `pending_slot 0`, `sequence 3`;
+  only `ledger_boots 1 → 0`) and `build_revision` unchanged. Two properties
+  operators should expect: `ota_diag.rehearsal` reads `never-run` after the
+  reset (it is the RAM mirror; the durable verdict is the `ota_dark` stamp),
+  and the staged session does not survive — `/api/ota` comes back `idle` with
+  `staged_bytes 0`, so a real activation after a rehearsal means staging
+  again. Frozen recorder slots do not survive it either (`bank_init()` re-arms
+  all four `recording`), as the rolling-buffer plan already documents.
   [`aius-outstanding-work-2026-09.md`](aius-outstanding-work-2026-09.md)
   Phase 2 follow-up.
+
+- **OBSERVATION — `/api/ota` reports `"armed": true` even in `idle`.** It is
+  the OTA feature latch set by `ota_compose()`, not session state; an armed
+  *session* is `state "armed"`. No fix owed (2026-09-03).
+
+- **OBSERVATION — `clock.state` reads `unsupported` for ~12 s after a U24
+  re-authorization.** Seen 2026-09-03 in the lease-deferral probe: the
+  re-enumeration edge, `tracking` again a minute later, with the mixer
+  restored to 110,110. No fix owed.
 
 - ~~**`au_abandons` +1 at every carrier return during replay** (`pipeline_
   last_failure 3`, `drop_staged_compressed_input()` at the source
@@ -541,8 +569,10 @@ ends left open:
   evidence. Image otherwise identical to `4c9eb3d497ac` (ITCM 190,956 /
   5,652).
 
-- **OTA container verify is a one-epoch ~80 ms stall — an audible dropout
-  when staged during playback (2026-08-16).** Measured live while staging
+- ~~**OTA container verify is a one-epoch ~80 ms stall — an audible dropout
+  when staged during playback (2026-08-16).**~~ **CLOSED 2026-09-03** — both
+  halves dispositioned: the IVT-bounds check shipped and the stall is
+  accepted by D2 (see the closing paragraph). Measured live while staging
   the `fd9d35fd3f95` slot-B container with AC-3 playing:
   `POST /api/ota/verify` ran as one 79,952 µs HTTP-checkpoint epoch —
   `tx_underrun_frames` +2,560 (53 ms dropout), epoch budget overrun
@@ -568,8 +598,28 @@ ends left open:
   and must be exercised, so the IVT-bounds check at verify ships there (over
   OTA; the Phase 5 re-cutover is done 2026-09-03, stamp `acfd6e3baba9`); D2
   (accept-and-document default for the
-  Ed25519 stall) is applied in the same phase. Stays open until Phase 6
-  lands.**
+  Ed25519 stall) is applied in the same phase.** **Phase 6 disposition,
+  2026-09-03:** the IVT-bounds check shipped as aius `afce6a5` —
+  `POST /api/ota/verify` refuses a payload whose captured IVT is not an image
+  for the posture's link window, with `409 ota_ivt`, before any flash is
+  spent; the signer's self-check is the same predicate, so a plain-linked
+  image is refused at sign time unless signed `--link-window boot`. Deployed
+  over OTA and bench-proven on `92aae16706f5`: the good container staged
+  577,792 B / 142 chunks and verified, armed, activated cleanly (slot 1 → 2,
+  `rollback_observed false`); the plain container staged 576,768 B / 141
+  chunks and then `verify` → `409 {"ok": false, "error": "ota_ivt"}`, `GET
+  /api/ota` → `state "failed"`, `fault "ota_ivt"`, `verifier_fault 0`,
+  `staged_bytes 0`, nothing armed, `POST /api/ota/abort` → `idle` /
+  `fault "none"`, with `ab` and `build_revision` unchanged throughout. The
+  stall itself takes **D2's default: accepted and documented** — stage during
+  silence; on the bench there is no audio to protect, and the 8,960 underrun
+  frames that staging cost there are the un-gated card traffic, not the
+  verify epoch. Revisit only if the owner wants the Ed25519 scalar arithmetic
+  sliced across epochs. **Residual, open as a proposal, not built:** a payload
+  with a valid IVT but a garbled sector 0 still bricks the PLAIN posture to
+  HalfKay (activation programs the FCB from the payload last); the cheap
+  addition is a payload word0 `== 0x42464346` (`FCFB`) check alongside the IVT
+  bounds.
 
 - ~~**Flight recorder freezes on the boot bring-up underrun, spending its
   one-shot trigger before the session exists (2026-08-16).**~~ **FIXED, two

@@ -94,6 +94,19 @@ client response; the container digests are the durable artifact identity.
   documents, observed here with a live carrier on the bench; not isolated to a
   chunk. The two activations themselves were clean (0 at 453 s on slot B, 0 at
   54 s on slot A).
+- **Later the same day — second re-cutover and another OTA round trip, on
+  `92aae16706f5`.** Phase 3's leg B had HalfKay-flashed a pre-chooser image
+  over the chooser, so `recovery.hex` from clean HEAD (sha256 `8d9065b3…`)
+  was flashed again: `ab {ledger_valid true, slot 1, booted_slot 1,
+  active_slot 1, sequence 1, rollback_observed false}`. One OTA round trip
+  followed on that posture (untagged canonical container `b1b0b5fa…`,
+  577,792 B / 142 chunks, 0 retried faults): slot 1 → 2, `active_slot 2`,
+  `pending_slot 0`, `sequence 3`, `rollback_observed false`,
+  `tx_underrun_frames` 0 across the activation. The new
+  [Phase 6](aius-outstanding-work-2026-09.md) refusal was reproduced on the
+  same posture — a plain-linked container `409 ota_ivt` at verify,
+  `GET /api/ota` `failed` / `ota_ivt`, abort → `idle`, `ab` and
+  `build_revision` unchanged.
 - Mid-window power-cut gate: still owner-skipped (Phase 9 of the completion
   plan carries it).
 
