@@ -2109,6 +2109,42 @@ where the only prior record was a plan aside.
   [`aius-sample-rate-following.md`](aius-sample-rate-following.md) §Device
   evidence — 2026-09-03, gate-1 trim-cadence image A/B. Verdict (a)/(b) is
   open until leg B runs; the bound does not move.
+
+  **2026-09-03 (~22:30 UTC) — leg B ran; verdict (b), D4 to the owner.** The
+  old image `405ce9768532+teensy41-optical` (built from the `405ce97` detached
+  scratch worktree, hex sha256 `7b70c1e3…`, HalfKay-flashed over the chooser;
+  boot `ab null`) fails the same bound: 52 post-settle trims (54 whole-run;
+  `trim_timeline.py` agrees, 53 gaps 7.1–14.6 s, mean 10.9 s), max follow
+  error 680 mHz, 545 samples over 600.008 s, ingress slope +0.031 words/s,
+  settled `carrier_rate_millihz` hopping 8 bins between 48,019,644 and
+  48,020,622 mHz (span 978 mHz, ~140 mHz steps, `trim_ppm` 415–426) — against
+  leg A's 9 bins over 1,117 mHz and 53 trims. Its other analyzer failures are
+  known non-faults of that image or its weaker HTTP path
+  (`tx_underrun_frames` +2,176 idle silence, `http_service_overruns` +2,
+  `audio_diag.service_budget_overruns` +1,
+  `audio_diag.runtime_epoch_budget_overruns` +18, 37 transport retries,
+  `http_client_drops_delta` 11); `overruns`, `output_drops`, `clock_faults`,
+  `unsupported_episodes`, `watchdog_early_resets`, `network_restarts` all 0.
+  Evidence `.scratch/b63df0f9-d85c-412b-b65a-db884c1f77a0/gate1-legB.jsonl`
+  sha256 `451c2748d22400e6e081b0a5032c07ee0508628d7e8a8dbb458217bf4c6a3f80`
+  and `gate1-legB.log` sha256
+  `d7128c5358eb37b7030932222eac537ff7b5704f571b4fe4527c782ba11e3923` (7-day
+  GC). So **outcome (b)**: both images bin-hop with the same cadence, the
+  failure is not a regression in `405ce97..HEAD`, and there is nothing to
+  bisect. Orchestrator's reading, not a proven mechanism: the ~140 mHz
+  measurement quantum (≈ 3 ppb at 48 kHz) exceeds the tracker's 50 mHz
+  hysteresis (`AIUS_CLOCK_TARGET_HYSTERESIS_MILLIHZ`,
+  `firmware/lib/aius_clock/src/aius_clock.c:18`), so a one-bin hop earns a
+  trim at every eligible 10 s window (`AIUS_CLOCK_TARGET_INTERVAL_MS`, `:17`)
+  and the ≤ 2 post-settle bound is unreachable on any source while hysteresis
+  sits below the quantum; the 2026-08-02 single-value observation is
+  contradicted on the nearest committed tree and is no longer the baseline.
+  This entry stays open on D4, which is now the owner's: a source-qualified
+  bound (raise hysteresis to ≥ one bin, or bound on carrier span / follow
+  error instead of trim count), a different source, or keep the bound and
+  accept gate 1 as failing. Full record:
+  [`aius-sample-rate-following.md`](aius-sample-rate-following.md) §Device
+  evidence — 2026-09-03.
 - **ITCM ingress-regression mechanism unestablished.** The `30eeed071` A/B
   convicted the DSP-runtime adapter's default ITCM placement empirically, but
   no mechanism explains how 144 B of resident cold code starves the live

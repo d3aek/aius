@@ -6,7 +6,7 @@ component: aius
 status: in-progress
 subtype: implementation
 tags: [aius, firmware, teensy, audio, clocking, spdif]
-updated: 2026-09-01
+updated: 2026-09-03
 toc: true
 ---
 
@@ -1033,7 +1033,9 @@ numerator actuator; the acceptance bound does not weaken.
 
 ### Device evidence — 2026-09-03, gate-1 trim-cadence image A/B (completion plan Phase 3)
 
-Leg A ran; leg B did not. The A/B is half-done and the verdict is open.
+Both legs ran on 2026-09-03. Verdict: outcome (b) — the two images show the
+same trim cadence on the same source, so the failure is not a regression in
+`405ce97..25109fc`, and D4 goes to the owner with the measured span.
 
 **Leg A — deployed image `25109fca3f97+teensy41-optical-slot-a` (built
 `2026-09-03T18:01:32Z`, A/B chooser, `ab.slot 2`, `ledger_valid true`):
@@ -1073,32 +1075,60 @@ its gating (not the trim policy: `firmware/lib/aius_clock/` and
 apply/trim block `:8288-8311` itself has none). If it hops too, the source
 wanders and this is D4.
 
-**Leg B — not run; blocked on the restore image.** The prebuilt
-`405ce9768532+teensy41-optical` hex (built from the `405ce97` scratch
-worktree `2026-09-03T17:13:33Z`, sha256 `7b70c1e3…`) is ready, but the
-HalfKay flash overwrites the chooser and the planned re-cutover image
-`.pio/build/aius-ab/recovery.hex` (`acfd6e3baba9`, sha256 `c5c4f091…`, Phase
-5) no longer exists — `.pio/build/aius-ab/` and `.pio/build/aius-chooser/`
-were removed by a later build, and it cannot be rebuilt from the working tree
-because `firmware/lib/aius_ab/` (a chooser input) carries uncommitted edits.
-Facts for whoever restores: the chooser sources (`firmware/chooser/`,
-`firmware/lib/aius_ab/`) have no commits since `78cb738` (2026-08-22), so
-the 2026-08-31 cutover image
-`.scratch/19b44989-bd8d-4dca-b516-d0043f900667/recovery-78cb738-cutover.hex`
-(`78cb738ea15d+teensy41-optical-slot-a`, built `2026-08-31T22:48:16Z`,
-sha256 `c302acfc5afca3fdcfb8b81b968ac487e7ea8b6ebe710c4c61a307c3c0265925`,
-flashed and accepted untagged OTA that night) carries a source-identical
-chooser and is a candidate substitute, followed by the untagged OTA of
-`canonical-25109fc.aiuo`; alternatively `build_ab.sh` from a clean HEAD
-(needs the tree committed first). `.pio/build/teensy41-optical-slot-a/firmware.hex`
-flattens to sha256 `b4ca6fb2…` = the payload the board activated
-(`ota_dark.image_digest_prefix b4ca6fb227937e09`), so it is the running
-image byte-for-byte and can be merged with a clean-source chooser if the
-merge route is preferred. Leg B's known non-faults when it runs: the ~1,904 s
-periodic WDOG reset (start within 2 min of boot), `tx_underrun_frames`
-counting idle silence, `dsp.json` `config_error`, and a possible
-`validate_status` rejection of its older status payload (count the
-`clock.trim_updates` delta after t = 30 s from raw 1 s samples instead).
+**Leg B — old image `405ce9768532+teensy41-optical` (built
+`2026-09-03T17:13:33Z` from the detached scratch worktree at `405ce97`, hex
+sha256 `7b70c1e3d997b9d59c8dfb3274f1bfa7884cd92ebfd2806f94d6ef320a76c2d3`,
+HalfKay-flashed over the chooser): FAIL, 52 post-settle trims.** The flash
+log reads `Verified 405ce9768532+teensy41-optical`; the board booted with
+`ab null` and `reset_source 1`, from a pre-flash posture of
+`25109fca3f97+teensy41-optical-slot-a`, `ab.slot 2`, `sequence 7`.
+`aius_rate_bench.py run 48k-10m --target 192.0.2.66 --evidence
+<scratch>/gate1-legB.jsonl --expect-build 405ce9768532+teensy41-optical`,
+started ~60 s after boot, U24 XL as source, free-running 48 kHz, bench (no
+host playback), mixer at 110,110; `validate_status` accepted the old
+image's payload, so the raw-sample fallback was not needed. 545 samples over
+600.008 s; **`trim_updates_after_settle` 52** (54 whole-run), and the offline
+`trim_timeline.py` pass over the same JSONL agrees — 52 post-settle, 53 gaps
+of 7.1–14.6 s, mean 10.9 s. Max follow error 680 mHz (bound 1,000); ingress
+slope +0.031 words/s. The settled `carrier_rate_millihz` reads **8 distinct
+values** between 48,019,644 and 48,020,622 mHz (span 978 mHz) in the same
+~140 mHz steps, with `trim_ppm` walking 415–426 — against leg A's 9 bins over
+1,117 mHz and 53 trims. The analyzer's other failures on this image are known
+non-faults of it or of its weaker HTTP path, reported separately:
+`clock.tx_underrun_frames` +2,176 (idle silence), `http_service_overruns` +2,
+`audio_diag.service_budget_overruns` +1,
+`audio_diag.runtime_epoch_budget_overruns` +18, 37 transport retries over 18
+samples and `http_client_drops_delta` 11 (545 samples against leg A's 594 with
+0 drops). `overruns`, `output_drops`, `clock_faults`,
+`unsupported_episodes`, `watchdog_early_resets` and `network_restarts` are all
+0. Evidence `.scratch/b63df0f9-d85c-412b-b65a-db884c1f77a0/gate1-legB.jsonl`,
+sha256 `451c2748d22400e6e081b0a5032c07ee0508628d7e8a8dbb458217bf4c6a3f80`, and
+`gate1-legB.log`, sha256
+`d7128c5358eb37b7030932222eac537ff7b5704f571b4fe4527c782ba11e3923`. Both
+legs' JSONL are kept durably (gzip, LFS) under
+`firmware/test/fixtures/gate1-trim-cadence-2026-09-03/` with their
+uncompressed digests in that directory's README, since D4 is settled on them.
+
+**A/B verdict — outcome (b), D4 → owner.** Both images hop the carrier
+estimate across adjacent ~140 mHz bins and trim at essentially every eligible
+10 s window (53 on `25109fc`, 52 on `405ce97`), so the cadence failure is not
+a regression introduced in `405ce97..HEAD` and there is nothing to bisect. The
+reading below is the orchestrator's, not a proven mechanism: the settled
+carrier estimate's quantum (~140 mHz, ≈ 3 ppb at 48 kHz) is larger than the
+tracker's hysteresis, 50 mHz (`AIUS_CLOCK_TARGET_HYSTERESIS_MILLIHZ`,
+`firmware/lib/aius_clock/src/aius_clock.c:18`), so a one-bin hop of the
+estimate alone clears the hysteresis and earns a trim once the interval
+ceiling of 10 s (`AIUS_CLOCK_TARGET_INTERVAL_MS`, `:17`) allows one; the ≤ 2
+post-settle bound is therefore unreachable while the hysteresis sits below the
+measurement quantum, whichever source is used. The 2026-08-02 single-value
+observation (span 0 mHz, `trim_updates 0`) is contradicted on the nearest
+committed tree to it, so it was either a different tree (the dirty 10:51 build
+over `b8c2a74`) or a source in a different state that night; it cannot be
+reproduced and is no longer cited as the baseline. D4 is the owner's:
+(i) a source-qualified bound — raise the hysteresis to at least one
+measurement bin, or bound the gate on carrier span or follow error instead of
+trim count; (ii) a different source; (iii) keep the bound and accept gate 1 as
+failing. The gate-1 `PASS` criterion does not move until D4 is ruled.
 
 ## Optional recovered-clock hardware
 

@@ -32,11 +32,11 @@ Check *What landed* against `git -C git_modules/aius log` first; anything
 after `afce6a5` is invisible here.
 
 **Status.** DONE: Phase 0, Phase 1 (both steps, deployed), Phase 2 (recorder
-plan shipped), Phase 5 (A/B posture restored, OTA path proven), Phase 8 (D3
-docs default applied, register entry amended), Phase 6 code (committed,
-host-proven, NOT yet deployed or bench-proven). IN PROGRESS:
-Phase 3 (leg A done: 53 trims; leg B blocked only on a chooser-restore image,
-now buildable from clean HEAD). NOT STARTED: the rehearsal-reset fix (register
+plan shipped), Phase 3 (both A/B legs run: 53 vs 52 trims, outcome (b), no
+firmware change — D4 pending the owner), Phase 5 (A/B posture restored, OTA
+path proven), Phase 8 (D3 docs default applied, register entry amended),
+Phase 6 code (committed, host-proven, NOT yet deployed or bench-proven).
+NOT STARTED: the rehearsal-reset fix (register
 proposal, default implement; its implementer died on the rate limit before
 touching a file), Phase 4, Phase 7, Phase 9.
 
@@ -99,7 +99,9 @@ worktree remove <path>` when Phase 3 is done.
    `refusal=verify status=IVT`.
 3. **One bench pass, in this order** (`flash_optical.sh` is USB HalfKay; each
    flash reboots; start gate-1 legs within 2 min of boot):
-   (a) leg B: `flash_optical.sh <aius-405ce97 hex>`; `aius_rate_bench.py run
+   (a) **DONE 2026-09-03** (52 post-settle trims, verdict (b); Phase 3 is
+   SHIPPED, D4 is the owner's) — leg B:
+   `flash_optical.sh <aius-405ce97 hex>`; `aius_rate_bench.py run
    48k-10m --target 192.0.2.66 --evidence <scratch>/gate1-legB.jsonl
    --expect-build 405ce9768532+teensy41-optical` (exact-string compare; if
    `validate_status` rejects the old payload, capture raw `/api/status` 1 Hz
@@ -183,9 +185,12 @@ RST with 374 B undelivered (same bullet); ledger 21/25 read resolved without a
 close statement; `docs/reference/project-scale.md:167-171` and
 `aius-ota-resilience.md:48-50,75-78` carried stale 36/37/38 / drill wording
 (fixed 2026-09-03);
-gate-1 carrier estimate hops 9 bins on the current image — hypothesis: the
-carrier-measurement path in `optical_main.cpp` (33 commits since `405ce97`),
-since `aius_clock` / `aius_audio_clock.cpp` are untouched (SRF §Device
+gate-1 carrier estimate hops ~140 mHz bins on BOTH images (9 on `25109fc`, 8
+on `405ce97`), which refutes the earlier hypothesis that the
+carrier-measurement path in `optical_main.cpp` changed since `405ce97`; the
+reading that replaces it is that the measurement quantum exceeds the tracker's
+50 mHz hysteresis, so a one-bin hop earns a trim at every eligible 10 s window
+and the ≤ 2 bound is unreachable on any source — the D4 question (SRF §Device
 evidence 2026-09-03); slot-agnostic Phase 7 (retire the dual-slot path) with
 its (d) decision.
 
@@ -201,8 +206,12 @@ its (d) decision.
   `CLAUDE.md` asks to persist anyway. The owner's last message said
   "approved" without naming which; treat that as approval of the queued
   `CLAUDE.md` promote unless the owner says it was this.
-- **D4 (gate-1 bound)** — only after leg B: if both images hop bins, the
-  owner chooses a source-qualified bound vs a different source.
+- **D4 (gate-1 bound)** — the A/B is done and both images hop bins (53 vs 52
+  post-settle trims); the owner chooses one of three: a source-qualified bound
+  (raise `AIUS_CLOCK_TARGET_HYSTERESIS_MILLIHZ` to at least one ~140 mHz
+  measurement bin, or bound the gate on carrier span / follow error instead of
+  trim count), a different source, or keep the bound and accept gate 1 as
+  failing. Nothing moves until the ruling.
 - **D5, D7, D8, D11** unchanged (§Decisions); **slot-agnostic Phase 7 (d)**
   (keep the legacy `booted_slot == NONE` branch, default keep + compile-time
   guard).
@@ -546,7 +555,30 @@ touch the OTA service in `optical_main.cpp`).
   posture; the rehearsal-activation item needs a real inactive slot)
 - commit-checkpoint: one docs commit.
 
-### Phase 3 — Gate 1: trim-cadence image A/B, then root cause
+### Phase 3 — Gate 1: trim-cadence image A/B, then root cause ✓ SHIPPED 2026-09-03
+
+**Shipped 2026-09-03.** Both legs ran on the U24 XL the same day: leg A on the
+deployed `25109fca3f97+teensy41-optical-slot-a` failed at 53 post-settle trims
+(evidence sha256 `ebc7a4c9…`), leg B on `405ce9768532+teensy41-optical` — built
+from the `405ce97` detached worktree and HalfKay-flashed over the chooser —
+failed at 52 (evidence sha256 `451c2748…`, log `d7128c53…`). Both images hop
+the settled carrier estimate across adjacent ~140 mHz bins (9 bins / 1,117 mHz
+on leg A, 8 / 978 mHz on leg B) and trim at essentially every eligible 10 s
+window, so this is **outcome (b)**: no regression in `405ce97..HEAD`, nothing
+to bisect, and no firmware change ships from this phase. The reading recorded
+with it (orchestrator's, not a proven mechanism) is that the measurement
+quantum exceeds the tracker's 50 mHz hysteresis, which makes the ≤ 2
+post-settle bound unreachable on any source; the 2026-08-02 single-value
+observation is contradicted on the nearest committed tree and is no longer
+cited as the baseline. **D4 therefore goes to the owner** with the measured
+span: a source-qualified bound (raise hysteresis to at least one measurement
+bin, or bound the gate on carrier span / follow error instead of trim count),
+a different source, or keep the bound and accept gate 1 as failing. The
+`PASS` criterion does not move until D4 is ruled; gate 1 itself re-runs in
+Phase 4 on the acceptance image. Record:
+[`aius-sample-rate-following.md`](aius-sample-rate-following.md) §Device
+evidence — 2026-09-03, and the register's gate-1 entry (which stays open on
+D4).
 
 - outcome: the 52-post-settle-trim gate-1 failure on `3824579`
   ([`aius-sample-rate-following.md`](aius-sample-rate-following.md)
@@ -846,7 +878,7 @@ re-derivation. Docs only; no build, no flash.
 | D1 | `aius-ota-slot-agnostic.md` disposition | RULED 2026-09-03 | Re-cutover scheduled (Phase 5): "we should never have superseded the hard-won A/B deployment". |
 | D2 | OTA verify ~80 ms Ed25519 stall | default-able | Accept and document (stage during silence). Alternatives: slice the scalar arithmetic; verify under a gate-aware moment. |
 | D3 | Receive-DMA gating during dark replay | default-able | Leave as recorded (harmless; gating risks SIS error latches). Build only on request. |
-| D4 | Gate-1 trim bound | default-able | No bound change until Phase 3's A/B has run; if both images match, owner chooses source-qualified bound vs different source. |
+| D4 | Gate-1 trim bound | owner-only (A/B done 2026-09-03: both images match) | Phase 3 returned outcome (b) — 53 vs 52 post-settle trims, both images bin-hopping ~140 mHz against a 50 mHz hysteresis. Owner chooses: source-qualified bound (hysteresis ≥ one bin, or bound carrier span / follow error), different source, or keep the bound and accept gate 1 as failing. No bound change until then. |
 | D5 | e2e latency owner target (limiter lookahead) | owner-only | Phase 7 reports the numbers. |
 | D6 | Recorder Phase D build constraint | decided | Already retired in the doc (`aius-recorder-rolling-buffer.md:695-697`); record. |
 | D7 | Hardware H3 scheduling | owner-only | — |
