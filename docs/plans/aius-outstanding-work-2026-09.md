@@ -258,7 +258,19 @@ still carry stale 36/37/38 wording (`docs/reference/project-scale.md:167-171`,
 - commit-checkpoint: one `docs(aius)` commit per plan file touched; the
   register lands in one commit.
 
-### Phase 1 — Input recovery: premise re-check at HEAD, then finish or supersede
+### Phase 1 — Input recovery: premise re-check at HEAD, then finish or supersede — step 1 done 2026-09-03, step 2 open
+
+**Step 1 done 2026-09-03** (aius `f28a347`): all three stuck states are STILL
+REACHABLE at HEAD `a6f7e07` — `g_clock_live_ready` is set only in `enqueue()`
+after a landed block (`optical_main.cpp:1733`) and cleared at acceptance
+(`:8130`) / `!carrier_ready` (`:8100`); the tracker's `carrier_ready` has no
+timer (`aius_clock.c:266-292`); completed bursts never starve the class
+(`aius_pipeline.h:71-77`); `g_clock_carrier_unsupported` clears only at
+acceptance or carrier loss (`:8172-8183`). None of `dc16e75`, `b977488`,
+`018c000`/`3570a21`, `4c9eb3d` closes a row (`dc16e75` closed a fourth wedge
+not in the inventory). The plan is NOT superseded; step 2 (its Phase 1
+instrumentation, no behaviour change) is real value and deploys over OTA after
+Phase 5. Its Phases 2–4 stay gated on the instrumentation record.
 
 - outcome: [`aius-input-recovery.md`](aius-input-recovery.md) is completed or
   superseded, decided on code evidence, not on failing to reproduce. Its
