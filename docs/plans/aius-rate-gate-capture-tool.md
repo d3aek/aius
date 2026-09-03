@@ -340,6 +340,78 @@ phase the 262144-frame slot admits without `--allow-rolloff`; a run that
 reads `observed ['48000', 'replay']` with `carrier_rate_millihz` at 44118 kHz
 for the whole phase is this, not a board fault.
 
+### Stimulus fix — per-phase durations and an acceptance-gated freeze (2026-09-03, tool only)
+
+**The board stages nothing into the recorder while it sits `unsupported`,
+so a phase costs ring frames at its own rate and only for the time the board
+tracks it; the lead-in costs nothing.** Read straight off the three runs'
+`capture-analysis.json`: the slot's 44.1 kHz run was 8192 frames on run 1
+(whose polls show 0.26 s of 44.1 kHz `tracking`) and 37632 / 37888 on runs 2
+and 3 (0.78 s), and the frames after the second fiducial were 51200 on every
+run — `(2 s − 1.13 s + 0.2 s) × 48000`, i.e. the 44.1→48 acceptance took
+~1.13 s each time while the 48→44.1 acceptance ranged 1.3 s (runs 2–3) to
+1.85 s (run 1). The old budget `phase_seconds × (phases − 1) + 1 s` at
+48 kHz for every phase therefore over-counted the middle phase by 8 % and,
+more to the point, was symmetric where the stimulus need not be.
+
+- **Corrected ring budget** (`required_capture_frames`):
+  `Σ over phases after the first of (seconds × that phase's tone rate) +
+  1 s margin × 48000`, for the instant-acceptance worst case (a slow board
+  only lowers it). The margin itemises to ~0.6 s: two aplay gaps ≤ 0.1 s,
+  the 0.3 s freeze dwell plus one poll of detection latency, the freeze POST,
+  and the 4096-frame pre-fiducial window of the lead-in's tail. Symmetric
+  2 s phases need 232200 (fit); symmetric 3 s need 324300 (do not); the new
+  default needs **252300** against 262144. A 3 s middle with a 2 s trailing
+  phase would need 276300 and does not fit — hence the short trailing phase
+  and the gated freeze below.
+- **CLI:** `--phase-seconds` takes one value for all three aplay phases (as
+  before) or `first,middle,last`. **Default `2,3,1.5`**: the 48 kHz lead-in
+  stays 2 s (free in the ring; settles the analyzer's first phase from any
+  idle carrier); the 44.1 kHz middle is 3 s, which outlasts the 1.85 s
+  acceptance budget by more than three 0.25 s polls (the analyzer labels a
+  phase from `tracking` polls only and wants `phase_samples 2`, so the
+  tracking window must exceed two full intervals; 2 s lost this by 0.15 s on
+  run 1); the trailing 48 kHz phase is 1.5 s.
+- **Freeze gated on acceptance, not on phase length.** After the trailing
+  aplay returns the tool waits (≤ 1 s) for a status poll stamped since the
+  switch back that shows the board tracking 48 kHz — the second fiducial is
+  then stamped — dwells 0.3 s and freezes; the U24 keeps the 48 kHz carrier
+  up after aplay exits, so acceptance completes after a short phase. On
+  timeout it freezes anyway (the old fixed-delay behaviour, later). This is
+  what lets the trailing phase be shorter than the acceptance latency
+  without losing the second fiducial.
+- **Evidence:** `phase_seconds` keeps its scalar meaning and is `null` when
+  the phases differ; `phase_seconds_per_phase`, `phase_tones`,
+  `phase_rates_hz` and `phase_frames` (now a per-phase list) are
+  authoritative; `switch_back_elapsed_s`, `reference_tracking_seen_elapsed_s`,
+  `freeze_elapsed_s`, `freeze_trigger` (`reference-rate-tracking` |
+  `acceptance-timeout`) and `acceptance_latency_budget_s` record the freeze
+  decision. No verdict threshold and no `phase_samples` moved.
+- **Offline re-check:** runs 2 and 3 re-analysed with the bench read
+  `verdict pass`, `transition_reset_deltas [1, 1, 1]`,
+  `live_transition_windows [[7, 13], [15, 20]]`; run 1 still reads
+  `transition-sequence` `observed ['48000', 'replay']` plus two
+  `transition-unattributed-unsupported` (it cannot be rescued offline — the
+  point is the same diagnosis). The suite grew 72 → 91 (`scripts/test.sh
+  --environment native --suite rate-gate-capture`), including a synthetic
+  reproduction of the run-1 shape (one tracking poll in the middle) and an
+  unequal-phase pass at the same thresholds.
+- **Live proof — run 1 at the new defaults, image `4c9eb3d497ac`: PASS.**
+  `evidence-sha256: 5a8ff1aaf9ec56f77c5dee8377b7f918bd546819ac60c5fd955c0c1ae6011c60`.
+  `phase_frames [96000, 132300, 72000]`, `required_capture_frames 252300`
+  of 262144, `freeze_trigger reference-rate-tracking`: the board accepted
+  44.1 kHz at 3.38 s (1.3 s after the switch) and 48 kHz at 6.24 s (1.2 s
+  after the 5.02 s switch back), the freeze landed at 6.83 s, slot 0
+  captured with `rate_changes 2`, `old_rate_output_frames 0`.
+  `observed ['48000', '44100', '48000', 'replay']`, `transition_reset_deltas
+  [1, 1, 1]`, `live_transition_windows [[7, 13], [19, 24]]`, every counter
+  delta 0 inside the evidence (`au_abandons`, `tx_underrun_frames`,
+  `overruns`), `event_overflows` 7. After the run: PCM tracking at 48 kHz,
+  gate open, `tx_underrun_frames 0`, `gate_open_padded_frames` 128 → 1280
+  (three live relocks + one replay start), pool 2 / 4, `au_abandons` 0 → 1
+  with `pipeline_last_failure 3` — the one carrier return of the run, the
+  register's closed `au_abandons` item (a DTS replay's cut burst, by design).
+
 ## Live-run results — 2026-09-01 (INVALIDATED, re-run required)
 
 **Every number in this section was produced by a tool carrying defects
@@ -675,8 +747,8 @@ is producing that JSON faithfully.
 ## Acceptance for this tool
 
 - The three reducer field-groups are unit-tested against synthetic WAVs.
-  **Done** — 72 tests in `firmware/test/rate-gate-capture/` (2026-09-02;
-  19 before the review fixes), including five that round-trip a synthetic
+  **Done** — 91 tests in `firmware/test/rate-gate-capture/` (2026-09-03;
+  72 on 2026-09-02, 19 before the review fixes), including five that round-trip a synthetic
   `evidence.jsonl` through the real bench analyzer (two of them the
   recorder tool's recorded `expected_phases`) and two that drive the real
   bench `transitions` check. Run as `scripts/test.sh --environment native
@@ -864,5 +936,10 @@ stimulus (2026-09-02, operator ruling (d) in §Operator rulings (2026-09-02)):
   (`verdict pass`, digest `0cf5eeda…`). The replay-start open-gate underrun
   run 4 caught is fixed (replay gate-open floor, §Live-run results —
   2026-09-03, replay floor: two more green runs, zero underruns across
-  three replay starts); gate 4 is repeatable on the board side. Remaining
-  flake is the tool's 2 s phase against the 44.1 kHz acceptance latency.
+  three replay starts); gate 4 is repeatable on the board side. The
+  remaining flake — the tool's 2 s phase against the 44.1 kHz acceptance
+  latency — is fixed in the tool (§Live-run results — 2026-09-03, replay
+  floor, *Stimulus fix*: `--phase-seconds 2,3,1.5` default, per-rate ring
+  budget, acceptance-gated freeze) and proved live 2026-09-03: one
+  `--with-replay` run at the new defaults, `verdict pass` first time
+  (digest `5a8ff1aa…`). Gate 4 has no open item.

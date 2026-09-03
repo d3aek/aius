@@ -172,12 +172,14 @@ than reading a vacuous pass, and the tool exits 2.
 ```bash
 python3 recorder_transitions.py \
     --tone-48 /tmp/tone-997-48000.wav --tone-44 /tmp/tone-997-44100.wav \
-    --phase-seconds 2 --expect-build <revision>+teensy41-optical
+    --with-replay --expect-build <revision>+teensy41-optical
 ```
 
-It drives 48→44.1→48 via aplay while polling `/api/status` and `/api/events`
-in a background thread (for `evidence.jsonl`), operator-freezes the recorder,
-reads the captured slot and reduces. Operational contracts:
+It drives 48→44.1→48 via aplay (`--phase-seconds first,middle,last`, default
+`2,3,1.5`; a single value applies to all three) while polling `/api/status`
+and `/api/events` in a background thread (for `evidence.jsonl`), freezes the
+recorder once the board is seen tracking 48 kHz again, reads the captured
+slot and reduces. Operational contracts:
 
 - **The captured slot is the header's `newest_frozen_slot`** (fallback: the
   frozen slot with the highest `freeze_generation`), and its
@@ -193,13 +195,32 @@ reads the captured slot and reduces. Operational contracts:
   truncates `--phase-seconds 1.2` to 1 s, which is shorter than the board's
   follow latency: the board sits in `unsupported` for the whole 44.1 kHz
   phase and stamps no rate change (observed 2026-09-02). The tool reads each
-  tone's rate from its WAV header and passes `aplay --samples`; the frame
-  counts are in the evidence as `phase_frames`.
+  tone's rate from its WAV header and passes `aplay --samples`; the evidence
+  carries `phase_seconds_per_phase`, `phase_tones`, `phase_rates_hz` and the
+  per-phase `phase_frames` list (`phase_seconds` keeps its scalar meaning
+  and is `null` when the phases differ).
+- **The middle phase must outlast the board's acceptance latency by three
+  polls.** After a carrier rate switch the board sits `unsupported` at the
+  old stream rate for 1.05–1.85 s (48→44.1, 2026-09-02/03 runs) before it
+  tracks the new one, and the bench labels a phase from `tracking` polls
+  only with `phase_samples 2` — two polls are guaranteed inside a tracking
+  window only once it exceeds two 0.25 s intervals. The default 3 s middle
+  clears `ACCEPTANCE_LATENCY_BUDGET_S` (1.85 s) by that rule; the old 2 s
+  lost it by 0.15 s on the 2026-09-03 run 1 (`observed ['48000', 'replay']`).
+- **The freeze is gated on acceptance, not on the trailing phase length.**
+  After the trailing aplay returns the tool waits (≤ 1 s) for a poll stamped
+  since the switch back showing the board tracking 48 kHz — the second
+  fiducial is then stamped — dwells 0.3 s and freezes; on timeout it freezes
+  anyway. The U24 keeps the carrier up after aplay exits, so a 1.5 s trailing
+  phase is enough. The decision is in the evidence as
+  `switch_back_elapsed_s`, `reference_tracking_seen_elapsed_s`,
+  `freeze_elapsed_s` and `freeze_trigger`.
 - **A phase the board never followed is named as such.** The evidence
   carries `stream_rate_timeline` (every change of `clock.stream_rate_hz`
   across the polls) and `stimulus_followed`; when no slot was captured and
   the polls never saw 44100, `failure_reason` is `stimulus-not-followed`
-  (lengthen `--phase-seconds`), distinct from a freeze that failed to land.
+  (lengthen the middle value of `--phase-seconds`), distinct from a freeze
+  that failed to land.
 - **The run records the phase sequence it actually drove.** The evidence
   metadata carries `analysis_options.expected_phases` — `["48000", "44100",
   "48000"]`, plus `"replay"` only under `--with-replay` — and the bench's
@@ -215,10 +236,17 @@ reads the captured slot and reduces. Operational contracts:
   a `harmful-counter` on `au_abandons` (live run 1, 2026-09-03).
 - **Ring capacity is checked against what the measurement needs.** The
   frames from just before the *first* rate boundary to the freeze must
-  survive: `--phase-seconds × 2 + 1 s margin` against the slot's
-  `ring_frames` (the first phase's body is not needed, only its last block).
-  The tool refuses (exit 3) unless `--allow-rolloff`. Against the board's
-  262144-frame slot this admits 2 s phases (240000 frames).
+  survive. The recorder stages the board's output frames at the output rate
+  and only while the board is tracking (an `unsupported` board stages
+  nothing — live 2026-09-03: 8192 frames of 44.1 kHz in the slot on the run
+  whose polls showed 0.26 s of tracking, ~37700 on the runs that showed
+  0.78 s), so the budget is `middle_s × 44100 + last_s × 48000 + 1 s margin
+  × 48000` for the instant-acceptance worst case; the lead-in's body is
+  free (only its last classify block is read). The tool refuses (exit 3)
+  unless `--allow-rolloff`. Against the board's 262144-frame slot the
+  default `2,3,1.5` needs 252300 frames; symmetric 2 s phases need 232200;
+  symmetric 3 s phases (324300) and a 3 s middle with a 2 s trailing phase
+  (276300) do not fit.
 - **A fiducial with no measurable change is a lower bound, not a 0.** When
   the output never changes within the search window after a declared rate
   change (or the pre-fiducial rate cannot be classified), the slot lists it

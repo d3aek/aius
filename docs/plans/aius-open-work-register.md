@@ -367,8 +367,8 @@ ends left open:
   discontinuity, `aius_pipeline.c:701`). Outside the declared gate-4
   stimulus since the tool stops polling before the U24 restore, but a PCM
   replay should have no staged compressed input to abandon; one look owed.~~
-  **CLOSED 2026-09-03 — not a defect, the premise was wrong (live proof
-  pending).** The replay is not PCM: the gate-4 tool starts `channel_id_51`
+  **CLOSED 2026-09-03 — not a defect, the premise was wrong; confirmed
+  live on `4c9eb3d497ac`.** The replay is not PCM: the gate-4 tool starts `channel_id_51`
   (`tools/rate_gate_capture/recorder_transitions.py:691`), which
   `POST /api/replays/start` resolves to `/aius/replays/channel_id_51.iec`
   (`optical_main.cpp:5719`), the DTS Core rendering
@@ -395,9 +395,11 @@ ends left open:
   last-before-completion of `dts_be16` each count exactly one abandon with
   MALFORMED; inter-burst stuffing, confirmed PCM carrying false Pa words, an
   undecided staging window ending in Pa, and a bare Pa count nothing and
-  latch nothing. Live expectation for the pending gate-4 run: `au_abandons`
-  +1 per carrier return while a compressed replay plays, +0 at every other
-  transition of the run. Product call, recorded not agreed: whether an
+  latch nothing. Live (gate-4 `--with-replay` run at the tool's new
+  `2,3,1.5` stimulus, `verdict pass`, digest `5a8ff1aa…`): `au_abandons`
+  delta 0 through the 48→44.1→48→loss→replay evidence, then 0 → 1 with
+  `pipeline_last_failure 3` at the single carrier return after the U24
+  restore — exactly the one cut DTS burst. Product call, recorded not agreed: whether an
   operator-initiated displacement of a compressed replay should count as a
   MALFORMED abandon at all; changing that is a design change to defect 35's
   "honest reading", not a fix.

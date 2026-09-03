@@ -74,6 +74,7 @@ import time
 import urllib.error
 import urllib.request
 import wave
+from collections.abc import Iterable, Sequence
 from pathlib import Path
 
 import numpy as np
@@ -129,14 +130,53 @@ STATUS_POLL_NOTE = (
     "defect; any other harmful counter, or event_overflows alongside one, is "
     "a real finding.")
 # Margin added to the retention budget when checking the recorder ring can
-# hold the transition: aplay start-up per phase plus the freeze delay. The
-# board's follow latency is NOT in it -- a slow follow puts the first
-# fiducial later, i.e. nearer the freeze, so ignoring it is conservative.
+# hold the transition. It covers what the phase durations do not: the
+# aplay start-up gap between phases (<=0.1 s each, two of them), the
+# FREEZE_DWELL_S after the board is seen tracking again plus one poll
+# interval of detection latency, the freeze POST itself, and the
+# PRE_FIDUCIAL_WINDOW_FRAMES of the first phase's tail (~0.085 s) -- about
+# 0.6 s at 48 kHz in all. The board's acceptance latency is NOT in it: a
+# board sitting `unsupported` stages nothing (live 2026-09-03: the slot's
+# 44.1 kHz run was 8192 frames on the run whose polls showed 0.26 s of
+# 44.1 kHz tracking and ~37700 on the runs that showed 0.78 s), so a slow
+# follow only lowers the requirement and the budget below is the
+# instant-acceptance worst case.
 STIMULUS_MARGIN_S = 1.0
 # The rate the middle phase is played at; the run is REFERENCE -> this ->
 # REFERENCE, and the status polls must show the board reaching it or the
 # phase was shorter than the board's follow latency.
 TRANSITION_RATE = 44100
+# The board's acceptance latency after a carrier rate switch: it sits
+# `unsupported` at the OLD stream rate, gate closed, until it accepts the
+# new one. 48 -> 44.1 kHz measured 1.05-1.85 s across the 2026-09-02/03
+# runs (1.85 s on the run that failed `transition-sequence`); 44.1 -> 48 kHz
+# measured ~1.13 s on every run (51200 frames after the second fiducial,
+# four runs out of four). The bench analyzer labels a phase only from
+# `tracking` samples and wants `phase_samples 2`, so the middle phase must
+# outlast this budget by at least three poll intervals: two samples are
+# guaranteed only once the tracking window exceeds two full intervals.
+ACCEPTANCE_LATENCY_BUDGET_S = 1.85
+# Per-phase defaults: 48 kHz lead-in, 44.1 kHz middle, 48 kHz trailing.
+# The lead-in costs no ring (only its last classify block must survive the
+# freeze), so it stays long enough to settle and to give the analyzer its
+# first phase whatever carrier the U24 was idling at. The middle outlasts
+# ACCEPTANCE_LATENCY_BUDGET_S by the three-interval rule. The trailing
+# phase is short because the freeze is gated on the board being SEEN
+# tracking the reference rate again (see FREEZE_DWELL_S), not on the phase
+# length, and a short trailing phase is what lets a 3 s middle fit the
+# board's 262144-frame slot without --allow-rolloff: required_capture_frames
+# for these defaults is 252300.
+DEFAULT_PHASE_SECONDS = (2.0, 3.0, 1.5)
+# After the trailing aplay returns, the freeze waits (bounded) until a
+# status poll since the switch back shows the board tracking the reference
+# rate -- i.e. the second fiducial has been stamped -- then dwells this long
+# so the classifier has blocks after it. If no such poll arrives within
+# FREEZE_ACCEPTANCE_TIMEOUT_S the freeze goes ahead anyway (the old fixed
+# delay behaviour, later); the timeout is short because in the one case it
+# fires with the board actually tracking (poller dead) every second of it
+# costs 48000 ring frames.
+FREEZE_DWELL_S = 0.3
+FREEZE_ACCEPTANCE_TIMEOUT_S = 1.0
 
 
 def samples_per_cycle(segment: np.ndarray) -> float | None:
@@ -565,16 +605,72 @@ def slot_capacity_frames(header: dict, meta: dict | None) -> int:
     return (fitted_mb * 1024 * 1024) // slot_count // frame_bytes
 
 
-def required_capture_frames(phase_seconds: float, phases: int, rate: int,
+def required_capture_frames(phase_seconds: Sequence[float],
+                            phase_rates: Sequence[int],
                             latency_s: float = STIMULUS_MARGIN_S) -> int:
     """Frames the recorder must still hold at the freeze for every rate
     change to be measurable: from just before the FIRST rate boundary to
-    the freeze, i.e. the last `phases - 1` phases plus the stimulus margin.
-    The body of the first phase need not survive -- the measurement only
-    reads one classify block before each fiducial -- but a ring shorter
-    than this rolls the first fiducial off the front before the freeze and
-    the reduction then measures a transition that is no longer there."""
-    return int((phase_seconds * (phases - 1) + latency_s) * rate)
+    the freeze.
+
+    The recorder stages the board's OUTPUT frames at the output rate, and
+    only while the board is tracking (an `unsupported` board stages
+    nothing), so every phase after the first costs `seconds x rate` frames
+    at ITS rate -- a 44.1 kHz phase costs 44100 frames per second, not
+    48000 -- for the instant-acceptance worst case. The body of the first
+    phase need not survive: the measurement reads only one classify block
+    before the first fiducial, and the stimulus margin (at the reference
+    rate) covers that block plus the aplay gaps, freeze dwell and freeze
+    POST. A ring shorter than this rolls the first fiducial off the front
+    before the freeze and the reduction then measures a transition that is
+    no longer there."""
+    if len(phase_seconds) != len(phase_rates):
+        raise ValueError("one rate per phase")
+    later_phases = sum(seconds * rate for seconds, rate
+                       in zip(phase_seconds[1:], phase_rates[1:]))
+    return int(later_phases + latency_s * REFERENCE_RATE)
+
+
+def parse_phase_seconds(text: str) -> tuple[float, float, float]:
+    """`--phase-seconds` value: one positive number for all three aplay
+    phases, or `first,middle,last` (48 kHz lead-in, 44.1 kHz middle, 48 kHz
+    trailing). One flag rather than three because the phases are one
+    ordered stimulus and the evidence records them as one list."""
+    parts = [part.strip() for part in text.split(",")]
+    if len(parts) == 1:
+        parts = parts * 3
+    if len(parts) != 3:
+        raise argparse.ArgumentTypeError(
+            f"expected one duration or first,middle,last; got {text!r}")
+    try:
+        values = tuple(float(part) for part in parts)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(
+            f"phase durations must be numbers; got {text!r}") from error
+    if any(value <= 0 for value in values):
+        raise argparse.ArgumentTypeError(
+            f"phase durations must be positive; got {text!r}")
+    return values  # type: ignore[return-value]
+
+
+def tracking_seen_since(polls: Iterable[dict], rate: int,
+                        since_elapsed_s: float) -> float | None:
+    """elapsed_s of the first status poll stamped at or after
+    `since_elapsed_s` that shows the board TRACKING `rate`, or None.
+
+    Used to gate the freeze on the board having accepted the reference
+    rate after the switch back: a poll stamped after the trailing aplay
+    started that reads `stream_rate_hz == rate` with `state == tracking`
+    can only mean the second fiducial has been stamped. A poll stamped
+    before the switch is ignored whatever it reads (the board was tracking
+    the middle rate then, and a stale rate in it is not acceptance)."""
+    for poll in polls:
+        if float(poll.get("elapsed_s") or 0.0) < since_elapsed_s:
+            continue
+        clock = (poll.get("status") or {}).get("clock") or {}
+        if clock.get("stream_rate_hz") == rate and (
+                clock.get("state") == "tracking"):
+            return float(poll["elapsed_s"])
+    return None
 
 
 def tone_rate_hz(path: Path) -> int:
@@ -681,7 +777,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--auth-file", default=".secrets/aius-sd-auth")
     parser.add_argument("--tone-48", required=True, type=Path)
     parser.add_argument("--tone-44", required=True, type=Path)
-    parser.add_argument("--phase-seconds", type=float, default=2.0)
+    parser.add_argument(
+        "--phase-seconds", type=parse_phase_seconds,
+        default=DEFAULT_PHASE_SECONDS,
+        help="seconds per aplay phase: one value for all three, or "
+             "first,middle,last (48 kHz lead-in, 44.1 kHz middle, 48 kHz "
+             "trailing). Default 2,3,1.5: the middle outlasts the board's "
+             "1.85 s 44.1 kHz acceptance latency by three status polls and "
+             "the whole stimulus fits the 262144-frame recorder slot")
     parser.add_argument("--output", type=Path,
                         help="evidence directory (default: a timestamped dir "
                              "under firmware/test/evidence/rate-gate-capture/)")
@@ -712,31 +815,35 @@ def main(argv: list[str] | None = None) -> int:
     events_base = capture.events_url(status_url)
 
     # The three aplay phases are 48 -> 44.1 -> 48 (two rate boundaries); the
-    # ring must hold all three plus the stimulus start-up latency or the
-    # first boundary rolls off the front before the freeze.
+    # ring must hold everything from just before the first boundary to the
+    # freeze -- the middle and trailing phases at their own rates plus the
+    # stimulus margin -- or the first boundary rolls off the front before
+    # the freeze. The lead-in's body is free.
     phases = 3
+    phase_tones = [args.tone_48, args.tone_44, args.tone_48]
+    phase_rates = [tone_rate_hz(tone) for tone in phase_tones]
+    frames_per_phase = [phase_frames(seconds, rate) for seconds, rate
+                        in zip(args.phase_seconds, phase_rates)]
+    first_s, middle_s, last_s = args.phase_seconds
     baseline_header = client.header()
     baseline = frozen_identities(baseline_header)
     capacity = slot_capacity_frames(
         baseline_header,
         (baseline_header.get("slots") or [None])[0])
-    required = required_capture_frames(args.phase_seconds, phases,
-                                       REFERENCE_RATE)
+    required = required_capture_frames(args.phase_seconds, phase_rates)
     if capacity and required > capacity and not args.allow_rolloff:
         print(
-            f"recorder slot holds {capacity} frames; the last "
-            f"{phases - 1} of the {args.phase_seconds:g}s x {phases}-phase "
-            f"transition plus {STIMULUS_MARGIN_S:g}s stimulus margin needs "
-            f"{required}. The first rate change would roll off the ring "
-            f"before the freeze. Shorten --phase-seconds or pass "
-            f"--allow-rolloff to run anyway.", file=sys.stderr)
+            f"recorder slot holds {capacity} frames; the frames from just "
+            f"before the first rate change to the freeze -- the {middle_s:g}s "
+            f"middle phase at {phase_rates[1]} Hz ({frames_per_phase[1]}) "
+            f"plus the {last_s:g}s trailing phase at {phase_rates[2]} Hz "
+            f"({frames_per_phase[2]}) plus {STIMULUS_MARGIN_S:g}s stimulus "
+            f"margin -- need {required}; the {first_s:g}s lead-in costs "
+            f"nothing. The first rate change would roll off the ring before "
+            f"the freeze. Shorten the middle or trailing value of "
+            f"--phase-seconds or pass --allow-rolloff to run anyway.",
+            file=sys.stderr)
         return 3
-    tone_frames = {
-        str(args.tone_48): phase_frames(args.phase_seconds,
-                                        tone_rate_hz(args.tone_48)),
-        str(args.tone_44): phase_frames(args.phase_seconds,
-                                        tone_rate_hz(args.tone_44)),
-    }
 
     previous_config = dict(baseline_header.get("config") or {})
 
@@ -763,25 +870,42 @@ def main(argv: list[str] | None = None) -> int:
                 pass
             time.sleep(STATUS_POLL_INTERVAL_S)
 
-    def aplay(tone: Path) -> None:
+    def aplay(tone: Path, frames: int) -> None:
         # --samples, not --duration: aplay's -d is whole seconds and would
         # truncate a fractional phase below the board's follow latency.
         subprocess.run(["aplay", "-D", args.device,
-                        "-s", str(tone_frames[str(tone)]), str(tone)],
+                        "-s", str(frames), str(tone)],
                        capture_output=True, check=False)
 
     poller = threading.Thread(target=poll_loop, daemon=True)
     meta = None
     header = baseline_header
+    switch_back_elapsed: float | None = None
+    reference_seen_elapsed: float | None = None
+    freeze_elapsed: float | None = None
     try:
         client.disable_auto_triggers()
         poller.start()
 
-        aplay(args.tone_48)
-        aplay(args.tone_44)
-        aplay(args.tone_48)
-        time.sleep(0.2)
+        aplay(phase_tones[0], frames_per_phase[0])
+        aplay(phase_tones[1], frames_per_phase[1])
+        switch_back_elapsed = time.monotonic() - started
+        aplay(phase_tones[2], frames_per_phase[2])
+        # Freeze once a poll since the switch back shows the board tracking
+        # the reference rate again -- the second fiducial is then stamped
+        # -- plus a dwell for the classifier; the U24 keeps the 48 kHz
+        # carrier up after aplay returns, so acceptance can complete after
+        # the trailing phase ends. Bounded: see FREEZE_ACCEPTANCE_TIMEOUT_S.
+        deadline = time.monotonic() + FREEZE_ACCEPTANCE_TIMEOUT_S
+        reference_seen_elapsed = tracking_seen_since(
+            polls, REFERENCE_RATE, switch_back_elapsed)
+        while reference_seen_elapsed is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+            reference_seen_elapsed = tracking_seen_since(
+                polls, REFERENCE_RATE, switch_back_elapsed)
+        time.sleep(FREEZE_DWELL_S)
         client.freeze()
+        freeze_elapsed = time.monotonic() - started
         time.sleep(0.6)
 
         # Identify the captured slot NOW, before the replay leg perturbs the
@@ -847,9 +971,25 @@ def main(argv: list[str] | None = None) -> int:
         else meta.get("freeze_generation"),
         "slot_capacity_frames": capacity,
         "required_capture_frames": required,
-        "phase_seconds": args.phase_seconds,
-        "phase_frames": tone_frames,
+        # `phase_seconds` keeps its historic scalar meaning (one duration
+        # for every phase) and is null when the phases differ; the
+        # per-phase list is authoritative.
+        "phase_seconds": first_s if first_s == middle_s == last_s else None,
+        "phase_seconds_per_phase": list(args.phase_seconds),
+        "phase_tones": [str(tone) for tone in phase_tones],
+        "phase_rates_hz": phase_rates,
+        "phase_frames": frames_per_phase,
         "phases": phases,
+        "acceptance_latency_budget_s": ACCEPTANCE_LATENCY_BUDGET_S,
+        "switch_back_elapsed_s": None if switch_back_elapsed is None
+        else round(switch_back_elapsed, 3),
+        "reference_tracking_seen_elapsed_s": None
+        if reference_seen_elapsed is None else round(reference_seen_elapsed, 3),
+        "freeze_elapsed_s": None if freeze_elapsed is None
+        else round(freeze_elapsed, 3),
+        "freeze_trigger": None if freeze_elapsed is None else (
+            "reference-rate-tracking" if reference_seen_elapsed is not None
+            else "acceptance-timeout"),
         "driven_phase_labels": driven_phase_labels(args.with_replay),
         "stream_rate_timeline": stream_rate_timeline(polls),
         "stimulus_followed": followed,
@@ -861,11 +1001,11 @@ def main(argv: list[str] | None = None) -> int:
         reduced["evidence"]["failure_reason"] = "stimulus-not-followed"
         reduced["evidence"]["failure_reason_note"] = (
             f"the status polls never saw stream_rate_hz reach "
-            f"{TRANSITION_RATE}: the {args.phase_seconds:g}s middle phase "
-            f"was shorter than the board's follow latency, so no rate change "
-            f"was stamped and there was nothing to freeze. Lengthen "
-            f"--phase-seconds; this is a stimulus problem, not a freeze that "
-            f"failed to land")
+            f"{TRANSITION_RATE}: the {middle_s:g}s middle phase was shorter "
+            f"than the board's follow latency, so no rate change was stamped "
+            f"and there was nothing to freeze. Lengthen the middle value of "
+            f"--phase-seconds (first,middle,last); this is a stimulus "
+            f"problem, not a freeze that failed to land")
 
     external_raw = json.dumps(reduced["external"])
     capture.write_json(output / "external-observation.json", reduced["external"])

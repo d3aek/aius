@@ -746,16 +746,18 @@ class RecorderSlotSelectionTests(unittest.TestCase):
             REC.slot_capacity_frames(header, {"ring_frames": 0}),
             8 * 1024 * 1024 // 3 // 8)
 
-    def test_required_frames_cover_the_last_phases_plus_margin(self):
+    def test_required_frames_cover_the_later_phases_plus_margin(self):
         """Only the frames from just before the FIRST rate boundary to the
-        freeze must survive: the last phases - 1 phases plus the margin,
-        not the whole stimulus. Demanding all three phases refused every
-        2 s run against the board's 262144-frame slot for no reason."""
-        required = REC.required_capture_frames(2.0, 3, 48000, latency_s=1.0)
-        self.assertEqual(required, int((2.0 * 2 + 1.0) * 48000))
+        freeze must survive: every later phase plus the margin, not the
+        whole stimulus. Demanding all three phases refused every 2 s run
+        against the board's 262144-frame slot for no reason."""
+        rates = (48000, 44100, 48000)
+        required = REC.required_capture_frames((2.0, 2.0, 2.0), rates,
+                                               latency_s=1.0)
+        self.assertEqual(required, 2 * 44100 + 2 * 48000 + 48000)
         self.assertLessEqual(required, 262144)
         self.assertGreater(required, REC.required_capture_frames(
-            1.0, 3, 48000, latency_s=1.0))
+            (1.0, 1.0, 1.0), rates, latency_s=1.0))
 
     def test_frozen_identities_are_per_slot_pairs(self):
         header = self._header()
@@ -831,6 +833,250 @@ class RecorderSlotSelectionTests(unittest.TestCase):
             self._polls([48000, 48000, 48000, 0, 48000]), 44100))
         self.assertTrue(REC.stimulus_followed(
             self._polls([48000, 44100, 48000]), 44100))
+
+
+BOARD_SLOT_FRAMES = 262144
+BOARD_RATES = (48000, 44100, 48000)
+
+
+def run1_polls():
+    """The 2026-09-03 replay-floor run 1 status timeline, condensed: the
+    carrier switched to 44.1 kHz at ~2.1 s, the board sat `unsupported` at
+    stream 48000 until 3.93 s, was tracking 44.1 kHz for ONE poll, the
+    carrier switched back at ~4.1 s, the board sat `unsupported` at stream
+    44100 until 5.23 s, then tracked 48 kHz until the U24 was deauthorized
+    at ~7.0 s. Run 2 also carried a `stream_rate_hz 0 / tracking` poll at
+    the 44.1 kHz relock (3.14 s), reproduced here at 3.67 s."""
+    timeline = [
+        (0.011, 48000, "tracking"), (1.842, 48000, "tracking"),
+        (2.104, 48000, "unsupported"), (3.669, 0, "tracking"),
+        (3.927, 44100, "tracking"),
+        (4.189, 44100, "unsupported"), (4.972, 44100, "unsupported"),
+        (5.232, 48000, "tracking"), (6.801, 48000, "tracking"),
+        (7.062, 48000, "unlocked"), (9.677, 48000, "replay"),
+    ]
+    return [{"elapsed_s": elapsed,
+             "status": {"clock": {"stream_rate_hz": rate, "state": state}}}
+            for elapsed, rate, state in timeline]
+
+
+class RecorderStimulusShapeTests(unittest.TestCase):
+    """The per-phase stimulus, the corrected ring budget, and the freeze
+    gated on the board's acceptance of the reference rate.
+
+    Live 2026-09-03: the board accepts 44.1 kHz 1.05-1.85 s after the
+    carrier switch and stages NOTHING into the recorder while it sits
+    `unsupported` (the slot's 44.1 kHz run was 8192 frames on the run whose
+    polls showed 0.26 s of tracking, ~37700 on the runs that showed
+    0.78 s; frames after the second fiducial were 51200 on every run). So
+    a phase costs ring frames at its own rate, only while tracked, and the
+    lead-in costs nothing -- which is what lets the middle phase grow
+    past the acceptance latency without --allow-rolloff."""
+
+    def test_later_phases_are_counted_at_their_own_rates(self):
+        required = REC.required_capture_frames((2.0, 3.0, 1.5), BOARD_RATES,
+                                               latency_s=1.0)
+        self.assertEqual(required, int(3.0 * 44100 + 1.5 * 48000 + 48000))
+
+    def test_lead_in_length_does_not_enter_the_budget(self):
+        short = REC.required_capture_frames((0.5, 3.0, 1.5), BOARD_RATES)
+        long = REC.required_capture_frames((10.0, 3.0, 1.5), BOARD_RATES)
+        self.assertEqual(short, long)
+
+    def test_symmetric_two_second_phases_fit_the_board_slot(self):
+        self.assertLessEqual(
+            REC.required_capture_frames((2.0, 2.0, 2.0), BOARD_RATES),
+            BOARD_SLOT_FRAMES)
+
+    def test_symmetric_three_second_phases_do_not_fit(self):
+        self.assertGreater(
+            REC.required_capture_frames((3.0, 3.0, 3.0), BOARD_RATES),
+            BOARD_SLOT_FRAMES)
+
+    def test_three_second_middle_with_two_second_trailing_does_not_fit(self):
+        """Why the trailing default is 1.5 s and not 2 s: with a 3 s middle
+        a 2 s trailing phase overruns the slot for an instant-acceptance
+        board (276300 > 262144)."""
+        self.assertGreater(
+            REC.required_capture_frames((2.0, 3.0, 2.0), BOARD_RATES),
+            BOARD_SLOT_FRAMES)
+
+    def test_default_stimulus_fits_the_board_slot(self):
+        required = REC.required_capture_frames(REC.DEFAULT_PHASE_SECONDS,
+                                               BOARD_RATES)
+        self.assertEqual(required, 252300)
+        self.assertLessEqual(required, BOARD_SLOT_FRAMES)
+
+    def test_default_middle_outlasts_the_acceptance_budget_by_three_polls(
+            self):
+        """The analyzer labels a phase from `tracking` polls only and wants
+        `phase_samples 2`; two polls are guaranteed inside a tracking
+        window only once it exceeds two full poll intervals, so the middle
+        phase must exceed the acceptance budget by three intervals. The
+        2 s default lost this by 0.15 s on run 1 (1.85 s latency)."""
+        middle = REC.DEFAULT_PHASE_SECONDS[1]
+        floor = (REC.ACCEPTANCE_LATENCY_BUDGET_S
+                 + 3 * REC.STATUS_POLL_INTERVAL_S)
+        self.assertGreaterEqual(middle, floor)
+        self.assertLess(2.0, floor)
+
+    def test_default_trailing_plus_freeze_wait_covers_the_budget(self):
+        """The trailing phase may be shorter than the acceptance latency
+        because the freeze waits (bounded) for the board to be seen
+        tracking 48 kHz again; the phase plus the wait must still cover an
+        acceptance as slow as the worst 44.1 kHz one."""
+        trailing = REC.DEFAULT_PHASE_SECONDS[2]
+        self.assertGreaterEqual(trailing + REC.FREEZE_ACCEPTANCE_TIMEOUT_S,
+                                REC.ACCEPTANCE_LATENCY_BUDGET_S)
+
+    def test_replay_leg_is_outside_the_ring_budget(self):
+        """--with-replay adds a fourth bench phase AFTER the freeze; the
+        ring budget is over the three aplay phases in either case."""
+        self.assertEqual(len(REC.driven_phase_labels(True)), 4)
+        self.assertEqual(len(REC.DEFAULT_PHASE_SECONDS), 3)
+        self.assertEqual(
+            REC.required_capture_frames(REC.DEFAULT_PHASE_SECONDS,
+                                        BOARD_RATES),
+            252300)
+
+    def test_one_rate_per_phase_is_required(self):
+        with self.assertRaises(ValueError):
+            REC.required_capture_frames((2.0, 3.0, 1.5), (48000, 44100))
+
+    def test_phase_seconds_single_value_applies_to_every_phase(self):
+        self.assertEqual(REC.parse_phase_seconds("2"), (2.0, 2.0, 2.0))
+
+    def test_phase_seconds_accepts_first_middle_last(self):
+        self.assertEqual(REC.parse_phase_seconds("2, 3,1.5"),
+                         (2.0, 3.0, 1.5))
+
+    def test_phase_seconds_rejects_wrong_count_and_bad_values(self):
+        import argparse
+        for text in ("2,3", "2,3,1,1", "0,3,1.5", "-1", "two", ""):
+            with self.assertRaises(argparse.ArgumentTypeError, msg=text):
+                REC.parse_phase_seconds(text)
+
+    def test_tracking_seen_since_finds_the_acceptance_after_the_switch(self):
+        """Run 1: the switch back was at ~4.1 s; the first tracking 48 kHz
+        poll after it is 5.232 s. The lead-in's 48 kHz polls before the
+        switch and the `unsupported` polls at stream 44100 do not count."""
+        self.assertEqual(
+            REC.tracking_seen_since(run1_polls(), 48000, 4.1), 5.232)
+
+    def test_tracking_seen_since_ignores_stale_polls_before_the_switch(self):
+        self.assertIsNone(REC.tracking_seen_since(run1_polls(), 48000, 6.9))
+        self.assertEqual(
+            REC.tracking_seen_since(run1_polls(), 44100, 2.1), 3.927)
+
+    def test_tracking_seen_since_ignores_a_zero_rate_tracking_poll(self):
+        """Run 2 carried a `stream_rate_hz 0 / state tracking` poll at the
+        44.1 kHz relock; it is not acceptance of anything."""
+        polls = [{"elapsed_s": 3.1,
+                  "status": {"clock": {"stream_rate_hz": 0,
+                                       "state": "tracking"}}}]
+        self.assertIsNone(REC.tracking_seen_since(polls, 48000, 0.0))
+        self.assertIsNone(REC.tracking_seen_since(polls, 44100, 0.0))
+
+
+class RecorderUnequalPhaseAnalysisTests(unittest.TestCase):
+    """The bench analyzer judges phases by observed labels, not by equal
+    durations: a long middle phase and a short trailing phase must still
+    reach the same verdict, and a middle phase that yields one tracking
+    poll must still read as the run-1 stimulus failure."""
+
+    @staticmethod
+    def _fixture(counts):
+        """transition_fixture's shape with `counts` tracking polls per
+        phase (48 -> 44.1 -> 48, no replay leg): one dark `unsupported`
+        poll, one rate-change event and one requested reset per rate
+        boundary, exactly as the bench fixture models them."""
+        make_sample = BENCH_TEST.sample
+        samples = []
+        events = []
+        output_blocks = 0
+        changes = 0
+        resets = 0
+        unsupported = 0
+        elapsed = 0.0
+        for phase_index, rate in enumerate(BOARD_RATES):
+            if phase_index:
+                unsupported += 1
+                events.append({"sequence": len(events) + 1,
+                               "uptime_ms": int(elapsed * 1000),
+                               "type": 12, "state": 3, "detail": 40000})
+                dark = make_sample(elapsed, rate=BOARD_RATES[phase_index - 1],
+                                   output_blocks=output_blocks)
+                dark["status"]["tx_gate"]["open"] = 0
+                dark["status"]["clock"].update({
+                    "carrier_ready": False, "state": "unsupported",
+                    "unsupported_episodes": unsupported,
+                    "rate_changes": changes})
+                dark["status"]["audio_diag"][
+                    "service_requested_resets"] = resets
+                samples.append(dark)
+                elapsed += 0.25
+                resets += 1
+                changes += 1
+                events.append({"sequence": len(events) + 1,
+                               "uptime_ms": int(elapsed * 1000),
+                               "type": 11, "state": 3, "detail": rate})
+            for _ in range(counts[phase_index]):
+                output_blocks += 1
+                entry = make_sample(elapsed, rate=rate,
+                                    output_blocks=output_blocks)
+                entry["status"]["clock"].update({
+                    "rate_changes": changes,
+                    "unsupported_episodes": unsupported})
+                entry["status"]["audio_diag"][
+                    "service_requested_resets"] = resets
+                samples.append(entry)
+                elapsed += 0.25
+        return samples, events
+
+    def _analyze(self, counts):
+        samples, events = self._fixture(counts)
+        polls = RecorderDrivenPhaseMetadataTests._polls(samples, events)
+        external = json.dumps({"old_rate_output_frames": 0})
+        options = {"settle_s": 0.0, "phase_samples": 2,
+                   "max_follow_error_millihz": 1000,
+                   "expected_phases": REC.driven_phase_labels(False)}
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "evidence.jsonl"
+            CAP.write_evidence(path, "transitions", polls, options, external)
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                code = BENCH_TEST.BENCH.main(
+                    ["analyze", "transitions", "--evidence", str(path)])
+        return code, json.loads(stdout.getvalue())
+
+    def test_unequal_phases_pass_with_the_same_thresholds(self):
+        """2 s lead-in / 3 s middle / 1.5 s trailing at the 0.25 s poll
+        cadence: 8 / 12 / 6 tracking polls. No threshold moved."""
+        code, result = self._analyze((8, 12, 6))
+        self.assertEqual(code, 0, result.get("failures"))
+        self.assertEqual(result["verdict"], "pass")
+        self.assertEqual(result["metrics"]["observed_phase_sequence"],
+                         ["48000", "44100", "48000"])
+        self.assertEqual(result["metrics"]["transition_reset_deltas"],
+                         [1, 1])
+
+    def test_short_trailing_phase_still_needs_two_polls(self):
+        code, result = self._analyze((8, 12, 2))
+        self.assertEqual(code, 0, result.get("failures"))
+        self.assertEqual(result["verdict"], "pass")
+
+    def test_one_tracking_poll_in_the_middle_is_the_run1_failure(self):
+        """The 2026-09-03 run 1 diagnosis, reproduced: a middle phase the
+        board tracked for one poll collapses the sequence to a single
+        48000 label and the rate blips have no live window to land in."""
+        code, result = self._analyze((8, 1, 6))
+        self.assertEqual(code, 1)
+        codes = {failure["code"] for failure in result["failures"]}
+        self.assertIn("transition-sequence", codes)
+        self.assertIn("transition-unattributed-unsupported", codes)
+        self.assertEqual(result["metrics"]["observed_phase_sequence"],
+                         ["48000"])
 
 
 class RecorderAggregationTests(unittest.TestCase):
