@@ -2077,6 +2077,22 @@ where the only prior record was a plan aside.
   §Acceptance). Raw runs:
   `.scratch/f100000d-6907-42c1-8ece-ea0c38d7a786/u24xl-loop-*`
   (7-day GC; the numbers above are the complete record).
+
+  **2026-09-03 — Phase 3 A/B, leg A done, leg B blocked.** Gate 1 on the
+  deployed `25109fca3f97+teensy41-optical-slot-a` with the U24 XL: FAIL at
+  53 post-settle trims (max follow error 666 mHz, every harmful counter 0,
+  594/594 samples, evidence sha256 `ebc7a4c9…`), the same cadence as the
+  2026-09-01 runs. The raw samples show the carrier reading hopping across
+  9 adjacent ~140 mHz bins (span 1,117 mHz) with a trim every ~10.8 s — the
+  tracker's 10 s interval ceiling — where the 2026-08-02 image read one
+  value for 630 s. Leg B (`405ce9768532`, prebuilt) is not run because the
+  re-cutover image `recovery.hex` (`c5c4f091…`) was deleted from `.pio/build`
+  and the dirty `lib/aius_ab` blocks a rebuild; candidate substitutes and
+  the commit facts (`lib/aius_clock` and `aius_audio_clock.cpp` unchanged
+  `405ce97..HEAD`) are in
+  [`aius-sample-rate-following.md`](aius-sample-rate-following.md) §Device
+  evidence — 2026-09-03, gate-1 trim-cadence image A/B. Verdict (a)/(b) is
+  open until leg B runs; the bound does not move.
 - **ITCM ingress-regression mechanism unestablished.** The `30eeed071` A/B
   convicted the DSP-runtime adapter's default ITCM placement empirically, but
   no mechanism explains how 144 B of resident cold code starves the live

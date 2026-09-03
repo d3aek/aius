@@ -1031,6 +1031,75 @@ If the 48 kHz slope exceeds 0.25 words/s, Phase 2 is not complete. The next
 mechanism is a slow correction term driven by ingress slope into the same
 numerator actuator; the acceptance bound does not weaken.
 
+### Device evidence — 2026-09-03, gate-1 trim-cadence image A/B (completion plan Phase 3)
+
+Leg A ran; leg B did not. The A/B is half-done and the verdict is open.
+
+**Leg A — deployed image `25109fca3f97+teensy41-optical-slot-a` (built
+`2026-09-03T18:01:32Z`, A/B chooser, `ab.slot 2`, `ledger_valid true`):
+FAIL, 53 post-settle trims.** `aius_rate_bench.py run 48k-10m --target
+192.0.2.66 --expect-build 25109fca3f97+teensy41-optical-slot-a` (the exact
+`build_revision`, since the analyzer compares the whole string), started
+`2026-09-03T18:19:23Z`, U24 XL as source, free-running 48 kHz, bench (no
+host playback). 594/594 samples over 600.0 s, 0 transport retries; the only
+failure is `trim-cadence` (53 after the 30 s settle, 56 whole-run); max
+follow error 666 mHz (bound 1,000); ingress slope -0.038 words/s; every
+harmful counter 0 (`tx_underrun_frames`, `overruns`, `output_drops`,
+`unsupported_episodes`, `clock_faults`, `watchdog_early_resets`,
+`network_restarts`). Evidence
+`.scratch/ca959a0b-d32c-48a4-8a8d-ad0634c7ab96/gate1-legA.jsonl`, sha256
+`ebc7a4c9ac3e915a0bf9944485dbbb90c4217586513a949ce60a7b17bcda67e7` (7-day
+GC — copy it somewhere durable before the bound is settled on it). Same
+number as the two 2026-09-01 runs on `3824579` (52, 52): the cadence is
+stable across images from `3824579` to `25109fca3f97`.
+
+What the raw samples add (offline pass over the same JSONL): trims land
+every 10.8 s on average (55 gaps, 9.1–14.2 s) — the tracker's
+`AIUS_CLOCK_TARGET_INTERVAL_MS` = 10 s ceiling
+(`firmware/lib/aius_clock/src/aius_clock.c:17`), i.e. the 1 s window mean
+sits ≥ 50 mHz (`AIUS_CLOCK_TARGET_HYSTERESIS_MILLIHZ`, `:18`) from the
+applied target at essentially every eligible window. The settled
+`carrier_rate_millihz` reads **9 distinct values** between 48,019,644 and
+48,020,761 mHz (span 1,117 mHz) in ~140 mHz steps — the measurement's
+quantum — hopping between adjacent bins from sample to sample; `trim_ppm`
+walks 413–428. The 2026-08-02 observation on the 2026-08-02-era image read
+**one** value (48,020,342 mHz, the centre of today's spread) for 311 samples
+over 630 s with `trim_updates 0`. So the A/B question is sharper than "trim
+policy": does the old image read a steady carrier from today's source? If
+it does, something between the images changed the carrier measurement or
+its gating (not the trim policy: `firmware/lib/aius_clock/` and
+`firmware/lib/aius_audio/src/aius_audio_clock.cpp` have **no commits** in
+`405ce97..HEAD`; only `firmware/src/optical_main.cpp` changed there, and the
+apply/trim block `:8288-8311` itself has none). If it hops too, the source
+wanders and this is D4.
+
+**Leg B — not run; blocked on the restore image.** The prebuilt
+`405ce9768532+teensy41-optical` hex (built from the `405ce97` scratch
+worktree `2026-09-03T17:13:33Z`, sha256 `7b70c1e3…`) is ready, but the
+HalfKay flash overwrites the chooser and the planned re-cutover image
+`.pio/build/aius-ab/recovery.hex` (`acfd6e3baba9`, sha256 `c5c4f091…`, Phase
+5) no longer exists — `.pio/build/aius-ab/` and `.pio/build/aius-chooser/`
+were removed by a later build, and it cannot be rebuilt from the working tree
+because `firmware/lib/aius_ab/` (a chooser input) carries uncommitted edits.
+Facts for whoever restores: the chooser sources (`firmware/chooser/`,
+`firmware/lib/aius_ab/`) have no commits since `78cb738` (2026-08-22), so
+the 2026-08-31 cutover image
+`.scratch/19b44989-bd8d-4dca-b516-d0043f900667/recovery-78cb738-cutover.hex`
+(`78cb738ea15d+teensy41-optical-slot-a`, built `2026-08-31T22:48:16Z`,
+sha256 `c302acfc5afca3fdcfb8b81b968ac487e7ea8b6ebe710c4c61a307c3c0265925`,
+flashed and accepted untagged OTA that night) carries a source-identical
+chooser and is a candidate substitute, followed by the untagged OTA of
+`canonical-25109fc.aiuo`; alternatively `build_ab.sh` from a clean HEAD
+(needs the tree committed first). `.pio/build/teensy41-optical-slot-a/firmware.hex`
+flattens to sha256 `b4ca6fb2…` = the payload the board activated
+(`ota_dark.image_digest_prefix b4ca6fb227937e09`), so it is the running
+image byte-for-byte and can be merged with a clean-source chooser if the
+merge route is preferred. Leg B's known non-faults when it runs: the ~1,904 s
+periodic WDOG reset (start within 2 min of boot), `tx_underrun_frames`
+counting idle silence, `dsp.json` `config_error`, and a possible
+`validate_status` rejection of its older status payload (count the
+`clock.trim_updates` delta after t = 30 s from raw 1 s samples instead).
+
 ## Optional recovered-clock hardware
 
 The i.MX RT1062 cannot internally route its recovered S/PDIF clock back to the
