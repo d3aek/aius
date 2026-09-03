@@ -33,21 +33,69 @@ next physical visit.
 
 ## Status
 
-Cut over and bench-proven on the deployed board (`192.0.2.66`) on 2026-08-31,
-then **superseded on the board on 2026-09-01**: subsequent plain-image HalfKay
-flashes over USB CDC (`firmware/scripts/flash_optical.sh`, default hex
-`.pio/build/teensy41-optical/firmware.hex`) put the single-image
-`teensy41-optical` build back on the device, overwriting the slot-agnostic
-chooser. As of 2026-09-02 the board runs `fc674c60f06c+teensy41-optical` and
-`/api/status` reports `"ab": null` — no A/B machinery, no chooser, expected
-container slot `NONE` by construction default. **A re-cutover is owed** before
-any claim about the chooser applies to this device again; the work below is
-unchanged and still proven, it is simply not what is installed.
+Cut over and bench-proven on the deployed board (`192.0.2.66`) on 2026-08-31;
+superseded on the board 2026-09-01 by plain-image HalfKay flashes
+(`teensy41-optical`, `"ab": null` — an interim bench posture, not a decision:
+design decision D1, 2026-09-03); **re-cut-over on 2026-09-03**. The deployed
+posture is the slot-agnostic chooser again, and OTA is the deploy path
+([`aius-outstanding-work-2026-09.md`](aius-outstanding-work-2026-09.md)
+§Ground rules, Phase 5).
 
-Re-cutover to the slot-agnostic A/B posture is scheduled (design decision D1,
-2026-09-03; see
-[`aius-outstanding-work-2026-09.md`](aius-outstanding-work-2026-09.md) Phase 5);
-the 2026-09-01 plain-image flashes were an interim bench posture, not a decision.
+**Re-cutover record (2026-09-03).** Every line is a captured `/api/status` or
+client response; the container digests are the durable artifact identity.
+
+- Before: `dd9520e431a2+teensy41-optical`, `"ab": null`, clock tracking,
+  `tx_underrun_frames 0`.
+- `scripts/build_ab.sh` from clean HEAD `acfd6e3baba9`: chooser 6360 B text;
+  canonical image ITCM 191308 used / 5300 free of 196608 (97.3 %);
+  `recovery.hex` sha256 `c5c4f091e094779da688bdec0ca29e4a9ce9637cde460277ab24f87931ccd96b`;
+  HalfKay via `scripts/flash_optical.sh <recovery.hex>` (the one USB flash).
+  After: `acfd6e3baba9+teensy41-optical-slot-a` built `2026-09-03T16:53:21Z`,
+  `ab: {slot 1, ledger_valid true, booted_slot 1, active_slot 1, sequence 1,
+  rollback_observed false}`, clock tracking at 48 kHz, gate open,
+  `tx_underrun_frames 0` (`gate_open_padded_frames 128` = the boot pad),
+  `relocks 0`. `booted_slot` is now published on the wire
+  (`optical_main.cpp` `http_ab_json()`), so the chooser question is answerable
+  from `/api/status` alone.
+- A→B over OTA: slot-A env rebuilt (fresh automatic `AIUS_BUILD_UTC`), signed
+  WITHOUT `--slot` → `canonical-1.aiuo` sha256
+  `aea34ce82a852ebf30e53b4ea6af6a82ce211f10673ec3e73d145f017529a791` (payload
+  `e31bd6727fb929d70b19f2a12ccb16b2588273c0253184aad524fa89528a8fcd`,
+  575744 B, 141 chunks, 0 retried faults); verify 200, arm 200, activate 200.
+  Back as `build_utc 2026-09-03T16:56:04Z`, `ab: {slot 2, booted_slot 2,
+  active_slot 1, pending_slot 2, trial_budget 2}` on the trial boot, then the
+  healthy-boot self-commit: `{active_slot 2, pending_slot 0, sequence 3,
+  trial_budget 0}`; `rollback_observed false`, `relocks 0`,
+  `tx_underrun_frames 0`, `gate_open_padded_frames 128`.
+- B→A over OTA: rebuilt again → `canonical-2.aiuo` sha256
+  `ef2569047ed1889368f0b1c1760eafcaf0c9bc517cd28dc0cc9f47c8bcca9799` (payload
+  `43be69f4b336c11287e5be49bbe1568e4456ba7f48026c7fea016cf6871d54f4`); verify
+  passed reading physical slot A while running slot B (the Phase 2 remap-flip
+  read); back as `build_utc 2026-09-03T16:58:00Z`, `ab: {slot 1, booted_slot 1,
+  active_slot 1, pending_slot 0, sequence 5}`, `rollback_observed false`,
+  `relocks 0`, `tx_underrun_frames 0`. Caveat: this image stamps
+  `f28a347d0a68+teensy41-optical-slot-a` — aius HEAD advanced by two
+  docs-only commits between the two rebuilds; the container header says
+  `acfd6e3baba9` and the firmware bytes differ from that stamp's only in the
+  identity strings.
+- Refusal, **artifact retained this time**: one payload byte of `canonical-2`
+  flipped (offset 300000, `0x93 → 0x92`, header untouched) →
+  `canonical-corrupt.aiuo` sha256
+  `6d3b518b0b48ab11228606a6864de11a26b59d93cc08a4e7094a7243df04a982`. Staged
+  fully (141 chunks), `POST /api/ota/verify` → `409 {"ok":false,"error":
+  "ota_digest"}`; `GET /api/ota` → `state "failed"`, `fault "ota_digest"`,
+  `staged_bytes 0`, nothing armed; `POST /api/ota/abort` → `200 {"ok":true,
+  "state":"idle"}`; `GET /api/ota` → `state "idle"`, `fault "none"`. The
+  container files live in the session's scratch dir (7-day GC); the digests
+  above identify them. Cost: on this boot `tx_underrun_frames` read 0 at 54 s
+  and 1280 (26.7 ms at 48 kHz, one full ring) at 50 min, with the corrupt
+  container's 141-chunk SD staging the only bench activity in between — the
+  un-gated card-traffic dropout `CLAUDE.md` §Device access and OTA already
+  documents, observed here with a live carrier on the bench; not isolated to a
+  chunk. The two activations themselves were clean (0 at 453 s on slot B, 0 at
+  54 s on slot A).
+- Mid-window power-cut gate: still owner-skipped (Phase 9 of the completion
+  plan carries it).
 
 The 2026-08-31 cutover itself: the board ran the new chooser and one canonical,
 slot-agnostically-linked image, `ab.ledger_valid` flipped false→true, and the
@@ -71,16 +119,20 @@ device accepted untagged (`slot_id = NONE`) containers over OTA.
   canonical slot-A image signed WITHOUT `--slot` was accepted, programmed,
   remapped and committed both A→B and B→A; operator rule updated in
   `aius/CLAUDE.md` §Device access and OTA (rewritten 2026-09-02 to key on
-  `/api/status`'s `ab` rather than on the chooser, since the board is back in
-  the plain single-image posture). The `ledger_valid` false→true flip and the
-  `409 ota_digest` refusal below were **observed live 2026-08-31, no artifact
-  retained** — the session's readings, not a captured transcript. STILL OWED:
-  retire the dual slot-B
-  env, `gen_slot_ldscript.py`, and make `--slot` optional/deprecated in the
-  signer + CLI (code cleanup; the dual-linked path still coexists).
+  `/api/status`'s `ab`, and again 2026-09-03 for the re-cutover). The
+  `ledger_valid` false→true flip and the `409 ota_digest` refusal below were
+  **observed live 2026-08-31, no artifact retained**; the 2026-09-03 record in
+  §Status retains the refusal artifact by digest. Cleanup done 2026-09-03:
+  `--slot` is deprecated in the signer (stderr note on every use; the CLI's
+  sign/verify evidence now carries `slot_id=none|a|b`; two host rows in
+  `test_ota_signer.py`), and `build_ab.sh` builds only the canonical image by
+  default (`--with-slot-b` keeps the retired slot-B-linked image buildable).
+  STILL OWED, as Phase 7: retire the slot-B env, `gen_slot_ldscript.py`'s
+  dual path and the compile-time slot-B fallbacks.
 - **Phase 6** — atomic HalfKay cutover: **performed**. `recovery.hex` (new
   chooser + canonical slot A) built from `78cb738` — deliberately EXCLUDING the
   unflashed recorder Phase A/B/C work — HalfKay-flashed and identity-verified.
+  **Re-performed 2026-09-03** from `acfd6e3baba9` (§Status record above).
 
 Phases 2 & 4 had passed an adversarial register review (no brick risk, no
 false-verify; addresses/bits confirmed against `imxrt.h`; the D-cache aliasing
@@ -345,6 +397,50 @@ is between schemes with firmware that only understands one.
 - targeted-proof: the bench acceptance cycle above.
 - unit: parent-only
 - dependencies: Phases 1–5.
+
+### Phase 7 — retire the dual-slot build path
+
+The 2026-09-03 re-cutover left the per-slot build path coexisting: it is no
+longer in `build_ab.sh`'s default set and `--slot` is deprecated, but the env,
+the ldscript generator's B branch and the compile-time slot-B fallbacks are
+still in the tree. Scoped out of Phase 5 because it touches the link layout
+and a fallback whose retirement is a design call, not because it is large.
+
+- outcome: one canonical build with no second linkage anywhere. (a)
+  `platformio.ini` loses `[env:teensy41-optical-slot-b]`; the slot-A env keeps
+  its name (renaming it would churn every runbook, flash log and stamp for no
+  behaviour change). (b) `scripts/gen_slot_ldscript.py` collapses to the one
+  canonical window: `SLOT_BY_ENV_SUFFIX` keeps only `-slot-a`, the B-base
+  arithmetic goes, and the header comment stops describing a per-slot rewrite.
+  (c) `scripts/build_ab.sh` drops `--with-slot-b` and the slot-B lines. (d)
+  Decision, owner-visible: whether `optical_main.cpp`'s legacy branch —
+  `booted_slot == NONE` → compile-time `AIUS_AB_SLOT` + enforce the container's
+  slot tag — stays as the safety under an old chooser, or goes now that no
+  board runs the old chooser. Default: keep the branch but make `AIUS_AB_SLOT`
+  values other than 1 a compile-time error, so a slot-B-linked build cannot be
+  produced by accident. (e) `tools/ota/aius_ota_sign.py` and `aius_ota_cli.c`
+  either keep `--slot` deprecated (default, so a legacy tagged container can
+  still be produced for a test row) or remove it; the device-side
+  `expected_slot` gate and `slot_id` header field stay either way — they are
+  the interlock that refuses a legacy tagged container (§Open questions, rule
+  10). (f) `aius-ota-resilience.md` Phase 3 and this doc's §Why it is per-slot
+  today are marked historical where they describe the dual build as current.
+- seams: `platformio.ini`, `scripts/gen_slot_ldscript.py`,
+  `scripts/build_ab.sh`, `src/optical_main.cpp` (`AIUS_AB_SLOT` compile-time
+  uses; `ab_compose()` legacy branch), `tools/ota/aius_ota_sign.py`,
+  `tools/ota/aius_ota_cli.c`, `test/ota/test_ota_signer.py`,
+  `docs/plans/aius-ota-resilience.md`, `aius/CLAUDE.md` §Device access and
+  OTA (path-guarded).
+- targeted-proof: `scripts/test.sh --environment native --suite ab`, `--suite
+  ota`, `--suite build-metadata`, `--suite registry` green; `build_ab.sh` from
+  a clean HEAD still produces `recovery.hex` and the canonical image with
+  unchanged ITCM figures; `shellcheck` on `build_ab.sh`; one OTA round trip
+  (sign WITHOUT `--slot`, `aius_ota_flash.py --activate`) of the resulting
+  canonical image with `rollback_observed false` and `tx_underrun_frames`
+  unchanged beyond the boot pad; a legacy `--slot`-tagged container (if the
+  flag is kept) still refused at chunk 0 with `400 ota_unsupported`.
+- unit: parent-only
+- dependencies: Phase 5 re-cutover (done 2026-09-03); the (d) decision.
 
 ## Bench cutover runbook (next USB session)
 

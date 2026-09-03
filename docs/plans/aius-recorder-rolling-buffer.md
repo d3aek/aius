@@ -5,7 +5,7 @@ scope: component
 component: aius
 status: in-progress
 tags: [aius, firmware, audio, recorder, psram, ota]
-updated: 2026-09-02
+updated: 2026-09-03
 ---
 
 # Aius flight recorder — debounce + rolling multi-slot buffer
@@ -695,6 +695,11 @@ teardown, so the lease still leaked permanently mid-stream.
   - Proof-item (2)'s branch-isolation check is **moot, not met**: the build
     shipped from master after the slot-agnostic cutover went live, which is a
     deliberate supersession of that requirement, not a satisfaction of it.
+    Re-read 2026-09-03: the board is back on the slot-agnostic chooser
+    (re-cutover, stamp `acfd6e3baba9`,
+    [`aius-ota-slot-agnostic.md`](aius-ota-slot-agnostic.md) §Status), so the
+    dedicated-branch / per-slot-signed-fallback constraint is moot and Phase
+    D's remaining bench items run on this posture, deployed over untagged OTA.
   In addition, this pass **missed a HIGH defect in its own fix**: the
   `sd_settle` release it introduced does not fire on a network teardown
   (`aius_http_transaction_init()` zeroes the hook without calling it), so the

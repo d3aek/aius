@@ -459,7 +459,8 @@ ends left open:
   to [`aius-outstanding-work-2026-09.md`](aius-outstanding-work-2026-09.md)
   Phase 6. Owner ruled D12 the same day: OTA is the primary update method
   and must be exercised, so the IVT-bounds check at verify ships there (over
-  OTA, after the Phase 5 re-cutover); D2 (accept-and-document default for the
+  OTA; the Phase 5 re-cutover is done 2026-09-03, stamp `acfd6e3baba9`); D2
+  (accept-and-document default for the
   Ed25519 stall) is applied in the same phase. Stays open until Phase 6
   lands.**
 
@@ -509,12 +510,11 @@ ends left open:
   and `rollback_observed` persist; (c) Phase 4c's lit-carrier boot row —
   plug an optical source, reboot, confirm the SD dashboard mounts under
   the lit carrier. **Disposition 2026-09-03:** (a) and (b) are owner-hands
-  drills of the A/B chooser and wait for the scheduled re-cutover (design decision
-  D1, 2026-09-03: the 2026-09-01 plain-image flashes were an interim bench
-  posture, not a decision;
+  drills of the A/B chooser; the re-cutover they waited on is done 2026-09-03
+  (stamp `acfd6e3baba9`; design decision D1: the 2026-09-01 plain-image flashes
+  were an interim bench posture, not a decision;
   [`aius-outstanding-work-2026-09.md`](aius-outstanding-work-2026-09.md)
-  Phase 5 performs the re-cutover, Phase 9 carries the drills as
-  owner-scheduled after it). ~~(c)~~ DONE by evidence: the `b38e8448f5c8` flash of
+  Phase 5 performed it, Phase 9 carries the drills as owner-scheduled). ~~(c)~~ DONE by evidence: the `b38e8448f5c8` flash of
   2026-09-02 was a fresh boot with the carrier lit (relocks 0, audio
   flowing, §Waiting on the operator above) and a round-tripped `PUT
   /api/dsp/config` on that boot committed to the card (`sd_diag.http_jobs 1`,
