@@ -1853,6 +1853,23 @@ def assert_rate_service_orders_safe_gate(text):
         "nominal acceptance does not reset partial state whenever its relock "
         "reset credit is absent or bound to a different nominal rate"
     )
+    # Decision (b), 2026-09-03: the credit test alone re-typed a pipeline
+    # nothing had been ingested into (an aplay blip whose quiesce fired on an
+    # unsupported measured rate), one extra PCM-confirm mute per rate change.
+    assert re.search(
+        r"reset_for_acceptance\s*=\s*"
+        r"g_clock_relock_reset_nominal_hz\s*!=\s*"
+        r"result\.nominal_rate_hz\s*&&\s*"
+        r"g_audio_ingest_since_reset\s*;",
+        service,
+    ), (
+        "nominal acceptance resets even when nothing was ingested since the "
+        "last reset request; the second reset only adds a PCM-confirm mute"
+    )
+    assert "g_audio_ingest_since_reset = true;" in service, (
+        "sample_rate_service() never records that words may have been ingested, "
+        "so the acceptance reset can never fire again after the first request"
+    )
     assert re.search(
         r"observed_nominal_hz\s*!=\s*g_clock_relock_reset_nominal_hz\)\s*"
         r"g_clock_relock_reset_nominal_hz\s*=\s*0u;",
@@ -3306,9 +3323,14 @@ def run_audio_cutover_self_test():
         "audio-cutover/replay-without-ready",
         "before its exact 48 kHz plan",
     )
-    duplicate_rate_reset = text.replace(
+    acceptance_reset = (
         "g_clock_relock_reset_nominal_hz !=\n"
-        "\t\t\t\tresult.nominal_rate_hz;",
+        "\t\t\t\tresult.nominal_rate_hz &&\n"
+        "\t\t\tg_audio_ingest_since_reset;"
+    )
+    assert text.count(acceptance_reset) == 1, "acceptance reset text moved"
+    duplicate_rate_reset = text.replace(
+        acceptance_reset,
         "g_clock_relock_reset_nominal_hz == 0u;",
         1,
     )
@@ -3319,11 +3341,11 @@ def run_audio_cutover_self_test():
         "absent or bound to a different nominal",
     )
     first_acquisition_without_credit_reset = text.replace(
-        "g_clock_relock_reset_nominal_hz !=\n"
-        "\t\t\t\tresult.nominal_rate_hz;",
+        acceptance_reset,
         "old_nominal != 0u &&\n"
         "\t\t\tg_clock_relock_reset_nominal_hz !=\n"
-        "\t\t\t\tresult.nominal_rate_hz;",
+        "\t\t\t\tresult.nominal_rate_hz &&\n"
+        "\t\t\tg_audio_ingest_since_reset;",
         1,
     )
     _expect_fail(
@@ -3331,6 +3353,26 @@ def run_audio_cutover_self_test():
         first_acquisition_without_credit_reset,
         "audio-cutover/first-acquisition-reset-credit",
         "absent or bound to a different nominal",
+    )
+    # The redundant acceptance reset back (pre-(b) text).
+    ungated_acceptance_reset = text.replace(
+        acceptance_reset,
+        "g_clock_relock_reset_nominal_hz !=\n"
+        "\t\t\t\tresult.nominal_rate_hz;",
+        1,
+    )
+    _expect_fail(
+        assert_rate_service_orders_safe_gate,
+        ungated_acceptance_reset,
+        "audio-cutover/acceptance-reset-without-ingest",
+        "nothing was ingested",
+    )
+    never_ingested = text.replace("g_audio_ingest_since_reset = true;", "", 2)
+    _expect_fail(
+        assert_rate_service_orders_safe_gate,
+        never_ingested,
+        "audio-cutover/ingest-never-recorded",
+        "never records that words",
     )
     no_applied_gate = text.replace("!output_plan_ready", "false", 1)
     _expect_fail(

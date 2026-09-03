@@ -281,9 +281,26 @@ check but one is green.
   passed through an unsupported measured rate before the new nominal was
   accepted; the acceptance then resets again because
   `g_clock_relock_reset_nominal_hz` no longer matches (`sample_rate_service`,
-  `reset_for_acceptance`). Decision owed to the owner — register §Waiting
-  on the operator: allowance in the analyzer, or skip the redundant
-  acceptance reset in firmware (recommended).
+  `reset_for_acceptance`). Owner ruling: (b), skip the redundant acceptance
+  reset in firmware (`g_audio_ingest_since_reset`), thresholds untouched.
+- **Run 4 (`1e4224a7e3c3`, acceptance reset gated): FAIL on
+  `transition-open-gate-underrun` alone.**
+  `evidence-sha256: 06945e481125efda0ed6a90b70721519f57beafc0d8bc582a82dca2ab54602ff`.
+  `transition_reset_deltas [1, 1, 1]` (the acceptance reset is gone), slot
+  captured, `old_rate_output_frames 0`, both live windows attributed. The
+  one failure: `tx_underrun_frames` +128 between two open-gate samples at
+  replay start (9.40→9.67 s), the ring at 0 when the gate opened and the
+  128-frame pad drained before the first replay block. Register: *Replay
+  start can open the gate on an empty ring*.
+- **Run 5 (`1e4224a7e3c3`): PASS — the first green gate 4.**
+  `evidence-sha256: 0cf5eeda18a4c28c6daefe2d50a9461fde09b4b248f8d61effb03cc16a5ecc9f`.
+  `verdict pass`, `failures []`, `transition_reset_deltas [1, 1, 1]`,
+  `tx_underrun_frames` 0, `au_abandons` 0, `overruns` 0, `unsupported_
+  episodes` 6 all inside live windows, `event_overflows` 9 reported, rate
+  events `[44100, 48000]`, phase output blocks `[172, 45, 147, 299]`, slot 1
+  captured with both fiducials resolved (173056 / 210944), `old_rate_output_
+  frames 0`. After the run: PCM tracking at 48 kHz, gate open, `overruns 0`,
+  pool 2 / 4.
 
 ## Live-run results — 2026-09-01 (INVALIDATED, re-run required)
 
@@ -805,6 +822,6 @@ stimulus (2026-09-02, operator ruling (d) in §Operator rulings (2026-09-02)):
   pre-Phase-F open-gate underrun is gone (`tx_underrun_frames` 0 on every
   run), the run surfaced and reproduced the RX pool corruption (fixed
   `baef793d0063`) and one tool defect (fixed), and the double service reset
-  recurs on either blip. **Remaining: the reset-count decision** (register
-  §Waiting on the operator); once taken, one more run on the then-current
-  image is the green pass.
+  recurs on either blip. **Owner ruled (b); gate 4 GREEN on run 5**
+  (`verdict pass`, digest `0cf5eeda…`). Open beside it: the replay-start
+  open-gate underrun run 4 caught (register §Open defects — runtime).

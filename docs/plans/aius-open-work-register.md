@@ -171,13 +171,15 @@ ends left open:
     resets depending on whether the carrier passes through an unsupported
     measured rate before the new nominal is accepted (the acceptance then
     resets again because `g_clock_relock_reset_nominal_hz` no longer
-    matches). **Owner decision owed**: (a) the declared aplay-blip stimulus
-    carries a ≤2 allowance in `transitions` only, or (b) the firmware skips
-    the acceptance reset when nothing was ingested since the quiesce reset
-    (live ingress is closed throughout, so the second reset re-types an
-    already-fresh pipeline; it also costs one extra PCM-confirm mute on a
-    real source rate change). Recommendation: (b), then gate 4 on the
-    unchanged threshold.
+    matches). **Owner ruling 2026-09-03: (b)** — the firmware skips the
+    acceptance reset when nothing was ingested since the last reset request
+    (`g_audio_ingest_since_reset`, set where live ingress opens and while
+    replay feeds, cleared by `request_audio_reset()`; the relock-credit
+    mechanism is unchanged, cutover-pinned). **Gate 4 GREEN**: run 5 on the
+    fixed image, `verdict pass`, `transition_reset_deltas [1, 1, 1]`, digest
+    `0cf5eeda…` (tool plan §Live-run results — 2026-09-03). Run 4 on the
+    same image failed `transition-open-gate-underrun` alone, +128 frames at
+    replay start — a replay-start race, recorded below as its own defect.
 - ~~**Two deploys owed for the 2026-08-16 status-page rework.**~~ **BOTH DONE
   the same evening, owner-directed ("sync and flash"), with audio playing and
   the interruption accepted after it was costed.**
@@ -327,6 +329,28 @@ ends left open:
   receiver falls back to `tx_clk` under `SPDIF_SRPC_CLKSRC_SEL(1)`); it costs
   ~6.5x ISR entries while dark and is now harmless. Proposal (not agreed):
   gate the receive DMA request while the output drives the graph.
+
+- **Replay start can open the gate on an empty ring and underrun one block
+  (1 of 3 live runs, 2026-09-03).** Gate-4 run 4 on `1e4224a7e3c3`:
+  `tx_gate.open 1`, `replay_running 1`, `tx_level_frames 0` at 9.40 s, then
+  `gate_open_padded_frames` +128 and `tx_underrun_frames` +128 by 9.67 s —
+  the Phase-F pad (one `gate_open_target_frames` block, 2.67 ms) drained
+  before the first replay block was enqueued; runs 3 and 5, same sequence,
+  had the block land first. The replay checkpoint's longest primitive is
+  ~6.2 ms on every run (`replay_diag.longest_primitive_us`), longer than the
+  pad, so whether the underrun lands is the phase between the gate-open
+  edge (checkpoint 7) and the AUDIO checkpoint's first block. Live
+  passthrough relocks are not affected (their pad is preceded by the
+  producer). Fix shape (not agreed): open the gate for replay only once the
+  ring holds at least the target from replay data, or pad replay's gate-open
+  to cover one replay primitive. Bench verdict: `transition-open-gate-
+  underrun`, a real threshold; the tool re-run is the reproduction.
+
+- **`au_abandons` +1 at every carrier return during replay** (`pipeline_
+  last_failure 3`, `drop_staged_compressed_input()` at the source
+  discontinuity, `aius_pipeline.c:701`). Outside the declared gate-4
+  stimulus since the tool stops polling before the U24 restore, but a PCM
+  replay should have no staged compressed input to abandon; one look owed.
 
 - **OTA container verify is a one-epoch ~80 ms stall — an audible dropout
   when staged during playback (2026-08-16).** Measured live while staging

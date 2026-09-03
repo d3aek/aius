@@ -230,6 +230,14 @@ static AiusReplaySource g_audio_ingress_source =
 /* Epoch-owned reset request. Replay start and a debounced carrier relock each
  * advance it; AUDIO acknowledges the exact value through AiusAudioService. */
 static uint32_t g_audio_reset_sequence;
+/* True once live or replay words may have entered the ingress since the last
+ * reset request: set where live ingress opens and while replay feeds, cleared
+ * by request_audio_reset(). Nominal acceptance reads it to skip re-typing a
+ * pipeline nothing has been ingested into (owner decision (b), 2026-09-03: an
+ * aplay blip whose quiesce fired on an unsupported measured rate lost its
+ * relock credit and paid a second reset at acceptance; a real source rate
+ * change would pay the same extra PCM-confirm mute). */
+static bool g_audio_ingest_since_reset;
 /* Whole normal-epoch timing. AUDIO owns its narrower 8 ms diagnostics. */
 static uint32_t g_runtime_epoch_max_us;
 static uint32_t g_runtime_epoch_budget_overruns;
@@ -891,6 +899,7 @@ static_assert(AIUS_OPTICAL_APP_RECORDER_MASK_LIMITER_GR ==
 static FLASHMEM void request_audio_reset(void)
 {
 	g_audio_reset_sequence++;
+	g_audio_ingest_since_reset = false;
 }
 
 /* The only sample walk left in the software audio ISR. Keep it out of
@@ -8046,8 +8055,11 @@ static FLASHMEM void sample_rate_service(uint32_t now_ms)
 	    observed_nominal_hz != g_clock_relock_reset_nominal_hz)
 		g_clock_relock_reset_nominal_hz = 0u;
 
-	if (replay_rate_requested(source))
+	if (replay_rate_requested(source)) {
 		pipeline_pcm_rate_service(AIUS_OPTICAL_SAMPLE_RATE_HZ);
+		/* Replay publishes whatever the live producer gate says. */
+		g_audio_ingest_since_reset = true;
+	}
 	g_clock_carrier_rate_millihz = sample.carrier_rate_millihz;
 	g_clock_carrier_ready = result.carrier_ready;
 	if (!result.carrier_ready) {
@@ -8069,9 +8081,14 @@ static FLASHMEM void sample_rate_service(uint32_t now_ms)
 
 	if (result.nominal_accepted) {
 		const uint32_t old_nominal = g_clock_nominal_rate_hz;
+		/* A reset is owed only when the credit is absent or bound to another
+		 * nominal AND something may have entered the pipeline since the last
+		 * reset; with live ingress closed since the quiesce, the pipeline is
+		 * already fresh and a second reset would only add a PCM-confirm mute. */
 		const bool reset_for_acceptance =
 			g_clock_relock_reset_nominal_hz !=
-				result.nominal_rate_hz;
+				result.nominal_rate_hz &&
+			g_audio_ingest_since_reset;
 		AiusSpdifClockPlan plan = {};
 		g_clock_nominal_rate_hz = result.nominal_rate_hz;
 		g_clock_stream_rate_hz = 0u;
@@ -8158,11 +8175,13 @@ static FLASHMEM void sample_rate_service(uint32_t now_ms)
 	clock_refresh_applied(source, now_ms);
 	if (replay_rate_requested(source) || !g_clock_carrier_ready)
 		g_clock_live_ingress_open = false;
-	else if (g_clock_plan_applied)
+	else if (g_clock_plan_applied) {
 		/* Monotonic within one accepted live episode: a same-nominal
 		 * structural hold makes plan_applied temporarily false but must keep
 		 * buffering because it deliberately preserves decoder generation. */
 		g_clock_live_ingress_open = true;
+		g_audio_ingest_since_reset = true;
+	}
 }
 
 static FLASHMEM void tx_gate_service(void)
