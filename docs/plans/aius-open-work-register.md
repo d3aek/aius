@@ -434,10 +434,42 @@ ends left open:
   (`firmware/lib/aius_recorder/include/aius_recorder_bank.h:83-94`), and a
   wall-clock bound needs `now_ms` threaded into
   `aius_recorder_bank_drain()` (one call site, `optical_main.cpp:8464`) —
-  recorded there, not done. **Live proof pending: next OTA deploy + one
-  operator freeze reading `postroll_captured == postroll_blocks`**, which
-  also unblocks the rolling-buffer plan's Phase D `park()`-mid-POSTROLL
-  items.
+  recorded there, not done. **Live proof 2026-09-03 PASS** on the bench
+  (image `25109fca3f97+teensy41-optical-slot-a`, deployed over OTA): the first
+  operator freeze (`POST /api/recorder/freeze` → `state freezing`) read back
+  `trigger.which operator`, `at_block 4305`, `at_ms 48878`,
+  `postroll_captured 188` == `postroll_blocks 188`, `stream_end_frame
+  2300416`; the two `underrun` freezes the following OTA staging run provoked
+  (`at_ms 84551` / `89607`) read `postroll_captured 188` as well, and a header
+  read 0.35 s into a later operator freeze showed the slot in `postroll` with
+  `postroll_captured 33` (33 × 10.67 ms). This unblocked the rolling-buffer
+  plan's Phase D `park()`-mid-POSTROLL items, run the same day.
+
+- **OTA rehearsal ends in a watchdog reset, not a deliberate one (found
+  2026-09-03, `25109fca3f97`; proposal, default to implement).** Both
+  rehearsals of the recorder Phase D bench proof
+  ([`aius-recorder-rolling-buffer.md`](aius-recorder-rolling-buffer.md)
+  §Phase D, device evidence 2026-09-03 evening) rebooted ~8 s after
+  `ota_diag.rehearsal "pass"` with `reset_source 16` (`SRC_SRSR_WDOG_RST_B`
+  → `AIUS_RESET_WATCHDOG`, `firmware/src/aius_boot_teensy.cpp:396`; WDOG1
+  `WDOG_WCR_WT(15)` = 8 s) and `prev_boot {first_abort 9}`: the rehearsal's
+  READY_TO_RESET is emulated — recorded, not performed
+  (`firmware/src/optical_main.cpp:9144`) — the quiesce leaves the audio
+  service stopped, the epoch aborts at the AUDIO checkpoint and never feeds
+  the watchdog (`:9262-9268`), so the reboot the rehearsal "already owes for
+  audio" (`:9185-9188`) arrives as a watchdog bite. Harmless to the flash
+  (nothing is armed; `ab` unchanged) but a rehearsal is indistinguishable in
+  `prev_boot` from a crash, and it inflates the watchdog-reset accounting the
+  stall chase (periodic-watchdog entry above) reads as evidence. Proposal:
+  once `service_ota_rehearsal()` stamps the COMPLETED `ota_dark`, end with the
+  same `reset_application()` (`:4613`, `SCB_AIRCR` SYSRESETREQ) the real
+  activation uses — the rehearsal then rehearses the reset too and
+  `reset_source` reads software reset. Alternative: keep feeding the watchdog
+  while parked and leave the reboot to `POST /api/reboot`. Default (owner may
+  override): implement the software reset; one live rehearsal reading
+  `reset_source` ≠ 16 is the proof.
+  [`aius-outstanding-work-2026-09.md`](aius-outstanding-work-2026-09.md)
+  Phase 2 follow-up.
 
 - ~~**`au_abandons` +1 at every carrier return during replay** (`pipeline_
   last_failure 3`, `drop_staged_compressed_input()` at the source

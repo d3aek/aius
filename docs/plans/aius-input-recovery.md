@@ -361,7 +361,7 @@ with exponential backoff that resets on reaching steady.
 
 ## Phases
 
-### Phase 1 — see the stuck states before acting on them — ✓ SHIPPED 2026-09-03 (host-proven; deploy over OTA pending)
+### Phase 1 — see the stuck states before acting on them — ✓ SHIPPED 2026-09-03 (deployed over OTA, image `25109fca3f97`)
 
 - outcome: the three stuck states are observable in the field. The event ring
   is deep enough to survive an OSD navigation burst, a structured recovery
@@ -430,8 +430,19 @@ checkpoint (field writes and one 44-byte service-diag copy).
   `optical-cutover` 44/44 unchanged with no pin re-pinned; `itcm-placement`,
   `memory`, `net`, `input-liveness` green; upstream repository
   `test/swagger.test.js` 11/11 with the new `InputDiag`,
-  `InputDarkPhase`, `InputDarkInterval` and `Events` paging assertions. Not
-  flashed; deploy is the OTA path in [§Gates](#gates).
+  `InputDarkPhase`, `InputDarkInterval` and `Events` paging assertions.
+- **Deployed 2026-09-03** over untagged OTA to the bench board
+  (`25109fca3f97+teensy41-optical-slot-a`, A/B slot 1 → 2, `rollback_observed
+  false`; ITCM 191,308 used / 5,300 free on the slot env). Live on the wire
+  9 s after boot: `input_diag` `dark_alert_ms 3000`, `dark_record_min_ms 500`,
+  `dark_phase 6` (gate_open, tracking), `dark_phase_ms 8249`, `dark_open 1`,
+  `dark_interval_count 1`, `dark_phases[6]` (phase 2 `max_ms 1645`, phase 3
+  `593`, phase 4 `95`, phase 5 `11`), `dark_intervals[]` = one boot interval
+  `{start_ms 646, ms 2333, entry_phase 2, entry_class 0, exit_phase 5,
+  exit_class 1, exit_ready 1, exit_gate 0}`. `GET /api/events` → `{cursor 0,
+  next 4, events[4]}` (sequences 1–4: state 2/detail 10, rate 48000, state
+  3/detail 1, state 3), `GET /api/events?cursor=4` → `{cursor 4, next 4,
+  events[]}`.
 
 ### Phase 2 — the recovery rule, pure and host-proven
 

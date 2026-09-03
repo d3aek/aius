@@ -258,7 +258,16 @@ still carry stale 36/37/38 wording (`docs/reference/project-scale.md:167-171`,
 - commit-checkpoint: one `docs(aius)` commit per plan file touched; the
   register lands in one commit.
 
-### Phase 1 — Input recovery: premise re-check at HEAD, then finish or supersede — step 1 done 2026-09-03, step 2 open
+### Phase 1 — Input recovery: premise re-check at HEAD, then finish or supersede ✓ SHIPPED 2026-09-03
+
+**Step 2 shipped 2026-09-03** (aius `f0a2005`, swagger upstream repository `02b64b681`;
+deployed over OTA in `25109fca3f97`): 32-deep paged event ring, dark-interval
+record + per-phase gate-closed watermark, 14 `input_diag` keys, 0 B ITCM.
+Delivery audit found six issues (a `/api/clear` false commit boundary, a
+`cursor=UINT32_MAX` walk, plan text), all folded before commit. Live on the
+wire 9 s after boot with a real 2.3 s boot interval recorded. Input recovery's
+own Phases 2–4 stay gated on the instrumentation record showing a stuck state
+in the field; that plan remains `in-progress` by design.
 
 **Step 1 done 2026-09-03** (aius `f28a347`): all three stuck states are STILL
 REACHABLE at HEAD `a6f7e07` — `g_clock_live_ready` is set only in `enqueue()`
@@ -309,7 +318,23 @@ Phase 5. Its Phases 2–4 stay gated on the instrumentation record.
 - commit-checkpoint: step 1 is a one-path docs commit; step 2 is one firmware
   commit + swagger commit (upstream repository) + clean-stamp OTA deploy.
 
-### Phase 2 — Recorder rolling-buffer Phase D: the three owed device items
+### Phase 2 — Recorder rolling-buffer Phase D: the three owed device items ✓ SHIPPED 2026-09-03
+
+**Shipped 2026-09-03.** First pass on `f28a347d0a68` proved lease release on
+every terminal and found a proven defect: the post-roll was never captured
+(`AIUS_RECORDER_RECLAIM_EPOCHS` calibrated for ~115 epoch/s against a ~6,500
+epoch/s loop) — fixed by wall-clock reclaim `AIUS_RECORDER_RECLAIM_MS 280`
+(aius `25109fc`, +5 rows, ITCM 0 B), deployed over OTA, live
+`postroll_captured 188 == 188`. Items 1 and 3 then PASS on `25109fca3f97`:
+`park()` mid-POSTROLL proven (slot in `postroll` with 33 blocks when parked),
+rehearsal `pass` with the bank `absent` and metadata retained, `bank_init()`
+re-arming after reboot. Item 2's deferral half is owner-hands (the classifier
+blocks the U24 sysfs write for agents; recipe in the recorder plan). The
+recorder plan is `shipped`. Follow-up recorded in the register (proposal,
+default implement): the rehearsal ends in a watchdog reset because its
+READY_TO_RESET is emulated and the quiesce stops feeding WDOG1 — end it in
+`reset_application()` like real activation. Serialized after Phase 6 (both
+touch the OTA service in `optical_main.cpp`).
 
 - outcome: [`aius-recorder-rolling-buffer.md`](aius-recorder-rolling-buffer.md)
   Phase D is SHIPPED. The second review pass already ran 2026-09-01

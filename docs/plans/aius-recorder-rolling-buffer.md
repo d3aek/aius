@@ -3,7 +3,7 @@ title: Aius flight recorder — debounce + rolling multi-slot buffer
 type: plans
 scope: component
 component: aius
-status: in-progress
+status: shipped
 tags: [aius, firmware, audio, recorder, psram, ota]
 updated: 2026-09-03
 ---
@@ -629,12 +629,15 @@ overlapping ones.
   repository.
 - unit: parent-only
 
-### Phase D — adversarial review + bench proof IN-PROGRESS
+### Phase D — adversarial review + bench proof ✓ SHIPPED 2026-09-03
 
-**Reopened 2026-09-02.** Its targeted-proof items are owed, not done (the list
-is in the last bullet below), and its own fix carried this review's H1: the
-`sd_settle` read-lease release it introduced never fired on a network
-teardown, so the lease still leaked permanently mid-stream.
+**Reopened 2026-09-02, closed 2026-09-03.** Its targeted-proof items were owed,
+not done, and its own fix carried this review's H1: the `sd_settle` read-lease
+release it introduced never fired on a network teardown, so the lease still
+leaked permanently mid-stream. The bench items closed on 2026-09-03 (last
+bullet): items 1 and 3 PASS on device; item 2's release half PASS, its deferral
+half owner-hands (the permission classifier blocks the U24 sysfs write for
+agents).
 
 - outcome: a first design-level adversarial review already ran (2026-08-28,
   see the Design section's read-lease/reinit-context/recycle-naming
@@ -832,12 +835,72 @@ teardown, so the lease still leaked permanently mid-stream.
     `POST /api/ota/rehearse` (item 1a).
   - End state: recorder recording on slot 1, OTA `idle`, board image and slot
     unchanged, U24 not re-enumerated, mixer 110,110.
-  - **Still not evidenced on device**: `park()` mid-POSTROLL (no operator
-    route to `park()` short of `POST /api/ota/rehearse`, and no POSTROLL window
-    on this image — item 1), the deferral/skip itself (needs an out-of-band
-    freeze while a lease is held — item 2), and the rehearsal's
-    `park()` / `ota_psram_staging()` against the populated bank (item 3).
-    Phase D stays IN-PROGRESS on those.
+  - **Not evidenced on device at that point** (superseded the same evening,
+    next bullet): `park()` mid-POSTROLL (item 1), the deferral/skip itself
+    (item 2), and the rehearsal's `park()` / `ota_psram_staging()` against the
+    populated bank (item 3).
+- **Device evidence 2026-09-03 evening (bench, image
+  `25109fca3f97+teensy41-optical-slot-a` deployed over untagged OTA that
+  evening — the `AIUS_RECORDER_RECLAIM_MS` fix on board, A/B slot 1 → 2,
+  `rollback_observed false`). Items 1 and 3 PASS; item 2 as above.**
+  - **Post-roll window exists now.** First operator freeze on the new image:
+    slot 0 `frozen`, `trigger operator` (`at_block 4305`, `at_ms 48878`),
+    `postroll_captured 188` == `postroll_blocks 188`; the two `underrun`
+    freezes the OTA staging run then provoked read 188 as well.
+  - **(3) Rehearsal vs the populated bank — PASS, run twice.** Sequence each
+    time: `aius_ota_flash.py` stage-only → `state armed`; `POST
+    /api/ota/enable-activation` (`activation_enabled true`); operator freeze;
+    `POST /api/ota/rehearse` → `{"ok":true,"rehearsing":true}`. Header read
+    3 ms after the rehearse 200: all four slots `absent`, `newest_frozen_slot
+    null`, `deferred_epochs 0`, `lease_skips 0`, `lease_leaks 0`, every
+    slot's frozen metadata (trigger, `postroll_captured`, `stream_end_frame`)
+    still readable — `aius_recorder_park()` is the one-store state change the
+    Design section describes, nothing else is touched. Retained
+    `ota_dark` after the window: `state 4` (COMPLETED), `phase 4`
+    (READY_TO_RESET, the emulated reset), `fault 0`, `rehearsal true`,
+    `programmed_bytes 577536`, `verified_bytes 577536`, `steps 2397/2397`,
+    `image_digest_prefix b4ca6fb227937e09` (= the staged payload's sha256
+    prefix), `dark_window_cycles` 3,798,722,947 / 3,819,917,400. Live
+    verdict caught on run 2 at +6.98 s: `ota_diag.rehearsal "pass"`,
+    `rehearsal_dark_us 6366529`, `rehearsal_max_step_us 45381`,
+    `activation_fault none`, `tx_gate.open 1`, `clock tracking`. `ab`
+    unchanged throughout (`slot 2`, `booted_slot 2`, `sequence 7`).
+  - **(1) `park()` mid-POSTROLL then reboot — PASS on run 2; run 1 was a
+    different, also useful, row.** Run 1 posted freeze and rehearse
+    back-to-back (~5 ms apart): `aius_recorder_bank_freeze()` only sets
+    `freeze_token` and the producer latches it at the next block (≤ 10.67 ms),
+    while `service_ota_rehearsal()` parks as soon as
+    `reboot_drain_complete()` (a few epochs), so the park reached slot 3 still
+    RECORDING with the token pending — it read `absent`, `trigger none`,
+    `postroll_captured 0` (RECORDING-with-token → ABSENT, the token discarded
+    with the slot). Run 2 waited 0.35 s: the header at +0.391 s read slot 2
+    `postroll`, `trigger operator`, `postroll_captured 33`; rehearse at
+    +0.397 s; at +0.400 s slot 2 `absent` with `operator` / 33 retained —
+    park mid-POSTROLL. **The reboot is the watchdog's, not the operator's:**
+    both runs, ~8 s after the rehearsal returned, `boot_generation` +1 with
+    `reset_source 16` (`SRC_SRSR_WDOG_RST_B` → `AIUS_RESET_WATCHDOG`,
+    `aius_boot_teensy.cpp:396`; WDOG1 `WDOG_WCR_WT(15)` = 8 s) and
+    `prev_boot {first_abort 9}`: the quiesce leaves the audio service stopped,
+    the epoch aborts at the AUDIO checkpoint and never feeds
+    (`optical_main.cpp:9262-9268`), so the "reboot the rehearsal already owes
+    for audio" (`:9185-9188`) arrives on its own. `POST /api/reboot` was
+    therefore not needed and not sent. After each reboot `bank_init()` re-armed
+    all four slots `recording`, `active_slot 0`, every prior capture's
+    metadata gone (`trigger none`, `freeze_generation 0`, `valid_frames 0` on
+    slots 1–3) — exactly the Design section's "a parked bank forgets every
+    slot's FROZEN metadata on the next init"; `/api/ota` `state idle`,
+    `staged_bytes 0`; `ota_diag.rehearsal` back to `never-run` (RAM verdict;
+    the retained `ota_dark` stamp is the durable one).
+  - **(2) Read-lease-deferred recycle**: release half PASS (earlier bullet);
+    deferral half owner-hands — the classifier blocks the sysfs write for
+    agents, and no HTTP verb can fire while the board's single transaction
+    holds the lease.
+  - Side observation: `/api/ota` read `activation_available true` on the boot
+    after the first rehearsal (the COMPLETED `ota_dark` stamp unlocks it) and
+    `false` again after the second reboot with a fresh stage; not pursued.
+  - End state: recorder recording on slot 0, OTA `idle`, board on
+    `25109fca3f97+teensy41-optical-slot-a` slot 2, `tx_underrun_frames 0`,
+    U24 not touched.
 
 ## Residual risks / non-goals
 
