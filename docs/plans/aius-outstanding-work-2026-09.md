@@ -111,7 +111,19 @@ its disposition is a record correction in Phase 0 (orchestrator).
 
 ## Phases
 
-### Phase 0 — Reconcile the record
+### Phase 0 — Reconcile the record ✓ SHIPPED 2026-09-03
+
+**Shipped 2026-09-03** in four aius commits by concern: `6626c82` (register +
+network-hardening ledger reconcile; open on both sides: 4, 21, 23, 25, 27, 40,
+41), `e90ad5c` (plan statuses; input-recovery gate re-baselined), `d56352e`
+(optical-prototype per D10; raw-bypass rows re-homed to H4), `a6f7e07`
+(output-jitter A–D markers, Phase E closed with the governor retired per D9).
+Left open on purpose: R-N5 (UX placement is an owner call), the
+Ethernet-control-loss half of the optical-prototype state-table gate, the
+`dts` bench mode (no artefact defines it), and ledger 21/25 (bodies read
+resolved, no close statement). Two dated snapshots outside the named files
+still carry stale 36/37/38 wording (`docs/reference/project-scale.md:167-171`,
+`aius-ota-resilience.md:48-50,75-78`); the register is authoritative.
 
 - outcome: every register entry and plan status below states what is true
   today. Each item is struck / marked FIXED with the pointer to the shipping
