@@ -1038,12 +1038,16 @@ ota)
 	# incremental SHA-256, injected signature seam), the power-loss record
 	# and the slot-independent image-health rules. Pure logic: no flash, no
 	# transport, no firmware wiring, so it is host-only and self-contained.
+	# lib/aius_ab rides along for the IVT sanity rule verify() shares with
+	# the first-stage chooser (pure; the ab suite pins it on its own).
 	ota_out="$build_dir/ota"
 	"$cc" "${cflags[@]}" "-I$fw_root/lib/aius_ota/include" \
+		"-I$fw_root/lib/aius_ab/include" \
 		"$fw_root/test/ota/test_ota.c" \
 		"$fw_root/lib/aius_ota/src/aius_ota.c" \
 		"$fw_root/lib/aius_ota/src/aius_ota_staging.c" \
 		"$fw_root/lib/aius_ota/src/aius_sha256.c" \
+		"$fw_root/lib/aius_ab/src/aius_ab.c" \
 		-o "$ota_out"
 	"$ota_out"
 	# The activation sequencer over a fake flash device: the erase/program
@@ -1054,11 +1058,13 @@ ota)
 	# primitives -- than the container and state-machine suite above.
 	ota_activate_out="$build_dir/ota-activate"
 	"$cc" "${cflags[@]}" "-I$fw_root/lib/aius_ota/include" \
+		"-I$fw_root/lib/aius_ab/include" \
 		"$fw_root/test/ota/test_ota_activate.c" \
 		"$fw_root/lib/aius_ota/src/aius_ota.c" \
 		"$fw_root/lib/aius_ota/src/aius_ota_activate.c" \
 		"$fw_root/lib/aius_ota/src/aius_ota_dark_stamp.c" \
 		"$fw_root/lib/aius_ota/src/aius_sha256.c" \
+		"$fw_root/lib/aius_ab/src/aius_ab.c" \
 		-o "$ota_activate_out"
 	"$ota_activate_out"
 	# The Ed25519 verifier adapter behind that seam, over vendored TweetNaCl.
@@ -1083,11 +1089,13 @@ ota)
 		-o "$ota_tweetnacl"
 	ota_ed25519_out="$build_dir/ota-ed25519"
 	"$cc" "${cflags[@]}" "-I$fw_root/lib/aius_ota/include" \
+		"-I$fw_root/lib/aius_ab/include" \
 		"-I$fw_root/vendor/tweetnacl" \
 		"$fw_root/test/ota/test_ota_ed25519.c" \
 		"$fw_root/lib/aius_ota/src/aius_ota.c" \
 		"$fw_root/lib/aius_ota/src/aius_sha256.c" \
 		"$fw_root/lib/aius_ota/src/aius_ota_ed25519.c" \
+		"$fw_root/lib/aius_ab/src/aius_ab.c" \
 		"$ota_tweetnacl" \
 		-o "$ota_ed25519_out"
 	# The committed TEST-ONLY keypair lives beside the suite; the argument

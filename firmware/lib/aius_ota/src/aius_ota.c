@@ -2,6 +2,12 @@
 
 #include "aius_ota_health.h"
 
+/* lib/aius_ab for the IVT sanity rule the first-stage chooser applies AFTER a
+ * flash -- verify() applies the same rule BEFORE one, so the two cannot
+ * disagree about what a bootable image looks like. Pure functions only; the
+ * host suite links lib/aius_ab/src/aius_ab.c beside this file. */
+#include "aius_ab.h"
+
 #include <stddef.h>
 #include <string.h>
 
@@ -39,8 +45,20 @@ _Static_assert(AIUS_OTA_HEADER_OFFSET_SIGNATURE == AIUS_OTA_HEADER_AUTH_BYTES,
 _Static_assert(AIUS_OTA_RECORD_OFFSET_CRC32 + 4u == AIUS_OTA_RECORD_BYTES,
                "the staging record CRC is the last field");
 _Static_assert(AIUS_OTA_RECORD_OFFSET_HEADER + AIUS_OTA_HEADER_BYTES ==
-	               AIUS_OTA_RECORD_OFFSET_CRC32,
+	               AIUS_OTA_RECORD_OFFSET_IVT,
                "the staging record carries one whole header");
+_Static_assert(AIUS_OTA_RECORD_OFFSET_IVT + AIUS_OTA_IVT_BYTES ==
+	               AIUS_OTA_RECORD_OFFSET_CRC32,
+               "the staging record carries the whole captured IVT");
+/* The payload-relative IVT offset is the flash map's slot IVT offset: the
+ * payload IS the image as it sits at its window base. Two constants, one
+ * number, pinned rather than commented. */
+_Static_assert(AIUS_OTA_IVT_OFFSET == AIUS_AB_SLOT_IVT_OFFSET,
+               "the payload IVT offset is the slot IVT offset");
+_Static_assert(AIUS_OTA_IVT_BYTES == 8u * 4u,
+               "the i.MX RT IVT is eight 32-bit words");
+_Static_assert(AIUS_OTA_IVT_WORD_SELF * 4u + 4u <= AIUS_OTA_IVT_BYTES,
+               "every judged IVT word lies inside the captured block");
 _Static_assert(AIUS_OTA_HEALTH_OFFSET_CRC32 + 4u ==
 	               AIUS_OTA_HEALTH_RECORD_BYTES,
                "the health record CRC is the last field");
@@ -348,6 +366,42 @@ static FLASHMEM void session_clear(AiusOtaSession *session)
 	memset(session->header_bytes, 0, sizeof(session->header_bytes));
 	memset(&session->header, 0, sizeof(session->header));
 	memset(&session->digest, 0, sizeof(session->digest));
+	memset(session->ivt, 0, sizeof(session->ivt));
+}
+
+/* The number of IVT bytes a stage of `staged_length` payload bytes has
+ * passed: 0 before the IVT begins, the whole block once it has gone by. The
+ * record's canonical rule (bytes past this are zero) and absorb()'s capture
+ * both derive from it. */
+static FLASHMEM uint32_t ivt_captured_bytes(uint32_t staged_length)
+{
+	if (staged_length <= AIUS_OTA_IVT_OFFSET)
+		return 0u;
+	if (staged_length - AIUS_OTA_IVT_OFFSET >= AIUS_OTA_IVT_BYTES)
+		return AIUS_OTA_IVT_BYTES;
+	return staged_length - AIUS_OTA_IVT_OFFSET;
+}
+
+/* Copies whatever part of [offset, offset + length) overlaps the payload's
+ * IVT block into the session, so the block is complete once the stream has
+ * passed it whatever the chunk boundaries were (a 1-byte chunk suite proves
+ * this). Pure arithmetic on the offsets the strict chunk contract already
+ * validated. */
+static FLASHMEM void ivt_capture(AiusOtaSession *session, uint32_t offset,
+	                         const uint8_t *data, size_t length)
+{
+	uint32_t end = offset + (uint32_t)length;
+	uint32_t from = offset;
+	uint32_t to = end;
+
+	if (from < AIUS_OTA_IVT_OFFSET)
+		from = AIUS_OTA_IVT_OFFSET;
+	if (to > AIUS_OTA_IVT_OFFSET + AIUS_OTA_IVT_BYTES)
+		to = AIUS_OTA_IVT_OFFSET + AIUS_OTA_IVT_BYTES;
+	if (from >= to)
+		return;
+	memcpy(&session->ivt[from - AIUS_OTA_IVT_OFFSET], &data[from - offset],
+	       to - from);
 }
 
 static FLASHMEM void session_fail(AiusOtaSession *session,
@@ -479,6 +533,17 @@ FLASHMEM AiusOtaStatus aius_ota_set_expected_slot(AiusOtaSession *session,
 	return AIUS_OTA_OK;
 }
 
+FLASHMEM AiusOtaStatus aius_ota_set_link_window(AiusOtaSession *session,
+	                                        uint32_t base, uint32_t bytes)
+{
+	if (session == NULL || bytes == 0u ||
+	    (uint64_t)base + bytes > UINT64_C(0x100000000))
+		return AIUS_OTA_INVALID_ARG;
+	session->link_base = base;
+	session->link_bytes = bytes;
+	return AIUS_OTA_OK;
+}
+
 FLASHMEM AiusOtaStatus aius_ota_absorb_check(const AiusOtaSession *session,
 	                                     uint32_t offset, size_t length)
 {
@@ -524,11 +589,39 @@ FLASHMEM AiusOtaStatus aius_ota_absorb(AiusOtaSession *session,
 		return AIUS_OTA_OVERFLOW;
 
 	aius_sha256_update(&session->digest, data, length);
+	ivt_capture(session, offset, data, length);
 	session->staged_length += (uint32_t)length;
 	session->state = session->staged_length == session->header.image_length
 		? AIUS_OTA_STATE_STAGED
 		: AIUS_OTA_STATE_STAGING;
 	return AIUS_OTA_OK;
+}
+
+/* The verify-time IVT bounds check over the captured, now-authenticated
+ * block: the shared chooser rule (tag + entry inside the link window), then
+ * the IVT self pointer at exactly base + AIUS_OTA_IVT_OFFSET -- the one word
+ * that distinguishes an image linked for THIS window from one linked
+ * elsewhere whose entry happens to land in range (a plain 0x60000000 image's
+ * ResetHandler can sit above 0x60010000). BootData.start is NOT judged: the
+ * Teensy core hardcodes it to 0x60000000 in every image regardless of link
+ * base (measured on both built envs, 2026-09-03), so it carries no signal. */
+static FLASHMEM bool ivt_sane(const AiusOtaSession *session)
+{
+	uint32_t header_word;
+	uint32_t entry_word;
+	uint32_t self_word;
+
+	if (session->link_bytes == 0u)
+		return false;
+	if (session->header.image_length < AIUS_OTA_IVT_OFFSET + AIUS_OTA_IVT_BYTES)
+		return false;
+	header_word = get_u32(&session->ivt[AIUS_OTA_IVT_WORD_HEADER * 4u]);
+	entry_word = get_u32(&session->ivt[AIUS_OTA_IVT_WORD_ENTRY * 4u]);
+	self_word = get_u32(&session->ivt[AIUS_OTA_IVT_WORD_SELF * 4u]);
+	if (!aius_ab_ivt_sane_in_window(header_word, entry_word,
+	                                session->link_base, session->link_bytes))
+		return false;
+	return self_word == session->link_base + AIUS_OTA_IVT_OFFSET;
 }
 
 FLASHMEM AiusOtaStatus aius_ota_verify(AiusOtaSession *session,
@@ -559,6 +652,10 @@ FLASHMEM AiusOtaStatus aius_ota_verify(AiusOtaSession *session,
 		return AIUS_OTA_DIGEST;
 	}
 
+	/* The ~80 ms Ed25519 check (one audio epoch's stall on the target) is
+	 * accepted as a known cost (outstanding-work plan D2): staging is
+	 * owner-initiated, so the procedure is "stage during silence" rather
+	 * than slicing the scalar arithmetic across epochs. */
 	aius_sha256(session->header_bytes, AIUS_OTA_HEADER_AUTH_BYTES,
 	            auth_digest);
 	fault = verifier->verify(auth_digest, session->header.signature,
@@ -567,6 +664,13 @@ FLASHMEM AiusOtaStatus aius_ota_verify(AiusOtaSession *session,
 		session->verifier_fault = fault;
 		session_fail(session, AIUS_OTA_SIGNATURE);
 		return AIUS_OTA_SIGNATURE;
+	}
+
+	/* Authentic, so the captured IVT words are the signer's words: judge
+	 * them against the link window before any flash is spent. */
+	if (!ivt_sane(session)) {
+		session_fail(session, AIUS_OTA_IVT);
+		return AIUS_OTA_IVT;
 	}
 
 	session->state = AIUS_OTA_STATE_VERIFIED;
@@ -688,6 +792,11 @@ FLASHMEM AiusOtaStatus aius_ota_record_save(const AiusOtaSession *session,
 		       session->digest.buffer, session->digest.buffered);
 	memcpy(&bytes[AIUS_OTA_RECORD_OFFSET_HEADER], session->header_bytes,
 	       AIUS_OTA_HEADER_BYTES);
+	/* Only the captured prefix, for the same canonical-record reason as
+	 * the digest buffer: the session's own block is zero past it by
+	 * construction, and the load path checks that it is. */
+	memcpy(&bytes[AIUS_OTA_RECORD_OFFSET_IVT], session->ivt,
+	       ivt_captured_bytes(session->staged_length));
 	put_u32(&bytes[AIUS_OTA_RECORD_OFFSET_CRC32],
 	        crc32_over(bytes, AIUS_OTA_RECORD_OFFSET_CRC32));
 	return AIUS_OTA_OK;
@@ -765,7 +874,8 @@ FLASHMEM AiusOtaStatus aius_ota_record_load(AiusOtaSession *session,
 		(AiusOtaStatus)bytes[AIUS_OTA_RECORD_OFFSET_FAIL_REASON];
 	if (state == AIUS_OTA_STATE_FAILED) {
 		if (fail_reason != AIUS_OTA_DIGEST &&
-		    fail_reason != AIUS_OTA_SIGNATURE)
+		    fail_reason != AIUS_OTA_SIGNATURE &&
+		    fail_reason != AIUS_OTA_IVT)
 			return AIUS_OTA_CORRUPT;
 	} else if (fail_reason != AIUS_OTA_OK) {
 		return AIUS_OTA_CORRUPT;
@@ -786,6 +896,9 @@ FLASHMEM AiusOtaStatus aius_ota_record_load(AiusOtaSession *session,
 			return AIUS_OTA_CORRUPT;
 		if (!block_is_zero(&bytes[AIUS_OTA_RECORD_OFFSET_HEADER],
 		                   AIUS_OTA_HEADER_BYTES))
+			return AIUS_OTA_CORRUPT;
+		if (!block_is_zero(&bytes[AIUS_OTA_RECORD_OFFSET_IVT],
+		                   AIUS_OTA_IVT_BYTES))
 			return AIUS_OTA_CORRUPT;
 		return AIUS_OTA_OK;
 	}
@@ -814,9 +927,18 @@ FLASHMEM AiusOtaStatus aius_ota_record_load(AiusOtaSession *session,
 			          buffered],
 	                   AIUS_SHA256_BLOCK_BYTES - buffered))
 		return AIUS_OTA_CORRUPT;
+	/* The IVT block is canonical too: bytes the stage has not reached yet
+	 * must be zero, so a record cannot smuggle in words verify() will judge
+	 * that no absorb() ever saw. */
+	if (!block_is_zero(&bytes[AIUS_OTA_RECORD_OFFSET_IVT +
+			          ivt_captured_bytes(staged_length)],
+	                   AIUS_OTA_IVT_BYTES - ivt_captured_bytes(staged_length)))
+		return AIUS_OTA_CORRUPT;
 
 	memcpy(session->header_bytes, &bytes[AIUS_OTA_RECORD_OFFSET_HEADER],
 	       AIUS_OTA_HEADER_BYTES);
+	memcpy(session->ivt, &bytes[AIUS_OTA_RECORD_OFFSET_IVT],
+	       AIUS_OTA_IVT_BYTES);
 	session->header = header;
 	for (index = 0u; index < 8u; index++)
 		session->digest.state[index] =

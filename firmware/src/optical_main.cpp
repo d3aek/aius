@@ -3987,6 +3987,9 @@ static FLASHMEM bool ab_record_write(const AiusAbRecord *record)
 static FLASHMEM void ab_compose(void)
 {
 	if ((uintptr_t)g_ab_ledger_retained != AIUS_AB_LEDGER_ADDRESS) {
+		/* Returning here also leaves the OTA link window unset, so every
+		 * verify answers ota_ivt: fail-closed by design, and unreachable on
+		 * a shipped image (the post-link verifier pins the ledger address). */
 		g_ab_enabled = false;
 		return;
 	}
@@ -4016,6 +4019,22 @@ static FLASHMEM void ab_compose(void)
 		&g_ota_session,
 		new_chooser ? (uint8_t)AIUS_OTA_SLOT_NONE
 		            : (uint8_t)AIUS_AB_INACTIVE_SLOT);
+	/* And the window the image must have been LINKED for, which verify()
+	 * judges the staged IVT against (Phase 6 of the outstanding-work plan):
+	 * under the new chooser every image links at the canonical window; under
+	 * the old chooser the inactive slot's image links at that slot's own
+	 * physical base. Derived from the PHYSICAL running slot for the same
+	 * reason the activation window is (service_ota_activation). */
+	if (new_chooser) {
+		(void)aius_ota_set_link_window(&g_ota_session,
+		                               AIUS_AB_CANONICAL_BASE,
+		                               AIUS_AB_CANONICAL_BYTES);
+	} else {
+		(void)aius_ota_set_link_window(
+			&g_ota_session,
+			aius_ab_slot_base(aius_ab_other_slot(g_ab_running_slot)),
+			AIUS_AB_SLOT_BYTES);
+	}
 
 	if (!g_ab_record_valid)
 		return;
@@ -4769,6 +4788,7 @@ static FLASHMEM AiusOpticalAppOtaResult ota_map_result(AiusOtaStatus status)
 	case AIUS_OTA_UNSUPPORTED:  return AIUS_OPTICAL_APP_OTA_UNSUPPORTED;
 	case AIUS_OTA_DIGEST:      return AIUS_OPTICAL_APP_OTA_DIGEST;
 	case AIUS_OTA_SIGNATURE:   return AIUS_OPTICAL_APP_OTA_SIGNATURE;
+	case AIUS_OTA_IVT:         return AIUS_OPTICAL_APP_OTA_IVT;
 	default:                   return AIUS_OPTICAL_APP_OTA_STATE_REFUSED;
 	}
 }
@@ -5064,7 +5084,9 @@ static FLASHMEM AiusOpticalAppOtaResult app_ota_arm(void *)
 	return ota_map_result(aius_ota_arm_image(&g_ota_session));
 }
 
-/* verify: digest then signature, over what was staged, against the dev key. */
+/* verify: digest, then signature against the compiled-in key, then the IVT
+ * bounds check against the link window ab_compose() / setup configured -- all
+ * over what was staged, nothing re-read. */
 static FLASHMEM AiusOpticalAppOtaResult app_ota_verify(void *)
 {
 	return ota_map_result(aius_ota_verify(&g_ota_session, &g_ota_verifier));
@@ -5195,6 +5217,16 @@ static FLASHMEM void ota_compose(void)
 	ota_dark_stamp_boot_decode();
 #if AIUS_AB_SLOT
 	ab_compose();
+#else
+	/* The plain single-image posture: the activation window is NULL (= the
+	 * boot window, service_ota_activation), and the image it programs is
+	 * linked at the flash base by the ROM's own contract, so that is the
+	 * window verify() judges the staged IVT against. This posture has no
+	 * chooser to fall back on -- a byte-verified garbage image programmed
+	 * here bricks the board to HalfKay -- which is exactly why the check
+	 * runs here too rather than being skipped for want of a slot. */
+	(void)aius_ota_set_link_window(&g_ota_session, AIUS_OTA_FLASH_BASE,
+	                               AIUS_OTA_FLASH_USABLE_BYTES);
 #endif
 }
 #endif /* AIUS_OTA */

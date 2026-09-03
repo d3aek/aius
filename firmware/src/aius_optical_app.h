@@ -449,7 +449,14 @@ typedef enum {
 	/* The scratch-sector self-test ran and the flash read-back did not match
 	 * the programmed pattern: the driver's LUT use is not safe on this board.
 	 * 500 -- the device could not complete the operation it was asked to prove. */
-	AIUS_OPTICAL_APP_OTA_SELF_TEST_FAILED
+	AIUS_OPTICAL_APP_OTA_SELF_TEST_FAILED,
+	/* The authenticated payload's image vector table is not an image linked
+	 * for this device's flash window (tag, entry pointer or IVT self pointer
+	 * out of bounds; the 2026-08-16 Intel-hex-as-payload shape). 409: the
+	 * container is intact and correctly signed, it is simply not a bootable
+	 * image for this hole, and only a different image can succeed. Appended,
+	 * because kOtaVerdicts is indexed by this value. */
+	AIUS_OPTICAL_APP_OTA_IVT
 } AiusOpticalAppOtaResult;
 
 /* Everything GET /api/ota publishes, filled by the application in one call.

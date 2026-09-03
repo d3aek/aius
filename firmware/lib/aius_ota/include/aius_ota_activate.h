@@ -119,10 +119,13 @@ extern "C" {
  * aius_ota_activate.c static-asserts they cannot drift apart. */
 #define AIUS_OTA_FLASH_USABLE_BYTES AIUS_OTA_MAX_IMAGE_BYTES
 
-/* The smallest thing this sequencer will call an image: one byte past the IVT.
- * Anything shorter cannot carry the structure the ROM parses, and would leave
- * the sequencer with no body to program at all. */
-#define AIUS_OTA_ACTIVATE_MIN_IMAGE_BYTES (AIUS_OTA_FLASH_IVT_OFFSET + 1u)
+/* The smallest thing this sequencer will call an image: a whole IVT. Anything
+ * shorter cannot carry the structure the ROM parses, would leave the sequencer
+ * with no body to program, and -- since the verify-time IVT bounds check --
+ * could never have reached ACTIVATION_REQUESTED anyway (aius_ota_verify()
+ * refuses an image that ends inside its IVT), so the two bounds agree. */
+#define AIUS_OTA_ACTIVATE_MIN_IMAGE_BYTES \
+	(AIUS_OTA_FLASH_IVT_OFFSET + AIUS_OTA_IVT_BYTES)
 
 /* The unit of every program and every readback compare. 256 is the part's page
  * program granule; it also divides the sector, which is what makes "every

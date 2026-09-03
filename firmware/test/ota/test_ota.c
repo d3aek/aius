@@ -10,6 +10,7 @@
  * CRC rule independently instead of having every mutation stopped at the CRC.
  */
 
+#include "aius_ab_layout.h"
 #include "aius_ota.h"
 #include "aius_ota_health.h"
 #include "aius_ota_staging.h"
@@ -51,6 +52,44 @@ static void fill_payload(uint8_t *payload, uint32_t length, uint8_t seed)
 
 	for (index = 0u; index < length; index++)
 		payload[index] = (uint8_t)((index * 31u + seed) & 0xffu);
+}
+
+/* The link window every fixture session is configured for: the canonical
+ * window of the slot-agnostic chooser, which is the deployed posture. */
+#define TEST_LINK_BASE AIUS_AB_CANONICAL_BASE
+#define TEST_LINK_BYTES AIUS_AB_CANONICAL_BYTES
+/* The boot window of the plain single-image build. */
+#define TEST_BOOT_BASE AIUS_AB_FLASH_BASE
+#define TEST_BOOT_BYTES AIUS_OTA_MAX_IMAGE_BYTES
+/* Where the built images' ResetHandler sits relative to the link base
+ * (measured on both 2026-09-03 builds; any in-window value would do). */
+#define TEST_ENTRY_OFFSET 0x15f1u
+
+static void put_word(uint8_t *bytes, uint32_t value)
+{
+	bytes[0] = (uint8_t)(value & 0xffu);
+	bytes[1] = (uint8_t)((value >> 8) & 0xffu);
+	bytes[2] = (uint8_t)((value >> 16) & 0xffu);
+	bytes[3] = (uint8_t)(value >> 24);
+}
+
+/* Writes the Teensy 4 image vector table an image LINKED at `link_base`
+ * carries at +0x1000: header 0x432000D1, entry, two reserved, boot-data
+ * pointer, self pointer, CSF, reserved -- the exact word shape of the built
+ * firmware.hex. A fixture payload without one is not an image, and since the
+ * verify-time bounds check that is what the machine refuses. */
+static void stamp_ivt(uint8_t *payload, uint32_t link_base)
+{
+	uint8_t *ivt = &payload[AIUS_OTA_IVT_OFFSET];
+
+	memset(ivt, 0, AIUS_OTA_IVT_BYTES);
+	put_word(&ivt[AIUS_OTA_IVT_WORD_HEADER * 4u], 0x432000D1u);
+	put_word(&ivt[AIUS_OTA_IVT_WORD_ENTRY * 4u],
+	         link_base + TEST_ENTRY_OFFSET);
+	put_word(&ivt[4u * 4u],
+	         link_base + AIUS_OTA_IVT_OFFSET + AIUS_OTA_IVT_BYTES);
+	put_word(&ivt[AIUS_OTA_IVT_WORD_SELF * 4u],
+	         link_base + AIUS_OTA_IVT_OFFSET);
 }
 
 static void to_hex(const uint8_t *bytes, size_t length, char *out)
@@ -150,11 +189,15 @@ static AiusOtaVerifier verifier_over(FakeVerifier *fake)
 	return verifier;
 }
 
+/* A session as the composition root constructs it: bound to the board, armed,
+ * and told which flash window an image must have been linked for. */
 static void armed_session(AiusOtaSession *session)
 {
 	CHECK(aius_ota_init(session, TEST_TARGET_ID, strlen(TEST_TARGET_ID)) ==
 	      AIUS_OTA_OK);
 	CHECK(aius_ota_latch_arm(session) == AIUS_OTA_OK);
+	CHECK(aius_ota_set_link_window(session, TEST_LINK_BASE,
+	                               TEST_LINK_BYTES) == AIUS_OTA_OK);
 }
 
 /* Absorbs `payload` in `chunk` sized pieces from the session's next offset. */
@@ -1208,7 +1251,14 @@ static void test_record_round_trip_every_state(void)
 
 static void test_record_resumes_staging(void)
 {
+	/* The three IVT breakpoints matter since the verify-time bounds check:
+	 * a resume from just before, inside and just after the captured block
+	 * must still hand verify() the complete words. */
 	static const uint32_t breakpoints[] = {1u, 63u, 64u, 65u, 512u,
+	                                       AIUS_OTA_IVT_OFFSET - 1u,
+	                                       AIUS_OTA_IVT_OFFSET + 9u,
+	                                       AIUS_OTA_IVT_OFFSET +
+		                                       AIUS_OTA_IVT_BYTES,
 	                                       TEST_IMAGE_BYTES - 1u};
 	uint8_t wire[AIUS_OTA_HEADER_BYTES];
 	uint8_t record[AIUS_OTA_RECORD_BYTES];
@@ -1305,8 +1355,10 @@ static void test_record_rejections_fail_closed(void)
 	REJECT_RECORD("record.magic",
 	              mutated[AIUS_OTA_RECORD_OFFSET_MAGIC] ^= 0x01u,
 	              AIUS_OTA_CORRUPT);
+	/* A version-1 record (no IVT block) is the one this build must refuse
+	 * rather than read: the field it lacks is the one verify() judges. */
 	REJECT_RECORD("record.version",
-	              mutated[AIUS_OTA_RECORD_OFFSET_VERSION] = 2u,
+	              mutated[AIUS_OTA_RECORD_OFFSET_VERSION] = 1u,
 	              AIUS_OTA_CORRUPT);
 	REJECT_RECORD("record.length",
 	              mutated[AIUS_OTA_RECORD_OFFSET_LENGTH] = 0u,
@@ -1339,6 +1391,9 @@ static void test_record_rejections_fail_closed(void)
 	REJECT_RECORD("record.spurious-fail-reason",
 	              mutated[AIUS_OTA_RECORD_OFFSET_FAIL_REASON] =
 		              (uint8_t)AIUS_OTA_DIGEST,
+	              AIUS_OTA_CORRUPT);
+	REJECT_RECORD("record.ivt-byte",
+	              mutated[AIUS_OTA_RECORD_OFFSET_IVT + 5u] ^= 0x01u,
 	              AIUS_OTA_CORRUPT);
 	/* Every field above is CRC-covered, so each mutation is caught by the
 	 * CRC before its own rule fires. Resealing is not possible from here
@@ -1484,6 +1539,37 @@ static void test_record_consistency_rules(void)
 	armed_session(&session);
 	CHECK(aius_ota_record_load(&session, record, sizeof(record)) ==
 	      AIUS_OTA_CORRUPT);
+
+	/* The IVT block is canonical: a record staged 4 bytes into the IVT
+	 * carries exactly those 4 bytes (save() zeroes the rest even when the
+	 * session's own block holds stale bytes), and a record claiming IVT
+	 * bytes the stage never reached is refused. The second half needs the
+	 * record's CRC recomputed over the lie, so it reuses the suite's own
+	 * CRC exactly as reseal() does for headers. */
+	current_key = "record.ivt-canonical";
+	memset(&fake, 0, sizeof(fake));
+	armed_session(&source);
+	CHECK(aius_ota_offer(&source, wire, sizeof(wire)) == AIUS_OTA_OK);
+	stage_all(&source, g_payload, AIUS_OTA_IVT_OFFSET + 4u, 512u);
+	source.ivt[10] = 0xeeu; /* stale, never absorbed */
+	CHECK(aius_ota_record_save(&source, record, sizeof(record)) ==
+	      AIUS_OTA_OK);
+	CHECK(memcmp(&record[AIUS_OTA_RECORD_OFFSET_IVT],
+	             &g_payload[AIUS_OTA_IVT_OFFSET], 4u) == 0);
+	CHECK(record[AIUS_OTA_RECORD_OFFSET_IVT + 10u] == 0u);
+	armed_session(&session);
+	CHECK(aius_ota_record_load(&session, record, sizeof(record)) ==
+	      AIUS_OTA_OK);
+	CHECK(session.ivt[10] == 0u);
+	record[AIUS_OTA_RECORD_OFFSET_IVT + 10u] = 0xeeu;
+	{
+		uint32_t crc = test_crc32(record, AIUS_OTA_RECORD_OFFSET_CRC32);
+		put_word(&record[AIUS_OTA_RECORD_OFFSET_CRC32], crc);
+	}
+	armed_session(&session);
+	CHECK(aius_ota_record_load(&session, record, sizeof(record)) ==
+	      AIUS_OTA_CORRUPT);
+	CHECK(aius_ota_state(&session) == AIUS_OTA_STATE_IDLE);
 
 	/* The record is canonical: two sessions with the same hash state
 	 * serialize to the same bytes, whatever stale bytes their block
@@ -1883,19 +1969,26 @@ static void test_end_to_end_upgrade(void)
 	CHECK(aius_ota_offer(&session, wire, sizeof(wire)) ==
 	      AIUS_OTA_DISARMED);
 
-	/* The operator arms, the image is offered and staged. */
+	/* The operator arms, the composition states the link window, the image
+	 * is offered and staged. */
 	CHECK(aius_ota_latch_arm(&session) == AIUS_OTA_OK);
+	CHECK(aius_ota_set_link_window(&session, TEST_LINK_BASE,
+	                               TEST_LINK_BYTES) == AIUS_OTA_OK);
 	CHECK(aius_ota_offer(&session, wire, sizeof(wire)) == AIUS_OTA_OK);
 	stage_all(&session, g_payload, 2048u, 512u);
 	CHECK(aius_ota_record_save(&session, record, sizeof(record)) ==
 	      AIUS_OTA_OK);
 
-	/* Power loss. The board comes back disarmed, as it always does. */
+	/* Power loss. The board comes back disarmed, as it always does, and the
+	 * link window is the composition's to re-state (a device property, not
+	 * the record's). */
 	CHECK(aius_ota_init(&session, TEST_TARGET_ID,
 	                    strlen(TEST_TARGET_ID)) == AIUS_OTA_OK);
 	CHECK(aius_ota_record_load(&session, record, sizeof(record)) ==
 	      AIUS_OTA_DISARMED);
 	CHECK(aius_ota_latch_arm(&session) == AIUS_OTA_OK);
+	CHECK(aius_ota_set_link_window(&session, TEST_LINK_BASE,
+	                               TEST_LINK_BYTES) == AIUS_OTA_OK);
 	CHECK(aius_ota_record_load(&session, record, sizeof(record)) ==
 	      AIUS_OTA_OK);
 	CHECK(aius_ota_next_offset(&session) == 2048u);
@@ -2165,10 +2258,339 @@ static void test_staging_placement_per_fitment(void)
 	CHECK(!aius_ota_staging_place(0u, 0u, 0u, NULL));
 }
 
+/* -------------------------------------------------------------------------
+ * The verify-time IVT bounds check (aius-outstanding-work-2026-09.md Phase 6)
+ *
+ * The 2026-08-16 incident: a container whose payload was the ASCII TEXT of an
+ * Intel-hex file byte-verified, signature-verified and was FLASHED; only the
+ * chooser's post-flash IVT sanity refusal kept the slot bootable. verify()
+ * now judges the authenticated payload's IVT against the configured link
+ * window before any flash is spent, with its own refusal, in the same FAILED
+ * shape as DIGEST and SIGNATURE.
+ * ---------------------------------------------------------------------- */
+
+/* Constructs a session the way the composition does (bound, armed, window
+ * stated unless `windowed` is false), offers a header over `payload`, stages
+ * it in `chunk`-byte pieces and returns verify()'s verdict. */
+static AiusOtaStatus verify_image(AiusOtaSession *session, FakeVerifier *fake,
+	                          const uint8_t *payload, uint32_t image_length,
+	                          uint32_t chunk, bool windowed, uint32_t base,
+	                          uint32_t bytes)
+{
+	uint8_t wire[AIUS_OTA_HEADER_BYTES];
+	AiusOtaVerifier verifier = verifier_over(fake);
+
+	build_wire(wire, payload, image_length);
+	CHECK(aius_ota_init(session, TEST_TARGET_ID, strlen(TEST_TARGET_ID)) ==
+	      AIUS_OTA_OK);
+	CHECK(aius_ota_latch_arm(session) == AIUS_OTA_OK);
+	if (windowed)
+		CHECK(aius_ota_set_link_window(session, base, bytes) ==
+		      AIUS_OTA_OK);
+	CHECK(aius_ota_offer(session, wire, sizeof(wire)) == AIUS_OTA_OK);
+	stage_all(session, payload, image_length, chunk);
+	CHECK(aius_ota_state(session) == AIUS_OTA_STATE_STAGED);
+	return aius_ota_verify(session, &verifier);
+}
+
+/* The FAILED shape an IVT refusal must leave, identical to DIGEST's: the
+ * reason latched, nothing armed, the verifier consulted exactly once (the
+ * check runs AFTER the signature), no verifier fault, a second verify a state
+ * refusal, abort the way back to IDLE with the latch intact. */
+static void expect_ivt_failed(AiusOtaSession *session, FakeVerifier *fake)
+{
+	AiusOtaProgress progress;
+	AiusOtaVerifier verifier = verifier_over(fake);
+
+	CHECK(aius_ota_state(session) == AIUS_OTA_STATE_FAILED);
+	CHECK(aius_ota_progress(session, &progress) == AIUS_OTA_OK);
+	CHECK(progress.fail_reason == AIUS_OTA_IVT);
+	CHECK(progress.verifier_fault == 0);
+	CHECK(progress.staged_length == progress.image_length);
+	CHECK(fake->calls == 1u);
+	CHECK(aius_ota_arm_image(session) == AIUS_OTA_STATE);
+	CHECK(aius_ota_request_activation(session) == AIUS_OTA_STATE);
+	CHECK(aius_ota_verify(session, &verifier) == AIUS_OTA_STATE);
+	CHECK(aius_ota_abort(session) == AIUS_OTA_OK);
+	CHECK(aius_ota_state(session) == AIUS_OTA_STATE_IDLE);
+	CHECK(aius_ota_next_offset(session) == 0u);
+	CHECK(aius_ota_latch_is_armed(session));
+	CHECK(aius_ota_progress(session, &progress) == AIUS_OTA_OK);
+	CHECK(progress.fail_reason == AIUS_OTA_OK);
+}
+
+/* Renders `source` as Intel-hex TEXT into `text` (exactly `length` bytes:
+ * 16-byte data records at ascending addresses under one extended-linear
+ * record, the tail padded with newlines), the byte-for-byte shape of the
+ * incident's payload. */
+static void render_intel_hex_text(uint8_t *text, uint32_t length,
+	                          const uint8_t *source)
+{
+	static const char digits[] = "0123456789ABCDEF";
+	uint32_t written = 0u;
+	uint32_t address = 0u;
+	unsigned int index;
+
+	memcpy(text, ":020000046001" "99\n", 16u);
+	written = 16u;
+	while (written + 44u <= length) {
+		uint8_t raw[4u + 16u];
+		unsigned int sum = 0u;
+		char *line = (char *)&text[written];
+
+		raw[0] = 16u;
+		raw[1] = (uint8_t)(address >> 8);
+		raw[2] = (uint8_t)(address & 0xffu);
+		raw[3] = 0u;
+		memcpy(&raw[4], &source[address % (TEST_IMAGE_BYTES - 16u)], 16u);
+		line[0] = ':';
+		for (index = 0u; index < sizeof(raw); index++) {
+			line[1u + index * 2u] = digits[raw[index] >> 4];
+			line[2u + index * 2u] = digits[raw[index] & 0x0fu];
+			sum += raw[index];
+		}
+		line[41] = digits[((0x100u - (sum & 0xffu)) >> 4) & 0x0fu];
+		line[42] = digits[(0x100u - (sum & 0xffu)) & 0x0fu];
+		line[43] = '\n';
+		written += 44u;
+		address += 16u;
+	}
+	memset(&text[written], '\n', length - written);
+}
+
+static void test_verify_ivt_bounds(void)
+{
+	static const uint32_t chunks[] = {1u, 7u, 64u, 1000u, 2050u,
+	                                  AIUS_OTA_MAX_CHUNK_BYTES};
+	uint8_t image[TEST_IMAGE_BYTES];
+	AiusOtaSession session;
+	AiusOtaProgress progress;
+	FakeVerifier fake;
+	size_t index;
+
+	current_key = "ivt.accepts";
+	/* The fixture payload carries a canonical IVT; every chunking must
+	 * hand verify() the same complete words, including the ones that split
+	 * the block (1, 7, 2050 -- a boundary at 4100, four bytes in). */
+	for (index = 0u; index < ARRAY_COUNT(chunks); index++) {
+		memset(&fake, 0, sizeof(fake));
+		CHECK(verify_image(&session, &fake, g_payload, TEST_IMAGE_BYTES,
+		                   chunks[index], true, TEST_LINK_BASE,
+		                   TEST_LINK_BYTES) == AIUS_OTA_OK);
+		CHECK(aius_ota_state(&session) == AIUS_OTA_STATE_VERIFIED);
+		CHECK(memcmp(session.ivt, &g_payload[AIUS_OTA_IVT_OFFSET],
+		             AIUS_OTA_IVT_BYTES) == 0);
+	}
+
+	current_key = "ivt.entry-outside-window";
+	/* The reset vector (entry pointer) outside the canonical flash window:
+	 * above it, at its base exactly (the FCB sector, never code), in RAM. */
+	{
+		static const uint32_t entries[] = {
+			AIUS_AB_CANONICAL_BASE + AIUS_AB_CANONICAL_BYTES + 0x100u,
+			AIUS_AB_CANONICAL_BASE,
+			0x20000000u,
+			0xffffffffu
+		};
+		for (index = 0u; index < ARRAY_COUNT(entries); index++) {
+			memcpy(image, g_payload, sizeof(image));
+			put_word(&image[AIUS_OTA_IVT_OFFSET +
+			                AIUS_OTA_IVT_WORD_ENTRY * 4u],
+			         entries[index]);
+			memset(&fake, 0, sizeof(fake));
+			CHECK(verify_image(&session, &fake, image, TEST_IMAGE_BYTES,
+			                   512u, true, TEST_LINK_BASE,
+			                   TEST_LINK_BYTES) == AIUS_OTA_IVT);
+			expect_ivt_failed(&session, &fake);
+		}
+	}
+
+	current_key = "ivt.tag";
+	/* A torn header word and an erased sector both miss the 0xD1 tag. */
+	memcpy(image, g_payload, sizeof(image));
+	put_word(&image[AIUS_OTA_IVT_OFFSET], 0x432000D0u);
+	memset(&fake, 0, sizeof(fake));
+	CHECK(verify_image(&session, &fake, image, TEST_IMAGE_BYTES, 512u, true,
+	                   TEST_LINK_BASE, TEST_LINK_BYTES) == AIUS_OTA_IVT);
+	expect_ivt_failed(&session, &fake);
+	memset(&image[AIUS_OTA_IVT_OFFSET], 0xff, AIUS_OTA_IVT_BYTES);
+	memset(&fake, 0, sizeof(fake));
+	CHECK(verify_image(&session, &fake, image, TEST_IMAGE_BYTES, 512u, true,
+	                   TEST_LINK_BASE, TEST_LINK_BYTES) == AIUS_OTA_IVT);
+	expect_ivt_failed(&session, &fake);
+
+	current_key = "ivt.self-pointer";
+	/* The check the chooser does not have: an image linked at the flash
+	 * base whose ResetHandler happens to land inside the canonical window
+	 * passes the tag + entry rule, and its self pointer (0x60001000, not
+	 * 0x60011000) is what gives it away. */
+	memcpy(image, g_payload, sizeof(image));
+	stamp_ivt(image, TEST_BOOT_BASE);
+	put_word(&image[AIUS_OTA_IVT_OFFSET + AIUS_OTA_IVT_WORD_ENTRY * 4u],
+	         TEST_LINK_BASE + TEST_ENTRY_OFFSET);
+	memset(&fake, 0, sizeof(fake));
+	CHECK(verify_image(&session, &fake, image, TEST_IMAGE_BYTES, 512u, true,
+	                   TEST_LINK_BASE, TEST_LINK_BYTES) == AIUS_OTA_IVT);
+	expect_ivt_failed(&session, &fake);
+
+	current_key = "ivt.posture";
+	/* Posture-aware: a plain single-image build is sane against the boot
+	 * window it will be programmed into and insane against the canonical
+	 * window, and the canonical image is the mirror image of that. */
+	memcpy(image, g_payload, sizeof(image));
+	stamp_ivt(image, TEST_BOOT_BASE);
+	memset(&fake, 0, sizeof(fake));
+	CHECK(verify_image(&session, &fake, image, TEST_IMAGE_BYTES, 512u, true,
+	                   TEST_BOOT_BASE, TEST_BOOT_BYTES) == AIUS_OTA_OK);
+	memset(&fake, 0, sizeof(fake));
+	CHECK(verify_image(&session, &fake, image, TEST_IMAGE_BYTES, 512u, true,
+	                   TEST_LINK_BASE, TEST_LINK_BYTES) == AIUS_OTA_IVT);
+	expect_ivt_failed(&session, &fake);
+	memset(&fake, 0, sizeof(fake));
+	CHECK(verify_image(&session, &fake, g_payload, TEST_IMAGE_BYTES, 512u,
+	                   true, TEST_BOOT_BASE, TEST_BOOT_BYTES) ==
+	      AIUS_OTA_IVT);
+	expect_ivt_failed(&session, &fake);
+
+	current_key = "ivt.no-window-refuses";
+	/* No window configured means no verdict is possible, and a perfect
+	 * image is refused rather than guessed sane. */
+	memset(&fake, 0, sizeof(fake));
+	CHECK(verify_image(&session, &fake, g_payload, TEST_IMAGE_BYTES, 512u,
+	                   false, 0u, 0u) == AIUS_OTA_IVT);
+	expect_ivt_failed(&session, &fake);
+
+	current_key = "ivt.too-short";
+	/* An image that ends before or inside the IVT has no IVT to judge. */
+	memset(&fake, 0, sizeof(fake));
+	CHECK(verify_image(&session, &fake, g_payload, AIUS_OTA_IVT_OFFSET,
+	                   512u, true, TEST_LINK_BASE,
+	                   TEST_LINK_BYTES) == AIUS_OTA_IVT);
+	expect_ivt_failed(&session, &fake);
+	memset(&fake, 0, sizeof(fake));
+	CHECK(verify_image(&session, &fake, g_payload,
+	                   AIUS_OTA_IVT_OFFSET + AIUS_OTA_IVT_BYTES - 1u, 512u,
+	                   true, TEST_LINK_BASE, TEST_LINK_BYTES) ==
+	      AIUS_OTA_IVT);
+	expect_ivt_failed(&session, &fake);
+	memset(&fake, 0, sizeof(fake));
+	CHECK(verify_image(&session, &fake, g_payload,
+	                   AIUS_OTA_IVT_OFFSET + AIUS_OTA_IVT_BYTES, 512u, true,
+	                   TEST_LINK_BASE, TEST_LINK_BYTES) == AIUS_OTA_OK);
+
+	current_key = "ivt.incident-2026-08-16";
+	/* The incident shape: the ASCII text of an Intel-hex file as the
+	 * payload. Its digest matches (that is what was signed), the signature
+	 * opens, and the "IVT" at +0x1000 is hex digits and colons -- refused
+	 * with the new reason, nothing armed, abort back to idle. */
+	render_intel_hex_text(image, TEST_IMAGE_BYTES, g_payload);
+	CHECK(image[0] == ':');
+	CHECK(image[AIUS_OTA_IVT_OFFSET] != 0xd1u);
+	memset(&fake, 0, sizeof(fake));
+	CHECK(verify_image(&session, &fake, image, TEST_IMAGE_BYTES, 512u, true,
+	                   TEST_LINK_BASE, TEST_LINK_BYTES) == AIUS_OTA_IVT);
+	expect_ivt_failed(&session, &fake);
+	memset(&fake, 0, sizeof(fake));
+	CHECK(verify_image(&session, &fake, image, TEST_IMAGE_BYTES, 512u, true,
+	                   TEST_BOOT_BASE, TEST_BOOT_BYTES) == AIUS_OTA_IVT);
+	expect_ivt_failed(&session, &fake);
+
+	current_key = "ivt.ordering";
+	/* Pinned: a tampered payload still reads as DIGEST (the verifier never
+	 * consulted), and a refused signature still reads as SIGNATURE (its
+	 * fault latched), whatever the IVT holds -- the bounds check judges
+	 * only authenticated words. */
+	{
+		uint8_t wire[AIUS_OTA_HEADER_BYTES];
+		AiusOtaVerifier verifier;
+
+		render_intel_hex_text(image, TEST_IMAGE_BYTES, g_payload);
+		build_wire(wire, g_payload, TEST_IMAGE_BYTES);
+		memset(&fake, 0, sizeof(fake));
+		verifier = verifier_over(&fake);
+		armed_session(&session);
+		CHECK(aius_ota_offer(&session, wire, sizeof(wire)) == AIUS_OTA_OK);
+		stage_all(&session, image, TEST_IMAGE_BYTES, 512u);
+		CHECK(aius_ota_verify(&session, &verifier) == AIUS_OTA_DIGEST);
+		CHECK(fake.calls == 0u);
+		CHECK(aius_ota_progress(&session, &progress) == AIUS_OTA_OK);
+		CHECK(progress.fail_reason == AIUS_OTA_DIGEST);
+
+		memset(&fake, 0, sizeof(fake));
+		fake.result = 5;
+		CHECK(verify_image(&session, &fake, image, TEST_IMAGE_BYTES, 512u,
+		                   true, TEST_LINK_BASE,
+		                   TEST_LINK_BYTES) == AIUS_OTA_SIGNATURE);
+		CHECK(aius_ota_progress(&session, &progress) == AIUS_OTA_OK);
+		CHECK(progress.fail_reason == AIUS_OTA_SIGNATURE);
+		CHECK(progress.verifier_fault == 5);
+	}
+
+	current_key = "ivt.re-offer-recovers";
+	/* Like every FAILED, a fresh offer is the way back, and the good image
+	 * then verifies on the same session. */
+	{
+		uint8_t wire[AIUS_OTA_HEADER_BYTES];
+		AiusOtaVerifier verifier;
+
+		render_intel_hex_text(image, TEST_IMAGE_BYTES, g_payload);
+		memset(&fake, 0, sizeof(fake));
+		verifier = verifier_over(&fake);
+		CHECK(verify_image(&session, &fake, image, TEST_IMAGE_BYTES, 512u,
+		                   true, TEST_LINK_BASE,
+		                   TEST_LINK_BYTES) == AIUS_OTA_IVT);
+		build_wire(wire, g_payload, TEST_IMAGE_BYTES);
+		CHECK(aius_ota_offer(&session, wire, sizeof(wire)) == AIUS_OTA_OK);
+		stage_all(&session, g_payload, TEST_IMAGE_BYTES, 512u);
+		CHECK(aius_ota_verify(&session, &verifier) == AIUS_OTA_OK);
+		CHECK(aius_ota_arm_image(&session) == AIUS_OTA_OK);
+	}
+
+	current_key = "ivt.record-round-trip";
+	/* A FAILED-by-IVT session persists and restores with its reason. */
+	{
+		uint8_t record[AIUS_OTA_RECORD_BYTES];
+		AiusOtaSession restored;
+
+		render_intel_hex_text(image, TEST_IMAGE_BYTES, g_payload);
+		memset(&fake, 0, sizeof(fake));
+		CHECK(verify_image(&session, &fake, image, TEST_IMAGE_BYTES, 512u,
+		                   true, TEST_LINK_BASE,
+		                   TEST_LINK_BYTES) == AIUS_OTA_IVT);
+		CHECK(aius_ota_record_save(&session, record, sizeof(record)) ==
+		      AIUS_OTA_OK);
+		armed_session(&restored);
+		CHECK(aius_ota_record_load(&restored, record, sizeof(record)) ==
+		      AIUS_OTA_OK);
+		CHECK(aius_ota_progress(&restored, &progress) == AIUS_OTA_OK);
+		CHECK(progress.state == AIUS_OTA_STATE_FAILED);
+		CHECK(progress.fail_reason == AIUS_OTA_IVT);
+		CHECK(memcmp(restored.ivt, &image[AIUS_OTA_IVT_OFFSET],
+		             AIUS_OTA_IVT_BYTES) == 0);
+	}
+
+	current_key = "ivt.window-arguments";
+	armed_session(&session);
+	CHECK(aius_ota_set_link_window(NULL, TEST_LINK_BASE, TEST_LINK_BYTES) ==
+	      AIUS_OTA_INVALID_ARG);
+	CHECK(aius_ota_set_link_window(&session, TEST_LINK_BASE, 0u) ==
+	      AIUS_OTA_INVALID_ARG);
+	CHECK(aius_ota_set_link_window(&session, 0xfffff000u, 0x2000u) ==
+	      AIUS_OTA_INVALID_ARG);
+	CHECK(aius_ota_set_link_window(&session, TEST_BOOT_BASE,
+	                               TEST_BOOT_BYTES) == AIUS_OTA_OK);
+	CHECK(session.link_base == TEST_BOOT_BASE);
+	CHECK(session.link_bytes == TEST_BOOT_BYTES);
+}
+
 int main(void)
 {
 	fill_payload(g_payload, TEST_IMAGE_BYTES, 0x00u);
 	fill_payload(g_other_payload, TEST_IMAGE_BYTES, 0x7fu);
+	/* Both fixtures are IMAGES linked at the canonical window, so a digest
+	 * mismatch between them stays a digest mismatch and never an IVT one. */
+	stamp_ivt(g_payload, TEST_LINK_BASE);
+	stamp_ivt(g_other_payload, TEST_LINK_BASE);
 
 	test_sha256_fips_vectors();
 	test_sha256_incremental_matches_one_shot();
@@ -2182,6 +2604,7 @@ int main(void)
 	test_staging_absorbs_and_completes();
 	test_chunk_sequencing_is_strict();
 	test_verify_seam_accept_and_refuse();
+	test_verify_ivt_bounds();
 	test_transition_matrix();
 	test_record_round_trip_every_state();
 	test_record_resumes_staging();

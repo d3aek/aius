@@ -164,6 +164,31 @@ static void fill_pattern(uint8_t *bytes, uint32_t length, uint8_t seed)
 		bytes[index] = (uint8_t)((index * 31u + seed) & 0xffu);
 }
 
+static void put_word(uint8_t *bytes, uint32_t value)
+{
+	bytes[0] = (uint8_t)(value & 0xffu);
+	bytes[1] = (uint8_t)((value >> 8) & 0xffu);
+	bytes[2] = (uint8_t)((value >> 16) & 0xffu);
+	bytes[3] = (uint8_t)(value >> 24);
+}
+
+/* Makes the new-image fixture an IMAGE linked at the fake device's base: the
+ * Teensy IVT at +0x1000 (header tag, entry, boot-data pointer, self pointer),
+ * which the slice-1 machine's verify() now judges before ACTIVATION_REQUESTED
+ * is reachable. The rest of the pattern is unchanged. */
+static void stamp_ivt(uint8_t *image, uint32_t link_base)
+{
+	uint8_t *ivt = &image[AIUS_OTA_FLASH_IVT_OFFSET];
+
+	memset(ivt, 0, AIUS_OTA_IVT_BYTES);
+	put_word(&ivt[AIUS_OTA_IVT_WORD_HEADER * 4u], 0x432000D1u);
+	put_word(&ivt[AIUS_OTA_IVT_WORD_ENTRY * 4u], link_base + 0x15f1u);
+	put_word(&ivt[4u * 4u], link_base + AIUS_OTA_FLASH_IVT_OFFSET +
+	                                AIUS_OTA_IVT_BYTES);
+	put_word(&ivt[AIUS_OTA_IVT_WORD_SELF * 4u],
+	         link_base + AIUS_OTA_FLASH_IVT_OFFSET);
+}
+
 static void trace_push(FakeDevice *dev, OpKind kind, uint32_t address,
 	               uint32_t length)
 {
@@ -472,6 +497,11 @@ static void request_activation(AiusOtaSession *session, const uint8_t *payload,
 	CHECK(aius_ota_init(session, TEST_TARGET_ID, strlen(TEST_TARGET_ID)) ==
 	      AIUS_OTA_OK);
 	CHECK(aius_ota_latch_arm(session) == AIUS_OTA_OK);
+	/* The fake device is the boot window (base AIUS_OTA_FLASH_BASE), so the
+	 * image is linked there and verify() judges its IVT against that. */
+	CHECK(aius_ota_set_link_window(session, AIUS_OTA_FLASH_BASE,
+	                               AIUS_OTA_FLASH_USABLE_BYTES) ==
+	      AIUS_OTA_OK);
 	build_wire(wire, payload, image_length);
 	CHECK(aius_ota_offer(session, wire, sizeof(wire)) == AIUS_OTA_OK);
 	while (offset < image_length) {
@@ -703,6 +733,12 @@ static void test_bounds_and_alignment_refusals(void)
 	CHECK(aius_ota_activate_check_image_length(0u) == AIUS_OTA_GEOMETRY);
 	CHECK(aius_ota_activate_check_image_length(AIUS_OTA_FLASH_IVT_OFFSET) ==
 	      AIUS_OTA_GEOMETRY);
+	/* One byte past the IVT offset was the old minimum; an image that ends
+	 * inside its IVT is no image, and verify() would refuse it first. */
+	CHECK(aius_ota_activate_check_image_length(AIUS_OTA_FLASH_IVT_OFFSET +
+	                                           1u) == AIUS_OTA_GEOMETRY);
+	CHECK(aius_ota_activate_check_image_length(TEST_MIN_IMAGE_BYTES - 1u) ==
+	      AIUS_OTA_GEOMETRY);
 	CHECK(aius_ota_activate_check_image_length(TEST_MIN_IMAGE_BYTES) ==
 	      AIUS_OTA_OK);
 	CHECK(aius_ota_activate_check_image_length(
@@ -715,8 +751,8 @@ static void test_bounds_and_alignment_refusals(void)
 	 * 35 body program-and-compare chunks + 16 head program-and-compare
 	 * chunks. The mark and the verification are begin()'s work, not steps. */
 	CHECK(aius_ota_activate_step_bound(TEST_IMAGE_BYTES) == 55u);
-	/* The minimum image: 1 head erase + 1 body erase + 1 one-byte body chunk
-	 * + 16 head chunks. */
+	/* The minimum image: 1 head erase + 1 body erase + 1 body chunk (the
+	 * 32-byte IVT, well inside one 256-byte program) + 16 head chunks. */
 	CHECK(aius_ota_activate_step_bound(TEST_MIN_IMAGE_BYTES) == 19u);
 	CHECK(aius_ota_activate_step_bound(0u) == 0u);
 	CHECK(aius_ota_activate_step_bound(AIUS_OTA_FLASH_USABLE_BYTES + 1u) ==
@@ -932,7 +968,7 @@ static void test_smallest_admissible_image(void)
 	assert_erase_order(&g_dev, 2u);
 	assert_head_programmed_last(&g_dev);
 	assert_feed_cadence(&g_dev);
-	/* The whole body is one byte, programmed by one 1-byte program. */
+	/* The whole body is the 32-byte IVT, programmed by one program. */
 	CHECK(g_dev.programs == 1u + 16u);
 }
 
@@ -1491,9 +1527,40 @@ static void test_begin_refuses_an_image_the_geometry_forbids(void)
 	current_key = "begin.image-too-short";
 	device_reset(&g_dev, g_new_image, AIUS_OTA_FLASH_IVT_OFFSET);
 	primitives = primitives_over(&g_dev);
-	/* A well-formed, correctly signed container the flash geometry still
-	 * refuses: it does not reach its own IVT. */
-	request_activation(&session, g_new_image, AIUS_OTA_FLASH_IVT_OFFSET);
+	/* A well-formed, correctly signed container that does not reach its own
+	 * IVT. Since the verify-time IVT bounds check the slice-1 machine refuses
+	 * it first, so it never reaches the sequencer through the public path. */
+	{
+		uint8_t wire[AIUS_OTA_HEADER_BYTES];
+		AiusOtaVerifier verifier;
+		uint32_t offset = 0u;
+
+		verifier.ctx = NULL;
+		verifier.verify = accepting_verify;
+		CHECK(aius_ota_init(&session, TEST_TARGET_ID,
+		                    strlen(TEST_TARGET_ID)) == AIUS_OTA_OK);
+		CHECK(aius_ota_latch_arm(&session) == AIUS_OTA_OK);
+		CHECK(aius_ota_set_link_window(&session, AIUS_OTA_FLASH_BASE,
+		                               AIUS_OTA_FLASH_USABLE_BYTES) ==
+		      AIUS_OTA_OK);
+		build_wire(wire, g_new_image, AIUS_OTA_FLASH_IVT_OFFSET);
+		CHECK(aius_ota_offer(&session, wire, sizeof(wire)) == AIUS_OTA_OK);
+		while (offset < AIUS_OTA_FLASH_IVT_OFFSET) {
+			CHECK(aius_ota_absorb(&session, offset,
+			                      &g_new_image[offset], 512u) ==
+			      AIUS_OTA_OK);
+			offset += 512u;
+		}
+		CHECK(aius_ota_verify(&session, &verifier) == AIUS_OTA_IVT);
+		CHECK(aius_ota_state(&session) == AIUS_OTA_STATE_FAILED);
+	}
+	/* The sequencer's own geometry rule stays as defence in depth against a
+	 * session that reached ACTIVATION_REQUESTED some other way (a build
+	 * without the verify-time check). Shaped by hand, since the public path
+	 * can no longer produce it. */
+	request_activation(&session, g_new_image, TEST_IMAGE_BYTES);
+	session.header.image_length = AIUS_OTA_FLASH_IVT_OFFSET;
+	session.staged_length = AIUS_OTA_FLASH_IVT_OFFSET;
 
 	CHECK(begin_over(&activator, &session, &primitives,
 	                 AIUS_OTA_FLASH_IVT_OFFSET, g_old_digest) ==
@@ -1866,6 +1933,7 @@ static void test_stamp_primitive_is_optional(void)
 int main(void)
 {
 	fill_pattern(g_new_image, TEST_IMAGE_BYTES, 0x11u);
+	stamp_ivt(g_new_image, AIUS_OTA_FLASH_BASE);
 	fill_pattern(g_old_image, FAKE_FLASH_BYTES, 0x93u);
 	aius_sha256(g_new_image, TEST_IMAGE_BYTES, g_new_digest);
 	aius_sha256(g_old_image, TEST_IMAGE_BYTES, g_old_digest);

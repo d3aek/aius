@@ -339,10 +339,17 @@ FLASHMEM bool aius_ab_remap_for_slot(uint8_t slot, AiusAbRemap *out)
 	return true;
 }
 
-FLASHMEM bool aius_ab_slot_ivt_sane(uint8_t slot, uint32_t ivt_word0,
-	                            uint32_t entry_word)
+FLASHMEM bool aius_ab_ivt_sane_in_window(uint32_t ivt_word0,
+	                                 uint32_t entry_word,
+	                                 uint32_t window_base,
+	                                 uint32_t window_bytes)
 {
-	if (aius_ab_slot_base(slot) == 0u)
+	/* No window, no verdict: a caller that does not know where the image
+	 * must have been linked cannot call it sane. The end is computed in
+	 * 64 bits so a window reaching the top of the address space cannot
+	 * wrap into a bound that accepts everything. */
+	if (window_bytes == 0u ||
+	    (uint64_t)window_base + window_bytes > UINT64_C(0x100000000))
 		return false;
 	/* The i.MX RT IVT header tag is 0xD1 in the word's low byte on this
 	 * little-endian part; an erased sector reads 0xFFFFFFFF and a torn
@@ -350,11 +357,24 @@ FLASHMEM bool aius_ab_slot_ivt_sane(uint8_t slot, uint32_t ivt_word0,
 	 * takes the other slot instead of jumping into garbage. */
 	if ((ivt_word0 & 0xffu) != 0xd1u)
 		return false;
+	/* The entry pointer is a LINKED address: an image linked for another
+	 * window (a plain 0x60000000 image offered to a slot, an old
+	 * physically-linked slot-B image, text) points outside this one. */
+	return entry_word > window_base &&
+	       entry_word < window_base + window_bytes;
+}
+
+FLASHMEM bool aius_ab_slot_ivt_sane(uint8_t slot, uint32_t ivt_word0,
+	                            uint32_t entry_word)
+{
+	if (aius_ab_slot_base(slot) == 0u)
+		return false;
 	/* Every slot-agnostic image is LINKED at the canonical window, so its
 	 * entry pointer lies there whichever physical slot it occupies -- the
 	 * chooser's remap makes the canonical window resolve to that slot. An
 	 * entry outside the canonical window is an unlinked/torn/cross-scheme
 	 * image the chooser must refuse. */
-	return entry_word > AIUS_AB_CANONICAL_BASE &&
-	       entry_word < AIUS_AB_CANONICAL_BASE + AIUS_AB_CANONICAL_BYTES;
+	return aius_ab_ivt_sane_in_window(ivt_word0, entry_word,
+	                                  AIUS_AB_CANONICAL_BASE,
+	                                  AIUS_AB_CANONICAL_BYTES);
 }

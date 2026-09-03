@@ -1490,7 +1490,8 @@ static const struct {
 	{ 409u, "ota_signature" },   /* SIGNATURE */
 	{ 507u, "ota_storage" },     /* STORAGE */
 	{ 409u, "ota_activation_disabled" }, /* ACTIVATION_DISABLED */
-	{ 500u, "ota_self_test_failed" }     /* SELF_TEST_FAILED */
+	{ 500u, "ota_self_test_failed" },    /* SELF_TEST_FAILED */
+	{ 409u, "ota_ivt" }                  /* IVT */
 };
 
 #define AIUS_OPTICAL_APP_OTA_VERDICTS \

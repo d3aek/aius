@@ -172,13 +172,27 @@ typedef struct {
 
 bool aius_ab_remap_for_slot(uint8_t slot, AiusAbRemap *out);
 
-/* The slot IVT sanity rule over the two words a caller fetches from a slot's
- * PHYSICAL base + AIUS_AB_SLOT_IVT_OFFSET: word0 is the IVT header (tag 0xD1 in
- * its low byte on this part's byte order) and word1 the entry pointer. Under
- * the slot-agnostic scheme every image is linked at the CANONICAL window, so
- * the entry must lie inside that window regardless of which physical slot the
- * caller read it from (the chooser's remap makes the canonical window resolve
- * to that physical slot). Pure so the host suite pins it. */
+/* THE IVT SANITY RULE, window form: the two words at an image's
+ * +AIUS_AB_SLOT_IVT_OFFSET -- word0 the IVT header (tag 0xD1 in its low byte
+ * on this part's byte order), word1 the entry pointer -- judged against the
+ * flash window the image must have been LINKED for: [window_base,
+ * window_base + window_bytes). The entry must lie strictly inside it (an
+ * entry exactly at the base is the FCB sector, never code). An erased sector
+ * (0xFFFFFFFF), a torn program, ASCII text or an image linked for another
+ * window all fail here. A zero-length window refuses everything: "no window
+ * known" fails closed rather than guessing. Pure, so the host suite pins it
+ * and both the first-stage chooser (slot form below) and the OTA verify path
+ * (lib/aius_ota, against the window the composition configured) share the
+ * one rule rather than two copies of the bounds. */
+bool aius_ab_ivt_sane_in_window(uint32_t ivt_word0, uint32_t entry_word,
+	                        uint32_t window_base, uint32_t window_bytes);
+
+/* The chooser's slot form of the rule over the two words it fetches from a
+ * slot's PHYSICAL base + AIUS_AB_SLOT_IVT_OFFSET. Under the slot-agnostic
+ * scheme every image is linked at the CANONICAL window, so the entry must lie
+ * inside that window regardless of which physical slot the caller read it
+ * from (the chooser's remap makes the canonical window resolve to that
+ * physical slot). False for an invalid slot id. */
 bool aius_ab_slot_ivt_sane(uint8_t slot, uint32_t ivt_word0,
 	                   uint32_t entry_word);
 

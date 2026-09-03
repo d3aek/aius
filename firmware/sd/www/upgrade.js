@@ -176,6 +176,7 @@
     staged: 'Staged on the device',
     digest: 'Payload digest verified',
     signature: 'Signature verified',
+    ivt: 'Image vector table in bounds',
     armed: 'Image armed for activation',
     activate: 'Activate the armed image',
   });
@@ -277,6 +278,7 @@
     if (token === 'unsupported') return 'the device refused the container as not for this build';
     if (token === 'digest') return 'the staged bytes do not match the header digest';
     if (token === 'signature') return 'the signature over this image was refused';
+    if (token === 'ivt') return 'the image is authentic but its vector table is not linked for this device flash window (wrong build, or not a firmware image at all); nothing was armed';
     if (token === 'corrupt') return 'the persisted staging record failed its own CRC';
     if (token === 'no_space') return 'the device has no room for the staging record';
     if (token === 'invalid_arg') return 'the device rejected the request arguments';
@@ -935,9 +937,11 @@
     return true;
   }
 
-  /* One verb, two steps: aius_ota_verify() finalizes the incremental digest
-   * first and only then hands the authentication digest to the verifier, so a
-   * digest refusal means the signature check never ran. */
+  /* One verb, three steps in a fixed order: aius_ota_verify() finalizes the
+   * incremental digest first, only then hands the authentication digest to
+   * the verifier, and only after that judges the authenticated payload's IVT
+   * against the device's flash window. So a digest refusal means the
+   * signature check never ran, and an IVT refusal means both passed. */
   async function verifyImage() {
     logStep('digest', STEP_TEXT.digest);
     const result = await request('/api/ota/verify', { method: 'POST', headers: mutationHeaders({}) });
@@ -966,6 +970,16 @@
       setPill($('log-pill'), 'error');
       return false;
     }
+    if (fault === 'ivt') {
+      settleStep('digest', 'ok', 'Payload digest matches the header.');
+      logStep('signature', STEP_TEXT.signature);
+      settleStep('signature', 'ok', 'Signature over the header-binding digest accepted; target and build identity are authenticated too.');
+      logStep('ivt', STEP_TEXT.ivt);
+      settleStep('ivt', 'fail', `${describeOtaFailure(result)}.`, 'ivt');
+      setPill($('log-pill'), 'error');
+      setCardStatus('log', 'No retry can fix a wrong-window image: sign the build for this device posture and re-upload.');
+      return false;
+    }
     if (!result.ok || name !== 'verified') {
       settleStep(
         'digest',
@@ -979,6 +993,8 @@
     settleStep('digest', 'ok', 'Payload digest matches the header.');
     logStep('signature', STEP_TEXT.signature);
     settleStep('signature', 'ok', 'Signature over the header-binding digest accepted; target and build identity are authenticated too.');
+    logStep('ivt', STEP_TEXT.ivt);
+    settleStep('ivt', 'ok', 'Image vector table lies inside the device flash window.');
     return true;
   }
 

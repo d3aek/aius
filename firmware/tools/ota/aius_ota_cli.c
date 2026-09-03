@@ -5,8 +5,15 @@
  * human read the same evidence:
  *
  *     aius-ota-cli sign   <image> <secret-key> <target-id> <build-revision> \
- *                         <build-utc> <container-out>
- *     aius-ota-cli verify <container> <public-key> <target-id>
+ *                         <build-utc> <container-out> [none|a|b [canonical|boot]]
+ *     aius-ota-cli verify <container> <public-key> <target-id> [canonical|boot]
+ *
+ * The trailing word names the flash window the image must have been LINKED
+ * for, which the device's verify() judges the payload's IVT against
+ * (aius_ota_set_link_window): `canonical` (default) is the slot-agnostic
+ * chooser's window, `boot` the plain single-image build's. A slot-tagged
+ * container (a|b, the retired per-slot chooser) is judged against that slot's
+ * physical window regardless.
  *
  * WHY THIS EXISTS IN C AT ALL. The container layout is lib/aius_ota's, and the
  * device reads it with aius_ota_header_parse(). A Python re-implementation of
@@ -37,7 +44,9 @@
 /* open()/fdopen() are POSIX, and -std=c11 hides them behind this. */
 #define _POSIX_C_SOURCE 200809L
 
+#include "aius_ab_layout.h"
 #include "aius_ota.h"
+#include "aius_ota_activate.h"
 #include "aius_ota_ed25519.h"
 #include "aius_sha256.h"
 #include "tweetnacl.h"
@@ -89,6 +98,8 @@ static const char *status_name(AiusOtaStatus status)
 		return "VERIFY";
 	case AIUS_OTA_INTERRUPTED:
 		return "INTERRUPTED";
+	case AIUS_OTA_IVT:
+		return "IVT";
 	}
 	return "UNKNOWN";
 }
@@ -303,14 +314,54 @@ static int copy_text_field(char *destination, size_t capacity,
 	return 0;
 }
 
+/* The flash window a container's image must have been linked for, as the
+ * device would configure it (optical_main.cpp ab_compose / setup): a slot tag
+ * names that slot's physical window (the retired per-slot chooser), and an
+ * explicit window word beside a slot tag is a contradiction refused rather
+ * than silently overridden; an untagged container is the canonical
+ * slot-agnostic image unless the operator names the plain build's boot
+ * window. Returns 0, or 1 on an unknown word or the contradiction. */
+static int resolve_link_window(const char *name, uint8_t slot_id,
+	                       uint32_t *base, uint32_t *bytes)
+{
+	if (slot_id == AIUS_OTA_SLOT_A || slot_id == AIUS_OTA_SLOT_B) {
+		if (name != NULL) {
+			fprintf(stderr, "aius-ota-cli: a slot tag selects that "
+			                "slot's window; do not also name a link "
+			                "window (got %s)\n", name);
+			return 1;
+		}
+		*base = slot_id == AIUS_OTA_SLOT_A ? AIUS_AB_SLOT_A_BASE
+		                                   : AIUS_AB_SLOT_B_BASE;
+		*bytes = AIUS_AB_SLOT_BYTES;
+		return 0;
+	}
+	if (name == NULL || strcmp(name, "canonical") == 0) {
+		*base = AIUS_AB_CANONICAL_BASE;
+		*bytes = AIUS_AB_CANONICAL_BYTES;
+		return 0;
+	}
+	if (strcmp(name, "boot") == 0) {
+		*base = AIUS_OTA_FLASH_BASE;
+		*bytes = AIUS_OTA_FLASH_USABLE_BYTES;
+		return 0;
+	}
+	fprintf(stderr, "aius-ota-cli: link window must be 'canonical' or "
+	                "'boot', got %s\n", name);
+	return 1;
+}
+
 /* Drives the device's own state machine over a container: offer the header,
  * absorb the payload in AIUS_OTA_MAX_CHUNK_BYTES chunks exactly as the
- * transport will, verify against the injected Ed25519 adapter, then arm.
+ * transport will, verify against the injected Ed25519 adapter (digest, then
+ * signature, then the IVT bounds check against `link_window`), then arm.
  * Reports the first refusal and where it happened. */
 static int drive_session(const uint8_t *container, size_t container_length,
 	                 const uint8_t *public_key, const char *target_id,
-	                 int quiet)
+	                 const char *link_window, int quiet)
 {
+	uint32_t link_base;
+	uint32_t link_bytes;
 	AiusOtaSession session;
 	AiusOtaEd25519Key key;
 	AiusOtaVerifier verifier;
@@ -377,6 +428,14 @@ static int drive_session(const uint8_t *container, size_t container_length,
 		fprintf(stderr, "aius-ota-cli: cannot set the expected slot\n");
 		return 1;
 	}
+	if (resolve_link_window(link_window, header.slot_id, &link_base,
+	                        &link_bytes) != 0)
+		return 1;
+	if (aius_ota_set_link_window(&session, link_base, link_bytes) !=
+	    AIUS_OTA_OK) {
+		fprintf(stderr, "aius-ota-cli: cannot set the link window\n");
+		return 1;
+	}
 
 	status = aius_ota_offer(&session, container, AIUS_OTA_HEADER_BYTES);
 	if (status != AIUS_OTA_OK) {
@@ -408,6 +467,8 @@ static int drive_session(const uint8_t *container, size_t container_length,
 		printf("status=%s\n", status_name(status));
 		printf("verifier_fault=%d\n", progress.verifier_fault);
 		printf("state=%s\n", state_name(progress.state));
+		printf("link_window=0x%08x+0x%08x\n", (unsigned int)link_base,
+		       (unsigned int)link_bytes);
 		return EXIT_REFUSED;
 	}
 	status = aius_ota_arm_image(&session);
@@ -434,6 +495,8 @@ static int drive_session(const uint8_t *container, size_t container_length,
 	printf("image_length=%u\n", (unsigned int)header.image_length);
 	printf("header_bytes=%u\n", (unsigned int)AIUS_OTA_HEADER_BYTES);
 	printf("auth_bytes=%u\n", (unsigned int)AIUS_OTA_HEADER_AUTH_BYTES);
+	printf("link_window=0x%08x+0x%08x\n", (unsigned int)link_base,
+	       (unsigned int)link_bytes);
 	print_hex("payload_sha256", payload_digest, sizeof(payload_digest));
 	print_hex("auth_digest", auth_digest, sizeof(auth_digest));
 	print_hex("signature", header.signature, sizeof(header.signature));
@@ -461,28 +524,31 @@ static int command_sign(int argc, char **argv)
 	int status;
 
 	uint8_t slot_id = AIUS_OTA_SLOT_NONE;
+	const char *link_window = NULL;
 
-	if (argc != 8 && argc != 9) {
+	if (argc < 8 || argc > 10) {
 		fprintf(stderr,
 		        "usage: aius-ota-cli sign <image> <secret-key> "
 		        "<target-id> <build-revision> <build-utc> "
-		        "<container-out> [a|b]\n");
+		        "<container-out> [none|a|b [canonical|boot]]\n");
 		return 1;
 	}
-	if (argc == 9) {
+	if (argc >= 9) {
 		/* The A/B slot tag (aius-ota-resilience.md Phase 3b): which hole
-		 * this image was LINKED for. Omitted = the untagged single-image
-		 * container. */
+		 * this image was LINKED for. Omitted or "none" = the untagged
+		 * slot-agnostic / single-image container. */
 		if (strcmp(argv[8], "a") == 0) {
 			slot_id = AIUS_OTA_SLOT_A;
 		} else if (strcmp(argv[8], "b") == 0) {
 			slot_id = AIUS_OTA_SLOT_B;
-		} else {
+		} else if (strcmp(argv[8], "none") != 0) {
 			fprintf(stderr,
-			        "aius-ota-cli: slot must be 'a' or 'b'\n");
+			        "aius-ota-cli: slot must be 'none', 'a' or 'b'\n");
 			return 1;
 		}
 	}
+	if (argc == 10)
+		link_window = argv[9];
 	if (read_whole_file(argv[2], &image, &image_length) != 0)
 		return 1;
 	if (image_length == 0u ||
@@ -574,7 +640,7 @@ static int command_sign(int argc, char **argv)
 	 * about to write must pass the device's own state machine. */
 	status = drive_session(container, container_length,
 	                       &secret_key[AIUS_OTA_ED25519_PUBLIC_KEY_BYTES],
-	                       header.target_id, 1);
+	                       header.target_id, link_window, 1);
 	if (status != 0) {
 		fprintf(stderr, "aius-ota-cli: refusing to write a container "
 		                "this tool cannot verify\n");
@@ -620,9 +686,9 @@ static int command_verify(int argc, char **argv)
 	size_t container_length = 0u;
 	int status;
 
-	if (argc != 5) {
+	if (argc != 5 && argc != 6) {
 		fprintf(stderr, "usage: aius-ota-cli verify <container> "
-		                "<public-key> <target-id>\n");
+		                "<public-key> <target-id> [canonical|boot]\n");
 		return 1;
 	}
 	if (read_key_file(argv[3], public_key, sizeof(public_key)) != 0)
@@ -630,7 +696,7 @@ static int command_verify(int argc, char **argv)
 	if (read_whole_file(argv[2], &container, &container_length) != 0)
 		return 1;
 	status = drive_session(container, container_length, public_key, argv[4],
-	                       0);
+	                       argc == 6 ? argv[5] : NULL, 0);
 	free(container);
 	return status;
 }

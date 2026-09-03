@@ -130,6 +130,34 @@ static void fill_payload(uint8_t *payload, uint32_t length, uint8_t seed)
 		payload[index] = (uint8_t)((index * 31u + seed) & 0xffu);
 }
 
+/* The link window the fixture session is configured for (the canonical
+ * window of the slot-agnostic chooser, 0x60010000) and the Teensy IVT an
+ * image linked there carries at +0x1000, so the payload passes the
+ * verify-time IVT bounds check and the rows below stay about the curve. */
+#define TEST_LINK_BASE UINT32_C(0x60010000)
+#define TEST_LINK_BYTES UINT32_C(0x003D8000)
+
+static void put_word(uint8_t *bytes, uint32_t value)
+{
+	bytes[0] = (uint8_t)(value & 0xffu);
+	bytes[1] = (uint8_t)((value >> 8) & 0xffu);
+	bytes[2] = (uint8_t)((value >> 16) & 0xffu);
+	bytes[3] = (uint8_t)(value >> 24);
+}
+
+static void stamp_ivt(uint8_t *payload, uint32_t link_base)
+{
+	uint8_t *ivt = &payload[AIUS_OTA_IVT_OFFSET];
+
+	memset(ivt, 0, AIUS_OTA_IVT_BYTES);
+	put_word(&ivt[AIUS_OTA_IVT_WORD_HEADER * 4u], 0x432000D1u);
+	put_word(&ivt[AIUS_OTA_IVT_WORD_ENTRY * 4u], link_base + 0x15f1u);
+	put_word(&ivt[4u * 4u],
+	         link_base + AIUS_OTA_IVT_OFFSET + AIUS_OTA_IVT_BYTES);
+	put_word(&ivt[AIUS_OTA_IVT_WORD_SELF * 4u],
+	         link_base + AIUS_OTA_IVT_OFFSET);
+}
+
 /* The suite's own CRC-32, used only to re-seal a header after a wire-level
  * mutation -- the same device test/ota/test_ota.c uses, and for the same
  * reason: without it the CRC would stop every mutation before the rule under
@@ -457,6 +485,8 @@ static void arm_session(AiusOtaSession *session)
 	CHECK(aius_ota_init(session, TEST_TARGET_ID, strlen(TEST_TARGET_ID)) ==
 	      AIUS_OTA_OK);
 	CHECK(aius_ota_latch_arm(session) == AIUS_OTA_OK);
+	CHECK(aius_ota_set_link_window(session, TEST_LINK_BASE,
+	                               TEST_LINK_BYTES) == AIUS_OTA_OK);
 }
 
 static void test_session_reaches_armed(void)
@@ -534,6 +564,32 @@ static void test_session_reaches_armed(void)
 	CHECK(aius_ota_progress(&session, &progress) == AIUS_OTA_OK);
 	CHECK(progress.fail_reason == AIUS_OTA_DIGEST);
 	CHECK(progress.verifier_fault == 0);
+
+	current_key = "session.ivt-refused-after-the-curve";
+	/* A correctly signed container whose payload is not an image for this
+	 * window (the entry pointer moved into RAM): the real curve accepts,
+	 * and only then does the IVT bounds check refuse -- with its own
+	 * reason and no verifier fault, since the verifier said yes. */
+	{
+		uint8_t not_an_image[TEST_IMAGE_BYTES];
+
+		memcpy(not_an_image, g_payload, sizeof(not_an_image));
+		put_word(&not_an_image[AIUS_OTA_IVT_OFFSET +
+		                       AIUS_OTA_IVT_WORD_ENTRY * 4u],
+		         0x20200000u);
+		build_signed_wire(wire, not_an_image, TEST_IMAGE_BYTES);
+		arm_session(&session);
+		CHECK(aius_ota_offer(&session, wire, sizeof(wire)) == AIUS_OTA_OK);
+		stage_all(&session, not_an_image, TEST_IMAGE_BYTES, 1024u);
+		CHECK(aius_ota_verify(&session, &verifier) == AIUS_OTA_IVT);
+		CHECK(aius_ota_progress(&session, &progress) == AIUS_OTA_OK);
+		CHECK(progress.state == AIUS_OTA_STATE_FAILED);
+		CHECK(progress.fail_reason == AIUS_OTA_IVT);
+		CHECK(progress.verifier_fault == 0);
+		CHECK(aius_ota_arm_image(&session) == AIUS_OTA_STATE);
+		CHECK(aius_ota_abort(&session) == AIUS_OTA_OK);
+		CHECK(aius_ota_state(&session) == AIUS_OTA_STATE_IDLE);
+	}
 
 	current_key = "session.wrong-key";
 	/* The image is intact and correctly signed; this device simply holds a
@@ -624,6 +680,7 @@ int main(int argc, char **argv)
 	             AIUS_OTA_ED25519_PUBLIC_KEY_BYTES) == 0);
 
 	fill_payload(g_payload, TEST_IMAGE_BYTES, 0x00u);
+	stamp_ivt(g_payload, TEST_LINK_BASE);
 
 	test_rfc8032_vectors();
 	test_key_context_rules();

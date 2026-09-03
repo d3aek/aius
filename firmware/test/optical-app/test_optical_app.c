@@ -3271,7 +3271,9 @@ static void test_ota_verdict_map(void)
 		{ AIUS_OPTICAL_APP_OTA_SIGNATURE, 409,
 		  "{\"ok\":false,\"error\":\"ota_signature\"}" },
 		{ AIUS_OPTICAL_APP_OTA_STORAGE, 507,
-		  "{\"ok\":false,\"error\":\"ota_storage\"}" }
+		  "{\"ok\":false,\"error\":\"ota_storage\"}" },
+		{ AIUS_OPTICAL_APP_OTA_IVT, 409,
+		  "{\"ok\":false,\"error\":\"ota_ivt\"}" }
 	};
 	fixture_init(&fixture);
 

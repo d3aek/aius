@@ -70,7 +70,14 @@ typedef enum {
 	AIUS_OTA_GEOMETRY,    /* an address or length the flash geometry forbids */
 	AIUS_OTA_PRIMITIVE,   /* an injected activation primitive refused */
 	AIUS_OTA_VERIFY,      /* a flash readback did not match the staged image */
-	AIUS_OTA_INTERRUPTED  /* a prior activation is recorded in progress */
+	AIUS_OTA_INTERRUPTED, /* a prior activation is recorded in progress */
+	/* The verify-time IVT bounds check (aius-outstanding-work-2026-09.md
+	 * Phase 6): the staged payload is authentic but its image vector table
+	 * is not an image linked for this device's flash window -- the tag,
+	 * the entry pointer or the IVT self pointer is out of bounds, the image
+	 * is too short to hold one, or the composition configured no window.
+	 * Appended for the same record-persistence reason as the block above. */
+	AIUS_OTA_IVT
 } AiusOtaStatus;
 
 /* --------------------------------------------------------------------------
@@ -144,6 +151,22 @@ typedef enum {
  * against the audio block's 10,667 us budget. The SD transport's own slice is
  * 512 bytes (AIUS_SD_MAX_TRANSFER), so the live path stays far under this. */
 #define AIUS_OTA_MAX_CHUNK_BYTES 4096u
+
+/* THE IMAGE VECTOR TABLE inside the payload. Every Teensy 4 image keeps the
+ * boot ROM's layout at its own base: a flash-config sector, then at +0x1000
+ * the eight-word IVT the ROM (or the first-stage chooser) parses -- header
+ * word (tag 0xD1 in the low byte), entry pointer, two reserved, boot-data
+ * pointer, the IVT's own address, CSF, reserved. The payload IS the image as
+ * it will sit in flash, so these offsets are payload-relative, and
+ * aius_ota_absorb() captures the 32 bytes as they stream past for the
+ * verify-time bounds check; the number is the same 0x1000 lib/aius_ab
+ * publishes as AIUS_AB_SLOT_IVT_OFFSET and aius_ota_activate.h as
+ * AIUS_OTA_FLASH_IVT_OFFSET (pinned equal by _Static_asserts). */
+#define AIUS_OTA_IVT_OFFSET 0x1000u
+#define AIUS_OTA_IVT_BYTES 32u
+#define AIUS_OTA_IVT_WORD_HEADER 0u
+#define AIUS_OTA_IVT_WORD_ENTRY 1u
+#define AIUS_OTA_IVT_WORD_SELF 5u
 
 /* THE SIGNATURE SCHEME TAG REGISTRY -- the wire values of the `signature_scheme`
  * field at AIUS_OTA_HEADER_OFFSET_SIGNATURE_SCHEME, and the only place a tag is
@@ -309,8 +332,8 @@ typedef struct {
  *        -verify-> VERIFIED -arm_image-> ARMED -request_activation->
  *        ACTIVATION_REQUESTED
  *
- * FAILED is entered only by a verification refusal (digest or signature). A
- * chunk-level refusal (RANGE, OVERFLOW) does NOT fail the session: it mirrors
+ * FAILED is entered only by a verification refusal (digest, signature or IVT
+ * bounds). A chunk-level refusal (RANGE, OVERFLOW) does NOT fail the session: it mirrors
  * the APPEND_PART protocol, where a bad range is one request's 400 and the
  * client resumes from next_offset. Losing a megabyte of staging to a
  * mis-ordered chunk would be a worse contract than the transport already has.
@@ -343,7 +366,7 @@ typedef enum {
 typedef struct {
 	AiusOtaLatch latch;
 	AiusOtaState state;
-	/* The status that drove FAILED (DIGEST or SIGNATURE), AIUS_OTA_OK
+	/* The status that drove FAILED (DIGEST, SIGNATURE or IVT), AIUS_OTA_OK
 	 * otherwise. Latched so the failure survives the call that caused it and
 	 * can be published on a status endpoint, and persisted in the record. */
 	AiusOtaStatus fail_reason;
@@ -362,6 +385,15 @@ typedef struct {
 	 * slot. Like target_id, the session cannot know it; the composition
 	 * root does, and re-states it whenever the active slot changes. */
 	uint8_t expected_slot;
+	/* The flash window an offered image must have been LINKED for
+	 * (aius_ota_set_link_window): the canonical window under the
+	 * slot-agnostic chooser, the inactive slot's physical window under the
+	 * old per-slot chooser, the boot window on the plain single-image build.
+	 * A device property like target_id and expected_slot, never persisted.
+	 * Zero bytes -- the construction default -- means "no window known" and
+	 * verify() refuses every image rather than guess. */
+	uint32_t link_base;
+	uint32_t link_bytes;
 	/* The offered header, kept as wire bytes AND parsed. The bytes are what
 	 * the record persists and what the authentication digest is computed
 	 * over, so restoring re-runs the one validator rather than trusting a
@@ -370,6 +402,13 @@ typedef struct {
 	AiusOtaImageHeader header;
 	uint32_t staged_length;
 	AiusSha256 digest;
+	/* The payload's IVT, captured byte-for-byte by absorb() as the bytes at
+	 * [AIUS_OTA_IVT_OFFSET, +AIUS_OTA_IVT_BYTES) stream past, whatever the
+	 * chunk boundaries. Judged by verify() AFTER the digest and signature,
+	 * so the words judged are exactly the words that were authenticated; a
+	 * staging medium need not be re-read. Bytes not yet staged are zero, and
+	 * the record persists the block so a resumed staging keeps it. */
+	uint8_t ivt[AIUS_OTA_IVT_BYTES];
 } AiusOtaSession;
 
 /* Deliberately absent from the session: the digest computed at verify() and
@@ -412,6 +451,20 @@ AiusOtaStatus aius_ota_init(AiusOtaSession *session, const char *target_id,
  * value outside the slot domain. */
 AiusOtaStatus aius_ota_set_expected_slot(AiusOtaSession *session,
 	                                 uint8_t slot);
+
+/* States the flash window every offered image must have been LINKED for:
+ * [base, base + bytes). verify() judges the staged payload's IVT against it
+ * (aius_ab_ivt_sane_in_window plus the IVT self pointer, which must equal
+ * base + AIUS_OTA_IVT_OFFSET -- the image "as it would sit in the window").
+ * The composition root sets it once from its posture, exactly as it sets the
+ * expected slot: the canonical link window under the slot-agnostic chooser,
+ * the inactive slot's physical window under the old per-slot chooser, the
+ * boot window (AIUS_OTA_FLASH_BASE, +AIUS_OTA_FLASH_USABLE_BYTES) on the plain
+ * single-image build. Callable in any state; it governs future verifies.
+ * INVALID_ARG for a zero-length window or one that wraps the address space;
+ * a session that was never given a window refuses at verify() with IVT. */
+AiusOtaStatus aius_ota_set_link_window(AiusOtaSession *session,
+	                               uint32_t base, uint32_t bytes);
 
 /* The deliberate act. Arming does not start an upgrade; it makes one
  * possible. */
@@ -483,7 +536,7 @@ AiusOtaStatus aius_ota_absorb(AiusOtaSession *session, uint32_t offset,
 AiusOtaStatus aius_ota_absorb_check(const AiusOtaSession *session,
 	                            uint32_t offset, size_t length);
 
-/* STAGED -> VERIFIED, in two independent steps.
+/* STAGED -> VERIFIED, in three independent steps, in this order.
  *
  * First the incremental digest is finalized (on a COPY, so the session's hash
  * state stays valid for a subsequent record save) and compared against the
@@ -495,6 +548,18 @@ AiusOtaStatus aius_ota_absorb_check(const AiusOtaSession *session,
  * computed and handed, with the detached signature, to the injected verifier.
  * Non-zero is SIGNATURE and fails the session, with the verifier's own return
  * value latched.
+ *
+ * Last, the authenticated payload's IVT (captured by absorb()) is judged
+ * against the link window (aius_ota_set_link_window): the header tag, the
+ * entry pointer inside the window, the IVT self pointer at exactly
+ * base + AIUS_OTA_IVT_OFFSET. Any miss -- or an image too short to hold an
+ * IVT, or no window configured -- is IVT and fails the session the same way.
+ * This is the 2026-08-16 guard: a byte-perfect, correctly signed container
+ * whose payload is not a bootable image for this window (Intel-hex TEXT that
+ * day) is refused before a byte of flash is spent, instead of relying on the
+ * chooser's post-flash sanity check to save the slot. Last rather than first
+ * because the words are only trustworthy once they are authenticated, and a
+ * tampered payload must keep reading as DIGEST.
  *
  * INVALID_ARG when the verifier or its function pointer is absent -- a missing
  * verifier is never treated as an accepting one. */
@@ -569,13 +634,19 @@ AiusOtaStatus aius_ota_progress(const AiusOtaSession *session,
  * re-reading them can. Re-reading and re-digesting before programming is the
  * activation slice's obligation, not this one's.
  *
- * It carries the whole session except two things, both deliberate: the feature
- * latch (a reboot always comes up disarmed) and `verifier_fault` (a live
- * diagnostic; `fail_reason` is persisted).
+ * It carries the whole session's IMAGE state except `verifier_fault` (a live
+ * diagnostic; `fail_reason` is persisted). The device properties -- the
+ * feature latch (a reboot always comes up disarmed), target_id, expected_slot
+ * and the link window -- are the composition's to re-state, not the record's.
+ *
+ * Version 2 (2026-09-03) appended the captured IVT block so a resumed staging
+ * keeps the words verify() judges; a version-1 record (384 bytes) is refused
+ * as CORRUPT by its version and length, which is the intended fail-closed
+ * answer for the one field it could not have carried.
  *
  *    0   4  magic "AIUR"
- *    4   2  record_version = 1
- *    6   2  record_length  = 384
+ *    4   2  record_version = 2
+ *    6   2  record_length  = 416
  *    8   1  state
  *    9   1  fail_reason
  *   10   2  reserved0 = 0
@@ -586,11 +657,13 @@ AiusOtaStatus aius_ota_progress(const AiusOtaSession *session,
  *   57   3  reserved1 = 0
  *   60  64  digest block buffer (bytes past `buffered` are zero)
  *  124 256  the offered header, verbatim wire bytes
- *  380   4  CRC-32 over bytes [0, 380)
+ *  380  32  the payload's IVT as captured so far (bytes not yet staged are
+ *           zero, which is what makes the record canonical)
+ *  412   4  CRC-32 over bytes [0, 412)
  */
 #define AIUS_OTA_RECORD_MAGIC UINT32_C(0x52554941) /* "AIUR" */
-#define AIUS_OTA_RECORD_VERSION 1u
-#define AIUS_OTA_RECORD_BYTES 384u
+#define AIUS_OTA_RECORD_VERSION 2u
+#define AIUS_OTA_RECORD_BYTES 416u
 #define AIUS_OTA_RECORD_OFFSET_MAGIC 0u
 #define AIUS_OTA_RECORD_OFFSET_VERSION 4u
 #define AIUS_OTA_RECORD_OFFSET_LENGTH 6u
@@ -604,7 +677,8 @@ AiusOtaStatus aius_ota_progress(const AiusOtaSession *session,
 #define AIUS_OTA_RECORD_OFFSET_RESERVED1 57u
 #define AIUS_OTA_RECORD_OFFSET_DIGEST_BUFFER 60u
 #define AIUS_OTA_RECORD_OFFSET_HEADER 124u
-#define AIUS_OTA_RECORD_OFFSET_CRC32 380u
+#define AIUS_OTA_RECORD_OFFSET_IVT 380u
+#define AIUS_OTA_RECORD_OFFSET_CRC32 412u
 
 /* Serializes the session. Permitted while disarmed: the record is a read of
  * the session, and persisting the IDLE a disarm produced is exactly how a

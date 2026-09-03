@@ -521,18 +521,33 @@ firmware phase deploys over OTA.
 
 - outcome: D12 ruled 2026-09-03 — OTA is the primary update method, so this
   is real value: `POST /api/ota/verify` refuses a staged payload whose IVT is
-  out of bounds before any flash is spent. The verify path today sees only
-  digest + header (`firmware/lib/aius_ota/src/aius_ota.c:534-574`); the check
-  reads the staged PSRAM image at `+0x1000` and reuses
-  `aius_ab_slot_ivt_sane` (`firmware/lib/aius_ab/src/aius_ab.c:342`),
-  posture-aware (slot window under the chooser; the NULL/boot window case
-  `optical_main.cpp:8944-8946` refuses rather than guesses, since on that
-  posture a byte-verified garbage image bricks the board). The 2026-08-16
-  incident (register `:434-440`) is the regression fixture. D2 applies to the
-  ~80 ms Ed25519 verify stall (default: accept and document — staging is
-  owner-initiated; the register entry becomes "known cost, mitigated by
-  procedure: stage during silence"); revisit only if the owner wants the
-  scalar arithmetic sliced across epochs.
+  not an image for this posture's window, before any flash is spent, with a
+  new distinct status `AIUS_OTA_IVT` → `409 ota_ivt` (same FAILED /
+  abort-to-idle shape as `ota_digest`). **As shipped (deviations from the
+  first draft of this phase, both deliberate):** the verify path never sees
+  payload bytes (SHA-256 midstate only; staged bytes sit on SD until
+  activation), so instead of reading back from a medium, `aius_ota_absorb()`
+  captures the 32-byte IVT at image offset `0x1000` as it streams past (any
+  chunk boundary) and verify judges those very bytes after digest + signature;
+  and the plain posture is JUDGED against the boot window `[0x60000000,
+  +FLASH_USABLE)` rather than refused outright — the ROM's fixed link base is
+  not a guess, and D12 makes OTA primary on whatever posture is deployed; an
+  UNSET window refuses. Bounds are the chooser's via the shared
+  `aius_ab_ivt_sane_in_window()` (tag `0xD1`, entry strictly inside the
+  window; `aius_ab_slot_ivt_sane()` delegates unchanged) plus the IVT self
+  pointer `== base + 0x1000`, which is what tells a plain-linked image from a
+  canonical one. Staging record v2 carries the captured IVT across a resume.
+  The signer's self-check is the device's verify, so a non-image is refused
+  at sign time; a plain-posture image must be signed `--link-window boot`.
+  The 2026-08-16 incident (register `:434-440`) is the regression fixture
+  (hex text at `+0x1000` reads `FFFF`, tag `0x46`). D2 applies to the ~80 ms
+  Ed25519 verify stall (accept and document — staging is owner-initiated;
+  "stage during silence"); revisit only if the owner wants the scalar
+  arithmetic sliced across epochs. Residual, recorded not built: a payload
+  with a valid IVT but a garbled sector 0 (FCB) still bricks the PLAIN
+  posture to HalfKay (activation programs the FCB from the payload last); a
+  cheap addition is payload word0 `== 0x42464346` (`FCFB`) — proposal for the
+  register.
 - seams: `firmware/lib/aius_ota/src/aius_ota.c` (+ header),
   `firmware/lib/aius_ab/` (shared IVT predicate), `firmware/test/ota/` host
   suite, swagger `ota` error vocabulary (upstream repository `swagger.json`,

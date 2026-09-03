@@ -20,7 +20,9 @@ before the signature is ever consulted.
 """
 
 import hashlib
+import os
 import pathlib
+import struct
 import subprocess
 import sys
 import tempfile
@@ -29,6 +31,8 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 SIGNER = ROOT / "tools" / "ota" / "aius_ota_sign.py"
+sys.path.insert(0, str(SIGNER.parent))
+import aius_ota_sign  # noqa: E402  (the module owns the native helper build)
 TEST_KEY_DIR = ROOT / "test" / "ota"
 COMMITTED_PUBLIC = TEST_KEY_DIR / "test-only-signing-key.pub"
 COMMITTED_SECRET = TEST_KEY_DIR / "test-only-signing-key.sec"
@@ -75,9 +79,57 @@ def key_hex(path):
     raise AssertionError(f"{path} carries no key line")
 
 
-def sample_image(path, length=5096, seed=0):
-    path.write_bytes(bytes((index * 31 + seed) % 256 for index in range(length)))
+# The flash windows the device judges a payload's IVT against
+# (aius_ota_set_link_window): the slot-agnostic chooser's canonical window and
+# the plain single-image build's boot window (lib/aius_ab/include/aius_ab_layout.h).
+CANONICAL_BASE = 0x60010000
+BOOT_BASE = 0x60000000
+IVT_OFFSET = 0x1000
+IVT_ENTRY_OFFSET = 0x15F1  # where both 2026-09-03 builds' ResetHandler sits
+
+
+def ivt_words(link_base, entry=None):
+    """The eight-word Teensy 4 image vector table an image LINKED at
+    `link_base` carries at +0x1000: header tag, entry, two reserved, boot-data
+    pointer, self pointer, CSF, reserved."""
+    return struct.pack(
+        "<8I", 0x432000D1,
+        link_base + IVT_ENTRY_OFFSET if entry is None else entry,
+        0, 0, link_base + IVT_OFFSET + 32, link_base + IVT_OFFSET, 0, 0,
+    )
+
+
+def sample_image(path, length=5096, seed=0, link_base=CANONICAL_BASE,
+                 entry=None):
+    """A pseudo-random payload that IS an image: it carries the IVT of a
+    build linked at `link_base`, since the device's verify (and therefore
+    the signer's self-check) refuses anything that does not."""
+    body = bytearray((index * 31 + seed) % 256 for index in range(length))
+    body[IVT_OFFSET:IVT_OFFSET + 32] = ivt_words(link_base, entry)
+    path.write_bytes(bytes(body))
     return path
+
+
+def intel_hex_text(payload_length):
+    """Intel-hex TEXT long enough to carry an 'IVT' at +0x1000 made of hex
+    digits and newlines: the byte-for-byte shape of the 2026-08-16 incident's
+    payload."""
+    lines = [":020000046001" + "99"]
+    address = 0
+    while sum(len(line) + 1 for line in lines) + 44 <= payload_length:
+        data = bytes((address + index) % 256 for index in range(16))
+        raw = bytes([16, (address >> 8) & 0xFF, address & 0xFF, 0]) + data
+        lines.append(":" + (raw + bytes([(-sum(raw)) & 0xFF])).hex().upper())
+        address += 16
+    text = "\n".join(lines) + "\n"
+    return text.encode("ascii").ljust(payload_length, b"\n")
+
+
+def native_cli():
+    """The C helper the signer drives, built by the signer's own rule, for
+    the one row that must bypass the Python layer's Intel-hex flattening."""
+    _, cli = aius_ota_sign.build_helpers(os.environ.get("CC", "cc"))
+    return cli
 
 
 class SignerTestCase(unittest.TestCase):
@@ -225,15 +277,22 @@ class SignTests(SignerTestCase):
             checksum = (-sum(raw)) & 0xFF
             return ":" + (raw + bytes([checksum])).hex().upper()
 
+        ivt = ivt_words(CANONICAL_BASE)
         lines = [ela(0x6001)]
         lines.append(record(0x0000, payload[:16]))
         lines.append(record(0x0010, payload[16:32]))
         # A 4-byte alignment gap, as the real slot images carry.
         lines.append(record(0x0024, payload[32:48]))
+        # The IVT at +0x1000, so the flattened result IS an image the
+        # signer's self-check (the device's own verify) accepts; the erased
+        # span between is 0xFF exactly as flash would read it.
+        lines.append(record(0x1000, ivt[:16]))
+        lines.append(record(0x1010, ivt[16:32]))
         lines.append(":00000001FF")
         image = self.work / "image.hex"
         image.write_text("\n".join(lines) + "\n")
-        expected = payload[:32] + b"\xff" * 4 + payload[32:48]
+        expected = (payload[:32] + b"\xff" * 4 + payload[32:48]
+                    + b"\xff" * (IVT_OFFSET - 0x34) + ivt)
 
         container = self.work / "image.aiuo"
         code, evidence, stdout, stderr = run_signer(
@@ -294,6 +353,85 @@ class SignTests(SignerTestCase):
         self.assertEqual(code, EXIT_OK, f"{stdout}\n{stderr}")
         self.assertEqual(verify_evidence["slot_id"], "a")
 
+    def test_sign_refuses_an_image_whose_ivt_is_out_of_window(self):
+        """The signer's self-check is the device's own verify, IVT bounds
+        included: an image whose reset vector points into RAM is refused at
+        sign time with the device's reason, and no container is written."""
+        image = sample_image(self.work / "image.bin", entry=0x20200000)
+        container = self.work / "image.aiuo"
+        code, evidence, stdout, stderr = run_signer(
+            "sign",
+            "--image", str(image),
+            "--secret", str(COMMITTED_SECRET),
+            "--target-id", TARGET_ID,
+            "--build-revision", REVISION,
+            "--build-utc", BUILD_UTC,
+            "--output", str(container),
+        )
+        self.assertEqual(code, EXIT_ERROR, f"{stdout}\n{stderr}")
+        self.assertEqual(evidence["refusal"], "verify")
+        self.assertEqual(evidence["status"], "IVT")
+        self.assertEqual(evidence["verifier_fault"], "0")
+        self.assertEqual(evidence["state"], "FAILED")
+        self.assertFalse(container.exists())
+
+    def test_the_incident_payload_signed_raw_is_refused_as_not_an_image(self):
+        """The 2026-08-16 shape at the device's seam: the pre-fix signer
+        handed the C helper the hex file's ASCII text as the payload, and
+        the device accepted it. The Python layer now flattens hex, so this
+        row drives the C helper directly with the text -- exactly what the
+        old signer did -- and the device's verify (which the helper's
+        self-check IS) refuses it as not an image, before any container
+        exists to stage."""
+        text = self.work / "firmware-as-text.bin"
+        text.write_bytes(intel_hex_text(5096))
+        self.assertEqual(text.read_bytes()[0:1], b":")
+        container = self.work / "text.aiuo"
+        completed = subprocess.run(
+            [str(native_cli()), "sign", str(text), str(COMMITTED_SECRET),
+             TARGET_ID, REVISION, BUILD_UTC, str(container)],
+            capture_output=True, text=True, check=False,
+        )
+        evidence = dict(line.partition("=")[::2]
+                        for line in completed.stdout.splitlines() if "=" in line)
+        self.assertEqual(completed.returncode, EXIT_ERROR, completed.stderr)
+        self.assertEqual(evidence["refusal"], "verify")
+        self.assertEqual(evidence["status"], "IVT")
+        self.assertEqual(evidence["verifier_fault"], "0")
+        self.assertEqual(evidence["state"], "FAILED")
+        self.assertIn("cannot verify", completed.stderr)
+        self.assertFalse(container.exists())
+
+    def test_a_slot_tag_and_a_link_window_together_are_refused(self):
+        """A slot tag names that slot's link window; naming another beside it
+        is a contradiction the signer refuses as a usage error, before the
+        native helper runs, and nothing is written."""
+        image = sample_image(self.work / "image.bin")
+        container = self.work / "contradiction.aiuo"
+        code, _, stdout, stderr = run_signer(
+            "sign",
+            "--image", str(image),
+            "--secret", str(COMMITTED_SECRET),
+            "--target-id", TARGET_ID,
+            "--build-revision", REVISION,
+            "--build-utc", BUILD_UTC,
+            "--slot", "a",
+            "--link-window", "boot",
+            "--output", str(container),
+        )
+        self.assertEqual(code, EXIT_ERROR, f"{stdout}\n{stderr}")
+        self.assertIn("do not also pass --link-window", stderr)
+        self.assertFalse(container.exists())
+        # The helper enforces the same rule on its own argv.
+        completed = subprocess.run(
+            [str(native_cli()), "sign", str(image), str(COMMITTED_SECRET),
+             TARGET_ID, REVISION, BUILD_UTC, str(container), "a", "boot"],
+            capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(completed.returncode, EXIT_ERROR, completed.stderr)
+        self.assertIn("do not also name a link window", completed.stderr)
+        self.assertFalse(container.exists())
+
     def test_sign_refuses_to_overwrite_a_container(self):
         image, container, _ = self.sign_sample()
         before = container.read_bytes()
@@ -311,22 +449,28 @@ class SignTests(SignerTestCase):
 
 
 class VerifyTests(SignerTestCase):
-    def verify(self, container, public=None, target_id=TARGET_ID):
-        return run_signer(
+    def verify(self, container, public=None, target_id=TARGET_ID,
+               link_window=None):
+        args = [
             "verify",
             "--container", str(container),
             "--public", str(public or COMMITTED_PUBLIC),
             "--target-id", target_id,
-        )
+        ]
+        if link_window:
+            args += ["--link-window", link_window]
+        return run_signer(*args)
 
     def test_a_signed_container_reaches_armed(self):
         image, container, sign_evidence = self.sign_sample()
         code, evidence, stdout, stderr = self.verify(container)
         self.assertEqual(code, EXIT_OK, f"{stdout}\n{stderr}")
         # ARMED is the whole claim: the header parsed, the target matched, the
-        # payload digested to what the header promised, and the signature over
-        # the authentication digest checked out.
+        # payload digested to what the header promised, the signature over the
+        # authentication digest checked out, and the IVT lies in the canonical
+        # window the default posture judges against.
         self.assertEqual(evidence["state"], "ARMED")
+        self.assertEqual(evidence["link_window"], "0x60010000+0x003d8000")
         self.assertEqual(evidence["target_id"], TARGET_ID)
         self.assertEqual(evidence["build_revision"], REVISION)
         self.assertEqual(evidence["build_utc"], BUILD_UTC)
@@ -398,6 +542,57 @@ class VerifyTests(SignerTestCase):
         code, evidence, _, stderr = self.verify(truncated)
         self.assertEqual(code, EXIT_REFUSED, stderr)
         self.assertEqual(evidence["refusal"], "container_length")
+
+    def test_a_plain_image_is_judged_by_posture(self):
+        """Posture-aware: a plain single-image build (linked at the flash
+        base) signs and verifies against the boot window, and the same
+        container is refused at verify against the canonical window with the
+        IVT reason -- the signature is fine, so no verifier fault -- leaving
+        the device machine FAILED and nothing armed."""
+        image = sample_image(self.work / "plain.bin", link_base=BOOT_BASE)
+        container = self.work / "plain.aiuo"
+        code, evidence, stdout, stderr = run_signer(
+            "sign",
+            "--image", str(image),
+            "--secret", str(COMMITTED_SECRET),
+            "--target-id", TARGET_ID,
+            "--build-revision", REVISION,
+            "--build-utc", BUILD_UTC,
+            "--link-window", "boot",
+            "--output", str(container),
+        )
+        self.assertEqual(code, EXIT_OK, f"sign failed:\n{stdout}\n{stderr}")
+
+        code, evidence, stdout, stderr = self.verify(container)
+        self.assertEqual(code, EXIT_REFUSED, f"{stdout}\n{stderr}")
+        self.assertEqual(evidence["refusal"], "verify")
+        self.assertEqual(evidence["status"], "IVT")
+        self.assertEqual(evidence["verifier_fault"], "0")
+        self.assertEqual(evidence["state"], "FAILED")
+        self.assertEqual(evidence["link_window"], "0x60010000+0x003d8000")
+
+        code, evidence, stdout, stderr = self.verify(container,
+                                                     link_window="boot")
+        self.assertEqual(code, EXIT_OK, f"{stdout}\n{stderr}")
+        self.assertEqual(evidence["state"], "ARMED")
+        self.assertEqual(evidence["link_window"], "0x60000000+0x007c0000")
+
+    def test_a_tampered_ivt_fails_on_the_digest_first(self):
+        """Ordering pinned: a flipped byte inside the signed container's IVT
+        is a payload change, so it reads as DIGEST -- the bounds check judges
+        only words the signature has already vouched for."""
+        _, container, evidence = self.sign_sample()
+        header_bytes = int(evidence["header_bytes"])
+        bytes_out = bytearray(container.read_bytes())
+        bytes_out[header_bytes + IVT_OFFSET + 4] ^= 0x80
+        tampered = self.work / "tampered-ivt.aiuo"
+        tampered.write_bytes(bytes(bytes_out))
+
+        code, evidence, _, stderr = self.verify(tampered)
+        self.assertEqual(code, EXIT_REFUSED, stderr)
+        self.assertEqual(evidence["refusal"], "verify")
+        self.assertEqual(evidence["status"], "DIGEST")
+        self.assertEqual(evidence["verifier_fault"], "0")
 
 
 if __name__ == "__main__":

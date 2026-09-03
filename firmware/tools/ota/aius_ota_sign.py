@@ -51,8 +51,17 @@ from pathlib import Path
 FIRMWARE_ROOT = Path(__file__).resolve().parents[2]
 TOOL_DIR = FIRMWARE_ROOT / "tools" / "ota"
 LIB_DIR = FIRMWARE_ROOT / "lib" / "aius_ota"
+# lib/aius_ab for the IVT sanity rule the device's verify() shares with the
+# first-stage chooser; the CLI links it so `verify` judges the payload's IVT
+# exactly as the board will.
+AB_LIB_DIR = FIRMWARE_ROOT / "lib" / "aius_ab"
 VENDOR_DIR = FIRMWARE_ROOT / "vendor" / "tweetnacl"
 BUILD_DIR = FIRMWARE_ROOT / ".build" / "native"
+
+# The flash window the image must have been LINKED for (aius_ota_set_link_window
+# on the device). `canonical` is the slot-agnostic chooser's window, the
+# deployed posture; `boot` is the plain single-image build's.
+LINK_WINDOWS = ("canonical", "boot")
 
 EXIT_ERROR = 1
 EXIT_REFUSED = 2
@@ -73,6 +82,7 @@ LIB_SOURCES = (
     LIB_DIR / "src" / "aius_ota.c",
     LIB_DIR / "src" / "aius_sha256.c",
     LIB_DIR / "src" / "aius_ota_ed25519.c",
+    AB_LIB_DIR / "src" / "aius_ab.c",
 )
 
 PRODUCTION_KEYGEN_HELP = """\
@@ -131,7 +141,9 @@ def build_helpers(cc: str) -> tuple[Path, Path]:
     keygen = BUILD_DIR / "aius-ota-keygen"
     cli = BUILD_DIR / "aius-ota-cli"
 
-    headers = sorted((LIB_DIR / "include").glob("*.h"))
+    headers = sorted((LIB_DIR / "include").glob("*.h")) + sorted(
+        (AB_LIB_DIR / "include").glob("*.h")
+    )
     vendor_inputs = [vendor_source, VENDOR_DIR / "tweetnacl.h"]
     if not vendor_object.exists() or vendor_object.stat().st_mtime < newest(
         vendor_inputs
@@ -153,7 +165,8 @@ def build_helpers(cc: str) -> tuple[Path, Path]:
                   *headers]
     if not cli.exists() or cli.stat().st_mtime < newest(cli_inputs):
         run_compiler(
-            [cc, *CFLAGS, f"-I{LIB_DIR / 'include'}", f"-I{VENDOR_DIR}",
+            [cc, *CFLAGS, f"-I{LIB_DIR / 'include'}",
+             f"-I{AB_LIB_DIR / 'include'}", f"-I{VENDOR_DIR}",
              str(TOOL_DIR / "aius_ota_cli.c"),
              *[str(source) for source in LIB_SOURCES],
              str(vendor_object), "-o", str(cli)]
@@ -294,7 +307,16 @@ def command_sign(args, cli: Path) -> int:
         print("==> --slot is DEPRECATED: the slot-agnostic chooser accepts "
               "only the untagged container; this tagged container is for "
               "the retired per-slot chooser", file=sys.stderr)
-        argv.append(args.slot)
+    # The self-check drives the device's own verify(), IVT bounds included,
+    # so a container the board would refuse as not-an-image is never written.
+    # A slot tag names that slot's window; naming another beside it is a
+    # contradiction, refused here before the helper sees it.
+    if args.slot and args.link_window:
+        return fail("--slot selects that slot's link window; do not also pass "
+                    "--link-window")
+    argv.append(args.slot or "none")
+    if not args.slot:
+        argv.append(args.link_window or "canonical")
     completed = subprocess.run(argv, text=True, capture_output=True)
     return relay(completed)
 
@@ -304,12 +326,25 @@ def command_verify(args, cli: Path) -> int:
         return fail(f"no such container: {args.container}")
     if not args.public.is_file():
         return fail(f"no such public key: {args.public}")
-    completed = subprocess.run(
-        [str(cli), "verify", str(args.container), str(args.public),
-         args.target_id],
-        text=True, capture_output=True,
-    )
+    # Passed through only when given: a slot-tagged container's window is the
+    # tag's, and the helper refuses a window word beside one.
+    argv = [str(cli), "verify", str(args.container), str(args.public),
+            args.target_id]
+    if args.link_window:
+        argv.append(args.link_window)
+    completed = subprocess.run(argv, text=True, capture_output=True)
     return relay(completed)
+
+
+def add_link_window_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--link-window", choices=LINK_WINDOWS, default=None,
+        help="the flash window the image was linked for, which the device's "
+             "verify judges the payload IVT against: 'canonical' (the "
+             "default for an untagged container) for a slot-agnostic image, "
+             "'boot' for a plain single-image build. A --slot tag selects "
+             "that slot's window and refuses this flag beside it",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -360,6 +395,7 @@ def build_parser() -> argparse.ArgumentParser:
              "chooser deployed since 2026-09-03 accepts only the untagged "
              "container -- omit this flag, which is the default",
     )
+    add_link_window_argument(sign)
 
     verify = commands.add_parser(
         "verify",
@@ -368,6 +404,7 @@ def build_parser() -> argparse.ArgumentParser:
     verify.add_argument("--container", type=Path, required=True)
     verify.add_argument("--public", type=Path, required=True)
     verify.add_argument("--target-id", default=DEFAULT_TARGET_ID)
+    add_link_window_argument(verify)
     return parser
 
 

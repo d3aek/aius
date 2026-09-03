@@ -347,6 +347,36 @@ static void test_slot_ivt_sanity(void)
 	 * old B image would (correctly) find it insane. */
 	CHECK(!aius_ab_slot_ivt_sane(AIUS_AB_SLOT_B, 0x432000D1u,
 	                             AIUS_AB_SLOT_B_BASE + 0x1200u));
+
+	current_key = "ivt.window-form";
+	/* The window form the OTA verify path shares with the chooser: the
+	 * same words judged against an explicit link window. The plain
+	 * single-image posture links at the flash base and is sane against the
+	 * boot window, insane against the canonical one; a zero-length window
+	 * ("no window known") refuses even a perfect image; a window reaching
+	 * the top of the address space does not wrap into accept-everything. */
+	CHECK(aius_ab_ivt_sane_in_window(0x432000D1u, AIUS_AB_FLASH_BASE + 0x15f1u,
+	                                 AIUS_AB_FLASH_BASE,
+	                                 UINT32_C(0x007C0000)));
+	CHECK(!aius_ab_ivt_sane_in_window(0x432000D1u,
+	                                  AIUS_AB_FLASH_BASE + 0x15f1u,
+	                                  AIUS_AB_CANONICAL_BASE,
+	                                  AIUS_AB_CANONICAL_BYTES));
+	CHECK(aius_ab_ivt_sane_in_window(0x432000D1u,
+	                                 AIUS_AB_CANONICAL_BASE + 0x15f1u,
+	                                 AIUS_AB_CANONICAL_BASE,
+	                                 AIUS_AB_CANONICAL_BYTES));
+	CHECK(!aius_ab_ivt_sane_in_window(0x432000D1u,
+	                                  AIUS_AB_CANONICAL_BASE + 0x15f1u,
+	                                  AIUS_AB_CANONICAL_BASE, 0u));
+	CHECK(!aius_ab_ivt_sane_in_window(0x432000D1u, 0xFFFFFFF0u,
+	                                  0xFFFFF000u, 0x2000u));
+	/* Entry exactly at the window end (exclusive) refuses. */
+	CHECK(!aius_ab_ivt_sane_in_window(0x432000D1u,
+	                                  AIUS_AB_CANONICAL_BASE +
+		                                  AIUS_AB_CANONICAL_BYTES,
+	                                  AIUS_AB_CANONICAL_BASE,
+	                                  AIUS_AB_CANONICAL_BYTES));
 }
 
 static void test_remap_primitive(void)

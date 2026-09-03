@@ -231,7 +231,8 @@ function createDevice(options = {}) {
     absent: options.absent === true,
     unreachable: options.unreachable === true,
     status: 'status' in options ? options.status : { ok: true, target_id: DEVICE_TARGET },
-    /* 'digest' | 'signature' | null -- which half of verify() refuses. */
+    /* 'digest' | 'signature' | 'ivt' | null -- which of verify()'s three
+     * ordered checks refuses. */
     verifyFault: options.verifyFault || null,
     armRefusal: options.armRefusal || null,
     activateRefusal: options.activateRefusal || null,
@@ -281,6 +282,12 @@ function createDevice(options = {}) {
       if (stub.verifyFault === 'signature') {
         Object.assign(stub.ota, { state: 'failed', fault: 'ota_signature', verifier_fault: 7 });
         return jsonResponse(409, { ok: false, error: 'ota_signature' });
+      }
+      if (stub.verifyFault === 'ivt') {
+        /* Digest and signature passed; the authenticated payload's IVT is
+         * not an image for this device's flash window. No verifier fault. */
+        Object.assign(stub.ota, { state: 'failed', fault: 'ota_ivt', verifier_fault: 0 });
+        return jsonResponse(409, { ok: false, error: 'ota_ivt' });
       }
       Object.assign(stub.ota, { state: 'verified', fault: 'none' });
       return jsonResponse(200, { ok: true });
@@ -537,6 +544,7 @@ describe('Aius SD firmware upgrade — the happy path', () => {
       ['staged', 'ok'],
       ['digest', 'ok'],
       ['signature', 'ok'],
+      ['ivt', 'ok'],
       ['armed', 'ok'],
       ['activate', 'pending'],
     ]);
@@ -620,6 +628,7 @@ describe('Aius SD firmware upgrade — interrupted transfers', () => {
       ['staged', 'ok'],
       ['digest', 'ok'],
       ['signature', 'ok'],
+      ['ivt', 'ok'],
       ['armed', 'ok'],
       ['activate', 'pending'],
     ]);
@@ -686,6 +695,7 @@ describe('Aius SD firmware upgrade — interrupted transfers', () => {
       ['staged', 'ok'],
       ['digest', 'ok'],
       ['signature', 'ok'],
+      ['ivt', 'ok'],
       ['armed', 'ok'],
       ['activate', 'pending'],
     ]);
@@ -767,6 +777,28 @@ describe('Aius SD firmware upgrade — verification faults', () => {
     expect(faultOf('signature')).toBe('fault: signature');
     expect(textOf('signature')).toContain('verifier fault 7');
     expect(el('ota-fault').textContent).toBe('signature (verifier 7)');
+  });
+
+  it('passes the digest and signature, then fails the IVT bounds step', async () => {
+    await ready({ verifyFault: 'ivt' });
+
+    await startRun();
+
+    /* The device's verify order is digest, signature, IVT: an ota_ivt fault
+     * means the first two passed, and the page must say so rather than
+     * blame the digest step. */
+    expect(steps()).toEqual([
+      ['parsed', 'ok'],
+      ['upload', 'ok'],
+      ['staged', 'ok'],
+      ['digest', 'ok'],
+      ['signature', 'ok'],
+      ['ivt', 'fail'],
+    ]);
+    expect(faultOf('ivt')).toBe('fault: ivt');
+    expect(textOf('ivt')).toContain('not linked for this device flash window');
+    expect(el('log-status').textContent).toContain('re-upload');
+    expect(entryFor('armed')).toBeUndefined();
   });
 
   it('fails the staged step when the device is not staged after the last chunk', async () => {
