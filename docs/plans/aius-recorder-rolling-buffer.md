@@ -894,7 +894,13 @@ agents).
   - **(2) Read-lease-deferred recycle**: release half PASS (earlier bullet);
     deferral half owner-hands — the classifier blocks the sysfs write for
     agents, and no HTTP verb can fire while the board's single transaction
-    holds the lease.
+    holds the lease. The recipe is now a committed tool rather than a
+    hand-run sequence —
+    `firmware/tools/rate_gate_capture/lease_deferral_probe.py` (see that
+    directory's README §Read-lease-deferred recycle) holds the lease with
+    `slow_reader.py`, drives the U24 de-auth in the same process and always
+    re-authorizes; it has NOT been run on the bench, so the deferral half
+    remains unproven.
   - Side observation: `/api/ota` read `activation_available true` on the boot
     after the first rehearsal (the COMPLETED `ota_dark` stamp unlocks it) and
     `false` again after the second reboot with a fresh stage; not pursued.

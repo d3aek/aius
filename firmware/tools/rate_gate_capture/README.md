@@ -267,6 +267,67 @@ slot and reduces. Operational contracts:
   and `unsupported-event-count` remains the guard against lost events
   breaking attribution.
 
+## Read-lease-deferred recycle — `lease_deferral_probe.py`
+
+Device evidence for
+[`../../../docs/plans/aius-recorder-rolling-buffer.md`](../../../docs/plans/aius-recorder-rolling-buffer.md)
+Phase D item 2, **deferral half**. Item 2's *release* half is proven on device;
+the deferral half needs a read lease held **open across a carrier drop**, and
+no sequence of HTTP verbs produces that from outside. The board serves one
+transaction at a time, so the client holding the lease is the only client and
+cannot also drive the drop. This tool is a single process for that reason: no
+tool round-trip sits inside the lease window, and the carrier drop is a local
+sysfs write rather than another request the board would have to answer first.
+
+`slow_reader.py` is the lease holder. It issues one
+`GET /api/recorder/data` and refuses to finish reading the 200: a tiny
+`SO_RCVBUF` keeps the board's TCP send window nearly closed, and the board's
+`RESPONSE_TIMEOUT_MS` (5000) deadline is re-armed on every completed write, so
+a trickle read keeps the transaction — and the addressed slot's read lease —
+alive until the process is killed. It counts and discards the bytes; use
+`aius-recorder-pull.py` to actually retrieve a capture.
+
+```bash
+python3 lease_deferral_probe.py \
+    --target http://192.0.2.66 \
+    --evidence <outdir>/lease-deferral.json
+```
+
+The candidate slot is the frozen slot the next recycle would take,
+`(active_slot + 1) % slot_count`. The sequence is: header before → start the
+reader on the candidate → de-authorize the U24 after `--hold-before-drop` (6 s)
+→ hold `--hold-after-drop` (15 s) while the bank defers → kill the reader →
+header after release → re-authorize → header after `--relock-wait` (12 s) →
+`/api/status`. One JSON line is printed per step and the whole record is
+written to `--evidence`.
+
+**Expected counters.** While the lease is held:
+
+- `deferred_epochs` and `lease_skips` **advance** — the carrier drop fires the
+  `carrier_loss` trigger, which freezes the active slot; the bank then wants to
+  recycle the leased candidate and defers instead, skipping past it.
+- `lease_leaks` stays **0**. A non-zero value is the read-lease leak Phase D's
+  own review found and closed, not a property of the deferral.
+- The candidate slot's `freeze_generation` is **unchanged until the lease is
+  released**. This is the actual claim: it says the leased capture survived the
+  recycle the bank wanted to perform. The evidence carries it as
+  `candidate_generation_before` / `_after_release` / `_after_relock`.
+
+A candidate slot that is not frozen means there is nothing for the bank to
+defer over, so the tool exits **2** rather than reporting a vacuous pass.
+
+**The U24 is always re-authorized**, including on an exception path (a
+`finally`). A tool that exits leaving the bench source de-authorized silently
+takes the room's audio down and every later run reads a carrier that is not
+there.
+
+**Restore the mixer after every run.** U24 re-enumeration resets its PCM
+playback volume to 70,70 and every bench here assumes unity:
+
+```bash
+amixer -c 0 cset numid=5 110,110
+```
+
 ## Usage
 
 Generate the 997 Hz stimulus with the source-qualification tone generator
