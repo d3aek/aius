@@ -17,44 +17,44 @@ last item under §Next action and §Pending decisions, after promoting anything 
 per the handover skill's retirement rule. Resumers: check §What landed against
 `git -C git_modules/aius log` first; anything after it is invisible here.
 
-This session closed the 2026-09-02 loose-end handover (retired in `b977488`): the live
-gate-4 `--with-replay` run it left owed was run five times, found and fixed a board
-defect and a tool defect on the way, took the owner's reset-count ruling, and ended with
-the first green gate 4. The durable homes are
-[`aius-open-work-register.md`](aius-open-work-register.md) (§Waiting on the operator,
-§Open defects — runtime) and
+Two sessions on 2026-09-03. The first ran the live gate-4 `--with-replay` leg five
+times, fixed the RX pool corruption and the redundant acceptance reset, and reached the
+first green gate 4. The second fixed the one defect that made gate 4 flake (the
+replay-start open-gate underrun) and proved it live three times. The durable homes are
+[`aius-open-work-register.md`](aius-open-work-register.md) (§Open defects — runtime),
 [`aius-rate-gate-capture-tool.md`](aius-rate-gate-capture-tool.md) (§Live-run results —
-2026-09-03).
+2026-09-03, both sections) and
+[`aius-output-jitter.md`](aius-output-jitter.md) (Phase F amendment).
 
 ## State — resume here
 
-**Status.** DONE: the S/PDIF receive fix (RX pool corruption under replay), the
-acceptance-reset fix (design decision (b)), the tool fix (evidence ends before the U24
-restore), two new `input_diag` instruments, gate 4 GREEN (run 5), docs, the clean-stamp
-flash. IN FLIGHT: nothing. OPEN: one queued `CLAUDE.md` promote; two runtime defects the
-runs surfaced, recorded and not started (§Pending decisions).
+**Status.** DONE: replay gate-open floor (`tx_gate_execute_open(bool replay)` pads a
+replay's open to 768 frames, sized to the SD refill's `OPEN_READ`), its cutover pin,
+swagger field, three live runs (zero underruns across three replay starts, runs 2–3
+`verdict pass`), docs, clean-stamp flash. IN FLIGHT: nothing. OPEN: one queued
+`CLAUDE.md` promote; the `au_abandons` runtime defect (recorded, not started); one tool
+marginality finding (§Findings).
 
 ### What landed (all pushed)
 
 | Commit | Contents | Proof |
 |---|---|---|
-| `git_modules/aius` `baef793` | `CLAUDE.md` deployed-image line `b38e8448f5c8` (landed promote) | docs only |
-| `git_modules/aius` `dc16e75` | `firmware/lib/aius_audio/src/aius_spdif_rx.h` (pure guarded stager) + `AiusSpdifRxHook` in `aius_spdif_sources.cpp` re-pointing the receive DMA vector; `input_spdif3.h` block statics protected; `optical_main.cpp` installs the hook and emits `input_diag.rx_dropped_halves` / `pool_blocks_used` / `pool_blocks_used_max`; `recorder_transitions.py` stops the poller before the U24 restore; optical-cutover re-pin + receive pin; clock-target case; README bullet; register entry; tool plan §Live-run results — 2026-09-03 | clock-target green; optical-cutover 33/1/1/2/6; itcm-placement 29 + 5 target guards; `teensy41-optical` SUCCESS, ITCM 190,956 / 5,652 free; live run 3: board back on PCM after replay + carrier return, `overruns 0`, pool 2/4 |
-| `git_modules/aius` `00b3ba0` | (retired) handover named the clean-stamp image | docs only |
-| `git_modules/aius` `1e4224a` | `CLAUDE.md`: deployed image `dc16e7522250`; "on the bench there is never audio to interrupt" (landed promote) | docs only |
-| `git_modules/aius` `b977488` | `g_audio_ingest_since_reset` gates the acceptance reset (`optical_main.cpp`); cutover pin + three mutations; register (ruling (b), gate 4 green, two new runtime defects); tool plan runs 4–5; the 2026-09-02 handover deleted | optical-cutover 33/1/1/2/6; `teensy41-optical` SUCCESS, ITCM unchanged; live run 4 `[1,1,1]` + one replay-start underrun, run 5 `verdict pass` (digest `0cf5eeda…`) |
-| upstream repository `3bd69d68e`, `84ef63032`, `ae1a4def9`, `c4b4cd3b0` | pointer bumps; `84ef63032` also `swagger.json` `InputDiag` + the three fields | `swagger.test.js` 11 green; prettier clean |
+| `git_modules/aius` `baef793` … `b977488` (session 1) | RX guarded stager, `input_diag` pool instruments, acceptance reset gated on ingest, tool poller stop, register + tool plan | in the register / tool plan; gate 4 green run 5 (`0cf5eeda…`) |
+| `git_modules/aius` `4c82434` | `CLAUDE.md` deployed-image line `b977488b3080` (landed promote) | docs only |
+| `git_modules/aius` `4c9eb3d` | `AIUS_TX_GATE_OPEN_REPLAY_TARGET_FRAMES` (768, `platformio.ini`; `#error` below the live target); `tx_gate_execute_open(bool replay)` selects the floor from `enqueue()`'s `replay` fact; `clock.gate_open_replay_target_frames`; cutover pin `assert_replay_gate_open_pads_to_its_own_floor` + three mutations; register entry FIXED; tool plan §Live-run results — 2026-09-03, replay floor; output-jitter Phase F amendment | optical-cutover 34/1/1/2/6; `teensy41-optical` SUCCESS, ITCM 190,956 / 5,652 free (unchanged); live runs on `4c82434311f0`: `tx_underrun_frames` 0 lifetime across three replay starts, pad +768 each, ring 1024–1280 through replay; run 1 FAIL on the 44.1 kHz acceptance latency only, runs 2–3 PASS `[1,1,1]` |
+| upstream repository `a9b574b7c`, `75f44a40a` | pointer bumps; `75f44a40a` also `swagger.json` `Clock.gate_open_replay_target_frames` | `swagger.test.js` 11 green; prettier clean |
 
-**Deployed image: `b977488b3080+teensy41-optical`** (flashed 2026-09-03 09:05 UTC from
+**Deployed image: `4c9eb3d497ac+teensy41-optical`** (flashed 2026-09-03 10:37 UTC from
 the committed tree; healthy on boot: PCM tracking at 48 kHz, gate open, `overruns 0`,
-`pool_blocks_used 2 / max 4`, `rx_dropped_halves 1`).
+`tx_underrun_frames 0`, `gate_open_replay_target_frames 768`, pool 2 / 4).
 
 ### Uncommitted tree state
 
 `git_modules/aius`: clean. A `the release-promotion step` of `CLAUDE.md` is queued (deployed-image
-line → `b977488b3080`): `git -C git_modules/aius status --short CLAUDE.md` clean means
-still queued, dirty means it landed and wants a one-path `docs(aius)` commit plus a
-upstream pointer bump. Do not restate the approval; check.
+line → `4c9eb3d497ac`, plus one sentence after the Phase-F relock note saying a replay
+start pads +768): `git -C git_modules/aius status --short CLAUDE.md` clean means still
+queued, dirty means it landed and wants a one-path `docs(aius)` commit plus a upstream repository
+pointer bump. Do not restate the approval; check.
 
 upstream repository root: every dirty path (`.claude/**`, `data/*.sqlite`, `docs/plans/almanac.md`,
 `docs/plans/deploy-backlog-and-red-suite.md`, `scripts/CLAUDE.md`, `src/apps/tiro/CLAUDE.md`,
@@ -62,45 +62,59 @@ other submodule pointers, untracked ``, `.codex/`, …) is foreign.
 `the repo tooling test` cannot compile the repo graph while the foreign untracked almanac
 tests exist; run vitest directly (`pnpm exec vitest run test/swagger.test.js`).
 
+Evidence for the three replay-floor runs lives in session scratch
+(`.scratch/c520374c-a5ad-4092-b445-d613091e8422/gate4-replay-floor-run{1,2,3}/evidence.jsonl`,
+digests in the tool plan) and is subject to the 7-day scratch GC; the tone fixtures are
+beside them.
+
 ### Next action
 
 1. `git -C git_modules/aius status --short CLAUDE.md`; if dirty, commit it alone
    (`git -C git_modules/aius commit -F <msg> -- CLAUDE.md`), push, bump the pointer.
-2. Then whichever defect the owner picks (§Pending decisions). For the replay-start
-   underrun, start at `tx_gate_actuate()` / `aius_tx_gate_permitted()` in
-   `firmware/src/optical_main.cpp` (checkpoint 7 opens the gate for replay on
-   `g_clock_replay_ready`; the AUDIO checkpoint enqueues the first replay block later in
-   the same epoch, after an SD primitive of ~6.2 ms, and the Phase-F pad is one
-   128-frame block). Reproduction: `recorder_transitions.py --with-replay --phase-seconds
-   2 --expect-build b977488b3080+teensy41-optical` (tones from `tone_gen.py --rate
-   48000|44100 --seconds 5` into session scratch), then `aius_rate_bench.py analyze
-   transitions --evidence <run>/evidence.jsonl`; it landed 1 run in 3.
+2. Then whichever the owner picks (§Pending decisions). For `au_abandons`, start at
+   `drop_staged_compressed_input()` (`firmware/lib/aius_pipeline/src/aius_pipeline.c:701`)
+   and the carrier-return path in `replay_source_service()` (`firmware/src/optical_main.cpp`,
+   `REPLAY_STOP_CARRIER`): the counter reads +1 per carrier return during a PCM replay
+   (`pipeline_last_failure 3` MALFORMED), now at 3 on the board after the three runs.
+   Reproduction: any `--with-replay` gate-4 run, then read `audio_diag.au_abandons` from
+   `/api/status` after the tool restores the U24 (it is outside the evidence by design).
 
 ### Decisions taken this session
 
-- **Owner: run the live gate-4 now; on the bench there is never audio to interrupt.**
-  In `CLAUDE.md` §Device access and OTA (`1e4224a`). A flash, sync, U24 de-auth or
-  replay start needs no audio-interruption ask on the bench.
-- **Owner: (b) — skip the redundant acceptance reset in firmware; thresholds untouched.**
-  Why: with live ingress closed since the quiesce reset the pipeline is already fresh; the
-  second reset only added a PCM-confirm mute, and a real source rate change paid it too.
-- **The RX pool corruption is fixed at the receive ISR, not by gating the receiver's
-  DMA**: the guarded stager is the vendor bug's fix whoever drives the graph. Gating the
-  DMA while the output drives is a recorded proposal.
-- **The evidence ends with the declared stimulus.** The U24 restore is bench
-  housekeeping; the poller stops before it (README contract bullet).
-- **Instruments over inference.** `pool_blocks_used` / `_max` and `rx_dropped_halves`
-  are in `input_diag` (swagger `InputDiag`); the wedge was invisible without them.
-- **Clean-stamp reflash after each firmware commit** so `CLAUDE.md`'s deployed line
-  names a real commit; on the bench it is free.
+- **The gate-open floor is per source, and a replay's is sized to the SD primitive, not
+  to latency.** Why: the live 128-frame floor covers epoch jitter of a producer that never
+  blocks; a replay's producer is the refill job whose `OPEN_READ` / `READ` primitives
+  (8.3 / 6.3 ms measured) block checkpoint 7 two checkpoints before AUDIO, and pad +
+  first block = 5.3 ms lost that race 1 run in 3. Replay has no lip-sync, so 768 frames
+  (16 ms, ~2x the longest primitive) costs nothing audible. The live target and the held
+  governor's policy are untouched; the `#error` guard keeps the replay floor ≥ the live one.
+- **The floor is chosen at the same pre-commit instant, from `enqueue()`'s own `replay`
+  fact**, not from checkpoint 7's view — a replay→live relock still trims back to 128.
+- **Serve the constant (`gate_open_replay_target_frames`)** so a +768 in
+  `gate_open_padded_frames` at replay start reads as designed, not as a fault.
+- **Run 1's failure is the tool's, not the board's.** The board accepted 44.1 kHz 1.8 s
+  after the switch (run 5: 1.05 s), leaving one sample where the analyzer wants two; the
+  replay window of that run was clean. Recorded in the tool plan as a marginality finding,
+  no threshold weakened, no re-run counted as a pass.
+- Session-1 decisions (owner: bench needs no audio-interruption ask; ruling (b) on the
+  acceptance reset; RX fix at the receive ISR; evidence ends with the declared stimulus;
+  instruments over inference; clean-stamp reflash after each firmware commit) are already
+  in `CLAUDE.md` and the register.
 
 ### Traps
 
 - The optical-cutover suite reads firmware sources as TEXT; re-pin to the current fact,
-  never loosen. Its transmit checks slice `function_body(text, "void
-  AiusSpdifTx24Hook::isr(void)")`; the receive pin slices `AiusSpdifRxHook::isr` and
-  `install`; the acceptance-reset pin anchors on the exact three-line
-  `reset_for_acceptance` text (a `text.count(...) == 1` guard names it if it moves).
+  never loosen. `function_body(text, marker)` requires a UNIQUE marker: a forward-declared
+  function (`tx_gate_execute_open`, `tx_gate_actuate`) appears twice, so the new pin
+  slices on `"…(bool replay)\n"` — the trailing newline excludes the `;`-terminated
+  declaration. The self-test fixtures must reproduce that exact newline.
+- The 12-char `build_revision` is the HEAD commit with no dirty marker: a dirty-tree build
+  stamps the previous commit (the live runs ran on `4c82434311f0`, the fix's parent), so
+  `--expect-build` proves the flash, not the content. Clean-stamp reflash after committing.
+- The tool's 2 s phase is marginal against the board's 44.1 kHz acceptance latency
+  (1.05–1.8 s observed): a run reading `observed ['48000', 'replay']` with
+  `carrier_rate_millihz` at ~44118 kHz through the phase is this, not a board fault. 2 s is
+  the longest phase the 262144-frame slot admits without `--allow-rolloff`.
 - `firmware/scripts/build.sh teensy41-optical` is ~25 s and exits 75 when another session
   holds the flock; never clear it. Its memory report is the ITCM proof (headroom 5,652 B).
 - `CLAUDE.md` is path-guarded: write to scratch, `the release-promotion step`; the
@@ -109,36 +123,37 @@ tests exist; run vitest directly (`pnpm exec vitest run test/swagger.test.js`).
   after every run. The tool also PUTs the recorder config back (an SD write).
 - A status read issued in the same turn as a background capture can land after the
   capture; read the evidence samples, not a concurrent `/api/status`, for run facts.
-- No host suite compiles `optical_main.cpp`; the cross-build is its automated proof. The
-  RX hook lives in `aius_spdif_sources.cpp`, which the clock-target host suite compiles
-  under the fake target (the hook is `#if !defined(AIUS_AUDIO_CLOCK_FAKE_TARGET)`).
-- `rx_dropped_halves` reads 1 after every boot (the half before the first pair exists)
-  and climbs by thousands during any replay with the carrier down; that is the receiver
-  storm being dropped, not a fault.
+- No host suite compiles `optical_main.cpp`; the cross-build is its automated proof.
+- `rx_dropped_halves` reads 1 after every boot and climbs by thousands during any replay
+  with the carrier down; that is the receiver storm being dropped, not a fault.
+- `au_abandons` and `gate_open_padded_frames` are lifetime counters: after N replay runs
+  without a reboot they read N and 128 + 768·N (+128 per live relock).
 
 ### Findings and loose ends
 
-All recorded in the register; listed here so nothing is inherited as a commitment:
+All recorded in the register or the tool plan; listed here so nothing is inherited as a
+commitment:
 
-- **Replay start can open the gate on an empty ring** (register §Open defects —
-  runtime, 1 of 3 runs). Proposed (not agreed): open the replay gate only once the ring
-  holds the target from replay data, or pad replay's gate-open to cover one replay
-  primitive. Until then gate 4 flakes ~1 run in 3 on this code.
 - **`au_abandons` +1 at every carrier return during replay** (`aius_pipeline.c:701`,
-  `drop_staged_compressed_input()`): a PCM replay should have nothing staged. Proposed:
-  one look, likely a false MALFORMED latch on the replay→live discontinuity.
-- **Unlocked-receiver DMA storm** (~2,460 ISR entries/s while dark, `SPDIF_SRPC_
-  CLKSRC_SEL(1)` fallback). Harmless now. Proposed: gate the receive DMA request while
-  the output drives the graph.
+  `drop_staged_compressed_input()`): a PCM replay should have nothing staged. Proposed
+  (not agreed): one look, likely a false MALFORMED latch on the replay→live discontinuity.
+- **Tool: the 2 s phase is marginal against 44.1 kHz acceptance latency** (tool plan
+  §Live-run results — 2026-09-03, replay floor). Proposed (not agreed): the ring-capacity
+  check counts `phase × 2 + 1 s` but only the FIRST phase's last block is needed, so an
+  asymmetric stimulus (short first 48 kHz phase, 3 s 44.1 kHz phase) fits the slot without
+  `--allow-rolloff`; alternatively accept the flake as a retry. No threshold change.
+- **Unlocked-receiver DMA storm** (~2,460 ISR entries/s while dark). Harmless now.
+  Proposed: gate the receive DMA request while the output drives the graph.
 - ITCM census / ldscript proposal, `final_replay_output_blocks_delta` naming, register
   length: unchanged proposals from 2026-09-02, in the register.
 
 ### Pending decisions
 
-- **Which defect next?** Exact words: *"Gate 4 is green but flakes about one run in three
-  on the replay-start open-gate underrun (a real threshold). Fix that next, look at the
-  `au_abandons` latch at carrier return, or park both?"* Options: replay-start underrun
-  (makes gate 4 repeatable; a checkpoint-7 gate-open ordering change, cross-build +
-  live run as proof) / `au_abandons` (small pipeline investigation) / park.
-  Recommendation: the replay-start underrun. Blocks: nothing but the next phase; this
-  document retires once both are dispositioned or the owner parks them.
+- **Which next?** Exact words: *"Gate 4 is now repeatable on the board side (three replay
+  starts, zero underruns). Look at the `au_abandons` latch at carrier return next, fix the
+  tool's marginal 2 s phase, or park both?"* Options: `au_abandons` (small pipeline
+  investigation, cross-build + one live run as proof) / tool phase asymmetry (Python-only,
+  offline re-analysis + one live run) / park. Recommendation: `au_abandons` — it is a
+  counter that reads as a board fault to anyone not carrying this context, and the tool
+  flake is a retry. Blocks: nothing but the next phase; this document retires once both
+  are dispositioned or the owner parks them.
