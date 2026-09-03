@@ -302,6 +302,44 @@ check but one is green.
   frames 0`. After the run: PCM tracking at 48 kHz, gate open, `overruns 0`,
   pool 2 / 4.
 
+## Live-run results — 2026-09-03, replay floor (`--with-replay`, image `4c82434311f0`)
+
+Three runs on the replay gate-open floor (`gate_open_replay_target_frames
+768`; register §Open defects — runtime, *replay start could open the gate on
+an empty ring*), same recipe, fresh flash before run 1, mixer re-set to
+110,110 after every run. The fix's instrument is the replay window of every
+run: `tx_underrun_frames` stayed 0 lifetime across all three replay starts,
+`gate_open_padded_frames` advanced +768 at each (384→1152, 1536→2304,
+2688→3456) and the ring rode 1024–1280 frames through the whole replay while
+`replay_diag.longest_primitive_us` climbed to 7,222 (`OPEN_READ`) — the
+primitive that drained the 256-frame ring of run 4.
+
+- **Run 1: FAIL on the stimulus, not the fix.**
+  `evidence-sha256: 641fc3affdec1f55f5d20908f89751b8f67f53cd0b0a35f9f07a2c40fbc67ff3`.
+  `transition-sequence` (`observed ['48000', 'replay']`) plus two
+  `transition-unattributed-unsupported`: the board accepted 44.1 kHz at
+  3.93 s, 1.8 s after the switch (run 5: 1.05 s), leaving one sample inside
+  the 2 s phase where the analyzer wants `phase_samples 2`, so no live
+  window formed and the six rate-switch blips (the same six runs 3–5
+  attributed) had nothing to attribute to. Slot captured,
+  `old_rate_output_frames 0`, replay window clean as above.
+- **Run 2: PASS.**
+  `evidence-sha256: 9dc6785ca8103e6cb75b01af321aacb582196f6827f706d39108cface2ce17ee`.
+  `transition_reset_deltas [1, 1, 1]`, `live_transition_windows
+  [[7,13],[15,20]]`, slot captured, `old_rate_output_frames 0`.
+- **Run 3: PASS.**
+  `evidence-sha256: b599b118c847f62b508b2f7ad34033ff466aad6466b344b67ba8c0e548f4001e`.
+  Same shape as run 2; `event_overflows` 9 reported. After the three runs:
+  PCM tracking at 48 kHz, gate open, `overruns 0`, `tx_underrun_frames 0`,
+  pool 2 / 4, `au_abandons 3` (one per carrier return, outside every run's
+  evidence — the register's open `au_abandons` item, unchanged).
+
+Finding for the tool: the 2 s phase is marginal against the board's
+44.1 kHz acceptance latency (1.05–1.8 s observed), and 2 s is the longest
+phase the 262144-frame slot admits without `--allow-rolloff`; a run that
+reads `observed ['48000', 'replay']` with `carrier_rate_millihz` at 44118 kHz
+for the whole phase is this, not a board fault.
+
 ## Live-run results — 2026-09-01 (INVALIDATED, re-run required)
 
 **Every number in this section was produced by a tool carrying defects
@@ -823,5 +861,8 @@ stimulus (2026-09-02, operator ruling (d) in §Operator rulings (2026-09-02)):
   run), the run surfaced and reproduced the RX pool corruption (fixed
   `baef793d0063`) and one tool defect (fixed), and the double service reset
   recurs on either blip. **Owner ruled (b); gate 4 GREEN on run 5**
-  (`verdict pass`, digest `0cf5eeda…`). Open beside it: the replay-start
-  open-gate underrun run 4 caught (register §Open defects — runtime).
+  (`verdict pass`, digest `0cf5eeda…`). The replay-start open-gate underrun
+  run 4 caught is fixed (replay gate-open floor, §Live-run results —
+  2026-09-03, replay floor: two more green runs, zero underruns across
+  three replay starts); gate 4 is repeatable on the board side. Remaining
+  flake is the tool's 2 s phase against the 44.1 kHz acceptance latency.

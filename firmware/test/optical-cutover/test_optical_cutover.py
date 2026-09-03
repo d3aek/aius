@@ -2003,6 +2003,8 @@ CLOCK_JSON_KEYS = (
     # Output-jitter phases D/E/F: gate-open TX-ring trim (cec2dfa), the
     # latency governor (fecd2e6), and the relock ring pad.
     "gate_open_target_frames",
+    # 2026-09-03: the replay gate-open floor, sized to the SD primitive.
+    "gate_open_replay_target_frames",
     "gate_open_trims",
     "gate_open_trimmed_frames",
     "gate_open_padded_frames",
@@ -2023,6 +2025,54 @@ CLOCK_COUNTERS = (
     "g_clock_unsupported_episodes",
 )
 RATE_UNSUPPORTED_EVENT = "record_event(AIUS_EVENT_RATE_UNSUPPORTED"
+
+
+def assert_replay_gate_open_pads_to_its_own_floor(text):
+    """A replay's gate-open floor is sized to the SD primitive its producer
+    blocks on, chosen at the pre-commit instant from enqueue()'s own source
+    fact (register: "Replay start can open the gate on an empty ring",
+    2026-09-03)."""
+    clean = without_comments_and_literals(text)
+    assert "#define AIUS_TX_GATE_OPEN_REPLAY_TARGET_FRAMES" in clean, (
+        "no replay gate-open floor macro; the live target's one block of "
+        "margin loses the race against the refill job's OPEN_READ"
+    )
+    assert re.search(
+        r"#if\s+AIUS_TX_GATE_OPEN_REPLAY_TARGET_FRAMES\s*<\s*"
+        r"AIUS_TX_GATE_OPEN_TARGET_FRAMES",
+        clean,
+    ), "the replay floor is not guarded against sinking below the live target"
+    # The trailing newline excludes the `;`-terminated forward declaration.
+    execute = without_comments_and_literals(
+        function_body(text, "static inline void tx_gate_execute_open(bool replay)\n")
+    )
+    assert re.search(
+        r"replay\s*\?\s*AIUS_TX_GATE_OPEN_REPLAY_TARGET_FRAMES\s*:\s*"
+        r"AIUS_TX_GATE_OPEN_TARGET_FRAMES",
+        execute,
+    ), "tx_gate_execute_open() does not select the floor by source"
+    assert re.search(
+        r"aius_spdif_tx24_set_level\(\s*&g_aius_spdif_tx24,\s*target_frames,",
+        execute,
+    ), "the gate-open pad is not set to the selected floor"
+    assert "AIUS_TX_GATE_OPEN_TARGET_FRAMES," not in execute, (
+        "the gate-open pad still hard-codes the live target"
+    )
+    enqueue = without_comments_and_literals(
+        function_body(text, "AiusStatus enqueue(const AiusPcmBlock *block)")
+    )
+    assert enqueue.count("tx_gate_execute_open(") == 1, (
+        "enqueue() must execute the armed open exactly once per block"
+    )
+    fact = re.search(
+        r"const bool replay\s*=\s*g_replay_service\.source\s*==\s*"
+        r"AIUS_REPLAY_SOURCE_REPLAY;",
+        enqueue,
+    )
+    call = enqueue.find("tx_gate_execute_open(replay);")
+    assert fact is not None and call >= 0 and fact.start() < call, (
+        "enqueue() does not pass its own replay fact to the gate-open edge"
+    )
 
 
 def assert_clock_status_clear_and_episode_contract(text):
@@ -2798,6 +2848,10 @@ POSITIVE_CHECKS = (
     (
         "enqueue refuses unsupported and unapplied rates before DSP",
         assert_enqueue_refuses_rate_before_dsp,
+    ),
+    (
+        "a replay's gate-open edge pads to its own primitive-sized floor",
+        assert_replay_gate_open_pads_to_its_own_floor,
     ),
     (
         "clock status, clears and unsupported episodes remain observable",
@@ -4898,6 +4952,64 @@ static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
         assert_receive_isr_stages_only_into_an_empty_pair,
         good_rx.replace("\tdma.attachInterrupt(AiusSpdifRxHook::isr);\n", "", 1),
         "rx-isr/vector-not-redirected", "redirects the receive DMA vector",
+    )
+
+    # the replay gate-open edge pads to its own floor.
+    good_floor = (
+        "#define AIUS_TX_GATE_OPEN_REPLAY_TARGET_FRAMES 768u\n"
+        "#if AIUS_TX_GATE_OPEN_REPLAY_TARGET_FRAMES < AIUS_TX_GATE_OPEN_TARGET_FRAMES\n"
+        "#error \"below\"\n"
+        "#endif\n"
+        "static inline void tx_gate_execute_open(bool replay)\n"
+        "{\n"
+        "\tif (!g_tx_gate_open_pending)\n"
+        "\t\treturn;\n"
+        "\tconst uint32_t target_frames =\n"
+        "\t\treplay ? AIUS_TX_GATE_OPEN_REPLAY_TARGET_FRAMES\n"
+        "\t\t       : AIUS_TX_GATE_OPEN_TARGET_FRAMES;\n"
+        "\taius_spdif_tx24_set_level(&g_aius_spdif_tx24, target_frames,\n"
+        "\t                          &dropped, &padded);\n"
+        "}\n"
+        "AiusStatus enqueue(const AiusPcmBlock *block)\n"
+        "{\n"
+        "\tconst bool replay =\n"
+        "\t\tg_replay_service.source == AIUS_REPLAY_SOURCE_REPLAY;\n"
+        "\ttx_gate_execute_open(replay);\n"
+        "\treturn AIUS_OK;\n"
+        "}\n"
+    )
+    _expect_pass(
+        assert_replay_gate_open_pads_to_its_own_floor, good_floor, "replay-floor/good"
+    )
+    _expect_fail(
+        assert_replay_gate_open_pads_to_its_own_floor,
+        good_floor.replace(
+            "#if AIUS_TX_GATE_OPEN_REPLAY_TARGET_FRAMES < "
+            "AIUS_TX_GATE_OPEN_TARGET_FRAMES\n#error \"below\"\n#endif\n",
+            "",
+            1,
+        ),
+        "replay-floor/unguarded", "sinking below",
+    )
+    # THE REGRESSION: one floor for both sources.
+    _expect_fail(
+        assert_replay_gate_open_pads_to_its_own_floor,
+        good_floor.replace(
+            "\tconst uint32_t target_frames =\n"
+            "\t\treplay ? AIUS_TX_GATE_OPEN_REPLAY_TARGET_FRAMES\n"
+            "\t\t       : AIUS_TX_GATE_OPEN_TARGET_FRAMES;\n"
+            "\taius_spdif_tx24_set_level(&g_aius_spdif_tx24, target_frames,\n",
+            "\taius_spdif_tx24_set_level(&g_aius_spdif_tx24,\n"
+            "\t                          AIUS_TX_GATE_OPEN_TARGET_FRAMES,\n",
+            1,
+        ),
+        "replay-floor/one-floor", "select the floor by source",
+    )
+    _expect_fail(
+        assert_replay_gate_open_pads_to_its_own_floor,
+        good_floor.replace("\ttx_gate_execute_open(replay);\n",
+                           "\ttx_gate_execute_open(false);\n", 1),
+        "replay-floor/fact-not-passed", "replay fact",
     )
 
 

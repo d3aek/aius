@@ -289,7 +289,7 @@ static bool g_tx_gate_carrier; /* latched checkpoint-7 carrier input */
 static bool g_tx_gate_replay;  /* never re-derived at request time */
 
 static FLASHMEM void tx_gate_actuate(bool open);
-static inline void tx_gate_execute_open(void);
+static inline void tx_gate_execute_open(bool replay);
 static FLASHMEM bool clock_output_is_master(void);
 static FLASHMEM bool clock_input_is_master(void);
 
@@ -1326,6 +1326,27 @@ static volatile uint32_t g_audio_update_max_cycles;
 #ifndef AIUS_TX_GATE_OPEN_TARGET_FRAMES
 #define AIUS_TX_GATE_OPEN_TARGET_FRAMES 256u
 #endif
+/* THE REPLAY GATE-OPEN FLOOR (register: "Replay start can open the gate on
+ * an empty ring", 2026-09-03). The live target above is sized for the epoch
+ * jitter of a producer that never blocks; a replay's producer is the SD
+ * refill at checkpoint 7, and every refill job spends OPEN_READ (8.3 ms
+ * measured) and READ (6.3 ms) primitives on the card two checkpoints before
+ * AUDIO enqueues. Mid-replay the ring rides those out only because the
+ * PCM-confirm backlog happened to leave it at 384-768 frames; at the first
+ * replay block the Phase-F pad plus that block is 256 frames = 5.3 ms, so
+ * whether the next epoch's primitive underruns is the phase between the
+ * gate-open edge and the job's next OPEN_READ (1 run in 3 live). A replay
+ * has no lip-sync to protect, so its floor is sized to the primitive, not
+ * to latency: 768 frames = 16 ms covers the 8.3 ms open with the same ~2x
+ * margin the live target keeps over its jitter. Selected at the same
+ * pre-commit instant (tx_gate_execute_open), so a replay→live relock still
+ * trims back to the live target. */
+#ifndef AIUS_TX_GATE_OPEN_REPLAY_TARGET_FRAMES
+#define AIUS_TX_GATE_OPEN_REPLAY_TARGET_FRAMES 768u
+#endif
+#if AIUS_TX_GATE_OPEN_REPLAY_TARGET_FRAMES < AIUS_TX_GATE_OPEN_TARGET_FRAMES
+#error "the replay gate-open floor must not be below the live target"
+#endif
 #ifndef AIUS_TX_GOVERNOR_WINDOW_FRAMES
 #define AIUS_TX_GOVERNOR_WINDOW_FRAMES 192000u
 #endif
@@ -1801,8 +1822,9 @@ private:
 		 * the level it sets is the standing floor every later commit lands
 		 * on (aius-output-jitter Phase F). Before the governor tap, so the
 		 * governor's first window sample is the set floor, not the
-		 * pre-open residue. */
-		tx_gate_execute_open();
+		 * pre-open residue. The source picks the floor: a replay's is
+		 * sized to the SD primitive its producer blocks on. */
+		tx_gate_execute_open(replay);
 #if AIUS_TX_GOVERNOR_ENABLED
 		/* Latency-governor tap (aius-output-jitter Phase E): the ring level
 		 * BEFORE this block is staged is the standing floor sample the
@@ -2183,7 +2205,14 @@ static AudioConnection g_spdif_right(g_spdif_in, 1, g_audio_processor, 1);
  * Now the open edge only ARMS a pending open here; enqueue() executes it at
  * its pre-commit instant, setting the ring to exactly the target (trim down
  * or pad up with silence -- both unheard, the pad is still dark) before this
- * block commits, so the floor every later commit lands on IS the target. */
+ * block commits, so the floor every later commit lands on IS the target.
+ *
+ * 2026-09-03: the target is per source. A replay's producer is the SD refill
+ * job, whose OPEN_READ / READ primitives (8.3 / 6.3 ms measured) block the
+ * epoch two checkpoints before AUDIO; the live target's one block of margin
+ * lost that race 1 run in 3 at replay start. enqueue() passes its own
+ * `replay` fact and the open pads to AIUS_TX_GATE_OPEN_REPLAY_TARGET_FRAMES
+ * instead (rationale at the macro). */
 static uint32_t g_tx_gate_open_trims;          /* .bss = 0 */
 static uint32_t g_tx_gate_open_trimmed_frames; /* .bss = 0 */
 static uint32_t g_tx_gate_open_padded_frames;  /* .bss = 0 */
@@ -2214,15 +2243,17 @@ static FLASHMEM void tx_gate_actuate(bool open)
  * the TX ISR is the sole cursor reader. The underrun-count arm rides the same
  * masked section, so no fill() can observe an open gate before the level has
  * been set. Cost when nothing is pending: one bool test per block. */
-static inline void tx_gate_execute_open(void)
+static inline void tx_gate_execute_open(bool replay)
 {
 	if (!g_tx_gate_open_pending)
 		return;
+	const uint32_t target_frames =
+		replay ? AIUS_TX_GATE_OPEN_REPLAY_TARGET_FRAMES
+		       : AIUS_TX_GATE_OPEN_TARGET_FRAMES;
 	uint32_t dropped;
 	uint32_t padded;
 	noInterrupts();
-	aius_spdif_tx24_set_level(&g_aius_spdif_tx24,
-	                          AIUS_TX_GATE_OPEN_TARGET_FRAMES,
+	aius_spdif_tx24_set_level(&g_aius_spdif_tx24, target_frames,
 	                          &dropped, &padded);
 	g_aius_spdif_tx24.gate_open = 1u;
 	interrupts();
@@ -3046,6 +3077,7 @@ static FLASHMEM bool http_clock_json(char *output, size_t capacity,
 		"\"tx_level_frames\":%lu,"
 		"\"tx_underrun_frames\":%lu,"
 		"\"gate_open_target_frames\":%lu,"
+		"\"gate_open_replay_target_frames\":%lu,"
 		"\"gate_open_trims\":%lu,"
 		"\"gate_open_trimmed_frames\":%lu,"
 		"\"gate_open_padded_frames\":%lu,"
@@ -3072,6 +3104,7 @@ static FLASHMEM bool http_clock_json(char *output, size_t capacity,
 		(unsigned long)aius_spdif_tx24_level(&g_aius_spdif_tx24),
 		(unsigned long)g_aius_spdif_tx24.underruns,
 		(unsigned long)AIUS_TX_GATE_OPEN_TARGET_FRAMES,
+		(unsigned long)AIUS_TX_GATE_OPEN_REPLAY_TARGET_FRAMES,
 		(unsigned long)g_tx_gate_open_trims,
 		(unsigned long)g_tx_gate_open_trimmed_frames,
 		(unsigned long)g_tx_gate_open_padded_frames,

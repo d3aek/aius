@@ -485,6 +485,22 @@ here makes the knob mean what it says.
   beyond `target − 128` frames.
 - unit: parent-only
 
+**Amendment 2026-09-03 — the target is per source.** The 128-frame floor
+lost a race the live producer never runs: a replay's producer is the SD
+refill job at checkpoint 7, whose `OPEN_READ` / `READ` primitives (8.3 /
+6.3 ms measured) block the epoch two checkpoints before AUDIO, and pad +
+first block = 256 frames = 5.3 ms drained 1 run in 3 at replay start
+(register §Open defects — runtime). `tx_gate_execute_open(bool replay)` now
+pads a replay's open to `AIUS_TX_GATE_OPEN_REPLAY_TARGET_FRAMES` (768 =
+16 ms, `platformio.ini`, `#error` below the live target), chosen from
+`enqueue()`'s own source fact; served as
+`clock.gate_open_replay_target_frames`. Replay has no lip-sync to protect,
+so its floor is sized to the primitive; the live floor and the governor's
+target policy are untouched. Live: three `--with-replay` gate-4 runs on
+`4c82434311f0`, `tx_underrun_frames` 0 across all three replay starts
+([`aius-rate-gate-capture-tool.md`](aius-rate-gate-capture-tool.md)
+§Live-run results — 2026-09-03, replay floor).
+
 ## Acceptance
 
 One evening of live 5.1 with the dashboard open on the new image:

@@ -330,8 +330,8 @@ ends left open:
   ~6.5x ISR entries while dark and is now harmless. Proposal (not agreed):
   gate the receive DMA request while the output drives the graph.
 
-- **Replay start can open the gate on an empty ring and underrun one block
-  (1 of 3 live runs, 2026-09-03).** Gate-4 run 4 on `1e4224a7e3c3`:
+- **FIXED 2026-09-03 — replay start could open the gate on an empty ring
+  and underrun one block (1 of 3 live runs).** Gate-4 run 4 on `1e4224a7e3c3`:
   `tx_gate.open 1`, `replay_running 1`, `tx_level_frames 0` at 9.40 s, then
   `gate_open_padded_frames` +128 and `tx_underrun_frames` +128 by 9.67 s —
   the Phase-F pad (one `gate_open_target_frames` block, 2.67 ms) drained
@@ -341,10 +341,26 @@ ends left open:
   pad, so whether the underrun lands is the phase between the gate-open
   edge (checkpoint 7) and the AUDIO checkpoint's first block. Live
   passthrough relocks are not affected (their pad is preceded by the
-  producer). Fix shape (not agreed): open the gate for replay only once the
-  ring holds at least the target from replay data, or pad replay's gate-open
-  to cover one replay primitive. Bench verdict: `transition-open-gate-
-  underrun`, a real threshold; the tool re-run is the reproduction.
+  producer). Bench verdict: `transition-open-gate-underrun`, a real
+  threshold. **Root cause and fix (2026-09-03):** the Phase-F pad executes
+  at the first replay block's pre-commit instant, so the ring holds pad +
+  block = 256 frames = 5.3 ms; the next epoch's checkpoint 7 (two
+  checkpoints before AUDIO) spends the refill job's `OPEN_READ` (8.3 ms
+  measured, `replay_diag.longest_action 4`) or `READ` (6.3 ms) on the card,
+  and the ring drains. Mid-replay the ring survives those same primitives
+  only because the PCM-confirm backlog happened to leave it at 384–768
+  frames. The gate-open floor is now per source:
+  `AIUS_TX_GATE_OPEN_REPLAY_TARGET_FRAMES` (768 = 16 ms, `platformio.ini`;
+  `#error` if below the live target), selected in
+  `tx_gate_execute_open(bool replay)` from `enqueue()`'s own `replay` fact
+  and served as `clock.gate_open_replay_target_frames`; replay has no
+  lip-sync to protect, so its floor is sized to the primitive, not to
+  latency, and live passthrough keeps 128. Proof: optical-cutover pin +
+  three mutations; three `--with-replay` gate-4 runs on `4c82434311f0`
+  ([tool plan](aius-rate-gate-capture-tool.md) §Live-run results —
+  2026-09-03, replay floor): `tx_underrun_frames` 0 lifetime across three
+  replay starts, `gate_open_padded_frames` +768 each, ring 1024–1280 during
+  replay, runs 2–3 `verdict pass`.
 
 - **`au_abandons` +1 at every carrier return during replay** (`pipeline_
   last_failure 3`, `drop_staged_compressed_input()` at the source
