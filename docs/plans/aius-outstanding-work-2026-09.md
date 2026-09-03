@@ -434,7 +434,21 @@ Phase 5. Its Phases 2–4 stay gated on the instrumentation record.
 - commit-checkpoint: one docs commit (SRF + register), plus the AC-3 plan
   status paragraph.
 
-### Phase 5 — Restore the slot-agnostic A/B posture; OTA becomes the deploy path
+### Phase 5 — Restore the slot-agnostic A/B posture; OTA becomes the deploy path ✓ SHIPPED 2026-09-03
+
+**Shipped 2026-09-03.** Board on the slot-agnostic chooser again from HEAD
+`acfd6e3baba9` (`recovery.hex` sha256 `c5c4f091…`, the one HalfKay flash);
+two untagged OTA round-trips A→B→A (`canonical-1` `aea34ce8…`, `canonical-2`
+`ef256904…`) with `rollback_observed false`, `relocks 0`, `tx_underrun_frames`
+0 across both activations; `409 ota_digest` refusal reproduced with the
+corrupt container RETAINED (`6d3b518b…`), abort → idle. Cleanup done small
+(`--slot` deprecated, `build_ab.sh` canonical by default, signer evidence
+carries `slot_id`); full dual-slot retirement scoped as the slot-agnostic
+plan's Phase 7 with its owner-visible (d) decision. Observed and recorded, not
+a regression: 1280 underrun frames during the 141-chunk SD staging with the
+carrier live — the documented un-gated card-traffic cost. `booted_slot` is now
+on the wire. Record: `aius-ota-slot-agnostic.md` §Status. From here every
+firmware phase deploys over OTA.
 
 - outcome: the board runs the slot-agnostic chooser and a canonical image
   built from HEAD, and every later firmware phase in this plan deploys over
