@@ -356,13 +356,18 @@ def assert_requested_reset_waits_for_the_drained_transaction(text):
         "peer cannot prevent a requested reset"
     )
     occurrences = call_count(text, "reset_application")
-    assert occurrences == 3, (
-        "expected exactly three reset_application() occurrences -- its "
-        "definition and the TWO gated call sites -- found "
-        f"{occurrences}. The invariant is deliberately two gated resets now, not "
-        "one: the reboot drain gate above AND OTA activation, whose RAM-resident "
-        "run-to-completion finalizer resets into the new image only after the "
-        "sequencer reaches READY_TO_RESET (ota_activate_run_and_finalize)"
+    assert occurrences == 4, (
+        "expected exactly four reset_application() occurrences -- its "
+        "definition and the THREE gated call sites -- found "
+        f"{occurrences}. The invariant is deliberately three gated resets now, "
+        "not one: the reboot drain gate above; OTA activation, whose "
+        "RAM-resident run-to-completion finalizer resets into the new image "
+        "only after the sequencer reaches READY_TO_RESET "
+        "(ota_activate_run_and_finalize); and the OTA REHEARSAL, which ends in "
+        "the same deliberate reset once its verdict is recorded, because its "
+        "quiesce already stopped the audio service one-way and the epoch can "
+        "no longer feed the watchdog (assert_rehearsal_ends_in_a_deliberate_"
+        "reset pins that one)"
     )
     assert "reset_application(" in gate, (
         "the reboot reset must stay the drained-transaction gated call site"
@@ -516,6 +521,89 @@ def assert_activation_quiesce_is_ordered(text):
     assert 0 <= begin_at < quiesce_at, (
         f"{OTA_ACTIVATION_SERVICE}() must run aius_ota_activate_begin() before "
         f"{OTA_QUIESCE_FUNCTION}(), so a pre-dark refusal leaves the board serving"
+    )
+
+
+OTA_REHEARSAL_SERVICE = "service_ota_rehearsal"
+OTA_REHEARSAL_RUN = "ota_rehearse_run"
+OTA_REHEARSAL_VERDICT = "ota_rehearsal_finish"
+
+
+def assert_rehearsal_ends_in_a_deliberate_reset(text):
+    """The rehearsal performs its own reset, after the verdict and only there.
+
+    Measured on the board 2026-09-03: both rehearsals rebooted ~8 s after
+    `ota_diag.rehearsal "pass"` with `reset_source 16` (SRC_SRSR_WDOG_RST_B)
+    and `prev_boot.first_abort 9` (AUDIO). The mechanism is not the sequencer's
+    -- it is `ota_quiesce()` step 2, `g_audio_service_ready = false`, which the
+    snapshot restore does NOT undo (it restores interrupt SOURCES only). From
+    the quiesce on, `platform_audio()` refuses the AUDIO checkpoint, every
+    epoch aborts before EPOCH_COMPLETE and none feeds WDOG1, so the board
+    reboots either way and the only question is whether it does so
+    deliberately. A watchdog bite makes a clean rehearsal indistinguishable in
+    `prev_boot` from a crash and inflates the watchdog-reset accounting the
+    stall chase reads as evidence.
+
+    So the rehearsal ends in `reset_application()` -- the SAME SYSRESETREQ the
+    real activation finalizer performs, which also makes the rehearsal rehearse
+    the terminal act. The pins are ordering and count:
+
+      - exactly ONE reset in the function, so the pre-quiesce aborts (geometry,
+        PSRAM, verify, stage copy, begin) keep returning WITHOUT resetting --
+        the board never darkened there, so it keeps serving and its verdict
+        stays readable live in `ota_diag`;
+      - it comes after the quiesce, after the RAM-resident run and after the
+        LAST `ota_rehearsal_finish()`, so both post-window verdicts (pass and
+        fail alike -- the debt is the quiesce's, not the verdict's) are
+        recorded first and the reset is out of the dark window with flash
+        coherent;
+      - nothing follows it, because it never returns.
+
+    No grace window is pinned or wanted: the sequencer's terminal stamp
+    (COMPLETED exactly at READY_TO_RESET) lands in the retained
+    `.aius_retained_ota` slot with the REHEARSAL flag, survives SYSRESETREQ and
+    is served as `/api/status` `ota_dark`, so the verdict outlives the reboot.
+
+    No native suite compiles optical_main.cpp, so this is a text property."""
+    definitions = function_definitions(text)
+    assert OTA_REHEARSAL_SERVICE in definitions, (
+        f"missing {OTA_REHEARSAL_SERVICE}() -- the deferred rehearsal that "
+        "drives the scratch-window run and owns its terminal reset"
+    )
+    body = without_comments_and_literals(definitions[OTA_REHEARSAL_SERVICE])
+    for name in (OTA_QUIESCE_FUNCTION, OTA_REHEARSAL_RUN, OTA_REHEARSAL_VERDICT):
+        assert f"{name}(" in body, (
+            f"{OTA_REHEARSAL_SERVICE}() is missing {name}()"
+        )
+    resets = call_count(body, "reset_application")
+    assert resets == 1, (
+        f"expected exactly one reset_application() in {OTA_REHEARSAL_SERVICE}"
+        f"(), found {resets}. One: the terminal reset. A second would mean a "
+        "PRE-quiesce abort resets too, and those never darkened the board -- "
+        "they must hand it back serving with the verdict live in ota_diag"
+    )
+    quiesce_at = body.find(OTA_QUIESCE_FUNCTION + "(")
+    run_at = body.find(OTA_REHEARSAL_RUN + "(")
+    verdict_at = body.rfind(OTA_REHEARSAL_VERDICT + "(")
+    reset_at = body.find("reset_application(")
+    assert quiesce_at < run_at, (
+        f"{OTA_REHEARSAL_SERVICE}() must call {OTA_QUIESCE_FUNCTION}() before "
+        f"{OTA_REHEARSAL_RUN}()"
+    )
+    assert run_at < verdict_at, (
+        f"{OTA_REHEARSAL_SERVICE}() must record the verdict with "
+        f"{OTA_REHEARSAL_VERDICT}() after {OTA_REHEARSAL_RUN}() returns"
+    )
+    assert reset_at > verdict_at, (
+        f"{OTA_REHEARSAL_SERVICE}() must call reset_application() AFTER the "
+        f"last {OTA_REHEARSAL_VERDICT}(): the reset is the rehearsal's "
+        "terminal act, and the verdict has to be recorded before it"
+    )
+    tail = body[reset_at + len("reset_application("):]
+    assert tail.strip() == ");", (
+        f"reset_application() must be the LAST statement of "
+        f"{OTA_REHEARSAL_SERVICE}() -- it never returns, so anything after it "
+        f"is dead code; found {tail.strip()!r} following it"
     )
 
 
@@ -2870,6 +2958,10 @@ POSITIVE_CHECKS = (
         assert_dark_window_parks_every_interrupt_source,
     ),
     (
+        "the OTA rehearsal ends in a deliberate reset, after its verdict",
+        assert_rehearsal_ends_in_a_deliberate_reset,
+    ),
+    (
         "OTA activation gates on PSRAM presence and stages only over a parked recorder ring",
         assert_activation_gates_on_psram_presence,
     ),
@@ -3753,6 +3845,13 @@ def run_self_test():
         "\tif (phase == AIUS_OTA_ACTIVATE_READY_TO_RESET)\n"
         "\t\treset_application();\n"
         "\tfor (;;)\n\t\t;\n}\n"
+        # The third gated site: the rehearsal's terminal reset. Present here
+        # only so the occurrence count this check pins is the real one.
+        "static FLASHMEM void service_ota_rehearsal(uint32_t now_ms)\n{\n"
+        "\tota_quiesce(&snapshot);\n"
+        "\tota_rehearse_run();\n"
+        "\tota_rehearsal_finish(OTA_REHEARSAL_PASS);\n"
+        "\treset_application();\n}\n"
         "void loop(void)\n{\n"
         "\tconst uint32_t now_ms = millis();\n"
         "\tif (g_reboot_requested)\n"
@@ -3788,6 +3887,71 @@ def run_self_test():
     _expect_fail(
         assert_requested_reset_waits_for_the_drained_transaction,
         bad_reboot_epoch_delay, "reboot/fixed-epoch-delay", "AIUS_HTTP_TX_IDLE",
+    )
+
+    # The rehearsal's own terminal reset. The `bad` variants below are the four
+    # ways it goes wrong: no reset at all (the shipped shape, which rebooted by
+    # watchdog ~8 s later with reset_source 16 / first_abort 9), a reset that
+    # beats the verdict, a PRE-quiesce abort that resets a board that never
+    # darkened, and dead code after a call that never returns.
+    good_rehearsal = (
+        "static FLASHMEM void service_ota_rehearsal(uint32_t now_ms)\n{\n"
+        "\tif (aius_ota_activate_check_window(&g_ota_rehearsal_window) !=\n"
+        "\t    AIUS_OTA_OK) {\n"
+        "\t\tg_ota_activation_fault = OTA_ACTIVATION_FAULT_GEOMETRY;\n"
+        "\t\tota_rehearsal_finish(OTA_REHEARSAL_FAIL);\n"
+        "\t\treturn;\n"
+        "\t}\n"
+        "\tota_quiesce(&snapshot);\n"
+        "\tota_rehearse_run();\n"
+        "\tota_restore_interrupt_sources(&snapshot);\n"
+        "\tota_rehearsal_finish(progress.phase ==\n"
+        "\t\t\t\t     AIUS_OTA_ACTIVATE_READY_TO_RESET\n"
+        "\t\t\t     ? OTA_REHEARSAL_PASS\n"
+        "\t\t\t     : OTA_REHEARSAL_FAIL);\n"
+        "\treset_application();\n}\n"
+    )
+    _expect_pass(
+        assert_rehearsal_ends_in_a_deliberate_reset, good_rehearsal,
+        "rehearsal/good",
+    )
+    bad_rehearsal_no_reset = good_rehearsal.replace(
+        "\treset_application();\n", "", 1
+    )
+    _expect_fail(
+        assert_rehearsal_ends_in_a_deliberate_reset, bad_rehearsal_no_reset,
+        "rehearsal/emulated-reset", "found 0",
+    )
+    bad_rehearsal_reset_before_verdict = good_rehearsal.replace(
+        "\tota_restore_interrupt_sources(&snapshot);\n",
+        "\tota_restore_interrupt_sources(&snapshot);\n\treset_application();\n",
+        1,
+    ).replace("\treset_application();\n}\n", "}\n", 1)
+    _expect_fail(
+        assert_rehearsal_ends_in_a_deliberate_reset,
+        bad_rehearsal_reset_before_verdict, "rehearsal/reset-before-verdict",
+        "AFTER the last",
+    )
+    bad_rehearsal_pre_quiesce_reset = good_rehearsal.replace(
+        "\t\tota_rehearsal_finish(OTA_REHEARSAL_FAIL);\n",
+        "\t\tota_rehearsal_finish(OTA_REHEARSAL_FAIL);\n"
+        "\t\treset_application();\n",
+        1,
+    )
+    _expect_fail(
+        assert_rehearsal_ends_in_a_deliberate_reset,
+        bad_rehearsal_pre_quiesce_reset, "rehearsal/pre-quiesce-reset",
+        "found 2",
+    )
+    bad_rehearsal_trailing_code = good_rehearsal.replace(
+        "\treset_application();\n}\n",
+        "\treset_application();\n\tg_ota_rehearsal_requested = false;\n}\n",
+        1,
+    )
+    _expect_fail(
+        assert_rehearsal_ends_in_a_deliberate_reset,
+        bad_rehearsal_trailing_code, "rehearsal/dead-code-after-reset",
+        "LAST statement",
     )
 
     # The boot fuse is served and never written. Raw string: the synthetic C

@@ -1930,6 +1930,55 @@ static void test_stamp_primitive_is_optional(void)
 	assert_flash_holds_image(&g_dev, g_new_image, TEST_IMAGE_BYTES);
 }
 
+/* The terminal stamp NAMES the verdict, it is not merely emitted at it.
+ *
+ * This is the fact the OTA rehearsal's post-reboot readback rests on.
+ * service_ota_rehearsal() (src/optical_main.cpp) ends in reset_application()
+ * rather than letting the quiesced board be bitten by the watchdog 8 s later,
+ * so the RAM-only `ota_diag.rehearsal` verdict does NOT survive that reset --
+ * what survives is this stamp, in the retained .aius_retained_ota slot, served
+ * back as /api/status `ota_dark`. A rehearsal passes iff the sequencer reached
+ * READY_TO_RESET, so the COMPLETED stamp has to CARRY that phase, its
+ * fault-free result and the dark-window figure. assert_last_stamp() round-trips
+ * `phase` between the view and the bytes but pins no VALUE for it; this does,
+ * and reads them the way the boot-side reader will: off the encoded bytes.
+ *
+ * `flags` is pinned zero for the same reason. The rehearsal's writer ORs in
+ * AIUS_OTA_DARK_STAMP_FLAG_REHEARSAL over the sequencer's view, which is what
+ * stops a scratch-window stamp from reading as a field brick -- so the
+ * sequencer itself must never set it. */
+static void test_completed_stamp_names_the_ready_to_reset_phase(void)
+{
+	AiusOtaSession session;
+	AiusOtaActivator activator;
+	AiusOtaActivatePrimitives primitives;
+	AiusOtaDarkStampView decoded;
+
+	current_key = "verdict.run";
+	device_reset(&g_dev, g_new_image, TEST_IMAGE_BYTES);
+	primitives = primitives_over(&g_dev);
+	request_activation(&session, g_new_image, TEST_IMAGE_BYTES);
+	CHECK(begin_over(&activator, &session, &primitives, TEST_IMAGE_BYTES,
+	                 g_old_digest) == AIUS_OTA_OK);
+	CHECK(aius_ota_activate_run(&activator) == AIUS_OTA_OK);
+	CHECK(aius_ota_activate_phase(&activator) ==
+	      AIUS_OTA_ACTIVATE_READY_TO_RESET);
+
+	current_key = "verdict.stamp";
+	CHECK(aius_ota_dark_stamp_decode(&decoded, g_dev.stamp_bytes,
+	                                 sizeof(g_dev.stamp_bytes)));
+	CHECK(decoded.state == (uint8_t)AIUS_OTA_DARK_STAMP_COMPLETED);
+	CHECK(decoded.phase == (uint8_t)AIUS_OTA_ACTIVATE_READY_TO_RESET);
+	CHECK(decoded.fault == (uint8_t)AIUS_OTA_ACTIVATE_FAULT_NONE);
+	CHECK(decoded.primitive_fault == 0);
+	CHECK(decoded.flags == 0u);
+	CHECK(decoded.programmed_bytes == TEST_IMAGE_BYTES);
+	CHECK(decoded.verified_bytes == TEST_IMAGE_BYTES);
+	CHECK(decoded.steps_taken == decoded.steps_total);
+	CHECK(decoded.dark_window_cycles ==
+	      (uint64_t)TEST_CYCLES_PER_CALL * 55u);
+}
+
 int main(void)
 {
 	fill_pattern(g_new_image, TEST_IMAGE_BYTES, 0x11u);
@@ -1961,6 +2010,7 @@ int main(void)
 	test_windowed_begin_refuses_a_malformed_window();
 	test_dark_stamp_record_rules();
 	test_stamp_primitive_is_optional();
+	test_completed_stamp_names_the_ready_to_reset_phase();
 	puts("ota activation tests passed");
 	return 0;
 }

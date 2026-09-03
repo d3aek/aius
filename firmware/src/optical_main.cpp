@@ -3828,8 +3828,11 @@ static volatile OtaActivationFault g_ota_activation_fault;
 /* The 2026-08-01 re-proof's verdict, surfaced in ota_diag beside the self-test's.
  * Never-run until the operator triggers POST /api/ota/rehearse (or its
  * fault-injected arm); pass means the rehearsal reached ITS arm's expected
- * terminal -- READY_TO_RESET (the emulated reset) for the positive arm,
- * FAULTED with the head-compare's VERIFY fault for the injected one. */
+ * terminal -- READY_TO_RESET (the sequencer's emulated reset) for the positive
+ * arm, FAULTED with the head-compare's VERIFY fault for the injected one. RAM
+ * only: service_ota_rehearsal() ends in a deliberate reset, so this mirror is
+ * readable live only by an abort ABOVE the quiesce; the verdict that survives
+ * the reset is the retained rehearsal stamp served as ota_dark. */
 typedef enum {
 	OTA_REHEARSAL_NEVER_RUN = 0,
 	OTA_REHEARSAL_PASS = 1,
@@ -4429,7 +4432,8 @@ FASTRUN static int ota_health_write(void *, const uint8_t *bytes,
 
 /* --------------------------------------------------------------------------
  * The rehearsal (the 2026-08-01 re-proof): the FULL activation sequence
- * against the scratch window above the image, real primitives, emulated reset.
+ * against the scratch window above the image, real primitives, the sequencer's
+ * reset emulated and then performed deliberately by service_ota_rehearsal().
  * -------------------------------------------------------------------------- */
 
 /* The rehearsal's own session copy, window, and health record. The session is
@@ -4667,7 +4671,9 @@ AIUS_OTA_DARK_WINDOW_FN void ota_activate_run_and_finalize(void)
  * ota_activate_run_and_finalize, WITHOUT the terminal acts. READY_TO_RESET is
  * the EMULATED reset -- the sequence has proven it would have reset, and that
  * proof is the verdict -- and FAULTED is what the negative arm asserts. It
- * RETURNS, because the rehearsal's whole point is that the board comes back.
+ * RETURNS, because the rehearsal's whole point is that the board comes back:
+ * the verdict is read out of the activator here and the caller performs the
+ * deliberate reset afterwards, out of the dark window and with flash coherent.
  * RAM-resident for the same reason as the real loop: while a scratch-window
  * erase or program is in flight, no master may touch flash, this loop
  * included. The scratch window holds no code, so between operations XIP is
@@ -4760,8 +4766,10 @@ FASTRUN static OtaSelfTestResult ota_run_self_test_flash(void)
  * new image or a HalfKay halt, so there is no un-quiesce path for a REAL
  * activation (`saved` NULL, the park is one-way). The REHEARSAL passes a
  * snapshot: it darkens only its scratch window and must hand the board back,
- * so interrupts are restored afterwards -- audio stays down (steps 1-3 are
- * one-way) until the operator reboots, which the rehearsal's verdict reports. */
+ * so interrupts are restored afterwards -- but steps 1-3 are one-way for the
+ * rehearsal too, so audio stays down and the epoch can no longer complete or
+ * feed the watchdog. service_ota_rehearsal() therefore ends in its own
+ * reset_application() rather than leaving that reboot to the watchdog. */
 AIUS_OTA_DARK_WINDOW_FN void ota_quiesce(OtaIrqSnapshot *saved)
 {
 	tx_gate_actuate(false);
@@ -4849,7 +4857,10 @@ static FLASHMEM bool http_ota_diag_json(char *output, size_t capacity,
 		ota_activation_fault_name(g_ota_activation_fault),
 		/* The 2026-08-01 re-proof's verdict and its dark-window evidence:
 		 * pass means the last run reached ITS arm's expected terminal --
-		 * the emulated reset, or the injected head-fault's halt. The µs
+		 * the sequencer's emulated reset, or the injected head-fault's
+		 * halt. RAM only: a run that reached the quiet window ends in
+		 * reset_application(), after which this reads never-run and the
+		 * retained rehearsal stamp in ota_dark carries the verdict. The µs
 		 * pair is the operator-expectation data the plan's item 4 deferred
 		 * to bring-up. */
 		ota_rehearsal_result_name(g_ota_rehearsal_result),
@@ -9140,11 +9151,12 @@ static FLASHMEM void service_ota_activation(uint32_t now_ms)
  *   - the session is a COPY, so the real one stays ARMED with the staged
  *     image intact for the actual upgrade;
  *   - the health record is a zeroed scratch, so no trial budget is spent;
- *   - the quiesce takes a SNAPSHOT and interrupts are RESTORED after -- the
- *     board hands back an epoch loop that keeps serving HTTP (audio stays
- *     down: quiesce steps 1-3 are one-way; a reboot restores it, and the
- *     verdict in ota_diag is what the operator came for);
- *   - READY_TO_RESET is EMULATED: recorded, not performed. */
+ *   - the quiesce takes a SNAPSHOT and interrupts are RESTORED after, so the
+ *     scratch-window run hands the board back rather than halting in RAM;
+ *   - the sequencer's own READY_TO_RESET is EMULATED -- ota_rehearse_run()
+ *     records the phase instead of resetting into the scratch window, which
+ *     holds no bootable image -- but the RUN still ends in a reset, performed
+ *     here once the verdict is recorded (see the tail of this function). */
 static uint32_t g_ota_rehearsal_deadline_ms;
 static bool g_ota_rehearsal_deadline_armed;
 
@@ -9216,8 +9228,9 @@ static FLASHMEM void service_ota_rehearsal(uint32_t now_ms)
 
 	/* 1-2. Park, PSRAM region and the SD->PSRAM copy: identical to
 	 * activation -- the rehearsal proves the real pre-window path, park
-	 * included, not a stand-in. The recorder stays parked until the
-	 * reboot the rehearsal already owes for audio. */
+	 * included, not a stand-in. The recorder stays parked until the reset
+	 * at the tail of this function -- the reboot the rehearsal already owes
+	 * for audio, now performed rather than waited for. */
 	(void)aius_recorder_bank_park(&g_recorder_bank);
 	g_recorder_present = false;
 	if (!ota_psram_staging(&psram_base, &psram_capacity)) {
@@ -9288,6 +9301,47 @@ static FLASHMEM void service_ota_rehearsal(uint32_t now_ms)
 			progress.phase == AIUS_OTA_ACTIVATE_READY_TO_RESET
 				? OTA_REHEARSAL_PASS
 				: OTA_REHEARSAL_FAIL);
+
+	/* THE REHEARSAL'S OWN RESET, and it rehearses the real one: the same
+	 * FASTRUN reset_application() (SCB_AIRCR SYSRESETREQ) the activation
+	 * finalizer performs at READY_TO_RESET, so the rehearsal covers the
+	 * terminal act too instead of stopping one step short of it.
+	 *
+	 * It is not optional. ota_quiesce() cleared g_audio_service_ready and
+	 * that step is ONE-WAY (the snapshot restores interrupt SOURCES, not
+	 * the audio service), so from here on platform_audio() refuses the
+	 * AUDIO checkpoint, every epoch aborts before EPOCH_COMPLETE and NONE
+	 * of them feeds WDOG1. The board therefore reboots either way; the only
+	 * question is whether it reboots deliberately now or by watchdog bite
+	 * ~8 s from now. The bite was the observed behaviour (2026-09-03): the
+	 * rehearsal read back reset_source 16 with prev_boot.first_abort 9, so
+	 * a clean rehearsal was indistinguishable in prev_boot from a crash and
+	 * every rehearsal inflated the watchdog-reset accounting.
+	 *
+	 * BOTH VERDICTS reset, because the debt is the quiesce's, not the
+	 * verdict's -- a post-window FAIL leaves exactly the same deaf board.
+	 * The aborts ABOVE, all of which return before ota_quiesce(), keep
+	 * their old behaviour: the board never darkened, so it keeps serving
+	 * and its verdict stays readable live in ota_diag.
+	 *
+	 * NO GRACE WINDOW, because the verdict survives the reboot. The
+	 * sequencer stamps its terminal state into the retained
+	 * .aius_retained_ota slot -- COMPLETED exactly at READY_TO_RESET,
+	 * FAULTED otherwise -- through ota_rehearsal_dark_stamp_write(), which
+	 * sets the REHEARSAL flag; the slot survives SYSRESETREQ, boot decodes
+	 * it (ota_dark_stamp_boot_decode) and /api/status reports it as
+	 * ota_dark {state, phase, fault, rehearsal, dark_window_cycles}. That
+	 * IS the verdict: pass is DEFINED as READY_TO_RESET above, which is
+	 * exactly the state the COMPLETED stamp records. Only the ota_diag
+	 * mirror is plain RAM and does not survive, and it would be redundant.
+	 *
+	 * Nothing else is owed. The rehearsal's own 200 drained before the run
+	 * (the deadline gate at the top of this function), so no response is in
+	 * flight; ota_quiesce() already drove the transmit gate low, which is
+	 * the state service_reboot_request() resets from; and the A/B record is
+	 * untouched -- the rehearsal armed nothing and wrote no pending mark,
+	 * so `ab` reads the same across the reboot. */
+	reset_application();
 }
 #endif /* AIUS_OTA */
 
@@ -9381,7 +9435,8 @@ FLASHMEM void loop(void)
 	if (g_ota_activation_requested)
 		service_ota_activation(now_ms);
 	/* The deferred rehearsal: the same quiet window against the scratch
-	 * region, reset emulated, interrupts restored, verdict into ota_diag. */
+	 * region, interrupts restored, verdict stamped into the retained slot,
+	 * then a deliberate reset (the quiesce is one-way). */
 	if (g_ota_rehearsal_requested)
 		service_ota_rehearsal(now_ms);
 #endif
