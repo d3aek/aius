@@ -411,8 +411,17 @@ more to the point, was symmetric where the stimulus need not be.
   (three live relocks + one replay start), pool 2 / 4, `au_abandons` 0 → 1
   with `pipeline_last_failure 3` — the one carrier return of the run, the
   register's closed `au_abandons` item (a DTS replay's cut burst, by design;
-  from the next image the latch reads `4` truncated, not `3` malformed — the
+  from `dd9520e431a2` the latch reads `4` truncated, not `3` malformed — the
   register entry records the relabel).
+- **Live proof — run 2 at the same defaults, image `dd9520e431a2`
+  (TRUNCATED relabel, otherwise the same firmware): PASS.**
+  `evidence-sha256: 82334562e4098e5c757250fa5df8ff78294228d4343348e6d2863d9c319d2f55`.
+  Same shape as run 1: `observed ['48000', '44100', '48000', 'replay']`,
+  `[1, 1, 1]`, `live_transition_windows [[7, 13], [19, 24]]`, every counter
+  delta 0 inside the evidence, `event_overflows` 7, slot captured,
+  `old_rate_output_frames 0`. After the run: `au_abandons` 0 → 1 with
+  `pipeline_last_failure 4`, `tx_underrun_frames 0`, `gate_open_padded_frames`
+  128 → 1280, pool 2 / 4. Two runs, two first-time passes at `2,3,1.5`.
 
 ## Live-run results — 2026-09-01 (INVALIDATED, re-run required)
 

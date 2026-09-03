@@ -409,9 +409,12 @@ ends left open:
   distinguishable on `audio_diag.pipeline_last_failure`, and a carrier
   return over a compressed replay no longer reads as a board fault.
   Pinned by `test_teardown_drops_partial_burst` and
-  `test_discontinuity_counts_only_committed_bursts`; live proof pending
-  (the next `--with-replay` gate-4 run should read `pipeline_last_failure
-  4` after the U24 restore).
+  `test_discontinuity_counts_only_committed_bursts`; live on
+  `dd9520e431a2` (clean-stamp flash, one `--with-replay` gate-4 run,
+  `verdict pass`, digest `82334562…`): `au_abandons` 0 → 1 and
+  `pipeline_last_failure 4` after the U24 restore, 0 / 0 through the
+  evidence. Image otherwise identical to `4c9eb3d497ac` (ITCM 190,956 /
+  5,652).
 
 - **OTA container verify is a one-epoch ~80 ms stall — an audible dropout
   when staged during playback (2026-08-16).** Measured live while staging
