@@ -17,7 +17,9 @@ protected:
 	static bool update_responsibility;
 	static DMAChannel dma;
 	static void isr(void);
-private:
+	/* Protected, not private as upstream: the receive hook in
+	 * lib/aius_audio/src/aius_spdif_sources.cpp stages into this pair from its
+	 * own DMA handler (aius_spdif_rx.h). */
 	static audio_block_t *block_left;
 	static audio_block_t *block_right;
 	static uint16_t block_offset;

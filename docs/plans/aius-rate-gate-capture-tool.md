@@ -6,7 +6,7 @@ component: aius
 status: in-progress
 subtype: design
 tags: [aius, firmware, teensy, audio, spdif, acceptance, tooling]
-updated: 2026-09-02
+updated: 2026-09-03
 toc: true
 ---
 
@@ -228,6 +228,62 @@ are the citation. Every verdict is a real bench verdict, not a tool error.
   same post-relock transmit-ring floor gate 2 caught, i.e. the defect
   output-jitter Phase F fixes, so the fail is legitimate; its reset deltas
   are `[1, 1]`.
+
+## Live-run results — 2026-09-03 (`--with-replay`, images `b38e8448f5c8` and `baef793d0063`)
+
+Three live gate-4 runs with the replay leg driven, all `--phase-seconds 2`,
+`--expect-build` exact, tone fixtures in session scratch. The first one found
+a board defect and a tool defect; the third is the first run on which every
+check but one is green.
+
+- **Run 1 (`b38e8448f5c8`, tool at `b0bc64e`): FAIL, two failures, both on
+  the U24 restore edge.**
+  `evidence-sha256: d385ade4349338fbeee9054a24401ead788fc90d7be558b30f194d4fb4927def`.
+  Slot 1 captured (`trigger operator`, `rate_changes 2`, both fiducials
+  resolved at 173056 / 210944, `old_rate_output_frames 0`), phases observed
+  `48000, 44100, 48000, replay`, `transition_reset_deltas [1, 1, 1]`,
+  `tx_underrun_frames` delta 0 (the pre-Phase-F open-gate underrun of the
+  `ce84850` run is gone), both live transitions attributed. The failures:
+  `harmful-counter` (`audio_diag.au_abandons` +1, `pipeline_last_failure 3`
+  MALFORMED: the interrupted replay unit) and
+  `transition-unattributed-unsupported` (+4 at 12.85→13.11 s, details
+  65535 / 27336 / 54249 / 46003), both at the single poll where the tool
+  re-authorized the U24 — a replay→live transition the declared stimulus
+  ends before. Tool defect: the poller ran through the restore. Fixed: the
+  poller is stopped and joined before `usb_authorize(..., 1)`
+  (`recorder_transitions.py`, README contract bullet).
+- **Between runs 1 and 2 the board wedged** (`state 2`, `stream_rate_hz 0`,
+  gate closed, `AIUS_EVENT_OVERRUN` flooding at ~190/s, every drop
+  `ingress_drop_missing_live`), so run 2 (`a0b4f2c4…`) reads
+  `stimulus-not-followed` and is a reproduction, not a measurement. Root
+  cause and fix: the register's *RX pool corruption under replay* (the
+  retained receive ISR writes past the block pair while replay drives the
+  graph and the unlocked receiver storms at ~2,460 update calls/s; fixed in
+  `baef793d0063` by re-pointing the receive DMA vector at a guarded stager).
+  This run is what surfaced it: no earlier gate-4 run drove the replay leg
+  on a board whose carrier then returned.
+- **Run 3 (`baef793d0063`, fixed tool): FAIL on `transition-reset-count`
+  alone; everything else green.**
+  `evidence-sha256: 062c344609510381ebeca365802c05a617c802dd9408a2e65157123665723826`.
+  Slot captured, `old_rate_output_frames 0` through two resolved fiducials,
+  observed phases `48000, 44100, 48000, replay`, `live_transition_windows
+  [[7,13],[15,20]]` both attributed, `tx_underrun_frames` 0,
+  `au_abandons` 0 inside the evidence, `event_overflows` 7 reported,
+  `unsupported_episodes` 6 all inside live windows, `final_replay_output_
+  blocks_delta 276`. `transition_reset_deltas [1, 2, 1]`: the second blip
+  cost a reset at the unsupported edge (4.19 s) and another at acceptance
+  (5.23 s). After the run the board was back on live PCM at 48 kHz with
+  `overruns 0`, `pool_blocks_used 2 / max 4`, `rx_dropped_halves 7,195`
+  (the replay window's storm, every half the old ISR would have written out
+  of bounds).
+- **Reset count across the three live runs: `[2, 1]`, `[1, 1, 1]`,
+  `[1, 2, 1]`.** One or two per blip, depending on whether the carrier
+  passed through an unsupported measured rate before the new nominal was
+  accepted; the acceptance then resets again because
+  `g_clock_relock_reset_nominal_hz` no longer matches (`sample_rate_service`,
+  `reset_for_acceptance`). Decision owed to the owner — register §Waiting
+  on the operator: allowance in the analyzer, or skip the redundant
+  acceptance reset in firmware (recommended).
 
 ## Live-run results — 2026-09-01 (INVALIDATED, re-run required)
 
@@ -744,10 +800,11 @@ stimulus (2026-09-02, operator ruling (d) in §Operator rulings (2026-09-02)):
   `event_overflows` reported rather than gated in `transitions` alone (F8).
   Offline re-analysis of the two saved runs is in §Live-run results —
   2026-09-02.
-- **Gate 4 green pass — remaining step: one live re-run.** Re-run
-  `recorder_transitions.py --with-replay` on the new image (`b38e8448f5c8`,
-  output-jitter Phase F aboard, so the reopen underruns should be 0) and
-  re-analyze. Open questions the re-run answers: whether the pre-Phase-F
-  open-gate underrun (`ce84850`) is gone, and whether the first rate change
-  still requests two service resets (run 2's only remaining failure,
-  `transition-reset-count`; the bound is a threshold and stays).
+- ~~**Gate 4 green pass — remaining step: one live re-run.**~~ **Run
+  2026-09-03, three times** (§Live-run results — 2026-09-03): the
+  pre-Phase-F open-gate underrun is gone (`tx_underrun_frames` 0 on every
+  run), the run surfaced and reproduced the RX pool corruption (fixed
+  `baef793d0063`) and one tool defect (fixed), and the double service reset
+  recurs on either blip. **Remaining: the reset-count decision** (register
+  §Waiting on the operator); once taken, one more run on the then-current
+  image is the green pass.

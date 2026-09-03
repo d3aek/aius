@@ -21,6 +21,9 @@
 #if !defined(AIUS_AUDIO_CLOCK_FAKE_TARGET)
 #include "aius_spdif_tx24.h"
 #endif
+/* The receive staging is pure and host-built (the clock-target suite pins
+ * it); only its hook below is target-only. */
+#include "aius_spdif_rx.h"
 
 #if defined(__IMXRT1062__) || defined(AIUS_AUDIO_CLOCK_FAKE_TARGET)
 
@@ -245,6 +248,71 @@ FLASHMEM void AiusSpdifTx24Hook::install(void)
 	dma.attachInterrupt(AiusSpdifTx24Hook::isr);
 	__enable_irq();
 }
+
+/* The receive-side shim, same shape as AiusSpdifTx24Hook: private inheritance
+ * reaches `dma`, `update_responsibility`, `update_all()` and (protected in the
+ * repo's input_spdif3.h) the block pair; `spdif_rx_buffer` is the snapshot's
+ * file static, addressable because the snapshot is included above. */
+class AiusSpdifRxHook : private AudioInputSPDIF3 {
+public:
+	AiusSpdifRxHook(void) = delete;
+	static void install(void);
+	static void isr(void);
+	static volatile uint32_t dropped_halves;
+};
+
+volatile uint32_t AiusSpdifRxHook::dropped_halves;
+
+/* THE RECEIVE DMA INTERRUPT, once per AUDIO_BLOCK_SAMPLES frames while the
+ * DPLL is locked (and several times that while it is not), replacing
+ * AudioInputSPDIF3::isr(). The snapshot's order is kept -- graph first, so the
+ * pair update() swaps in is the one this interrupt fills -- and the only
+ * behavioural change is the one aius_spdif_rx.h states: a pair the graph has
+ * not consumed is dropped from, never written past.
+ *
+ * Not FLASHMEM: per-block code belongs in ITCM, as for the transmit hook. */
+void AiusSpdifRxHook::isr(void)
+{
+	dma.clearInterrupt();
+	if (update_responsibility)
+		update_all();
+
+	/* Which half to drain: the one the DMA is NOT filling. Identical test to
+	 * the snapshot's (input_spdif3.cpp:90), against the same buffer. */
+	const uint32_t daddr = (uint32_t)(dma.TCD->DADDR);
+	int32_t *const src =
+		(daddr < (uint32_t)spdif_rx_buffer + sizeof(spdif_rx_buffer) / 2)
+			? (int32_t *)&spdif_rx_buffer[AUDIO_BLOCK_SAMPLES * 2]
+			: (int32_t *)&spdif_rx_buffer[0];
+
+	audio_block_t *const left = block_left;
+	audio_block_t *const right = block_right;
+	if (left == nullptr || right == nullptr) {
+		/* update() allocates both or neither, so a lone block never exists;
+		 * no pair means the pool could not supply one, which is a drop. */
+		dropped_halves++;
+		return;
+	}
+	/* The half is 32-byte aligned and a multiple of 32 bytes (the buffer is
+	 * aligned(32) and each half is AUDIO_BLOCK_SAMPLES * 2 * 4 = 1,024 bytes),
+	 * so the DMA-written lines can be invalidated whole rather than the
+	 * snapshot's line-by-line DCIMVAC inside the copy loop. */
+#if IMXRT_CACHE_ENABLED >= 1
+	arm_dcache_delete(src, AUDIO_BLOCK_SAMPLES * 2 * sizeof *src);
+#endif
+	if (!aius_spdif_rx_stage(src, AUDIO_BLOCK_SAMPLES, left->data,
+	                         right->data, &block_offset, AUDIO_BLOCK_SAMPLES))
+		dropped_halves++;
+}
+
+FLASHMEM void AiusSpdifRxHook::install(void)
+{
+	/* One vector store under a critical section, as for the transmit hook;
+	 * the pair and offset are the snapshot's own statics and need no reset. */
+	__disable_irq();
+	dma.attachInterrupt(AiusSpdifRxHook::isr);
+	__enable_irq();
+}
 #endif
 
 } /* namespace */
@@ -270,6 +338,16 @@ FLASHMEM void aius_spdif_tx24_begin(void)
 	 * and then proven over the physical output-to-input fibre loop. */
 	SPDIF_STCSCH = UINT32_C(0x00200000);
 	SPDIF_STCSCL = UINT32_C(0x00400000);
+}
+
+FLASHMEM void aius_spdif_rx_begin(void)
+{
+	AiusSpdifRxHook::install();
+}
+
+FLASHMEM uint32_t aius_spdif_rx_dropped_halves(void)
+{
+	return AiusSpdifRxHook::dropped_halves;
 }
 #endif
 

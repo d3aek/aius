@@ -807,6 +807,14 @@ def main(argv: list[str] | None = None) -> int:
                     time.sleep(0.8)                   # carrier not gone yet
                 time.sleep(3.5)                       # dwell in replay
             finally:
+                # The evidence ends with the declared stimulus (`expected_phases`
+                # ends at `replay`). Restoring the U24 is bench housekeeping, and
+                # its re-enumeration edge -- garbage-rate unsupported episodes,
+                # the interrupted replay unit abandoned as MALFORMED -- is a
+                # replay->live transition nobody declared; polled, the analyzer
+                # judged it as unattributed (live run 2026-09-03).
+                stop.set()
+                poller.join(timeout=5)
                 print("loss->replay: reauthorizing U24", flush=True)
                 usb_authorize(args.usb_path, 1)       # ALWAYS restore the U24
                 time.sleep(1.5)

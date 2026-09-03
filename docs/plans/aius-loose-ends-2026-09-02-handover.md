@@ -5,8 +5,8 @@ scope: component
 component: aius
 status: in-progress
 subtype: how-to
-tags: [aius, firmware, handover, itcm, dsp-config, recorder]
-updated: 2026-09-02
+tags: [aius, firmware, handover, itcm, dsp-config, recorder, rate-gate, spdif-rx]
+updated: 2026-09-03
 toc: true
 ---
 
@@ -19,134 +19,121 @@ per the handover skill's retirement rule. Resumers: check §What landed against
 
 The 2026-09-02 review-fix handover was retired the same day and its loose ends moved to
 [`aius-open-work-register.md`](aius-open-work-register.md) §Waiting on the operator.
-This session worked that list: every item is now closed or reduced to one owner decision,
-except the ITCM placement pass, whose state is below.
+The 2026-09-02 session worked that list; the 2026-09-03 session ran the one live step it
+left (gate 4 with the replay leg), which found and fixed a board defect on the way.
 
 ## State — resume here
 
-**Status.** DONE: recorder-auth rule corrected, CONTRIBUTING path sweep, SD fixture,
-H1 accepted on host proof, optical-cutover and registry suites green, `staged_generation`
-advancing at SD commit, ITCM placement pass (headroom 1,108 → 5,844 B), the flash
-(`b38e8448f5c8` on the board, both firmware changes verified live), the gate-4
-`transitions` analyzer adaptation (design decision (d); saved run 2 re-analyzes to one
-real threshold failure). Nothing is in flight; one live step is pending the owner.
+**Status.** DONE: everything in the 2026-09-02 list; the live gate-4 `--with-replay`
+runs (three); the RX pool corruption under replay found by run 1, fixed
+(`aius_spdif_rx.h` + `AiusSpdifRxHook`) and verified live on `baef793d0063`; the tool
+defect (evidence polled through the U24 restore) fixed; two new `/api/status`
+`input_diag` instruments. Nothing is in flight. One owner decision is open (§Pending
+decisions); gate 4's green pass waits on it.
 
 ### What landed (all pushed)
 
 | Commit | Contents | Proof |
 |---|---|---|
-| `git_modules/aius` `22fe1ae` | CONTRIBUTING.md paths swept to repository-relative; sd-editor paragraph names `test.sh --suite sd-editor`; recorder plan: auth note + H1 accepted, Phase D still IN-PROGRESS on three items; `dsp-config-sd.json` carries `staged_generation`/`config_pending` and the PUT-verbatim case strips them; optical-cutover re-pinned to the current firmware (micros watermark, recorder-bank rename, six clock keys, staged-aware origin, per-slot recorder array, OTA pad-1 alias model); registry guard models repo-root suites via `$aius_root`, sd-editor catalogued | sd-editor 359 green; optical-cutover 33/1/1/1/6 green; registry green (60 arms); shellcheck clean |
-| `git_modules/aius` `c34242e` | `g_staged_generation++` moved from `app_store_dsp_config()` (accept) to `sd_settle_http_write()` (commit, before arming `g_dsp_apply_pending`); serializer comment; network-hardening defect 22 correction (d); register strikes | `teensy41-optical` cross-build SUCCESS, ITCM 195500 / 1108 free unchanged |
-| `git_modules/aius` `f0a91e0` | `CLAUDE.md`: reads need nothing except the five `/api/recorder*` routes, token-gated on read by contract (promoted through `the maintainer`, operator-approved) | docs only |
-| `git_modules/aius` `bcf2233` | every definition in `aius_recorder.c`, `aius_recorder_bank.c`, `aius_config.c`, `aius_auth.c` is `FLASHMEM` (51 functions); the three libraries left `ITCM_ALLOWED_LDF_LIBS` and are gated to zero `.text`; the named recorder-helper guard retired (five guards); README/CONTRIBUTING/test.sh wording; register: item struck, nm census + ldscript proposal recorded | `teensy41-optical` cross-build SUCCESS, ITCM 195,500 → 190,764 B; itcm-placement (29 unit + target), memory, recorder, auth, config, optical-cutover, registry green |
-| upstream repository `b91a507fc` | pointer bump; `swagger.json` `staged_generation` / `dsp_staged_generation` descriptions say "committed" | `swagger.test.js` 11 green; prettier clean |
+| `git_modules/aius` `22fe1ae` … `bcf2233`, upstream repository `b91a507fc` | the 2026-09-02 series (recorder-auth rule, CONTRIBUTING sweep, SD fixture, H1 accepted, `staged_generation` at SD commit, ITCM pass 195,500 → 190,764 B) | see the register §Waiting on the operator |
+| `git_modules/aius` `baef793` | `CLAUDE.md` deployed-image line `b38e8448f5c8` (operator-approved promote) | docs only |
+| upstream repository `3bd69d68e` | pointer bump for `baef793` | — |
+| `git_modules/aius` (this session's fix commit; see `git log`) | `firmware/lib/aius_audio/src/aius_spdif_rx.h` (pure guarded stager) + `AiusSpdifRxHook` in `aius_spdif_sources.cpp` re-pointing the receive DMA vector; `input_spdif3.h` block statics protected; `optical_main.cpp` installs the hook and emits `input_diag.rx_dropped_halves` / `pool_blocks_used` / `pool_blocks_used_max`; `recorder_transitions.py` stops the poller before the U24 restore; optical-cutover re-pin (transmit checks scoped to the transmit handler, receive-hook pin + self-test mutations); clock-target case `test_rx_stage_fills_only_an_empty_pair`; README contract bullet; register entry (fixed) + decision text; tool plan §Live-run results — 2026-09-03 | clock-target green; optical-cutover 33/1/1/2/6 green; itcm-placement 29 + 5 target guards green; `teensy41-optical` SUCCESS, ITCM 190,956 / 5,652 free; flashed `baef793d0063`, run 3 live: board back to PCM after replay + carrier return, `overruns 0`, pool 2/4 |
+| upstream repository (this session) | `swagger.json` `InputDiag` + the three fields; pointer bump | `swagger.test.js` 11 green; prettier clean |
 
 ### Uncommitted tree state
 
-`git_modules/aius`: clean. `CLAUDE.md`'s deployed-image line (`b38e8448f5c8`) is a
-queued `the release-promotion step` if `git -C git_modules/aius status --short CLAUDE.md` is clean;
-dirty means it landed and wants a one-path `docs(aius)` commit.
+`git_modules/aius`: clean after the fix commit. `CLAUDE.md` has a queued `the maintainer
+promote` (bench note: no audio to interrupt on the bench; deployed-image line) —
+`git -C git_modules/aius status --short CLAUDE.md` clean means still queued, dirty means
+landed and wants a one-path `docs(aius)` commit. Do not restate the approval; check.
 
-upstream repository root: the `git_modules/aius` pointer is bumped in the commit that carries this
-document. Every other dirty path (`.claude/**`, `data/*.sqlite`, `docs/plans/almanac.md`,
-other submodule pointers, untracked ``, …) is foreign. `the repo tooling test`
-cannot compile the repo graph while the foreign untracked almanac tests exist, so vitest
-was run directly (`pnpm exec vitest run <file>`).
+upstream repository root: every dirty path other than `swagger.json` and the
+`git_modules/aius` pointer is foreign (`.claude/**`, `data/*.sqlite`,
+`docs/plans/almanac.md`, other submodule pointers, untracked ``, …).
+`the repo tooling test` cannot compile the repo graph while the foreign untracked almanac
+tests exist, so vitest is run directly (`pnpm exec vitest run <file>`).
 
 ### Next action
 
-The one remaining live step: a gate-4 run with `--with-replay` on `b38e8448f5c8`
-(`firmware/tools/rate_gate_capture/recorder_transitions.py`, `--phase-seconds 2`; U24
-de-auth + replay start, so an audio interruption the owner must accept first), then
-`aius_rate_bench.py analyze transitions --evidence <run>/evidence.jsonl` (the driven
-sequence is in the metadata). Watch `transition_reset_deltas`: run 2 read `[2, 1]`
-offline (two service resets in the first blip), and whether that recurs decides if it
-is a stimulus property worth a declared allowance or a board question. Record in
-`aius-rate-gate-capture-tool.md` §Live-run results and retire this document.
+Take the reset-count decision (§Pending decisions), implement (b) if chosen (the
+acceptance reset in `sample_rate_service()` is redundant when live ingress stayed
+closed since the quiesce reset), rebuild, flash, and run
+`firmware/tools/rate_gate_capture/recorder_transitions.py --with-replay
+--phase-seconds 2 --expect-build <rev>+teensy41-optical` once more, then
+`aius_rate_bench.py analyze transitions --evidence <run>/evidence.jsonl`. Expect
+`verdict pass`. Record the digest in `aius-rate-gate-capture-tool.md` §Live-run
+results and retire this document. Tone fixtures: `tone_gen.py --rate 48000|44100
+--seconds 5` into session scratch; re-apply `amixer -c 0 cset numid=5 110,110`
+after every run (the tool's re-auth resets the U24 mixer).
 
-### Decisions taken this session
+### Decisions taken (2026-09-02, still binding)
 
-- **`GET /api/recorder` auth: the route is right, the rule was wrong.** `dispatch_recorder()`
-  token-gates every recorder route including GETs, per the recorder contract (recorded
-  audio + trigger state). `CLAUDE.md` says so (`f0a91e0`).
-- **`dsp-config-default.json` keeps no runtime keys by design** — it is pinned
-  byte-for-byte to `firmware/config/optical_dsp.json` by a test; the wire example that
-  carries `staged_generation`/`config_pending` is `dsp-config-sd.json`.
-- **`staged_generation` advances at SD commit**, not at PUT accept: a faulted write must
-  not report a staging that never existed. Counter before the volatile apply flag, the
-  order the SD-load stager already keeps. Semantics of `config_generation` untouched.
-- **H1 (teardown lease release) accepted on its host proof**; provoking it needs a
-  physical Ethernet unplug mid-pull and is not scheduled.
-- **The optical-cutover OTA/recorder pin follows the pad-1 alias model** (`b76f8fc`,
-  `optical_main.cpp` "ALIAS, DO NOT PARTITION"): staging over a parked ring, proven by
-  ordering + the park assert, not by disjointness. This was the one semantic re-pin; it
-  carries more checks than the disjointness pin it replaced.
-- **Registry guard: repo-root suites are first-class**, named through `$aius_root/test/…`
-  and existence-checked one level above the firmware tree; the sd-editor arm names its path.
-- **ITCM pass scope: the three first-party libs only** (`aius_recorder`, `aius_auth`,
-  `aius_config`). The bigger levers are ldscript-level and proposals (§Findings).
-- **Owner, 2026-09-02 ~23:00 UTC: flash now** — done, `b38e8448f5c8` (HEAD rebuild of
-  the `bcf2233` code so the revision stamp is clean); both firmware changes verified
-  live (register bullets, network-hardening defect 22 (d)).
-- **Owner, same ask: gate 4 → adapt the `transitions` analyzer to the aplay-blip
-  stimulus, thresholds untouched** (ruling (d) in `aius-rate-gate-capture-tool.md`).
-  Shape: live windows derived from the observed labels instead of the positional
-  "last window is replay" rule (a real bug, F13 — it produced run 2's false
-  `transition-unattributed-unsupported`); the analyzer judges the phase sequence the
-  capture tool declares it drove (`expected_phases`, recorded in the evidence
-  metadata) instead of asserting a replay leg that was not played; `event_overflows`
-  reported rather than gated in `transitions` only (F8: an events-ring overflow
-  between two polls is a tool-observability loss; `unsupported-event-count` stays as
-  the guard). No threshold changes.
+- `GET /api/recorder` auth: the route is right, the rule was wrong (`CLAUDE.md`).
+- `dsp-config-default.json` keeps no runtime keys by design; `dsp-config-sd.json` is
+  the wire example.
+- `staged_generation` advances at SD commit, not at PUT accept.
+- H1 accepted on its host proof.
+- The optical-cutover OTA/recorder pin follows the pad-1 alias model.
+- Registry guard: repo-root suites are first-class.
+- ITCM pass scope: the three first-party libs only.
+- Gate 4: adapt the `transitions` analyzer to the aplay-blip stimulus, thresholds
+  untouched (ruling (d)).
+
+### Decisions taken (2026-09-03)
+
+- **Owner: run the live gate-4 now; on the bench there is never audio to interrupt.**
+  Persisted to `CLAUDE.md` §Device access and OTA (promote queued): a flash, sync,
+  U24 de-auth or replay start needs no audio-interruption ask while the board is on
+  the bench; the cost-stating rule is for the installed listening-room posture.
+- **The evidence ends with the declared stimulus.** The U24 restore is bench
+  housekeeping; the poller stops before it. Its re-enumeration edge is not judged.
+- **RX pool corruption is fixed at the receive ISR, not by gating the receiver's
+  DMA.** The guarded stager is the vendor bug's fix regardless of who drives the
+  graph; gating the DMA while the output drives is recorded as a proposal.
+- **Instruments over inference.** `pool_blocks_used` / `_max` and
+  `rx_dropped_halves` now sit in `input_diag`; the wedge was invisible without them.
 
 ### Traps
 
-- The optical-cutover suite reads firmware sources as TEXT. A rename or a new JSON key
-  in `optical_main.cpp` fails it with a message naming the old token; the fix is to
-  re-pin to the current fact, never to loosen (`test_optical_cutover.py` has the
-  per-pin commit references). It also has self-test mutations anchored on exact
-  indentation (`\n\t\tg_dsp_apply_pending = true;` binds the SD stager's two-tab arm).
+- The optical-cutover suite reads firmware sources as TEXT; re-pin to the current
+  fact, never loosen. Its transmit-module checks now slice
+  `function_body(text, "void AiusSpdifTx24Hook::isr(void)")` for the `audio_block_t`
+  and `<< 8` pins; the receive pin slices `AiusSpdifRxHook::isr` and `install`.
 - `firmware/scripts/build.sh teensy41-optical` is ~25 s incremental and exits 75 when
   another session holds the flock; never clear it. The memory report it prints is the
-  ITCM proof; `python3 firmware/tools/memory/mem_report.py --elf …/firmware.elf`
-  re-prints it without building.
+  ITCM proof.
 - `CLAUDE.md` is path-guarded: write to scratch, `the release-promotion step`.
-- The deployed board (`3570a216216d`) still bumps `staged_generation` at accept; the
-  register and defect 22 (d) say so. A flash reboots the board and stops audio.
-- No host suite compiles `optical_main.cpp`; the cross-build is the only automated
-  proof for `sd_settle_http_write()` changes.
+- A flash reboots the board and stops audio; on the bench that is free (owner).
+- The tool's U24 re-auth resets the mixer to 70,70: re-apply 110,110 after every run.
+- `recorder_transitions.py` restores the recorder config with a PUT after the run (an
+  SD write, ~600 ms checkpoint-8 stall observed); expect `sd_diag.http_jobs` +1.
+- No host suite compiles `optical_main.cpp`; the cross-build is the automated proof
+  for its edits. The RX hook lives in `aius_spdif_sources.cpp`, which the
+  clock-target host suite DOES compile under the fake target (the hook itself is
+  `#if !defined(AIUS_AUDIO_CLOCK_FAKE_TARGET)`).
 
 ### Findings and loose ends
 
-- **ITCM census (nm on the current ELF, 195500 B used):** newlib printf family
-  (`_vfprintf_r` 8.6 KB, `_svfprintf_r` 8.3 KB, `_vfiprintf_r` 4.7 KB, `_dtoa_r` 3.6 KB)
-  ≈ 25 KB; FNET + NativeEthernet ≈ 43 KB; SdFat/ExFat/FatFile ≈ 19 KB; AC-3 decoder
-  (`a52_*`, `parse_frame_data`) ≈ 15 KB; DTS core ≈ 10 KB. Six 32 KiB blocks are
-  claimed, so shedding ~32 KB would hand a whole block back to DTCM stack/locals.
-  Proposed (not agreed): an ldscript rule in `firmware/link/aius_teensy41.ld` placing
-  libc's printf objects (callers are all FLASHMEM serializers) and SdFat in `.flashmem`;
-  the decoders and FNET stay pending a measured decode-budget / poll-latency check.
-- `aius_codec_api` (`aius_arena.c`) and `aius_dts` stay in `ITCM_ALLOWED_LDF_LIBS`;
-  `aius_dts` because its tree carries the vendored dcadec core, not a first-party
-  annotation job.
-- **`transition-reset-count [2, 1]` on the saved gate-4 run 2.** The first aplay blip
-  advanced `audio_diag.service_requested_resets` twice inside one transition window
-  (stream → `unsupported` at 2.10 s, then `stream_rate_hz 0` at 3.15 s); the second
-  window polled no carrier-gone sample and advanced once; the earlier `ce84850` run read
-  `[1, 1]`. Proposed (not agreed): leave the one-reset threshold; let the live
-  `--with-replay` run say whether two edges per blip is the stimulus's shape, and only
-  then decide whether the declared stimulus may carry an allowance.
-- `final_replay_output_blocks_delta` (bench metric) keeps its name although the final
-  phase is no longer necessarily `replay`; renaming churns a published evidence field.
-  Proposed: leave.
-- `aius-open-work-register.md` is 1646 lines; the 2026-08 defect narratives dominate.
-  Proposed: leave — it is the authoritative home and the doc-index tolerates it.
+- **The unlocked receiver's DMA storm** (~2,460 `audio_update_calls`/s while the
+  carrier is down, six and a half times the block rate; `SPDIF_SRPC_CLKSRC_SEL(1)`
+  falls the receiver back to `tx_clk`). Harmless since the fix; proposal (not
+  agreed): gate the receive DMA request while the output drives the graph.
+- **`au_abandons` +1 at every carrier return during replay** (`pipeline_last_failure
+  3`, the interrupted replay unit dropped by `drop_staged_compressed_input`). Outside
+  the declared stimulus now; a PCM replay should have no staged compressed input to
+  abandon, so this is worth one look (`aius_pipeline.c:701`).
+- **The double service reset per aplay blip** — §Pending decisions.
+- ITCM census / ldscript proposal, `final_replay_output_blocks_delta` naming, register
+  length: unchanged from 2026-09-02 (proposals, not agreed).
 
 ### Pending decisions
 
-- **Live gate-4 re-run with `--with-replay` on `b38e8448f5c8`.** Not yet asked. Exact
-  words: *"The adapted analyzer passes the saved run offline; a live `--with-replay`
-  gate-4 run would give the first real green and costs a U24 de-auth plus a replay start
-  (audio stops for the run, ~30 s). Run it now, or at a silent window?"* Options: now
-  (closes gate 4 tonight) / later (nothing else blocks). Recommendation: at the next
-  silent window. Blocks: retiring this document.
+- **Reset count on gate 4.** Exact words: *"Three live runs read `[2, 1]`, `[1, 1, 1]`,
+  `[1, 2, 1]`: an aplay blip costs one or two service resets depending on whether the
+  carrier passes through an unsupported measured rate before the new nominal is
+  accepted; the acceptance then resets a pipeline nothing has been ingested into since
+  the quiesce reset. (a) allow ≤2 per transition for the declared aplay-blip stimulus
+  in `transitions` only, or (b) skip the redundant acceptance reset in firmware and
+  keep the threshold?"* Recommendation: (b). Blocks: gate 4's green pass, retiring this
+  document.

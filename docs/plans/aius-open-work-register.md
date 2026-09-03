@@ -6,7 +6,7 @@ component: aius
 subtype: backlog
 status: in-progress
 tags: [aius, backlog, debt, defects]
-updated: 2026-09-02
+updated: 2026-09-03
 toc: true
 ---
 
@@ -161,8 +161,23 @@ ends left open:
     `transitions` only (F8). The saved run 2 re-analyzes offline to ONE
     remaining failure, `transition-reset-count [2, 1]`: the first aplay blip
     cost two `service_requested_resets` (rate → unsupported at 2.10 s, then
-    carrier gone at 3.15 s), a genuine threshold left alone. Remaining: a
-    live `--with-replay` run on `b38e8448f5c8` (tool plan §Follow-on work).
+    carrier gone at 3.15 s), a genuine threshold left alone. **Live
+    `--with-replay` runs 2026-09-03 (three, tool plan §Live-run results —
+    2026-09-03):** the run found and reproduced the RX pool corruption
+    (§Open defects — runtime, fixed `baef793d0063`) and one tool defect (the
+    evidence polled through the U24 restore; fixed). On the fixed image the
+    only failure left is `transition-reset-count`, now read `[1, 2, 1]`
+    after `[1, 1, 1]` and the saved `[2, 1]`: an aplay blip costs one or two
+    resets depending on whether the carrier passes through an unsupported
+    measured rate before the new nominal is accepted (the acceptance then
+    resets again because `g_clock_relock_reset_nominal_hz` no longer
+    matches). **Owner decision owed**: (a) the declared aplay-blip stimulus
+    carries a ≤2 allowance in `transitions` only, or (b) the firmware skips
+    the acceptance reset when nothing was ingested since the quiesce reset
+    (live ingress is closed throughout, so the second reset re-types an
+    already-fresh pipeline; it also costs one extra PCM-confirm mute on a
+    real source rate change). Recommendation: (b), then gate 4 on the
+    unchanged threshold.
 - ~~**Two deploys owed for the 2026-08-16 status-page rework.**~~ **BOTH DONE
   the same evening, owner-directed ("sync and flash"), with audio playing and
   the interruption accepted after it was costed.**
@@ -272,6 +287,46 @@ ends left open:
   register that as a runtime defect.
 
 ## Open defects — runtime
+
+- ~~**RX pool corruption under replay: the retained S/PDIF receive ISR writes
+  past the AudioStream block pair whenever two DMA halves land between two
+  `update()` calls, and replay is exactly when they do (found 2026-09-03).**~~
+  **FIXED `baef793d0063`, verified live the same night.** Mechanism: the
+  snapshot's `AudioInputSPDIF3::isr()` (`input_spdif3.cpp:105-131`) guards
+  its copy with `offset <= AUDIO_BLOCK_SAMPLES*2`, then writes 128 samples at
+  `data[offset]` and advances `offset` by 256, so the second copy into an
+  unswapped pair lands at `data[256..383]`: 512 bytes past the pair, over the
+  next pool blocks' headers. Latent under the vendor's design (that ISR
+  drives `update_all()` first, so the pair is swapped and `offset` is 0 at
+  every copy), it fires once replay hands `update_all()` to the transmit
+  ISR (`replay_clock_service()`), because with the DPLL unlocked the receive
+  DMA storms at ~6.5x the block rate (2,453–2,465 `audio_update_calls`/s
+  measured across three runs) and several receive interrupts land per
+  transmit-driven `update()`. Corrupted `memory_pool_index` values then leak
+  blocks on `release()`. The first live `--with-replay` gate-4 run left the
+  board with two free blocks of `AudioMemory(24)`: `update()` found no pair
+  on exactly one call in three (`ingress_drop_missing_live` at 127/s against
+  366 update calls/s), every miss bumped the ingress generation,
+  `apply_generation()` reset the pipeline before it could type the stream,
+  and the board sat at `state 2`, `stream_rate_hz 0`, gate closed, with the
+  event ring flooding `AIUS_EVENT_OVERRUN` at ~190/s (61,914 drops, all
+  `missing_live`, `overruns` in lockstep) until reflashed. Fix
+  (`lib/aius_audio/src/aius_spdif_rx.h` + the `AiusSpdifRxHook` beside the
+  transmit hook in `aius_spdif_sources.cpp`, snapshot untouched): the
+  receive DMA vector is re-pointed at a handler that stages a half only into
+  an EMPTY pair, whole, through a pure `aius_spdif_rx_stage()` the
+  clock-target suite pins (offset 256 refused, tails intact); surplus halves
+  are dropped and counted. Two instruments added to `/api/status`
+  `input_diag`: `rx_dropped_halves` and `pool_blocks_used` /
+  `pool_blocks_used_max`. Live on `baef793d0063`: a full 48→44.1→48→loss→
+  replay→carrier-return cycle returned the board to PCM tracking at 48 kHz,
+  gate open, `overruns 0`, `missing_live 0`, pool 2 used / 4 max, with
+  `rx_dropped_halves` 7,195 — every one of them a half the old ISR would
+  have written past the pair. ITCM +192 B (190,956 used, 5,652 free).
+  Not changed, recorded: the unlocked-receiver DMA storm itself (the
+  receiver falls back to `tx_clk` under `SPDIF_SRPC_CLKSRC_SEL(1)`); it costs
+  ~6.5x ISR entries while dark and is now harmless. Proposal (not agreed):
+  gate the receive DMA request while the output drives the graph.
 
 - **OTA container verify is a one-epoch ~80 ms stall — an audible dropout
   when staged during playback (2026-08-16).** Measured live while staging

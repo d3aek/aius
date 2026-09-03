@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "../../lib/aius_audio/src/aius_audio_clock_internal.h"
+#include "../../lib/aius_audio/src/aius_spdif_rx.h"
 #include "../../lib/aius_audio/src/aius_spdif_tx24.h"
 
 namespace {
@@ -731,6 +732,72 @@ static void test_gate_open_set_level_pads_or_trims_to_target(void)
 	assert(aius_spdif_tx24_level(&ring) == 128u);
 }
 
+/* The receive staging (aius_spdif_rx.h): a DMA half fills only an EMPTY block
+ * pair, whole, and never writes past it. The snapshot's guard admitted
+ * offset == 2 * AUDIO_BLOCK_SAMPLES and wrote data[256..383] of a 128-sample
+ * block (RX pool corruption under replay, 2026-09-03); the tails below are the
+ * regression for that write. */
+static void test_rx_stage_fills_only_an_empty_pair(void)
+{
+	constexpr uint32_t BLOCK = 128u;
+	constexpr uint32_t TAIL = 256u;
+	constexpr int16_t SENTINEL = 0x5EE5;
+	int32_t half[2u * BLOCK];
+	int16_t left[BLOCK + TAIL];
+	int16_t right[BLOCK + TAIL];
+	for (uint32_t frame = 0u; frame < BLOCK; frame++) {
+		/* 24-bit words as the receiver delivers them; the low byte is what
+		 * the 16-bit reduction discards. */
+		half[2u * frame] = (int32_t)((frame << 8) | 0x5Au);
+		half[2u * frame + 1u] = -(int32_t)((frame + 1u) << 8);
+	}
+	for (uint32_t index = 0u; index < BLOCK + TAIL; index++) {
+		left[index] = SENTINEL;
+		right[index] = SENTINEL;
+	}
+	uint16_t offset = 0u;
+
+	assert(aius_spdif_rx_stage(half, BLOCK, left, right, &offset, BLOCK) == 1);
+	assert(offset == BLOCK);
+	assert(left[0] == 0);
+	assert(left[5] == 5);
+	assert(left[127] == 127);
+	assert(right[0] == -1);
+	assert(right[127] == -128);
+	for (uint32_t index = BLOCK; index < BLOCK + TAIL; index++) {
+		assert(left[index] == SENTINEL);
+		assert(right[index] == SENTINEL);
+	}
+
+	/* A staged pair is refused until update() swaps it back to empty ... */
+	left[0] = SENTINEL;
+	assert(aius_spdif_rx_stage(half, BLOCK, left, right, &offset, BLOCK) == 0);
+	assert(offset == BLOCK);
+	assert(left[0] == SENTINEL);
+	/* ... including at the exact offset the snapshot's guard let through. */
+	offset = (uint16_t)(2u * BLOCK);
+	assert(aius_spdif_rx_stage(half, BLOCK, left, right, &offset, BLOCK) == 0);
+	assert(offset == 2u * BLOCK);
+	for (uint32_t index = BLOCK; index < BLOCK + TAIL; index++) {
+		assert(left[index] == SENTINEL);
+		assert(right[index] == SENTINEL);
+	}
+
+	/* A half larger than the block, or empty, is refused whole. */
+	offset = 0u;
+	assert(aius_spdif_rx_stage(half, BLOCK + 1u, left, right, &offset,
+	                           BLOCK) == 0);
+	assert(offset == 0u);
+	assert(aius_spdif_rx_stage(half, 0u, left, right, &offset, BLOCK) == 0);
+	assert(offset == 0u);
+	assert(left[0] == SENTINEL);
+	assert(aius_spdif_rx_stage(nullptr, BLOCK, left, right, &offset,
+	                           BLOCK) == 0);
+	assert(aius_spdif_rx_stage(half, BLOCK, left, nullptr, &offset,
+	                           BLOCK) == 0);
+	assert(offset == 0u);
+}
+
 } /* namespace */
 
 uint32_t aius_audio_clock_fake_register_read(
@@ -763,6 +830,7 @@ int main(void)
 	test_flush_preserves_lifetime_diagnostics();
 	test_gate_open_trim_normalizes_occupancy();
 	test_gate_open_set_level_pads_or_trims_to_target();
+	test_rx_stage_fills_only_an_empty_pair();
 	puts("clock-target tests passed");
 	return 0;
 }

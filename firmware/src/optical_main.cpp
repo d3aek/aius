@@ -122,6 +122,7 @@ extern "C" const uint8_t _flashimagelen;
  * which holds the retained snapshot's own headers and is not ours to add to;
  * the path is relative for the same reason aius_spdif_sources.cpp's is. */
 #include "../lib/aius_audio/src/aius_spdif_tx24.h"
+#include "../lib/aius_audio/src/aius_spdif_rx.h"
 #include "../lib/aius_audio/src/aius_tx_governor.h"
 #include "aius_boot_teensy.h"
 #include "aius_cdc_teensy.h"
@@ -2012,6 +2013,12 @@ FLASHMEM void AiusAudioProcessor::begin_pipeline(void)
 	 * after the static AudioOutputSPDIF3 constructor has allocated the DMA
 	 * channel. */
 	aius_spdif_tx24_begin();
+	/* And the receive DMA interrupt: the snapshot's copy loop writes past the
+	 * block pair when two halves land between update() calls, which is what
+	 * the storming unlocked receiver does while replay drives the graph
+	 * (lib/aius_audio/src/aius_spdif_rx.h; register: RX pool corruption
+	 * under replay). Same placement reason as the transmit hook. */
+	aius_spdif_rx_begin();
 	aius_audio_clock_initialize();
 	/* The boot-lottery gate: cross-check the S/PDIF engine against the
 	 * DWT clock (delayMicroseconds is cycle-counter-driven, immune to
@@ -3147,7 +3154,10 @@ static FLASHMEM bool http_input_diag_json(char *output, size_t capacity,
 		"\"production_gap_over_count\":%lu,"
 		"\"production_gap_last_us\":%lu,"
 		"\"production_gap_last_at_ms\":%lu,"
-		"\"update_gap_max_us\":%lu}",
+		"\"update_gap_max_us\":%lu,"
+		"\"rx_dropped_halves\":%lu,"
+		"\"pool_blocks_used\":%lu,"
+		"\"pool_blocks_used_max\":%lu}",
 		(unsigned long)g_sis_biterr_events,
 		(unsigned long)g_sis_symerr_events,
 		(unsigned long)g_sis_lockloss_events,
@@ -3158,7 +3168,10 @@ static FLASHMEM bool http_input_diag_json(char *output, size_t capacity,
 		(unsigned long)g_enqueue_gap_over_count,
 		(unsigned long)g_enqueue_gap_last_us,
 		(unsigned long)g_enqueue_gap_last_at_ms,
-		(unsigned long)g_update_gap_max_us);
+		(unsigned long)g_update_gap_max_us,
+		(unsigned long)aius_spdif_rx_dropped_halves(),
+		(unsigned long)AudioStream::memory_used,
+		(unsigned long)AudioStream::memory_used_max);
 }
 
 /* The previous boot's retained forensics, HTTP-readable (they were CDC-only

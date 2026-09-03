@@ -1625,11 +1625,17 @@ def assert_transmit_isr_drains_the_24_bit_ring(text):
          "with no carrier processes zero blocks again"),
     ):
         assert needle in clean, f"the transmit handler omits {needle!r}: {why}"
-    assert "<< 8" not in clean, (
+    # The handler's own body, not the file: the receive hook beside it
+    # (assert_receive_isr_stages_only_into_an_empty_pair) legitimately handles
+    # audio_block_t, because the receive side still feeds the AudioStream graph.
+    handler = without_comments_and_literals(
+        function_body(text, "void AiusSpdifTx24Hook::isr(void)")
+    )
+    assert "<< 8" not in handler, (
         "the transmit handler shifts by 8, which is the 16-bit reduction it "
         "exists to remove: the DSP's word goes into the 24-bit register unchanged"
     )
-    assert "audio_block_t" not in clean, (
+    assert "audio_block_t" not in handler, (
         "the transmit handler still touches audio_block_t; bypassing that type "
         "for the final hop is the whole point of the path"
     )
@@ -1650,6 +1656,46 @@ def assert_transmit_isr_drains_the_24_bit_ring(text):
         )
 
 
+def assert_receive_isr_stages_only_into_an_empty_pair(text):
+    """`text` here is lib/aius_audio/src/aius_spdif_sources.cpp.
+
+    The retained receive snapshot's isr() copies at `data[offset]` under a guard
+    that admits offset == 2 * AUDIO_BLOCK_SAMPLES, 512 bytes past the block
+    pair, whenever two DMA halves land between update() calls -- which is what
+    the unlocked receiver's DMA storm does while replay drives the graph (RX
+    pool corruption under replay, 2026-09-03: the pool leaked down to two free
+    blocks and the pipeline never typed the stream again). Our handler stages
+    through aius_spdif_rx_stage(), which refuses a non-empty pair."""
+    handler = without_comments_and_literals(
+        function_body(text, "void AiusSpdifRxHook::isr(void)")
+    )
+    for needle, why in (
+        ("aius_spdif_rx_stage(",
+         "the handler must stage through the guarded copy; that guard is what "
+         "refuses a pair the graph has not consumed"),
+        ("dma.clearInterrupt(",
+         "an unacknowledged DMA interrupt re-enters immediately"),
+        ("arm_dcache_delete(",
+         "spdif_rx_buffer is cached OCRAM the DMA writes, so the half must be "
+         "invalidated or the copy reads stale words"),
+        ("update_responsibility",
+         "the receiver must still drive update_all() while it is the graph "
+         "master, or live passthrough processes zero blocks"),
+    ):
+        assert needle in handler, f"the receive handler omits {needle!r}: {why}"
+    assert "data[offset]" not in handler and "block_offset +" not in handler, (
+        "the receive handler indexes the pair by the snapshot's running offset; "
+        "the guarded stage is the only sanctioned copy into a block"
+    )
+    install = without_comments_and_literals(
+        function_body(text, "FLASHMEM void AiusSpdifRxHook::install(void)")
+    )
+    assert "dma.attachInterrupt(AiusSpdifRxHook::isr)" in install, (
+        "nothing redirects the receive DMA vector, so the snapshot's copy loop "
+        "stays installed and the out-of-bounds write returns with the next replay"
+    )
+
+
 OUTPUT_PATH_CHECKS = (
     (
         "the retained S/PDIF snapshot is unpatched",
@@ -1661,6 +1707,10 @@ TRANSMIT_MODULE_CHECKS = (
     (
         "the transmit ISR drains the 24-bit ring into SPDIF_tx_buffer",
         assert_transmit_isr_drains_the_24_bit_ring,
+    ),
+    (
+        "the receive ISR stages only into an empty block pair",
+        assert_receive_isr_stages_only_into_an_empty_pair,
     ),
 )
 
@@ -4730,6 +4780,82 @@ static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
             1,
         ),
         "tx-isr/extra-snapshot-include", "two retained snapshot includes",
+    )
+    # audio_block_t in a SIBLING function is fine; in the transmit handler it
+    # is the 16-bit hop the path exists to remove.
+    _expect_pass(
+        assert_transmit_isr_drains_the_24_bit_ring,
+        good_isr + "void other(void)\n{\n\taudio_block_t *b = nullptr;\n}\n",
+        "tx-isr/audio-block-elsewhere",
+    )
+    _expect_fail(
+        assert_transmit_isr_drains_the_24_bit_ring,
+        good_isr.replace(
+            "\tdma.clearInterrupt();\n",
+            "\tdma.clearInterrupt();\n\taudio_block_t *b = nullptr;\n",
+            1,
+        ),
+        "tx-isr/audio-block-in-handler", "touches audio_block_t",
+    )
+
+    # the receive ISR stages only into an empty block pair.
+    good_rx = (
+        "void AiusSpdifRxHook::isr(void)\n"
+        "{\n"
+        "\tdma.clearInterrupt();\n"
+        "\tif (update_responsibility)\n"
+        "\t\tupdate_all();\n"
+        "\tarm_dcache_delete(src, AUDIO_BLOCK_SAMPLES * 2 * sizeof *src);\n"
+        "\tif (!aius_spdif_rx_stage(src, AUDIO_BLOCK_SAMPLES, left->data,\n"
+        "\t                         right->data, &block_offset, AUDIO_BLOCK_SAMPLES))\n"
+        "\t\tdropped_halves++;\n"
+        "}\n"
+        "FLASHMEM void AiusSpdifRxHook::install(void)\n"
+        "{\n"
+        "\tdma.attachInterrupt(AiusSpdifRxHook::isr);\n"
+        "}\n"
+    )
+    _expect_pass(
+        assert_receive_isr_stages_only_into_an_empty_pair, good_rx, "rx-isr/good"
+    )
+    for removed, needle in (
+        ("\tdma.clearInterrupt();\n", "dma.clearInterrupt("),
+        ("\tarm_dcache_delete(src, AUDIO_BLOCK_SAMPLES * 2 * sizeof *src);\n",
+         "arm_dcache_delete("),
+        ("\tif (update_responsibility)\n\t\tupdate_all();\n",
+         "update_responsibility"),
+    ):
+        _expect_fail(
+            assert_receive_isr_stages_only_into_an_empty_pair,
+            good_rx.replace(removed, "", 1),
+            f"rx-isr/missing-{needle}", needle,
+        )
+    # THE REGRESSION: the snapshot's copy loop back in our handler.
+    _expect_fail(
+        assert_receive_isr_stages_only_into_an_empty_pair,
+        good_rx.replace(
+            "\tif (!aius_spdif_rx_stage(src, AUDIO_BLOCK_SAMPLES, left->data,\n"
+            "\t                         right->data, &block_offset, AUDIO_BLOCK_SAMPLES))\n"
+            "\t\tdropped_halves++;\n",
+            "\tdest_left = &(left->data[offset]);\n"
+            "\tblock_offset = offset + AUDIO_BLOCK_SAMPLES * 2;\n",
+            1,
+        ),
+        "rx-isr/snapshot-copy-loop", "guarded copy",
+    )
+    _expect_fail(
+        assert_receive_isr_stages_only_into_an_empty_pair,
+        good_rx.replace(
+            "\t\tdropped_halves++;\n",
+            "\t\tdropped_halves++;\n\tdest_left = &(left->data[offset]);\n",
+            1,
+        ),
+        "rx-isr/running-offset", "running offset",
+    )
+    _expect_fail(
+        assert_receive_isr_stages_only_into_an_empty_pair,
+        good_rx.replace("\tdma.attachInterrupt(AiusSpdifRxHook::isr);\n", "", 1),
+        "rx-isr/vector-not-redirected", "redirects the receive DMA vector",
     )
 
 
