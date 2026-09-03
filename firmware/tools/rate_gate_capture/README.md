@@ -230,8 +230,9 @@ slot and reduces. Operational contracts:
 - **The evidence ends with the declared stimulus.** Under `--with-replay` the
   poller is stopped and joined BEFORE the U24 is re-authorized: the restore is
   bench housekeeping, not a driven phase, and its re-enumeration edge (four
-  garbage-rate `unsupported` events, the interrupted replay unit abandoned as
-  `MALFORMED`) is a replay→live transition `expected_phases` never declares.
+  garbage-rate `unsupported` events, the interrupted replay unit abandoned once
+  with `pipeline_last_failure` `TRUNCATED` — `MALFORMED` on images before
+  2026-09-03) is a replay→live transition `expected_phases` never declares.
   Polled, the analyzer judged it as `transition-unattributed-unsupported` and
   a `harmful-counter` on `au_abandons` (live run 1, 2026-09-03).
 - **Ring capacity is checked against what the measurement needs.** The

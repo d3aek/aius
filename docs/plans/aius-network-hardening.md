@@ -1814,7 +1814,9 @@ table.
     teardown dropped partial work silently. Discontinuity now kills staged
     partial compressed input before any decode, counted once in
     `au_abandons` (widened, documented) with a
-    `service_diag.last_failure = AIUS_MALFORMED` observation; the
+    `service_diag.last_failure = AIUS_MALFORMED` observation (relabelled
+    `AIUS_TRUNCATED` 2026-09-03: a cut burst is not corrupt; see the
+    open-work register's closed `au_abandons` entry); the
     `last_status` latch semantics are untouched. STILL OPEN, two halves:
     (1) the 120 ms wall-clock unit itself — candidates are the sink path
     (`enqueue` -> apply_config/DSP/recorder/measure taps), ISR preemption

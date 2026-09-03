@@ -370,7 +370,8 @@ AiusStatus aius_pipeline_finish(AiusPipeline *p);
  * compressed input -- a burst the parser is inside, or a de-framed AU nothing
  * has decoded yet -- is dropped HERE, before any decoder can be handed a unit
  * that was completed from post-discontinuity words, and the drop counts ONE
- * au_abandon with AIUS_MALFORMED in the service diag's last_failure. An AU that
+ * au_abandon with AIUS_TRUNCATED in the service diag's last_failure (the burst
+ * was cut, not corrupt; MALFORMED stays the parser's own verdict). An AU that
  * is already emitting blocks is not counted here; the caller that observed its
  * failure counts it. */
 void aius_pipeline_reset(AiusPipeline *p);

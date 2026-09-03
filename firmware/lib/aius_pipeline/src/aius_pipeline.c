@@ -690,9 +690,14 @@ static void cleanup_pending(AiusPipeline *p)
  * compressed input that never reached a decoder -- which is the honest reading,
  * and the reason the live event could not be attributed: it read zero abandons
  * from end to end while a whole access unit was thrown away. `last_failure`
- * carries the observation across the reset that follows; `last_status` is left
- * to aius_pipeline_reset's documented clear, so the operator-owned latch keeps
- * its existing semantics exactly.
+ * carries the observation across the reset that follows, as AIUS_TRUNCATED:
+ * MALFORMED asserts the source emitted corrupt data, and a cut burst is not
+ * corrupt, it is truncated -- the word aius_pipeline_finish already uses for a
+ * burst the input ended inside. So a genuinely corrupt burst (the parser's own
+ * MALFORMED) and a burst a carrier return or replay stop cut short stay
+ * distinguishable on the wire, and the cut no longer reads as a board fault.
+ * `last_status` is left to aius_pipeline_reset's documented clear, so the
+ * operator-owned latch keeps its existing semantics exactly.
  *
  * A completed-but-unserviced AU counts too (it is staged compressed work with no
  * decode attempt). An AU already emitting blocks does NOT: aius_pipeline_push's
@@ -708,7 +713,7 @@ static void drop_staged_compressed_input(AiusPipeline *p)
 	cleanup_pending(p);
 	if (staged) {
 		p->service_diag.au_abandons++;
-		p->service_diag.last_failure = AIUS_MALFORMED;
+		p->service_diag.last_failure = AIUS_TRUNCATED;
 	}
 }
 

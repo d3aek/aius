@@ -399,10 +399,19 @@ ends left open:
   `2,3,1.5` stimulus, `verdict pass`, digest `5a8ff1aa…`): `au_abandons`
   delta 0 through the 48→44.1→48→loss→replay evidence, then 0 → 1 with
   `pipeline_last_failure 3` at the single carrier return after the U24
-  restore — exactly the one cut DTS burst. Product call, recorded not agreed: whether an
-  operator-initiated displacement of a compressed replay should count as a
-  MALFORMED abandon at all; changing that is a design change to defect 35's
-  "honest reading", not a fix.
+  restore — exactly the one cut DTS burst. Product call, taken 2026-09-03:
+  the count stays (an AU's worth of staged input was thrown away, and
+  `au_abandons` is work accounting), but the latch is now `AIUS_TRUNCATED`
+  (4), not `AIUS_MALFORMED` (3). MALFORMED asserts the source emitted
+  corrupt data; a cut burst is not corrupt, it is truncated, the word
+  `aius_pipeline_finish()` already uses for a mid-parse burst — so a
+  genuinely corrupt burst (the parser's own MALFORMED) and a cut one are
+  distinguishable on `audio_diag.pipeline_last_failure`, and a carrier
+  return over a compressed replay no longer reads as a board fault.
+  Pinned by `test_teardown_drops_partial_burst` and
+  `test_discontinuity_counts_only_committed_bursts`; live proof pending
+  (the next `--with-replay` gate-4 run should read `pipeline_last_failure
+  4` after the U24 restore).
 
 - **OTA container verify is a one-epoch ~80 ms stall — an audible dropout
   when staged during playback (2026-08-16).** Measured live while staging

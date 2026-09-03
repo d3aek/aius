@@ -2502,8 +2502,8 @@ static void test_teardown_drops_partial_burst(const char *dir, const char *name,
 		CHECK(after.au_abandons == 1u,
 		      "teardown %s: staged partial compressed input was dropped "
 		      "with %u abandons, not 1", name, after.au_abandons);
-		CHECK(after.last_failure == AIUS_MALFORMED,
-		      "teardown %s: the drop left no observation (last_failure=%d)",
+		CHECK(after.last_failure == AIUS_TRUNCATED,
+		      "teardown %s: the drop did not latch TRUNCATED (last_failure=%d)",
 		      name, (int)after.last_failure);
 		CHECK(after.decode_units == before.decode_units,
 		      "teardown %s: the discontinuity itself decoded something", name);
@@ -2546,7 +2546,7 @@ static void test_teardown_drops_partial_burst(const char *dir, const char *name,
 		              metrics.last_status == AIUS_OK,
 		      "teardown %s: reset stopped clearing the observation latch",
 		      name);
-		CHECK(final.last_failure == AIUS_MALFORMED,
+		CHECK(final.last_failure == AIUS_TRUNCATED,
 		      "teardown %s: the drop's observation was erased by recovery",
 		      name);
 		capture_free(&cap);
@@ -2608,7 +2608,10 @@ static void test_teardown_drops_partial_burst(const char *dir, const char *name,
  * inter-burst stuffing, over a PCM-classified stream carrying a false Pa, over
  * an undecided staging window that ends in a lone Pa, or over a bare Pa. The
  * parser sees no word at all in the PCM and UNKNOWN classes, so those legs also
- * pin that a reset over them cannot latch MALFORMED. */
+ * pin that a reset over them latches nothing. The counted cut latches
+ * TRUNCATED, not the MALFORMED the live run read: a cut burst is not corrupt,
+ * and the parser's own MALFORMED verdict must stay distinguishable from it on
+ * `pipeline_last_failure`. */
 static void scrub_sync_words(uint16_t *w, size_t n)
 {
 	for (size_t i = 0; i < n; i++) {
@@ -2628,7 +2631,7 @@ static void check_reset_counts(AiusPipeline *p, uint32_t expected_abandons,
 	      "cut-burst %s: reset counted %u abandons, not %u", leg,
 	      diag.au_abandons, expected_abandons);
 	CHECK(diag.last_failure ==
-	              (expected_abandons ? AIUS_MALFORMED : AIUS_OK),
+	              (expected_abandons ? AIUS_TRUNCATED : AIUS_OK),
 	      "cut-burst %s: last_failure %d after the reset", leg,
 	      (int)diag.last_failure);
 	CHECK(aius_pipeline_classification(p) == AIUS_PIPELINE_UNKNOWN,

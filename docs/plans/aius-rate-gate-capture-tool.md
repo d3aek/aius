@@ -410,7 +410,9 @@ more to the point, was symmetric where the stimulus need not be.
   gate open, `tx_underrun_frames 0`, `gate_open_padded_frames` 128 → 1280
   (three live relocks + one replay start), pool 2 / 4, `au_abandons` 0 → 1
   with `pipeline_last_failure 3` — the one carrier return of the run, the
-  register's closed `au_abandons` item (a DTS replay's cut burst, by design).
+  register's closed `au_abandons` item (a DTS replay's cut burst, by design;
+  from the next image the latch reads `4` truncated, not `3` malformed — the
+  register entry records the relabel).
 
 ## Live-run results — 2026-09-01 (INVALIDATED, re-run required)
 
