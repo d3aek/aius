@@ -39,7 +39,12 @@ decisions); gate 4's green pass waits on it.
 | `git_modules/aius` `baef793` | `CLAUDE.md` deployed-image line `b38e8448f5c8` (operator-approved promote) | docs only |
 | upstream repository `3bd69d68e` | pointer bump for `baef793` | — |
 | `git_modules/aius` (this session's fix commit; see `git log`) | `firmware/lib/aius_audio/src/aius_spdif_rx.h` (pure guarded stager) + `AiusSpdifRxHook` in `aius_spdif_sources.cpp` re-pointing the receive DMA vector; `input_spdif3.h` block statics protected; `optical_main.cpp` installs the hook and emits `input_diag.rx_dropped_halves` / `pool_blocks_used` / `pool_blocks_used_max`; `recorder_transitions.py` stops the poller before the U24 restore; optical-cutover re-pin (transmit checks scoped to the transmit handler, receive-hook pin + self-test mutations); clock-target case `test_rx_stage_fills_only_an_empty_pair`; README contract bullet; register entry (fixed) + decision text; tool plan §Live-run results — 2026-09-03 | clock-target green; optical-cutover 33/1/1/2/6 green; itcm-placement 29 + 5 target guards green; `teensy41-optical` SUCCESS, ITCM 190,956 / 5,652 free; flashed `baef793d0063`, run 3 live: board back to PCM after replay + carrier return, `overruns 0`, pool 2/4 |
-| upstream repository (this session) | `swagger.json` `InputDiag` + the three fields; pointer bump | `swagger.test.js` 11 green; prettier clean |
+| upstream repository `84ef63032` | `swagger.json` `InputDiag` + the three fields; pointer bump to `dc16e75` | `swagger.test.js` 11 green; prettier clean |
+
+The fix commit is `git_modules/aius` `dc16e75`. After it landed the board was reflashed
+from the committed tree for a clean stamp: **`dc16e7522250+teensy41-optical` is the
+deployed image** (2026-09-03 06:28 UTC; healthy on boot, `pool_blocks_used 2 / max 4`,
+`overruns 0`). The queued `CLAUDE.md` promote names it.
 
 ### Uncommitted tree state
 
