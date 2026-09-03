@@ -5,7 +5,7 @@ scope: component
 component: aius
 status: in-progress
 tags: [aius, firmware, audio, latency, jitter, monitoring]
-updated: 2026-08-19
+updated: 2026-09-03
 ---
 
 # Aius output jitter elimination
@@ -192,9 +192,10 @@ viewing the same evening.
   was frozen from the first dropout onward, and a frozen recorder counts
   nothing (`suppressed_triggers` only ticks during post-roll).
 
-Related but distinct: the open register entry "Open-gate 128-frame TX
+Related but distinct: the register entry "Open-gate 128-frame TX
 underrun, unexplained (2026-07-31)" is this same class, observed once before
-the tuning to 128 even landed.
+the tuning to 128 even landed (struck 2026-09-03: explained and fixed by
+Phase F).
 
 ## Locked decisions (owner, 2026-08-16)
 
@@ -209,7 +210,12 @@ the tuning to 128 even landed.
 
 ## Phases
 
-### Phase A — drop the meters analysis window
+Heading markers for Phases A–D added 2026-09-03 from their own records: A, C and
+D landed together in aius `d8e2a2d` (2026-08-16; A's editor half completed the
+same day in `725e280`), B in aius `9748752` (2026-08-16); the register's
+2026-08-15 `tx_underrun_frames` entry records D closed 2026-08-16.
+
+### Phase A — drop the meters analysis window ✓ SHIPPED 2026-08-16
 
 - outcome: `/api/meters` no longer serves `analysis_window` /
   `analysis_count` / `analysis_full_scale`; response shrinks to bars, GR and
@@ -241,7 +247,7 @@ the tuning to 128 even landed.
   the removed feature and are owed a re-render; its hero recipe needs a new
   lower anchor because `#spectrogram` was its old one.
 
-### Phase B — interleave a second audio-service pass
+### Phase B — interleave a second audio-service pass ✓ SHIPPED 2026-08-16
 
 - outcome: pipeline absence per epoch is bounded by one heavy segment, not
   the sum: an extra TX-refill/audio pass runs after the HTTP checkpoint, so
@@ -256,7 +262,7 @@ the tuning to 128 even landed.
   soak in the acceptance run below.
 - unit: parent-only
 
-### Phase C — pause SD hot-plug probe while the gate is open
+### Phase C — pause SD hot-plug probe while the gate is open ✓ SHIPPED 2026-08-16
 
 - outcome: no routine card primitive runs while live audio is being emitted;
   `root_jobs` stops advancing during playback. Hot insert/removal detection
@@ -282,7 +288,7 @@ the tuning to 128 even landed.
   again after gate close.
 - unit: parent-only
 
-### Phase D — gate-open-only underrun counter
+### Phase D — gate-open-only underrun counter ✓ SHIPPED 2026-08-16
 
 - outcome: `tx_underrun_frames` counts substituted-silence frames only while
   the TX gate is open — a true glitch metric that neither wraps in idle nor
@@ -295,7 +301,19 @@ the tuning to 128 even landed.
   adversarial hot-path review together with Phase B.
 - unit: parent-only
 
-### Phase E — PCM latency decomposition + ratchet governor IN-PROGRESS (decomposed + governor built 2026-08-16; live verify owed)
+### Phase E — PCM latency decomposition + ratchet governor ✓ SHIPPED 2026-09-03 (decomposition; governor RETIRED)
+
+**Closed 2026-09-03 by design decision D9
+([`aius-outstanding-work-2026-09.md`](aius-outstanding-work-2026-09.md)
+§Decisions):** the governor is not wanted — "it introduces systematic latency
+with repeated triggers; I preferred a silent output but not a buzz/stall in the
+output stream." `AIUS_TX_GOVERNOR_ENABLED` stays 0 on every image (it was never
+enabled on the board), the pure rule and its `tx-governor` host suite stay as
+host-proven code, and the standing behaviour on a stall is Phase F's silence pad
+at the gate-open edge. The decomposition below is the phase's delivered value;
+the "live verify owed" step is void. The acceptance evening and the pop verdict
+are re-read against that preference — a stall must produce silence, never a buzz
+— and are owner-scheduled listening (that plan's Phase 9).
 
 **Finding, 2026-08-16 (the attempt's value):** `AIUS_PIPELINE_PCM_BLOCK_FRAMES`
 at 512 is **load-bearing for re-type containment**, not just a buffer size. A
@@ -352,9 +370,9 @@ UNTOUCHED, so the re-type containment above is not reopened. Served as
 
 - outcome: ✓ decomposed (above); the governor removes the episodic term; the
   structural ~14–16 ms term is accepted as the cost of the load-bearing
-  512-frame quantum. Remaining: live verify on the deployed image — induce
-  an SD-traffic stall during playback, watch one `governor_trims` increment
-  return `estimated_latency_us` to the baseline band.
+  512-frame quantum. The live verify that was owed here (induce an SD-traffic
+  stall, watch one `governor_trims` increment) is void: the governor was
+  retired by design decision D9 on 2026-09-03 (heading note).
 - seams: `aius_tx_governor.h` (pure decision) / `enqueue()` tap + masked
   trim / clock JSON + swagger.
 - targeted-proof: `tx-governor` host suite (8 rows: clean floor, deadband
