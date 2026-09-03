@@ -47,10 +47,11 @@ extern "C" {
  *                                  position latched first)
  *   RECORDING/POSTROLL
  *             -> DRAINING   epoch (reclaim: the block counter unchanged for
- *                                  AIUS_RECORDER_RECLAIM_EPOCHS epochs while
- *                                  a token is pending or post-roll is open --
- *                                  the underrun and carrier-loss triggers
- *                                  fire precisely when blocks may stop)
+ *                                  AIUS_RECORDER_RECLAIM_MS of the caller's
+ *                                  now_ms while a token is pending or
+ *                                  post-roll is open -- the underrun and
+ *                                  carrier-loss triggers fire precisely when
+ *                                  blocks may stop)
  *   DRAINING  -> FROZEN     epoch (drain flushed the staging remnant; the
  *                                  capture is not readable before this)
  *   FROZEN    -> RECORDING  epoch (thaw; increments freeze_generation)
@@ -82,11 +83,23 @@ extern "C" {
 /* Interleaved stereo s32 frame. */
 #define AIUS_RECORDER_FRAME_BYTES 8u
 
-/* Epochs with the producer block counter unchanged before the controller reclaims a
- * pending token or an open post-roll. Playback epochs run ~115/s, so this is
- * ~280 ms -- a producer silent for that long has stopped (the
- * stream stops in whole-block units). */
-#define AIUS_RECORDER_RECLAIM_EPOCHS 32u
+/* Milliseconds of the caller's now_ms with the producer block counter
+ * unchanged before the controller reclaims a pending token or an open
+ * post-roll. 280 ms is ~26 block periods at the 512-frame / 10.67 ms block: a
+ * producer silent for that long has stopped (the stream stops in whole-block
+ * units), while one that is merely between two consecutive blocks has not.
+ *
+ * A TIME, DELIBERATELY NOT AN EPOCH COUNT. The epoch rate is not a constant
+ * of this design -- it is whatever the main loop's checkpoint cadence happens
+ * to be, and it moved without this library noticing: the window was first
+ * written as 32 epochs against a measured ~115 epoch/s (~280 ms), then the
+ * runtime came to run ~6,500 epoch/s (2026-09-03, image f28a347d0a68), so 32
+ * epochs elapsed in ~4.9 ms, inside one block period, and every freeze was
+ * reclaimed between two consecutive blocks with postroll_captured 0. Measured
+ * against now_ms the window means what it says whatever the loop does. The
+ * comparison is an unsigned subtraction, so it is correct across the u32
+ * millisecond wrap. */
+#define AIUS_RECORDER_RECLAIM_MS 280u
 
 /* Underrun-trigger settle window, in CONSECUTIVE cleanly-staged 512-frame
  * blocks under an open gate (~85 ms): a boot bring-up or post-thaw session
@@ -264,8 +277,14 @@ typedef struct {
 	uint32_t freeze_generation;
 	uint32_t carrier_prev;
 	uint32_t underrun_base_epoch;
+	/* Reclaim window: the producer block count last observed by the epoch
+	 * and the now_ms at which it was first seen at that value. Reclaim fires
+	 * once now_ms - reclaim_since_ms reaches AIUS_RECORDER_RECLAIM_MS with the
+	 * count still unchanged. reset_capture leaves reclaim_blocks at UINT32_MAX
+	 * ("nothing observed yet") so the first epoch after init/thaw starts the
+	 * window at its own now_ms rather than at a stale or zero stamp. */
 	uint32_t reclaim_blocks;
-	uint32_t reclaim_count;
+	uint32_t reclaim_since_ms;
 
 	/* Config: written cold by set_config/init, read per producer block. */
 	uint32_t default_sample_rate_hz;  /* reported until a frame is staged */
@@ -328,8 +347,8 @@ void aius_recorder_producer_block(AiusRecorder *r, const int32_t *l,
  * falling edge under the gate qualification; the underrun fallback under the
  * same latched gate, for the producer-stall case where no block is committed
  * again), sets the freeze token for them, and reclaims a pending token or
- * open post-roll after AIUS_RECORDER_RECLAIM_EPOCHS epochs with the block
- * counter unchanged. */
+ * open post-roll once the block counter has been unchanged for
+ * AIUS_RECORDER_RECLAIM_MS of now_ms (wrap-safe unsigned difference). */
 void aius_recorder_epoch(AiusRecorder *r, bool carrier_locked, bool gate_open,
                          uint32_t underruns, uint32_t now_ms);
 

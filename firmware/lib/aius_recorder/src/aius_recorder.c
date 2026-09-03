@@ -90,8 +90,13 @@ static FLASHMEM void reset_capture(AiusRecorder *r)
 	r->trigger_at_block = 0u;
 	r->trigger_at_ms = 0u;
 	r->freeze_token = 0u;
-	r->reclaim_blocks = 0u;
-	r->reclaim_count = 0u;
+	/* "Nothing observed yet": blocks_staged is 0 here, so the first epoch
+	 * to look sees a change and starts the reclaim window at its own now_ms.
+	 * A zero stamp instead would let a token set on the first epoch after a
+	 * thaw (a carrier edge the inherited history still detects) reclaim at
+	 * once, since now_ms - 0 is already past the window. */
+	r->reclaim_blocks = UINT32_MAX;
+	r->reclaim_since_ms = 0u;
 }
 
 FLASHMEM AiusStatus aius_recorder_init(AiusRecorder *r, uint8_t *ring,
@@ -313,7 +318,7 @@ FLASHMEM void aius_recorder_producer_block(AiusRecorder *r, const int32_t *l,
 }
 
 /* Controller: reclaim after the producer block counter remains unchanged for
- * the bounded window. */
+ * AIUS_RECORDER_RECLAIM_MS. */
 static FLASHMEM void epoch_reclaim(AiusRecorder *r, uint32_t now_ms)
 {
 	uint32_t state = r->state;
@@ -383,22 +388,28 @@ FLASHMEM void aius_recorder_epoch(AiusRecorder *r, bool carrier_locked,
 	r->underrun_base_epoch = underruns;
 
 	/* Reclaim: a pending token or an open post-roll with the block counter
-	 * unchanged for the bounded window means the producer stopped. */
+	 * unchanged for AIUS_RECORDER_RECLAIM_MS means the producer stopped.
+	 * Measured in the caller's milliseconds, never in epochs: the epoch rate
+	 * is whatever the main loop runs at (~6,500/s measured 2026-09-03, not
+	 * the ~115/s an epoch count was once calibrated against), and a count
+	 * of epochs elapsed inside one block period, reclaiming every capture
+	 * between two consecutive blocks. The unsigned difference is correct
+	 * across the u32 millisecond wrap. */
 	state = r->state;
 	if ((state == AIUS_RECORDER_RECORDING && r->freeze_token != 0u) ||
 	    state == AIUS_RECORDER_POSTROLL) {
 		uint32_t blocks = r->blocks_staged;
 		if (blocks == r->reclaim_blocks) {
-			r->reclaim_count++;
-			if (r->reclaim_count >= AIUS_RECORDER_RECLAIM_EPOCHS)
+			if ((uint32_t)(now_ms - r->reclaim_since_ms) >=
+			    AIUS_RECORDER_RECLAIM_MS)
 				epoch_reclaim(r, now_ms);
 		} else {
 			r->reclaim_blocks = blocks;
-			r->reclaim_count = 0u;
+			r->reclaim_since_ms = now_ms;
 		}
 	} else {
 		r->reclaim_blocks = r->blocks_staged;
-		r->reclaim_count = 0u;
+		r->reclaim_since_ms = now_ms;
 	}
 }
 

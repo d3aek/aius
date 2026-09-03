@@ -541,15 +541,251 @@ static void test_underrun_epoch_fallback_and_reclaim(void)
 	aius_recorder_epoch(&f.r, false, true, 4096u, 151u);
 	assert(f.r.freeze_token == AIUS_RECORDER_TRIGGER_UNDERRUN);
 	assert(f.r.state == AIUS_RECORDER_RECORDING);
-	/* ...and with the block counter unchanged, reclaims after the bound:
-	 * the transition happens epoch-side with the token's identity. */
-	for (uint32_t i = 0; i < AIUS_RECORDER_RECLAIM_EPOCHS; i++)
-		aius_recorder_epoch(&f.r, false, true, 4096u, 152u + i);
+	/* ...and with the block counter unchanged, reclaims once
+	 * AIUS_RECORDER_RECLAIM_MS has elapsed since the epoch that last saw
+	 * the counter (150 ms above) -- not after any number of epochs. Sixty
+	 * epochs in the next 50 ms leave it pending; the 280 ms mark takes it.
+	 * The transition happens epoch-side with the token's identity. */
+	for (uint32_t i = 0; i < 60u; i++)
+		aius_recorder_epoch(&f.r, false, true, 4096u, 152u + i / 2u);
+	assert(f.r.state == AIUS_RECORDER_RECORDING);
+	aius_recorder_epoch(&f.r, false, true, 4096u,
+	                    150u + AIUS_RECORDER_RECLAIM_MS - 1u);
+	assert(f.r.state == AIUS_RECORDER_RECORDING);
+	aius_recorder_epoch(&f.r, false, true, 4096u,
+	                    150u + AIUS_RECORDER_RECLAIM_MS);
 	assert(f.r.state == AIUS_RECORDER_DRAINING);
 	assert(f.r.trigger == AIUS_RECORDER_TRIGGER_UNDERRUN);
 	assert(f.r.end_frame == 8u * (1u + AIUS_RECORDER_SETTLE_BLOCKS));
 	drain_all(&f);
 	assert(f.r.state == AIUS_RECORDER_FROZEN);
+}
+
+/* The runtime's cadences, in microseconds, for the rows that drive the
+ * reclaim window the way the board does: a 512-frame block every 10.67 ms at
+ * 48 kHz, and an epoch every ~154 us (the ~6,500 epoch/s measured 2026-09-03,
+ * against which the old 32-EPOCH window elapsed in ~4.9 ms, inside one block
+ * period). now_ms is the truncated millisecond of the microsecond clock. */
+#define RUNTIME_BLOCK_US 10667u
+#define RUNTIME_EPOCH_US 154u
+
+/* Run epochs at the runtime cadence until the clock reaches until_us. The
+ * gate is open and the carrier never locks, so no epoch-side trigger can
+ * fire: the only epoch-side transition on offer is the reclaim. */
+static void run_epochs_until(Fixture *f, uint32_t *t_us, uint32_t until_us)
+{
+	while (*t_us < until_us) {
+		aius_recorder_epoch(&f->r, false, true, 0u, *t_us / 1000u);
+		*t_us += RUNTIME_EPOCH_US;
+	}
+}
+
+/* THE BENCH DEFECT (2026-09-03, image f28a347d0a68): every operator freeze
+ * read postroll_captured 0 against postroll_blocks 188, because ~69 epochs
+ * run between two consecutive blocks and the reclaim counted 32 of them as
+ * "the producer stopped". Drive the runtime's exact cadence and prove the
+ * full post-roll is captured: the token is acknowledged by the producer
+ * (not reclaimed by the epochs before it), POSTROLL survives every
+ * inter-block gap, and the capture ends by the producer's count with
+ * postroll_captured == postroll_blocks. */
+static void test_postroll_survives_runtime_epoch_cadence(void)
+{
+	Fixture f;
+	fixture_init(&f);
+	assert(aius_recorder_set_config(&f.r, AIUS_RECORDER_MASK_DEFAULT, 0.0f,
+	                                1u, AIUS_RECORDER_POSTROLL_DEFAULT_BLOCKS)
+	       == AIUS_OK);
+	uint32_t t_us = 0u;
+	/* Steady recording for a few blocks first. */
+	for (uint32_t b = 0; b < 4u; b++) {
+		run_epochs_until(&f, &t_us, (b + 1u) * RUNTIME_BLOCK_US);
+		feed_block(&f, 8u, 0, 0u, 0u);
+		drain_all(&f);
+	}
+	uint32_t next_block_us = 5u * RUNTIME_BLOCK_US;
+	/* Operator freeze lands mid-period; a full inter-block run of epochs
+	 * follows before the producer's next block. */
+	assert(aius_recorder_freeze(&f.r) == AIUS_OK);
+	run_epochs_until(&f, &t_us, next_block_us);
+	assert(f.r.state == AIUS_RECORDER_RECORDING);
+	assert(f.r.freeze_token == AIUS_RECORDER_TRIGGER_OPERATOR);
+	feed_block(&f, 8u, 0, 0u, 0u); /* acknowledges the token */
+	drain_all(&f);
+	assert(f.r.state == AIUS_RECORDER_POSTROLL);
+	assert(f.r.trigger == AIUS_RECORDER_TRIGGER_OPERATOR);
+	assert(f.r.trigger_at_block == 4u);
+	assert(f.r.postroll_captured == 1u); /* the acknowledging block counts */
+	/* Every further post-roll block arrives after a full inter-block run of
+	 * epochs, and none of those runs reclaims. */
+	for (uint32_t b = 2u; b < AIUS_RECORDER_POSTROLL_DEFAULT_BLOCKS; b++) {
+		next_block_us += RUNTIME_BLOCK_US;
+		run_epochs_until(&f, &t_us, next_block_us);
+		assert(f.r.state == AIUS_RECORDER_POSTROLL);
+		feed_block(&f, 8u, 0, 0u, 0u);
+		drain_all(&f);
+		assert(f.r.postroll_captured == b);
+	}
+	next_block_us += RUNTIME_BLOCK_US;
+	run_epochs_until(&f, &t_us, next_block_us);
+	assert(f.r.state == AIUS_RECORDER_POSTROLL);
+	feed_block(&f, 8u, 0, 0u, 0u); /* the 188th: producer closes it */
+	assert(f.r.state == AIUS_RECORDER_DRAINING);
+	assert(f.r.postroll_captured == AIUS_RECORDER_POSTROLL_DEFAULT_BLOCKS);
+	assert(f.r.end_frame == f.r.frames_staged);
+	drain_all(&f);
+	assert(f.r.state == AIUS_RECORDER_FROZEN);
+	AiusRecorderSnapshot s;
+	aius_recorder_snapshot(&f.r, &s);
+	assert(s.postroll_captured == s.postroll_blocks);
+}
+
+/* The reclaim is still there for the case it exists for: the producer stops
+ * mid-post-roll (the underrun and carrier-loss triggers fire exactly when
+ * blocks may stop). It fires at AIUS_RECORDER_RECLAIM_MS after the epoch
+ * that last saw the counter move -- not one millisecond before, however many
+ * epochs run in between -- and keeps the blocks already captured. */
+static void test_producer_stop_mid_postroll_reclaims_at_window(void)
+{
+	Fixture f;
+	fixture_init(&f);
+	assert(aius_recorder_set_config(&f.r, AIUS_RECORDER_MASK_DEFAULT, 0.0f,
+	                                1u, AIUS_RECORDER_POSTROLL_DEFAULT_BLOCKS)
+	       == AIUS_OK);
+	feed_block(&f, 8u, 0, 0u, 0u);
+	aius_recorder_epoch(&f.r, false, true, 0u, 1000u);
+	assert(aius_recorder_freeze(&f.r) == AIUS_OK);
+	feed_block(&f, 8u, 0, 0u, 0u); /* acknowledges the token */
+	drain_all(&f);
+	assert(f.r.state == AIUS_RECORDER_POSTROLL);
+	for (uint32_t b = 0; b < 10u; b++) {
+		aius_recorder_epoch(&f.r, false, true, 0u, 1010u + b * 11u);
+		feed_block(&f, 8u, 0, 0u, 0u);
+		drain_all(&f);
+	}
+	assert(f.r.postroll_captured == 11u);
+	/* The producer stops. This epoch is the last to see the counter move,
+	 * so the window is measured from its now_ms. */
+	aius_recorder_epoch(&f.r, false, true, 0u, 2000u);
+	assert(f.r.state == AIUS_RECORDER_POSTROLL);
+	/* Hundreds of epochs inside the window: still POSTROLL. */
+	for (uint32_t ms = 2001u; ms < 2000u + AIUS_RECORDER_RECLAIM_MS; ms++) {
+		aius_recorder_epoch(&f.r, false, true, 0u, ms);
+		aius_recorder_epoch(&f.r, false, true, 0u, ms);
+		assert(f.r.state == AIUS_RECORDER_POSTROLL);
+	}
+	aius_recorder_epoch(&f.r, false, true, 0u, 2000u + AIUS_RECORDER_RECLAIM_MS);
+	assert(f.r.state == AIUS_RECORDER_DRAINING);
+	/* The reclaim closes the capture with what it has: the trigger and
+	 * the captured count are the producer's, the end position is now. */
+	assert(f.r.trigger == AIUS_RECORDER_TRIGGER_OPERATOR);
+	assert(f.r.postroll_captured == 11u);
+	assert(f.r.end_frame == f.r.frames_staged);
+	drain_all(&f);
+	assert(f.r.state == AIUS_RECORDER_FROZEN);
+}
+
+/* A token with no producer at all (the carrier-loss and operator-with-no-
+ * stream cases): reclaimed at the window, with the token's identity and an
+ * empty post-roll, and not a millisecond earlier whatever the epoch count. */
+static void test_pending_token_without_blocks_reclaims_at_window(void)
+{
+	Fixture f;
+	fixture_init(&f);
+	feed_block(&f, 8u, 0, 0u, 0u);
+	drain_all(&f);
+	/* Unarmed epoch: observes the counter at 1 and stamps the window. */
+	aius_recorder_epoch(&f.r, false, true, 0u, 1000u);
+	assert(aius_recorder_freeze(&f.r) == AIUS_OK);
+	assert(f.r.freeze_token == AIUS_RECORDER_TRIGGER_OPERATOR);
+	/* 100 epochs across the first 100 ms -- more than three of the old
+	 * 32-epoch windows -- and the token is still pending. */
+	for (uint32_t i = 0; i < 100u; i++) {
+		aius_recorder_epoch(&f.r, false, true, 0u, 1001u + i);
+		assert(f.r.state == AIUS_RECORDER_RECORDING);
+	}
+	aius_recorder_epoch(&f.r, false, true, 0u,
+	                    1000u + AIUS_RECORDER_RECLAIM_MS - 1u);
+	assert(f.r.state == AIUS_RECORDER_RECORDING);
+	aius_recorder_epoch(&f.r, false, true, 0u,
+	                    1000u + AIUS_RECORDER_RECLAIM_MS);
+	assert(f.r.state == AIUS_RECORDER_DRAINING);
+	assert(f.r.freeze_token == 0u);
+	assert(f.r.trigger == AIUS_RECORDER_TRIGGER_OPERATOR);
+	assert(f.r.trigger_at_block == 1u);
+	assert(f.r.trigger_at_ms == 1000u + AIUS_RECORDER_RECLAIM_MS);
+	assert(f.r.postroll_captured == 0u);
+	assert(f.r.end_frame == 8u);
+	drain_all(&f);
+	assert(f.r.state == AIUS_RECORDER_FROZEN);
+}
+
+/* now_ms is a u32 millisecond counter and wraps every ~49.7 days; the
+ * window is an unsigned difference, so a window that straddles 0xFFFFFFFF
+ * is the same 280 ms as any other -- neither an instant reclaim (a signed
+ * or saturating compare would see "now" far behind "since") nor a stall. */
+static void test_reclaim_window_across_ms_wrap(void)
+{
+	Fixture f;
+	fixture_init(&f);
+	const uint32_t since = 0xFFFFFFFFu - 99u; /* 100 ms before the wrap */
+	feed_block(&f, 8u, 0, 0u, 0u);
+	aius_recorder_epoch(&f.r, false, true, 0u, since);
+	assert(aius_recorder_freeze(&f.r) == AIUS_OK);
+	aius_recorder_epoch(&f.r, false, true, 0u, 0xFFFFFFFFu);
+	assert(f.r.state == AIUS_RECORDER_RECORDING);
+	aius_recorder_epoch(&f.r, false, true, 0u, 0u); /* wrapped */
+	assert(f.r.state == AIUS_RECORDER_RECORDING);
+	/* 279 ms elapsed, 179 of them past the wrap: still pending. */
+	aius_recorder_epoch(&f.r, false, true, 0u,
+	                    since + AIUS_RECORDER_RECLAIM_MS - 1u);
+	assert(since + AIUS_RECORDER_RECLAIM_MS - 1u == 179u);
+	assert(f.r.state == AIUS_RECORDER_RECORDING);
+	aius_recorder_epoch(&f.r, false, true, 0u,
+	                    since + AIUS_RECORDER_RECLAIM_MS);
+	assert(f.r.state == AIUS_RECORDER_DRAINING);
+	assert(f.r.trigger_at_ms == 180u);
+	/* The mirror: a window that STARTS just after the wrap is not read as
+	 * ~49.7 days old by an epoch a few ms later. */
+	Fixture g;
+	fixture_init(&g);
+	feed_block(&g, 8u, 0, 0u, 0u);
+	aius_recorder_epoch(&g.r, false, true, 0u, 5u);
+	assert(aius_recorder_freeze(&g.r) == AIUS_OK);
+	aius_recorder_epoch(&g.r, false, true, 0u, 6u);
+	assert(g.r.state == AIUS_RECORDER_RECORDING);
+	aius_recorder_epoch(&g.r, false, true, 0u, 5u + AIUS_RECORDER_RECLAIM_MS);
+	assert(g.r.state == AIUS_RECORDER_DRAINING);
+}
+
+/* A token set on the very first epoch after a thaw (a carrier edge the
+ * inherited history still detects) must get a full window, not an instant
+ * reclaim against a zero stamp: reset_capture leaves "nothing observed" and
+ * the first epoch starts the window at its own now_ms. */
+static void test_reclaim_window_starts_fresh_after_thaw(void)
+{
+	Fixture f;
+	fixture_init(&f);
+	assert(aius_recorder_set_config(&f.r, AIUS_RECORDER_MASK_DEFAULT, 0.0f,
+	                                1u, 1u) == AIUS_OK);
+	aius_recorder_epoch(&f.r, true, true, 0u, 50000u);
+	feed_block(&f, 8u, 0, 0u, 0u);
+	assert(aius_recorder_freeze(&f.r) == AIUS_OK);
+	feed_block(&f, 8u, 0, 0u, 0u);
+	drain_all(&f);
+	assert(f.r.state == AIUS_RECORDER_FROZEN);
+	assert(aius_recorder_thaw(&f.r) == AIUS_OK);
+	/* Carrier falls on the first post-thaw epoch: token set, window starts
+	 * at 60000, not at 0. */
+	aius_recorder_epoch(&f.r, false, true, 0u, 60000u);
+	assert(f.r.freeze_token == AIUS_RECORDER_TRIGGER_CARRIER_LOSS);
+	assert(f.r.state == AIUS_RECORDER_RECORDING);
+	aius_recorder_epoch(&f.r, false, true, 0u,
+	                    60000u + AIUS_RECORDER_RECLAIM_MS - 1u);
+	assert(f.r.state == AIUS_RECORDER_RECORDING);
+	aius_recorder_epoch(&f.r, false, true, 0u,
+	                    60000u + AIUS_RECORDER_RECLAIM_MS);
+	assert(f.r.state == AIUS_RECORDER_DRAINING);
+	assert(f.r.trigger == AIUS_RECORDER_TRIGGER_CARRIER_LOSS);
 }
 
 static void test_replay_stop_transient_suppressed(void)
@@ -938,6 +1174,11 @@ int main(void)
 	test_settle_requires_consecutive_clean_blocks();
 	test_underrun_epoch_fallback_suppressed_before_settled();
 	test_underrun_epoch_fallback_and_reclaim();
+	test_postroll_survives_runtime_epoch_cadence();
+	test_producer_stop_mid_postroll_reclaims_at_window();
+	test_pending_token_without_blocks_reclaims_at_window();
+	test_reclaim_window_across_ms_wrap();
+	test_reclaim_window_starts_fresh_after_thaw();
 	test_replay_stop_transient_suppressed();
 	test_carrier_falling_edge();
 	test_gr_hold();

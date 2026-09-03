@@ -173,9 +173,13 @@ overlapping ones.
   recycling out from under a live response. This is new state this plan owns
   — not optional, and not covered by the generation check alone (which stops
   a *new* request from reading stale data but does nothing for a chunk
-  already in flight). **The deferral is bounded, and the bound is the
-  existing reclaim-epochs window.** After `AIUS_RECORDER_RECLAIM_EPOCHS`
-  deferred drains the advance skips *past* the leased slot to the first
+  already in flight). **The deferral is bounded, by a drain count.** After
+  `AIUS_RECORDER_BANK_DEFER_DRAINS` (32; until 2026-09-03 it borrowed the
+  reclaim window's retired epoch constant, which on this runtime is ~5 ms
+  of drains, not the ~280 ms the design intended — harmless, since the leased
+  slot is skipped, never touched; a wall-clock bound needs `now_ms` threaded
+  into `aius_recorder_bank_drain()`) deferred drains the advance skips
+  *past* the leased slot to the first
   candidate that is not leased — the leased capture stays intact for its
   reader and recording resumes one slot further on — and only when every
   candidate is leased does it keep deferring. `deferred_epochs` (cumulative
@@ -411,7 +415,8 @@ overlapping ones.
     `test_bank_thaw_refused_while_active_slot_leased`.
   - **The read-lease deferral was unbounded** despite the Design section
     calling it bounded. It now skips past a leased slot after
-    `AIUS_RECORDER_RECLAIM_EPOCHS` deferred drains, and exposes
+    `AIUS_RECORDER_BANK_DEFER_DRAINS` (was `AIUS_RECORDER_RECLAIM_EPOCHS`,
+    retired 2026-09-03) deferred drains, and exposes
     `aius_recorder_bank_deferred_epochs()` / `aius_recorder_bank_lease_skips()`;
     `test_bank_lease_deferral_is_bounded`,
     `test_bank_lease_deferral_when_every_slot_leased`.
@@ -772,7 +777,9 @@ teardown, so the lease still leaked permanently mid-stream.
     (b) On this image there is no POSTROLL window to enter. The recorder epoch
     runs at ~6,500/s (`/api/status` `loop_epoch` 17831470 → 17894820 over
     9.70 s while `blocks` advanced 910 = 93.8 blocks/s), so
-    `AIUS_RECORDER_RECLAIM_EPOCHS` (32) elapses in ~4.9 ms — inside one
+    `AIUS_RECORDER_RECLAIM_EPOCHS` (32; retired the same day for the
+    wall-clock `AIUS_RECORDER_RECLAIM_MS 280`, register §Open defects —
+    runtime) elapses in ~4.9 ms — inside one
     10.67 ms block period — and the reclaim in `aius_recorder_epoch()`
     (`firmware/lib/aius_recorder/src/aius_recorder.c:385-398`) fires between
     any two consecutive blocks. Every operator freeze today read
@@ -853,7 +860,7 @@ teardown, so the lease still leaked permanently mid-stream.
   bounded window.** Under a burst of triggers faster than an operator (or a
   slow network path) can finish pulling, the round-robin waits for the lease
   rather than overwriting a slot mid-response — correctness over liveness —
-  but only for `AIUS_RECORDER_RECLAIM_EPOCHS` drains, after which the
+  but only for `AIUS_RECORDER_BANK_DEFER_DRAINS` drains, after which the
   advance skips past the leased slot (fixed 2026-09-02; the earlier
   implementation deferred indefinitely despite this plan calling it
   bounded). Residual: while every slot is leased at once there is nowhere to

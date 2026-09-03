@@ -350,12 +350,12 @@ static void test_bank_lease_deferral_is_bounded(void)
 	assert(f.bank.active == 0u);
 	assert(aius_recorder_bank_deferred_epochs(&f.bank) >= 1u);
 	assert(aius_recorder_bank_lease_skips(&f.bank) == 0u);
-	for (uint32_t i = 0; i < AIUS_RECORDER_RECLAIM_EPOCHS; i++)
+	for (uint32_t i = 0; i < AIUS_RECORDER_BANK_DEFER_DRAINS; i++)
 		(void)aius_recorder_bank_drain(&f.bank, 4096u);
 	assert(f.bank.active == 2u);
 	assert(aius_recorder_bank_lease_skips(&f.bank) == 1u);
 	assert(aius_recorder_bank_deferred_epochs(&f.bank) >=
-	       AIUS_RECORDER_RECLAIM_EPOCHS);
+	       AIUS_RECORDER_BANK_DEFER_DRAINS);
 	/* The leased slot was left alone -- skipped, not recycled. */
 	assert(f.bank.slots[1].state == AIUS_RECORDER_RECORDING);
 	assert(f.bank.reads_in_flight[1] == 1u);
@@ -373,12 +373,12 @@ static void test_bank_lease_deferral_when_every_slot_leased(void)
 	for (uint32_t slot = 1u; slot < AIUS_RECORDER_BANK_SLOTS; slot++)
 		aius_recorder_bank_read_acquire(&f.bank, slot);
 	bank_trigger_and_freeze_active(&f);
-	for (uint32_t i = 0; i < AIUS_RECORDER_RECLAIM_EPOCHS + 2u; i++)
+	for (uint32_t i = 0; i < AIUS_RECORDER_BANK_DEFER_DRAINS + 2u; i++)
 		(void)aius_recorder_bank_drain(&f.bank, 4096u);
 	assert(f.bank.active == 0u);
 	assert(aius_recorder_bank_lease_skips(&f.bank) == 0u);
 	assert(aius_recorder_bank_deferred_epochs(&f.bank) >
-	       AIUS_RECORDER_RECLAIM_EPOCHS);
+	       AIUS_RECORDER_BANK_DEFER_DRAINS);
 	/* Slot 2 frees up while slots 1 and 3 stay held: the next drain skips
 	 * to it. */
 	aius_recorder_bank_read_release(&f.bank, 2u);

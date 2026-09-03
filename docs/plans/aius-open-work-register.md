@@ -380,6 +380,65 @@ ends left open:
   replay starts, `gate_open_padded_frames` +768 each, ring 1024–1280 during
   replay, runs 2–3 `verdict pass`.
 
+- **FIXED 2026-09-03 — recorder post-roll never captured: the reclaim window
+  was an epoch count calibrated against a loop rate the runtime no longer
+  runs at, so every freeze was reclaimed between two consecutive blocks.**
+  Found on the bench on `f28a347d0a68` while trying to exercise the
+  rolling-buffer plan's Phase D `park()`-mid-POSTROLL items: every operator
+  freeze read `postroll_captured 0` against `postroll_blocks 188`, and the
+  two underrun freezes read 4 and 9 (post-stall bursts that landed before the
+  reclaim did). Mechanism: `AIUS_RECORDER_RECLAIM_EPOCHS 32u` was documented
+  as "~280 ms at ~115 epoch/s", but `/api/status` `loop_epoch` advanced
+  +63,350 over 9.70 s (~6,500 epoch/s) while `blocks` advanced 910 (93.8
+  blocks/s), so the reclaim in `aius_recorder_epoch()` — block counter
+  unchanged for 32 epochs while a token is pending or POSTROLL is open — fired
+  after ~4.9 ms, inside one 10.67 ms block period, i.e. between any two
+  consecutive blocks; a pending operator token was reclaimed before the
+  producer could acknowledge it (hence `postroll_captured 0`), and an open
+  post-roll was closed after whatever blocks a stall burst had already
+  delivered. The epoch rate is not a constant of the design: it is whatever
+  the checkpoint cadence happens to be, and it moved without the library
+  noticing. Fix: the window is a time, `AIUS_RECORDER_RECLAIM_MS 280u`
+  (`firmware/lib/aius_recorder/include/aius_recorder.h:85-102`), measured
+  against the `now_ms` the epoch already receives as a wrap-safe unsigned
+  difference (`firmware/lib/aius_recorder/src/aius_recorder.c:390-413`); the
+  "counter unchanged" predicate is untouched; `reclaim_count` became
+  `reclaim_since_ms` (`aius_recorder.h:280-287`), and `reset_capture` leaves
+  `reclaim_blocks` at `UINT32_MAX` ("nothing observed yet",
+  `aius_recorder.c:93-99`) so a token set on the first epoch after a thaw
+  gets a full window instead of an instant reclaim against a zero stamp.
+  `AIUS_RECORDER_RECLAIM_EPOCHS` is retired. Proof (`recorder` suite, 32 core
+  rows + 22 bank rows, all green): the existing
+  `test_underrun_epoch_fallback_and_reclaim` re-pinned to time (60 epochs in
+  50 ms leave the token pending; 280 ms takes it), plus five new rows in
+  `firmware/test/recorder/test_recorder.c:591-789` — the bench cadence itself
+  (a 512-frame block every 10,667 µs, an epoch every 154 µs; operator freeze,
+  producer acknowledgement, all 188 post-roll blocks captured,
+  `postroll_captured == postroll_blocks`, never reclaimed), producer stop
+  mid-POSTROLL (reclaim at exactly 280 ms after the last observed block, not
+  at 279, keeping the 11 blocks captured), pending token with no blocks
+  (reclaim at 280 ms with the token's identity and `postroll_captured 0`,
+  not after 100 epochs), a window straddling the `0xFFFFFFFF` ms wrap (279 ms
+  pending, 280 ms reclaimed, both directions), and the first-epoch-after-thaw
+  carrier edge. `registry`, `memory` and `runtime-target` suites green;
+  `teensy41-optical` build SUCCESS, ITCM unchanged (every `aius_recorder.c`
+  definition is FLASHMEM; the struct swaps one u32 for another). Other
+  epoch-as-time windows audited: `AIUS_RECORDER_SETTLE_BLOCKS` and
+  `gr_hold_blocks` count producer blocks (time-true by construction, not
+  affected); the bank's read-lease deferral (`aius_recorder_bank.c:159-190`)
+  is the same shape — its 32-drain budget borrowed the old "32 epochs ≈
+  280 ms" figure and drain() runs once per epoch, so it is ~5 ms on this
+  runtime — but harmless: the leased slot is left intact either way and
+  recording resumes one slot on, so it now carries its own honestly-named
+  drain count, `AIUS_RECORDER_BANK_DEFER_DRAINS 32u`
+  (`firmware/lib/aius_recorder/include/aius_recorder_bank.h:83-94`), and a
+  wall-clock bound needs `now_ms` threaded into
+  `aius_recorder_bank_drain()` (one call site, `optical_main.cpp:8464`) —
+  recorded there, not done. **Live proof pending: next OTA deploy + one
+  operator freeze reading `postroll_captured == postroll_blocks`**, which
+  also unblocks the rolling-buffer plan's Phase D `park()`-mid-POSTROLL
+  items.
+
 - ~~**`au_abandons` +1 at every carrier return during replay** (`pipeline_
   last_failure 3`, `drop_staged_compressed_input()` at the source
   discontinuity, `aius_pipeline.c:701`). Outside the declared gate-4

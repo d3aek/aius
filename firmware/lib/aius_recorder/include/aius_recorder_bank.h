@@ -27,7 +27,7 @@ extern "C" {
  *     an outstanding HTTP read lease, in which case the advance defers one
  *     epoch at a time (retried on the next drain() call) rather than
  *     recycling a slot a response is still streaming from. The deferral is
- *     BOUNDED: after AIUS_RECORDER_RECLAIM_EPOCHS deferred drains the advance
+ *     BOUNDED: after AIUS_RECORDER_BANK_DEFER_DRAINS deferred drains the advance
  *     skips past the leased slot to the first candidate that is not leased
  *     (counted in lease_skips), leaving the leased capture intact for its
  *     reader; only when every other slot is leased too does it keep
@@ -80,6 +80,19 @@ extern "C" {
  * size should not treat this clamp as meaningful for its own arithmetic. */
 #define AIUS_RECORDER_BANK_BLOCK_FRAMES 512u
 
+/* Consecutive deferred drain() calls the round-robin spends waiting for a
+ * read lease on its next slot before skipping past it. A COUNT OF DRAINS, not
+ * a time: drain() receives no clock, and the bank was written to share the
+ * single-ring reclaim window's "32 epochs" figure, which the core has since
+ * retired in favour of AIUS_RECORDER_RECLAIM_MS because the epoch rate is not
+ * a design constant (~6,500/s on the 2026-09-03 runtime, so 32 drains is ~5 ms,
+ * not the ~280 ms the shared figure once meant). At 5 ms the deferral is
+ * effectively "skip on the next drain": harmless -- the leased slot is left
+ * intact either way and recording resumes one slot on -- but not the wait the
+ * plan describes. A wall-clock bound needs now_ms threaded into drain(); see
+ * aius-recorder-rolling-buffer.md §Residual risks. */
+#define AIUS_RECORDER_BANK_DEFER_DRAINS 32u
+
 typedef struct {
 	AiusRecorder slots[AIUS_RECORDER_BANK_SLOTS];
 	/* Index of the slot producer/epoch/drain forward to. Single epoch-side
@@ -106,7 +119,7 @@ typedef struct {
 	 * that ran out of deferral budget and skipped past a leased slot.
 	 * defer_held is the CURRENT run only -- the consecutive deferred drains
 	 * behind the present block, zeroed by every completed advance, and the
-	 * value compared against AIUS_RECORDER_RECLAIM_EPOCHS. */
+	 * value compared against AIUS_RECORDER_BANK_DEFER_DRAINS. */
 	uint32_t deferred_epochs;
 	uint32_t lease_skips;
 	uint32_t defer_held;

@@ -159,11 +159,12 @@ FLASHMEM uint32_t aius_recorder_bank_drain(AiusRecorderBank *bank,
 	uint32_t next = (bank->active + 1u) % AIUS_RECORDER_BANK_SLOTS;
 	if (bank->reads_in_flight[next] != 0u) {
 		bank->deferred_epochs++;
-		if (bank->defer_held < AIUS_RECORDER_RECLAIM_EPOCHS) {
+		if (bank->defer_held < AIUS_RECORDER_BANK_DEFER_DRAINS) {
 			/* Inside the deferral budget: wait for the reader,
 			 * retried on the next drain() call. Nothing records
-			 * meanwhile -- correctness over liveness, but bounded
-			 * by the same window the reclaim wait uses. */
+			 * meanwhile -- correctness over liveness, bounded by a
+			 * drain count (see the constant's comment for why that
+			 * is ~5 ms on the runtime, not a real wait). */
 			bank->defer_held++;
 			return drained;
 		}
