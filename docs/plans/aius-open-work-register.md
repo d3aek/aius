@@ -362,11 +362,45 @@ ends left open:
   replay starts, `gate_open_padded_frames` +768 each, ring 1024–1280 during
   replay, runs 2–3 `verdict pass`.
 
-- **`au_abandons` +1 at every carrier return during replay** (`pipeline_
+- ~~**`au_abandons` +1 at every carrier return during replay** (`pipeline_
   last_failure 3`, `drop_staged_compressed_input()` at the source
   discontinuity, `aius_pipeline.c:701`). Outside the declared gate-4
   stimulus since the tool stops polling before the U24 restore, but a PCM
-  replay should have no staged compressed input to abandon; one look owed.
+  replay should have no staged compressed input to abandon; one look owed.~~
+  **CLOSED 2026-09-03 — not a defect, the premise was wrong (live proof
+  pending).** The replay is not PCM: the gate-4 tool starts `channel_id_51`
+  (`tools/rate_gate_capture/recorder_transitions.py:691`), which
+  `POST /api/replays/start` resolves to `/aius/replays/channel_id_51.iec`
+  (`optical_main.cpp:5719`), the DTS Core rendering
+  (`tools/replay_samples/generate.sh:50-53`; the AC-3 and E-AC-3 renderings
+  carry `_ac3` / `_eac3` suffixes). Mechanism: in the epoch the carrier
+  returns, `replay_source_service()` stops the replay with
+  `REPLAY_STOP_CARRIER` (`optical_main.cpp:7839-7847`) and
+  `tx_gate_service()` requests the relock reset (`:8227-8229`); the AUDIO
+  checkpoint's `apply_reset_sequence()` (`lib/aius_audio_service/src/
+  aius_audio_service.c:45-62`) flushes the ingress and calls
+  `aius_pipeline_reset()`, whose `drop_staged_compressed_input()`
+  (`aius_pipeline.c:678-713`) finds the parser inside the DTS burst the
+  carrier cut -- `aius_iec61937_partial_burst()` is true only past a
+  confirmed Pa/Pb with header or payload outstanding
+  (`lib/aius_iec61937/src/aius_iec61937.c:289-297`) -- and counts it once,
+  latching `last_failure` MALFORMED as the defect-35 design documents. The
+  parser is fed no word in the PCM or UNKNOWN classes and a lone Pa is
+  excluded by the predicate, so a genuine PCM replay cannot reach this
+  count; the tool's own `finally` comment (`recorder_transitions.py:810-815`)
+  already records the U24 restore edge as "the interrupted replay unit
+  abandoned as MALFORMED". No firmware change. Proof:
+  `test_discontinuity_counts_only_committed_bursts` (`pipeline` suite,
+  `test/pipeline/test_pipeline.c`): cuts at words 2, 3, 4, mid-payload and
+  last-before-completion of `dts_be16` each count exactly one abandon with
+  MALFORMED; inter-burst stuffing, confirmed PCM carrying false Pa words, an
+  undecided staging window ending in Pa, and a bare Pa count nothing and
+  latch nothing. Live expectation for the pending gate-4 run: `au_abandons`
+  +1 per carrier return while a compressed replay plays, +0 at every other
+  transition of the run. Product call, recorded not agreed: whether an
+  operator-initiated displacement of a compressed replay should count as a
+  MALFORMED abandon at all; changing that is a design change to defect 35's
+  "honest reading", not a fix.
 
 - **OTA container verify is a one-epoch ~80 ms stall — an audible dropout
   when staged during playback (2026-08-16).** Measured live while staging

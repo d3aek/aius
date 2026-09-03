@@ -2594,6 +2594,187 @@ static void test_teardown_drops_partial_burst(const char *dir, const char *name,
 	free(wire);
 }
 
+/* ---- a carrier displacing a COMPRESSED replay counts its cut burst once ----
+ *
+ * Open-work register, 2026-09-03: `au_abandons` +1 with `last_failure`
+ * MALFORMED at every carrier return during a `--with-replay` gate-4 run, filed
+ * as a false latch on a "PCM replay". The replay is not PCM: `channel_id_51`
+ * resolves to `/aius/replays/channel_id_51.iec`, the DTS Core rendering, so the
+ * carrier displaces a real IEC 61937 bitstream at an arbitrary word and the
+ * defect-35 accounting above counts the burst it cut. These legs pin the
+ * boundary that makes that reading honest rather than noisy: a discontinuity
+ * counts exactly one abandon when -- and only when -- the parser is past a
+ * confirmed Pa/Pb with header or payload outstanding. It counts nothing over
+ * inter-burst stuffing, over a PCM-classified stream carrying a false Pa, over
+ * an undecided staging window that ends in a lone Pa, or over a bare Pa. The
+ * parser sees no word at all in the PCM and UNKNOWN classes, so those legs also
+ * pin that a reset over them cannot latch MALFORMED. */
+static void scrub_sync_words(uint16_t *w, size_t n)
+{
+	for (size_t i = 0; i < n; i++) {
+		if (w[i] == 0xF872u || w[i] == 0x72F8u || w[i] == 0x4E1Fu ||
+		    w[i] == 0x1F4Eu)
+			w[i] ^= 1u;
+	}
+}
+
+static void check_reset_counts(AiusPipeline *p, uint32_t expected_abandons,
+                               const char *leg)
+{
+	AiusPipelineServiceDiag diag;
+	aius_pipeline_reset(p);
+	aius_pipeline_get_service_diag(p, &diag);
+	CHECK(diag.au_abandons == expected_abandons,
+	      "cut-burst %s: reset counted %u abandons, not %u", leg,
+	      diag.au_abandons, expected_abandons);
+	CHECK(diag.last_failure ==
+	              (expected_abandons ? AIUS_MALFORMED : AIUS_OK),
+	      "cut-burst %s: last_failure %d after the reset", leg,
+	      (int)diag.last_failure);
+	CHECK(aius_pipeline_classification(p) == AIUS_PIPELINE_UNKNOWN,
+	      "cut-burst %s: reset left the class decided", leg);
+}
+
+static void test_discontinuity_counts_only_committed_bursts(const char *dir)
+{
+	enum {
+		CONFIRM = (int)AIUS_PIPELINE_PCM_CONFIRM_WORDS,
+		BLOCK_WORDS = 2 * (int)AIUS_PIPELINE_PCM_BLOCK_FRAMES,
+		RAMP_WORDS = CONFIRM + 2 * BLOCK_WORDS,
+		STUFFING_WORDS = 256,
+		STAGED_WORDS = 300 /* < AIUS_PIPELINE_CLASSIFY_MAX_WORDS: undecided */
+	};
+	size_t n = 0u;
+	uint16_t *wire = load_wire(dir, "dts_be16", &n);
+	if (!wire) {
+		CHECK(0, "cut-burst: corpus load");
+		return;
+	}
+	CHECK(n > 4u && wire[0] == 0xF872u && wire[1] == 0x4E1Fu,
+	      "cut-burst: dts_be16 does not open with a big-endian Pa/Pb");
+	struct capture cap;
+	AiusPcmSink sink = { .ctx = &cap, .consume = capture_consume };
+	AiusPipelineServiceDiag diag;
+
+	/* (a) COMMITTED: every cut past the confirmed Pa/Pb -- header still
+	 * outstanding (2, 3), payload just begun (4), mid-payload, and one word
+	 * short of completion -- is one abandon, exactly like the live carrier
+	 * return landing anywhere inside the replay's burst. */
+	const size_t cuts[] = { 2u, 3u, 4u, n / 2u, n - 1u };
+	for (size_t c = 0; c < sizeof(cuts) / sizeof(cuts[0]); c++) {
+		char leg[32];
+		snprintf(leg, sizeof(leg), "cut@%zu", cuts[c]);
+		memset(&cap, 0, sizeof(cap));
+		AiusPipeline *p = NULL;
+		CHECK(aius_pipeline_create(&p, NULL, &sink) == AIUS_OK,
+		      "cut-burst %s: create", leg);
+		if (!p)
+			continue;
+		drive_deferred(p, wire, cuts[c]);
+		aius_pipeline_get_service_diag(p, &diag);
+		CHECK(aius_pipeline_classification(p) == AIUS_PIPELINE_DTS &&
+		              diag.decode_units == 0u && diag.au_abandons == 0u,
+		      "cut-burst %s: the cut prefix was not a staged burst "
+		      "(class=%d units=%u abandons=%u)", leg,
+		      (int)aius_pipeline_classification(p), diag.decode_units,
+		      diag.au_abandons);
+		check_reset_counts(p, 1u, leg);
+		aius_pipeline_get_service_diag(p, &diag);
+		CHECK(diag.decode_units == 0u && diag.decode_rejects == 0u,
+		      "cut-burst %s: the discontinuity decoded something", leg);
+		capture_free(&cap);
+		aius_pipeline_destroy(p);
+	}
+
+	/* (b) INTER-BURST: the whole burst decoded, then the source cut inside
+	 * the zero stuffing before the next Pa. Nothing is staged; nothing
+	 * counts. */
+	{
+		uint16_t stuffing[STUFFING_WORDS];
+		memset(stuffing, 0, sizeof(stuffing));
+		memset(&cap, 0, sizeof(cap));
+		AiusPipeline *p = NULL;
+		CHECK(aius_pipeline_create(&p, NULL, &sink) == AIUS_OK,
+		      "cut-burst stuffing: create");
+		if (p) {
+			drive_deferred(p, wire, n);
+			drive_deferred(p, stuffing, STUFFING_WORDS);
+			aius_pipeline_get_service_diag(p, &diag);
+			CHECK(aius_pipeline_classification(p) == AIUS_PIPELINE_DTS &&
+			              diag.decode_units == 1u && diag.au_abandons == 0u,
+			      "cut-burst stuffing: the whole burst did not decode "
+			      "(class=%d units=%u abandons=%u)",
+			      (int)aius_pipeline_classification(p), diag.decode_units,
+			      diag.au_abandons);
+			check_reset_counts(p, 0u, "stuffing");
+			capture_free(&cap);
+			aius_pipeline_destroy(p);
+		}
+	}
+
+	/* (c) PCM: a confirmed linear-PCM run carrying a lone false Pa inside
+	 * the squelch window and another in the emitted region. The re-type
+	 * detector sees no pair, the parser sees no word; the reset counts
+	 * nothing and latches nothing. */
+	{
+		uint16_t *ramp = make_ramp(RAMP_WORDS);
+		scrub_sync_words(ramp, RAMP_WORDS);
+		ramp[10] = 0xF872u;
+		ramp[CONFIRM + 5] = 0xF872u;
+		memset(&cap, 0, sizeof(cap));
+		AiusPipeline *p = NULL;
+		CHECK(aius_pipeline_create(&p, NULL, &sink) == AIUS_OK,
+		      "cut-burst pcm: create");
+		if (p) {
+			drive_deferred(p, ramp, RAMP_WORDS);
+			aius_pipeline_get_service_diag(p, &diag);
+			CHECK(aius_pipeline_classification(p) == AIUS_PIPELINE_PCM &&
+			              cap.n == 2 && diag.au_abandons == 0u &&
+			              diag.last_failure == AIUS_OK,
+			      "cut-burst pcm: the ramp did not play as PCM "
+			      "(class=%d blocks=%d abandons=%u last=%d)",
+			      (int)aius_pipeline_classification(p), cap.n,
+			      diag.au_abandons, (int)diag.last_failure);
+			check_reset_counts(p, 0u, "pcm");
+			capture_free(&cap);
+			aius_pipeline_destroy(p);
+		}
+		free(ramp);
+	}
+
+	/* (d) UNDECIDED: fewer than a classify window of words, the last of them
+	 * a Pa with no Pb behind it yet; and (e) a bare Pa. Neither is a
+	 * confirmed sync, so neither is staged compressed input. */
+	{
+		uint16_t *staged = make_ramp(STAGED_WORDS);
+		scrub_sync_words(staged, STAGED_WORDS);
+		staged[STAGED_WORDS - 1] = 0xF872u;
+		const uint16_t bare_pa = 0xF872u;
+		memset(&cap, 0, sizeof(cap));
+		AiusPipeline *p = NULL;
+		CHECK(aius_pipeline_create(&p, NULL, &sink) == AIUS_OK,
+		      "cut-burst undecided: create");
+		if (p) {
+			drive_deferred(p, staged, STAGED_WORDS);
+			CHECK(aius_pipeline_classification(p) == AIUS_PIPELINE_UNKNOWN,
+			      "cut-burst undecided: %d words decided the class",
+			      STAGED_WORDS);
+			check_reset_counts(p, 0u, "undecided");
+			drive_deferred(p, &bare_pa, 1u);
+			CHECK(aius_pipeline_classification(p) == AIUS_PIPELINE_UNKNOWN,
+			      "cut-burst bare-pa: one word decided the class");
+			check_reset_counts(p, 0u, "bare-pa");
+			capture_free(&cap);
+			aius_pipeline_destroy(p);
+		}
+		free(staged);
+	}
+
+	printf("  cut-burst      a discontinuity counts one abandon only past a "
+	       "confirmed Pa/Pb (5 cuts); none over stuffing, PCM, undecided\n");
+	free(wire);
+}
+
 /* ---- defect 34: a type-21 carrier entered at any phase stays dark ----------
  *
  * E-AC-3's IEC 61937 repetition period is 12,288 words at the 6-block burst
@@ -3050,6 +3231,7 @@ int main(int argc, char **argv)
 	test_teardown_drops_partial_burst(dir, "dts_be16", 500u, 1u, 1u);
 	test_teardown_drops_partial_burst(dir, "ac3_surround51_ident", 700u, 12u,
 	                                  12u);
+	test_discontinuity_counts_only_committed_bursts(dir);
 	test_reset_semantics(dir);
 	test_deferred_dts(dir);
 	test_deferred_ac3(dir);
