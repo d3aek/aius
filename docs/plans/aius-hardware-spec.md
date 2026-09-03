@@ -155,7 +155,10 @@ quote.
 
 ## Open hardware questions
 
-All three were resolved as planned:
+All three were resolved as planned (re-confirmed 2026-09-03: nothing here is
+open, so no phase of
+[`aius-outstanding-work-2026-09.md`](aius-outstanding-work-2026-09.md) carries
+them):
 
 - **USB-A / USB-C receptacles — resolved at H1.** The captured schematic uses
   the original candidates: GCT `USB4105-GF-A` for USB-C and TE `292303-1` for

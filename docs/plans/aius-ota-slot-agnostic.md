@@ -6,7 +6,7 @@ component: aius
 status: in-progress
 subtype: design
 tags: [aius, firmware, ota, flash, flexspi, boot]
-updated: 2026-08-31
+updated: 2026-09-03
 toc: true
 ---
 
@@ -43,6 +43,11 @@ chooser. As of 2026-09-02 the board runs `fc674c60f06c+teensy41-optical` and
 container slot `NONE` by construction default. **A re-cutover is owed** before
 any claim about the chooser applies to this device again; the work below is
 unchanged and still proven, it is simply not what is installed.
+
+Re-cutover to the slot-agnostic A/B posture is scheduled (design decision D1,
+2026-09-03; see
+[`aius-outstanding-work-2026-09.md`](aius-outstanding-work-2026-09.md) Phase 5);
+the 2026-09-01 plain-image flashes were an interim bench posture, not a decision.
 
 The 2026-08-31 cutover itself: the board ran the new chooser and one canonical,
 slot-agnostically-linked image, `ab.ledger_valid` flipped false→true, and the

@@ -6,7 +6,7 @@ component: aius
 status: in-progress
 subtype: design
 tags: [aius, firmware, eac3, ddplus, dolby, decode, arena, iec61937]
-updated: 2026-08-04
+updated: 2026-09-03
 toc: true
 ---
 
@@ -19,6 +19,9 @@ the roadmap ends here). Originally a pre-decision scoping capture;
 ("let's implement the last decoder")**, which supplies the entry decision
 the scoping draft was parked on. The OTA sequencing gate cleared the same
 day ([`aius-ota-upgrade.md`](aius-ota-upgrade.md) shipped end-to-end).
+
+**Status 2026-09-03: stays `in-progress` for one reason — Phase 5 (live DD+
+evidence) is blocked on a real DD+ source on the bench; Phases 1–4 are done.**
 
 **Decisions adopted from the scoping record, now binding for this plan:**
 

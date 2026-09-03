@@ -6,7 +6,7 @@ component: aius
 status: in-progress
 subtype: implementation
 tags: [aius, firmware, audio, latency, spdif, cm6206]
-updated: 2026-08-04
+updated: 2026-09-03
 toc: true
 ---
 
@@ -28,6 +28,11 @@ CM6206 capture path. (Source update: the CM6206 was retired from the bench
 2026-08-02; the loop adapter is now the qualified ESI U24 XL, and the
 Phase 2 rows were re-measured through it on 2026-08-03. The measurement
 model is unchanged.)
+
+**Status 2026-09-03: stays `in-progress` until
+[`aius-outstanding-work-2026-09.md`](aius-outstanding-work-2026-09.md) Phase 7
+dispositions the `dts-production: deferred-by-priority` rows and the non-48 kHz
+rows (D8), and the owner rules D5 on Phase 3's unmet board-share target.**
 
 ## Measurement boundaries
 

@@ -5,7 +5,7 @@ scope: component
 component: aius
 status: in-progress
 tags: [aius, firmware, audio, spdif, recovery]
-updated: 2026-08-19
+updated: 2026-09-03
 ---
 
 # Aius input recovery ladder
@@ -359,9 +359,18 @@ with exponential backoff that resets on reaching steady.
 By owner instruction (2026-08-18): **no firmware reaches the device until its
 host proof is green and an adversarial review has been run against the changed
 seam and exhausted.** Phases 1 to 3 are host-only. Phase 4 is the first that
-touches the board, and signs for the inactive slot per
-[`../../CLAUDE.md`](../../CLAUDE.md) ("Sign an OTA container for an A/B board
-with `--slot`, always").
+touches the board. Deploy posture re-baselined 2026-09-03 without changing the
+gate: the board ran the plain single-image build (`/api/status` `"ab": null`,
+no A/B, no chooser) after the 2026-09-01 plain-image flashes, an interim bench
+posture; the "sign for the inactive slot with `--slot`" wording applied to the
+per-slot A/B scheme, and under the slot-agnostic chooser a container is signed
+WITHOUT `--slot`. A re-cutover to the slot-agnostic A/B posture is
+scheduled (design decision D1, 2026-09-03;
+[`aius-outstanding-work-2026-09.md`](aius-outstanding-work-2026-09.md) Phase
+5), and that plan makes OTA the deploy path for every firmware phase after it:
+Phase 4 therefore lands as an untagged signed container staged, verified and
+activated over OTA, never a USB flash. Read `/api/status` `ab` first and sign
+per [`../../CLAUDE.md`](../../CLAUDE.md) §Device access and OTA.
 
 ## Traps carried in from the jitter thread
 

@@ -6,7 +6,7 @@ component: aius
 status: draft
 subtype: design
 tags: [aius, firmware, teensy, tls, mbedtls, fnet, sd, security, http]
-updated: 2026-08-04
+updated: 2026-09-03
 toc: true
 ---
 
@@ -33,6 +33,9 @@ treat "feasible" as approval. `status: draft` in the front-matter says the same 
 in the field the doc index reads, so this plan will keep appearing in
 `docs/TODO.md`'s planned-but-unimplemented view — that is correct and is not a
 prompt to act.
+
+Still parked 2026-09-03: `status: draft`, no phase in
+[`aius-outstanding-work-2026-09.md`](aius-outstanding-work-2026-09.md).
 
 Two constraints from the analysis are **live regardless of whether TLS is ever
 built**, because they are properties of the current firmware rather than of this

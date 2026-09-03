@@ -5,13 +5,17 @@ scope: component
 component: aius
 status: in-progress
 tags: [aius, hardware, pcb, cost, prototype]
-updated: 2026-08-15
+updated: 2026-09-03
 toc: true
 ---
 
 # Aius prototype cost model
 
 Estimate the landed cost of three assembled Aius carrier boards before the design is committed to manufacture. This is a should-cost model, not a supplier quotation. Refresh it first from the costed functional BOM, then from the completed PCB files and an uploaded PCBWay quotation.
+
+**Status 2026-09-03: a living model, so `in-progress` is its steady state** —
+it is refreshed at each gate in §Confidence and refresh gates and never
+"ships"; the optical-jack anchor rows now name the purchased RS PRO parts.
 
 The estimate covers the carrier assembly, Hammond enclosure, internal cable, hardware, freight, VAT, duty, and prototype contingency. It excludes Teensy modules, the existing DAC, external cables, speakers, engineering time, panel machining, compliance testing, fixtures, CNC time, and re-spins.
 
@@ -80,16 +84,19 @@ These are provisional catalogue anchors, not a released BOM:
 | Function | Planning part/source | Provisional price evidence | Cost-model treatment |
 |---|---|---:|---|
 | Enclosure | Hammond 1455N1201BK, [Farnell](https://uk.farnell.com/hammond/1455n1201bk/box-black-aluminium-end-plate/dp/9287876) | £22.27 ex VAT at quantity five | Model £28-£30 delivered/VAT-inclusive |
-| Optical transmitter | Cliff FCR684205T / OTJ-5 class, [CPC](https://cpc.farnell.com/cliff-electronic-components/fcr684205t/optical-jack-transmitter-otj-5/dp/CN20715) | £1.23 ex VAT at quantity one | Included in PCBA line |
-| Optical receiver | Cliff FCR684205R / ORJ-5 class, [DigiKey](https://www.digikey.co.uk/en/products/detail/cliff-electronic-components-ltd/FCR684205R/15283094) | £3.67 ex VAT at quantity one | Included in PCBA line |
+| Optical transmitter | RS PRO OTJ-5, [RS `805-1680`](https://uk.rs-online.com/web/p/fibre-optic-connectors/8051680) (Cliff FCR684205T class, purchased 2026-07-27) | RS PRO price not re-quoted in-repo; Cliff-class anchor £1.23 ex VAT at quantity one (CPC, 2026-07) carried as the planning figure | Included in PCBA line |
+| Optical receiver | RS PRO ORJ-5, [RS `805-1671`](https://uk.rs-online.com/web/p/fibre-optic-connectors/8051671) (Cliff FCR684205R class, purchased 2026-07-27) | RS PRO price not re-quoted in-repo; Cliff-class anchor £3.67 ex VAT at quantity one (DigiKey, 2026-07) carried as the planning figure | Included in PCBA line |
 | Optional processor module | Teensy 4.1, [DigiKey](https://www.digikey.co.uk/en/products/filter/evaluation-boards/embedded-mcu-dsp-evaluation-boards/teensy-4-1/786) | £23.88 ex VAT | Separate approximately £29 inc-VAT option |
 
-**Optical-part substitution (2026-07-27):** the purchased modules are the RS PRO
-ORJ-5 (RS `805-1671`) and OTJ-5 (RS `805-1680`), chosen for availability over
-the unavailable Cliff parts
-([sourcing record](aius-optical-prototype.md#objective)). The anchor rows above
-still carry the old Cliff quotes; replace them with RS PRO pricing at the next
-refresh.
+**Optical-part substitution (2026-07-27, rows updated 2026-09-03):** the
+purchased modules are the RS PRO ORJ-5 (RS `805-1671`) and OTJ-5 (RS
+`805-1680`), chosen for availability over the unavailable Cliff parts
+([sourcing record](aius-optical-prototype.md#objective); datasheets under
+`https://uk.rs-online.com/web/p/fibre-optic-connectors/8051671` and `AIUS-OPTICAL-OTJ5-RS/`). The
+RS PRO unit price is not recorded in this repository and RS refuses automated
+page fetches (HTTP 403, 2026-09-03), so the rows carry the Cliff-class figures
+as planning anchors; read the RS PRO price off the purchase record or the
+product pages at the next refresh gate.
 
 Archive current supplier pages or quotations under `docs/reference/datasheets.md` before using them as a release decision. Record stock state, currency, price breaks, retrieval time, VAT basis, and source URL in the doc that cites them.
 

@@ -3,7 +3,7 @@ title: Aius rate-gate external capture tool
 type: plans
 scope: component
 component: aius
-status: in-progress
+status: shipped
 subtype: design
 tags: [aius, firmware, teensy, audio, spdif, acceptance, tooling]
 updated: 2026-09-03
@@ -11,6 +11,15 @@ toc: true
 ---
 
 # Aius rate-gate external capture tool
+
+**Status 2026-09-03: shipped.** The tool exists, its thirteen review defects
+(F1–F13) are fixed and unit-tested, gates 2, 4 and 7 pass on the fixed tool
+with digests recorded in §Live-run results (gate 4 repeatably, `verdict pass`
+at the new stimulus defaults), and every item in §Follow-on work is struck.
+What the tool measures but does not own — the gate-1 trim-cadence failure and
+the one-image acceptance re-run — lives in
+[`aius-outstanding-work-2026-09.md`](aius-outstanding-work-2026-09.md) Phases
+3 and 4.
 
 A build plan, written for a clean session to execute. It specifies the missing
 board→U24 optical capture-and-reduce tool that produces the
