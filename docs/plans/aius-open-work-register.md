@@ -515,6 +515,15 @@ ends left open:
   re-enumeration edge, `tracking` again a minute later, with the mixer
   restored to 110,110. No fix owed.
 
+- **OBSERVATION — `tx_underrun_frames` +11,648 / +11,136 at the PCM↔AC-3
+  44.1 kHz edges.** Seen 2026-09-03 in sample-rate gate 5 on
+  `92aae16706f5+teensy41-optical-slot-a`: the first during the 10 s settle as
+  the board relocked from a 48 kHz PCM carrier to the 44.1 kHz AC-3 stream,
+  the second after the stream ended. Both are the closed-gate TX drain at a
+  format-plus-rate change — the dark-pad drain the negative analyzer already
+  permits — not open-gate underruns; the gated window itself read zero. No fix
+  owed unless a by-ear gate hears it.
+
 - ~~**`au_abandons` +1 at every carrier return during replay** (`pipeline_
   last_failure 3`, `drop_staged_compressed_input()` at the source
   discontinuity, `aius_pipeline.c:701`). Outside the declared gate-4
@@ -1431,11 +1440,13 @@ ends left open:
     the stall witness's IABR snapshot names any ISR spin on sight, so the
     patch (FNET is vendored, `firmware/vendor/NativeEthernet`) is built only
     on a witnessed recurrence. Pad-2 straddle — superseded, see the
-    2026-08-04 row above. AC-3 four-hour run — scheduled behind the
-    one-image acceptance re-run
+    2026-08-04 row above. AC-3 four-hour run — **UNBLOCKED 2026-09-03**: the
+    one-image acceptance re-run ran and gate 5 (clean-source encoded 44.1 kHz
+    AC-3) passes on `92aae16706f5+teensy41-optical-slot-a`; gate 1's remaining
+    failure is a bound question (D4), not an AC-3 blocker. The four-hour run
+    and the by-ear gate are now owner-scheduled only
     ([`aius-outstanding-work-2026-09.md`](aius-outstanding-work-2026-09.md)
-    Phase 4, then Phase 9 owner-scheduled with the by-ear gate;
-    [`aius-ac3-support.md`](aius-ac3-support.md) `:157-160`).
+    Phase 9; [`aius-ac3-support.md`](aius-ac3-support.md) `:157-160`).
   - **8.00 h witness + heap watch on `930f003c6e6e+teensy41-optical`,
     2026-08-04 14:13–22:13 (boot generation 346 held throughout).**
     Zero deaths, zero resets: the generation never stepped, so this is
@@ -1645,6 +1656,22 @@ ends left open:
   in-scope gates on one exact image;
   [`aius-e2e-latency.md`](aius-e2e-latency.md) was deliberately interleaved
   ahead of them by owner priority.
+  **2026-09-03 — the one-image re-run happened; five of six gates pass.** All
+  in-scope gates ran 22:53–23:21 UTC on the single image
+  `92aae16706f5+teensy41-optical-slot-a` with the U24 XL at unity, each with
+  `--expect-build`: gate 6 negative control, gate 5 encoded 44.1 kHz AC-3,
+  gate 2 44.1 kHz PCM 120 s, gate 7 trim-boundary waveform and gate 4
+  transitions plus live loss→replay all PASS; gate 1 fails on `trim-cadence`
+  alone (53 post-settle trims, everything else green — ingress slope
+  0.00205 words/s, max follow error 693 mHz, zero harmful counters), which is
+  the D4 question in the gate-1 entry under §Open defects — sample-rate and
+  latency delivery, not a new finding. SRF Phase 2 stays
+  `device-acceptance-pending` on that one bound and flips when D4 is ruled.
+  Digests and per-gate numbers:
+  [`aius-sample-rate-following.md`](aius-sample-rate-following.md) §Device
+  evidence — 2026-09-03, one-image acceptance re-run
+  ([`aius-outstanding-work-2026-09.md`](aius-outstanding-work-2026-09.md)
+  Phase 4).
 - ~~**OTA investigation verdict, then implementation**~~ — **COMPLETE,
   owner-confirmed 2026-08-03.** The investigation gate closed and the
   implementation shipped ([`aius-ota-upgrade.md`](aius-ota-upgrade.md)
@@ -2208,3 +2235,10 @@ where the only prior record was a plan aside.
   first-class live modes with rate-dependent transmit-ring residence and DSP
   coefficients. Deferred until the sample-rate device gates pass; recorded in
   [`aius-e2e-latency.md`](aius-e2e-latency.md).
+  **2026-09-03 ([`aius-outstanding-work-2026-09.md`](aius-outstanding-work-2026-09.md)
+  Phase 7):** the rows are not bench-only. `firmware/tools/latency/bench.py:36`
+  pins `RATE = 48000` and uses it at `:1587` and `:2271` (verified at HEAD), so
+  measuring them needs a rate parameter, a 44.1 kHz stimulus and renderer path,
+  and a host row — new harness scope this entry did not anticipate.
+  Recommendation: strike as superseded unless the owner names a consumer for a
+  44.1 kHz latency figure. Awaiting D8 (owner-only).

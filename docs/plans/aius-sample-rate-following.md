@@ -473,7 +473,7 @@ The prebuild review attacks:
 ```yaml
 phase: 2
 title: Whole-rate PLL following and live trim
-status: device-acceptance-pending
+status: device-acceptance-pending # gate 1 / D4 only (2026-09-03: gates 2, 4, 5, 6, 7 pass on 92aae16706f5)
 implementation: complete
 delivery-audit: complete
 clean-room-audit: complete
@@ -513,7 +513,10 @@ The implementation, host proof, production build and checkpoint-9 fault build
 are complete. Phase status remains `device-acceptance-pending` until the exact
 committed production image clears the in-scope device gates in
 [§Acceptance](#acceptance) (gate 3 and gate 4's 32 kHz leg deferred
-2026-07-31 to the 32 kHz long tail by owner decision).
+2026-07-31 to the 32 kHz long tail by owner decision). As of 2026-09-03 the
+pending part is gate 1 alone, and only its trim-cadence bound: gates 2, 4, 5,
+6 and 7 all pass on the single image `92aae16706f5+teensy41-optical-slot-a`
+(§Device evidence — 2026-09-03, one-image acceptance re-run).
 
 The full-PLL target apply and checkpoint-side request functions live in
 `lib/aius_audio/src/aius_audio_clock.cpp`, carry `FLASHMEM`, and that exact
@@ -1129,6 +1132,116 @@ reproduced and is no longer cited as the baseline. D4 is the owner's:
 measurement bin, or bound the gate on carrier span or follow error instead of
 trim count; (ii) a different source; (iii) keep the bound and accept gate 1 as
 failing. The gate-1 `PASS` criterion does not move until D4 is ruled.
+
+### Device evidence — 2026-09-03, one-image acceptance re-run on 92aae16706f5 (completion plan Phase 4)
+
+Every in-scope device gate re-run 22:53–23:21 UTC on ONE exact image,
+`92aae16706f5+teensy41-optical-slot-a` (A/B chooser, `ab.slot 2`), with the
+ESI U24 XL as source and capture at unity (`amixer -c 0 cset numid=5
+110,110`); every run passed `--expect-build
+92aae16706f5+teensy41-optical-slot-a`. Evidence is in session scratch
+`.scratch/b63df0f9-d85c-412b-b65a-db884c1f77a0/` (7-day GC) with the sha256
+of each artifact below.
+
+- **Gate 6 — negative control: PASS.** Stimulus `gen_iec_stream.py --rate
+  44100 --seconds 100 --keep-intermediates`, the raw `.iec` words played as a
+  48 kHz carrier carrying a 44.1 kHz AC-3 header (`aplay -D hw:0,0 -t raw -f
+  S16_LE -c 2 -r 48000`), judged by `aius_rate_bench.py run negative
+  --carrier-rate 48000 --stream-rate 44100`. `mismatch_blocks` delta 5,628
+  (4,680 post-settle), `committed_output_blocks_delta 0`,
+  `tx_underrun_frames` 0, every harmful delta 0, 2 trims / 2 invalid windows —
+  the mismatched stream is counted and muted before any output state advances.
+  Evidence `gate6-negative-run3.jsonl`, sha256
+  `83b556b1f3f44e302c46c77aad2481aaada3cb5360835395ff27a5aa1e751a8f`. Runs 1
+  and 2 (`5e514f7f…`, `16fda8f1…`) failed only because the bench started after
+  `aplay` had already finished — inter-call latency, not a board finding; the
+  board had counted every played block (`mismatch_blocks` +7,746 ≈ 41.3 s ×
+  187.5 blocks/s). Run 3 coupled `aplay` and the bench in one script, which is
+  the recipe.
+- **Gate 5 — encoded 44.1 kHz AC-3: PASS.** U24 IEC-passthrough smoke first
+  (48 kHz `surround51_ident`, 10 s): three status reads all `format 2`,
+  `pipeline_diag.class 2`, `codec_pc 1`, `parse_rejects 0`, `decode_rejects 0`
+  (`gate5-smoke-status.jsonl`, sha256 `7ef83ef5…`). Then the
+  `firmware/tools/ac3_vectors/README.md` recipe — a 130 s 44.1 kHz AC-3 IEC
+  61937 wav played at unity, `aius_rate_bench.py run encoded --rate 44100
+  --codec ac3`: 120/120 settled samples read `format 2` / class 2 / `codec_pc
+  1`, `clock.state tracking`, `stream_rate_hz 44100`, `nominal_rate_hz 44100`,
+  `carrier_rate_millihz` 44,118,147–44,118,986 and `output_rate_millihz`
+  44,118,359–44,118,889 (carrier, decoder and output nominal rates agree).
+  `mismatch_blocks` delta 0, `rejects_unsupported 0`, `rejects_malformed 0`,
+  `resyncs 0`, `bursts_ok` +3,447; every harmful delta 0;
+  `max_follow_error_millihz` 627; 11 trims / 11 invalid windows;
+  `max_clock_tx_level_frames` 1536. Evidence `gate5-ac3-44100.jsonl`, sha256
+  `db963b47b6bbf438a3cb90f3b136d4afbb124b4d90b9de37526040120e352dfd`.
+  Observed outside the gated window and not a gate failure:
+  `tx_underrun_frames` +11,648 during the 10 s settle (the PCM 48 kHz →
+  AC-3 44.1 kHz relock) and +11,136 after the stream ended — the closed-gate
+  TX drain at a format-plus-rate edge that the negative analyzer already
+  permits, not an open-gate underrun. Recipe note: after `aplay` exits the
+  U24 holds a 44.1 kHz PCM carrier, so a 3 s 48 kHz tone was played to return
+  the bench to 48 kHz before the next gate.
+- **Gate 2 — 44.1 kHz PCM, 120 s: PASS.** `capture.py --scenario pcm-120s
+  --rate 44100 --seconds 130` then `analyze pcm-120s`: `continuous_output
+  true`, zero runs 0, `tx_underrun_frames` delta 0 and every other harmful
+  delta 0, 11 trims / 11 invalid windows, `max_follow_error_millihz` 626,
+  polled `tx_level_frames` 128–640, `gate_open_padded_frames` 1024,
+  `gate_open_trims` 0, ALSA overruns 0. `audio_rate_hz` reads 44100 and
+  asserts nothing (design decision 2026-09-02: self-referential on the U24 loop).
+  Evidence `gate2/evidence.jsonl`, sha256
+  `af1f68a0e08034d0abfcfd65f575ba6c1f619a46d4cabea5d186eeebea227d58`.
+- **Gate 7 — trim-boundary waveform, 48 kHz: PASS.** `capture.py --scenario
+  waveform --rate 48000 --seconds 130` then `analyze waveform`:
+  `discontinuities_outside_invalid 0`, `capture_frame_gaps 0`,
+  `invalid_intervals_frames []` against 12 trims / 12 invalid windows declared
+  by the board (none externally visible, permitted by the 2026-09-02 ruling),
+  held and zero runs 0, amplitude 409.37, every harmful delta 0,
+  `max_follow_error_millihz` 487, `max_clock_tx_level_frames` 512. Evidence
+  `gate7/evidence.jsonl`, sha256
+  `80a2678eb8eab81592f840bf6ee8e662abef721caafa9067546bdcc05bd18b3b`.
+- **Gate 4 — transitions 48→44.1→48 plus loss→replay: PASS.**
+  `recorder_transitions.py --auth-file … --with-replay` then `analyze
+  transitions` (a live replay leg, not a synthetic one): phases observed
+  `48000, 44100, 48000, replay` = expected; `rate_changes_delta 2` with 2
+  rate-change events; `transition_reset_deltas [1, 1, 1]`;
+  `old_rate_output_frames 0` by the `fiducial (slots[].rate_change_frames)`
+  method with `lower_bound false`, 1 slot captured (operator trigger, freeze
+  on `reference-rate-tracking` at 6.83 s), both fiducials resolved and neither
+  rolled off. `unsupported_episodes` delta 6, all inside closed-gate
+  transition windows with 6 matching rate-unsupported events;
+  `transition_tx_underrun_intervals []`; `au_abandons 0`, `tx_underrun 0`.
+  `event_overflows_delta 13` is reported and not gated. Evidence
+  `gate4/evidence.jsonl`, sha256
+  `03a5f767f72bc9ceb5bf4b8cd47832d2cb2850278693d161805ad87ac82647e7`.
+- **Gate 1 — 48 kHz, 10 minutes: FAIL on `trim-cadence` only.**
+  `aius_rate_bench.py run 48k-10m`, 594 samples over 600.0 s: **53 post-settle
+  trims** (56 whole-run; per-minute 6, 5, 6, 5, 6, 6, 5, 6, 5, 5; `trim_ppm`
+  414–429), against the ≤ 2 bound. Everything else is green:
+  `ingress_slope_words_per_s` 0.00205 (bound 0.25),
+  `max_follow_error_millihz` 693, `tx_underrun_frames` 0, `clock_faults` 0,
+  `unsupported_episodes` 0, `output_drops` 0, no service or epoch budget
+  overrun, `watchdog_early_resets` 0, `event_overflows` 0,
+  `http_client_drops` 0, `tx_level_frames` 128–640. Evidence
+  `gate1-92aae16.jsonl`, sha256
+  `7b738639e224fcd9fc103b5151dbd2f5f10456ec7351d72b83edd923ab600422`, filed
+  durably as gzip under
+  `firmware/test/fixtures/gate1-trim-cadence-2026-09-03/gate1-92aae16706f5-7b738639.jsonl.gz`
+  — the third data point for D4 (53 / 52 / 53 post-settle trims across three
+  images).
+
+Board state at the end of the session: `92aae16706f5+teensy41-optical-slot-a`,
+`ab.slot 2`, `clock.state tracking` at 48000; lifetime `au_abandons 1` is the
+replay cut at gate 4's re-authorization, outside every evidence window and the
+documented non-fault.
+
+**Verdict — five of six in-scope gates PASS on one exact image.** Gates 2, 4,
+5, 6 and 7 all pass on `92aae16706f5+teensy41-optical-slot-a`; gate 1 fails
+only its trim-cadence bound, which is exactly the question D4 puts to the
+owner (§Device evidence — 2026-09-03, gate-1 trim-cadence image A/B). Phase 2
+therefore stays `device-acceptance-pending` on that single bound and flips the
+moment D4 is ruled: a bound revision re-judges the saved gate-1 evidence
+offline with `aius_rate_bench.py analyze`, and only the "different source"
+option costs a re-run — of gate 1 alone, since the other five are already
+green on this image.
 
 ## Optional recovered-clock hardware
 

@@ -997,7 +997,7 @@ bypass row completed — recorded above.)
 
 ```yaml
 phase: 3
-status: complete # R1-R4 delivered 2026-08-03; owner-target not yet met (17.4 ms board share; limiter-lookahead lever is the owner's call)
+status: complete # R1-R4 delivered 2026-08-03; owner-target not yet met (16.9 ms board share on 3570a21; limiter-lookahead lever is the owner's call, asked as D5 on 2026-09-03)
 unit: parent-only
 depends-on: [phase-2]
 owner-target: board share at or under 16 ms e2e (owner, 2026-08-03)
@@ -1101,6 +1101,15 @@ smoke (`pcm-48k-smoke`, 120 s) on the same image: pass, zero deltas,
 image: pass for the first time
 ([`aius-sample-rate-following.md`](aius-sample-rate-following.md) §Device
 evidence — 2026-09-02).
+
+**D5 ask recorded 2026-09-03**
+([`aius-outstanding-work-2026-09.md`](aius-outstanding-work-2026-09.md)
+Phase 7): the latest board share is 16.9 ms on `3570a21` (the Phase F
+deterministic floor) against the owner's ≤ 16 ms target, ~41 frames away; the
+one identified lever is the limiter's 96-frame lookahead (−2 ms), a quality
+trade that is the owner's call. Until D5 and D8 are ruled, the two
+`dts-production: deferred-by-priority` rows (Phase 2's matrix, `:825`, and its
+status comment at `:815`) stay deferred, and this plan stays `in-progress`.
 
 ## Outstanding-work audit
 

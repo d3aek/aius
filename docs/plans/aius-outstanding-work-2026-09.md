@@ -22,30 +22,21 @@ entry this plan does not account for. Inventory sources: the register, every
 tool plan's follow-on list, swept 2026-09-03 and adversarially reviewed the same
 day (17 findings folded; the review's corrections are cited inline as "review").
 
-## State — resume here
+## Status — 2026-09-03 close
 
-**Transient baton inside this plan** (handover 2026-09-03 evening, written when
-the session hit its API rate limit mid-Phase 3). Delete this section in the
-commit that lands the last item under *Next action* and *Pending decisions*,
-after promoting anything durable per the handover skill's retirement rule.
-Check *What landed* against `git -C git_modules/aius log` first; anything
-after `afce6a5` is invisible here.
-
-**Status.** DONE: Phase 0, Phase 1 (both steps, deployed), Phase 2 (recorder
-plan shipped; item 2's deferral half is now proven too, by the committed
-`lease_deferral_probe.py`), Phase 3 (both A/B legs run: 53 vs 52 trims,
-outcome (b), no firmware change — D4 pending the owner), Phase 5 (A/B posture
-restored, OTA path proven), Phase 6 (deployed over OTA and bench-proven on
-`92aae16706f5`: good path plus the `409 ota_ivt` refusal), Phase 8 (D3 docs
-default applied, register entry amended), and the rehearsal-reset fix (aius
-`92aae16`, live-proven the same day: `prev_boot.reset_source 2` software, not
-16 WDOG). NOT STARTED: Phase 4 (the current action), Phase 7 (D5 / D8 are the
-owner's), Phase 9 (owner).
+**Shipped: Phases 0–6 and 8.** The record is reconciled, input recovery's
+instrumentation is deployed, the recorder's three device items are proven, the
+gate-1 A/B returned outcome (b), the slot-agnostic A/B posture is restored with
+OTA as the deploy path, the OTA IVT-bounds check is live, and the receive-DMA
+proposal is recorded rather than built. Phase 4's one-image acceptance re-run
+ran on 2026-09-03: gates 2, 4, 5, 6 and 7 PASS on
+`92aae16706f5+teensy41-optical-slot-a`, and gate 1 fails only its trim-cadence
+bound, which is D4's question. Open: Phase 7 (blocked on D5 and D8) and
+Phase 9 (blocked on owner scheduling, D7) — both owner-side, neither
+technically blocked.
 
 **Board:** `92aae16706f5+teensy41-optical-slot-a`, slot 2, `rollback_observed
-false`, tracking, OTA idle, recorder recording, `boot_generation 22`. The
-deployed image carries Phase 6 (`afce6a5`) and the rehearsal-reset fix
-(`92aae16`).
+false`, tracking, OTA idle, `boot_generation 22`.
 
 ### What landed (all pushed; aius SHAs unless noted)
 
@@ -62,120 +53,45 @@ deployed image carries Phase 6 (`afce6a5`) and the rehearsal-reset fix
 | `b4625cf` | `firmware/tools/rate_gate_capture/lease_deferral_probe.py` + its README recipe | committed tool; PASS on the bench the same day (below) |
 | `92aae16` | rehearsal ends in a deliberate reset — `reset_application()` after the COMPLETED `ota_dark` stamp | ota rows + optical-cutover; live: `reset_source 2`, `ab` unchanged |
 | `542dcb1` | Phase 3 leg B and the outcome-(b) verdict; SRF §Device evidence | leg-B digest `451c2748…`, log `d7128c53…` |
-| (this commit) | Phase 6 SHIPPED record; rehearsal-reset and lease-deferral proofs; register + recorder-plan updates | the 2026-09-03 bench pass, evidence in this session's scratch |
+| `6734ca8` | Phase 6 SHIPPED record; rehearsal-reset and lease-deferral proofs; register + recorder-plan updates | the 2026-09-03 bench pass, evidence in that session's scratch |
+| (this commit) | Phase 4 one-image acceptance re-run: SRF §Device evidence 2026-09-03, register + AC-3 + e2e updates, this §Status | six gate runs on `92aae16706f5`, digests in the SRF section; gate-1 JSONL filed under `firmware/test/fixtures/` |
 | upstream pointers through `3a004aead` (one bump per aius commit above) | | |
 
-### Uncommitted tree state
+### Owner asks
 
-`git_modules/aius` and the upstream repository aius paths: clean. A `the release-promotion step` of
-`CLAUDE.md` is queued (A/B object = deployed posture, OTA is
-the deploy path, USB only for `recovery.hex`, `booted_slot` on the wire,
-`--link-window boot` signing note); `git -C git_modules/aius status --short
-CLAUDE.md` clean means still queued, dirty means it landed and wants a
-one-path `docs(aius)` commit + pointer bump. Do not restate the approval;
-check. The `aius-405ce97` detached worktree Phase 3's leg B was built in is
-removed (2026-09-03). Earlier session scratch (7-day GC,
-`.scratch/ca959a0b-d32c-48a4-8a8d-ad0634c7ab96/`): `canonical-25109fc.aiuo`
-(sha256 `84be788d…`), `canonical-1/2/-corrupt.aiuo`, `gate1-legA*.jsonl`,
-`gate5-ac3-44100.wav` (sha256 `34a22851…`), `smoke-ac3-48000.wav`,
-`deferral_probe.py`, `slow_reader.py`, `u24_authorize.py`,
-`trim_timeline.py`, `freeze-then-rehearse.py`. This session's scratch
-(`.scratch/b63df0f9-d85c-412b-b65a-db884c1f77a0/`) holds the 2026-09-03 bench
-pass: `recovery-92aae16706f5.hex` (sha256 `8d9065b3…`),
-`slot-a-92aae16706f5.hex` (`28370342…`), `plain-92aae16706f5.hex`,
-`good-92aae16706f5.aiuo` (`b1b0b5fa…`), `plain-92aae16706f5.aiuo`
-(`07bbe5e9…`), `gate1-legB*.jsonl`, the `status-*.json` / `ota-*.json`
-captures, `rehearsal-poll.jsonl` (`d261e6c2…`), `upgrade-page.html`, and
-`lease-deferral.json` (`2c615ae5…`).
+Every open item in this plan is one of these; nothing else waits on anything.
 
-### Next action
-
-1. **Rehearsal-reset fix — DONE 2026-09-03** (aius `92aae16`): the rehearsal
-   ends in `reset_application()` after the COMPLETED `ota_dark` stamp, no
-   grace window; live-proven the same day (`prev_boot.reset_source 2`,
-   software, not 16).
-2. **Build from clean HEAD — DONE 2026-09-03** on `92aae16706f5`:
-   `recovery.hex` sha256 `8d9065b3…`, slot-A hex `28370342…`,
-   `good-92aae16706f5.aiuo` `b1b0b5fa…` (untagged, signer verify ARMED,
-   `link_window=0x60010000+0x003d8000`), `plain-92aae16706f5.aiuo`
-   `07bbe5e9…` (plain image, `--link-window boot`; verify prints
-   `refusal=verify status=IVT`, exit 2). ITCM 191,308 / 5,300, delta 0 vs
-   `25109fc`.
-3. **One bench pass — DONE 2026-09-03**, in this order (`flash_optical.sh` is
-   USB HalfKay; each flash reboots; start gate-1 legs within 2 min of boot):
-   (a) **DONE 2026-09-03** (52 post-settle trims, verdict (b); Phase 3 is
-   SHIPPED, D4 is the owner's) — leg B:
-   `flash_optical.sh <aius-405ce97 hex>`; `aius_rate_bench.py run
-   48k-10m --target 192.0.2.66 --evidence <scratch>/gate1-legB.jsonl
-   --expect-build 405ce9768532+teensy41-optical` (exact-string compare; if
-   `validate_status` rejects the old payload, capture raw `/api/status` 1 Hz
-   for 600 s and count post-settle `clock.trim_updates` offline with
-   `trim_timeline.py`); note `tx_underrun_frames` counts idle silence on that
-   image (non-fault) and `dsp.json` `config_error` (cosmetic).
-   (b) **DONE** — re-cutover: `flash_optical.sh <recovery.hex>` (HalfKay
-   "Verified 92aae16706f5+teensy41-optical-slot-a"); boot read `ab
-   {ledger_valid true, slot 1, booted_slot 1, active_slot 1, pending_slot 0,
-   sequence 1, trial_budget 0, rollback_observed false}`, `reset_source 1`,
-   `tx_underrun_frames 0` (evidence `status-b1-recovery-boot.json`
-   `fc9330a6…`, `status-b2-healthy.json` `c90f6996…`). The board was on leg
-   B's `405ce9768532+teensy41-optical`, `ab null`, before the flash.
-   (c) **DONE** — Phase 6 good path over OTA: 577,792 B / 142 chunks, 0
-   retried faults; verify / arm / enable-activation / activate all 200; slot
-   1 → 2, `sequence 3`, `rollback_observed false`, `ota_dark` COMPLETED
-   (digest `e51756bba1d585c5`), `tx_underrun_frames` 0 across the activation
-   (`status-c1-after-ota.json` `09ef2069…`, `status-c2-committed.json`
-   `bd9d66ec…`).
-   (d) **DONE** — Phase 6 refusal: plain container staged 576,768 B / 141
-   chunks, then `verify: 409 {'ok': False, 'error': 'ota_ivt'}`; `GET
-   /api/ota` `failed` / `ota_ivt` / `staged_bytes 0`
-   (`ota-d1-after-refusal.json` `93a9f2ca…`); abort → `idle` / `fault none`
-   (`ota-d3-idle.json` `147dc9e2…`); `ab` and `build_revision` unchanged
-   (`status-d4.json` `e23464bc…`). The saved upgrade page renders `/api/ota`,
-   so its ivt ✗ row is that fault.
-   (e) **DONE** — rehearsal-reset proof on `92aae16`: re-stage, enable
-   activation, operator freeze, `POST /api/ota/rehearse` → 200 at t=0.41 s,
-   board unreachable from ~0.4 s and answering again at 18.0 s with
-   `boot_generation 21 → 22`; after it `prev_boot.reset_source 2`
-   (`SRC_SRSR_LOCKUP_SYSRESETREQ` → `AIUS_RESET_SOFTWARE`,
-   `firmware/src/aius_boot_teensy.cpp:401-403`), `prev_boot {final_checkpoint
-   10, first_abort 254}`, `ota_dark {rehearsal true, COMPLETED, steps
-   2397/2397}`, `ab` unchanged apart from `ledger_boots 1 → 0`, `/api/ota`
-   `idle` with `staged_bytes 0` (`status-e1-after-rehearsal.json`
-   `feecea15…`, `rehearsal-poll.jsonl` `d261e6c2…`).
-   (f) **DONE** — record: SRF §Device evidence and the register's gate-1
-   entry (aius `542dcb1`), the register's OTA-verify and rehearsal entries,
-   the recorder plan's Phase D item 2, and this plan's Phase 3 / Phase 6
-   headings. The U24 did re-enumerate during the deferral probe, so
-   `amixer -c 0 cset numid=5 110,110` was re-applied.
-4. **Current action — Phase 4** (one-image acceptance re-run: gates 1, 2, 4,
-   5, 6, 7 on the deployed `92aae16706f5+teensy41-optical-slot-a`; the gate-5
-   fixture and bench command are in `firmware/tools/ac3_vectors/README.md`;
-   the U24 IEC passthrough smoke first). Then Phase 7 after D5 / D8, and
-   Phase 9 rulings.
-
-### Decisions taken this session (with why)
-
-- Owner rulings D1, D9, D10, D12 as recorded in §Decisions; their
-  consequences (re-cutover first, OTA-only deploys, governor retired, plain
-  posture judged not refused) are applied throughout.
-- Record corrections land one commit per concern, not per file (four Phase 0
-  commits); the ground-rule text still says "per plan file" — harmless.
-- Phase 6 deviations (capture-at-absorb; boot window judged; staging record
-  v2; `ACTIVATE_MIN_IMAGE_BYTES 0x1020`) — recorded in its outcome text.
-- Post-roll reclaim is wall-clock (280 ms) because the epoch rate is not a
-  design constant; the bank's defer budget stays a drain count (harmless).
-- The rehearsal watchdog reset is a proposal with default "implement"; the
-  register entry says why. Implemented as `92aae16` **with no grace window**:
-  the verdict an operator poll would have waited for survives the reset in the
-  retained `ota_dark` stamp (the RAM-only `ota_diag.rehearsal` reads
-  `never-run` afterwards by design), so a bounded epoch-side grace buys
-  nothing and keeps the watchdog fed for no reason.
-- The lease-deferral probe is committed under
-  `firmware/tools/rate_gate_capture/` beside the other bench tools, not a new
-  `firmware/tools/recorder/` directory — no such directory exists, and the
-  probe drives the same U24 sysfs edge `recorder_transitions.py` already owns.
-- Leg B image = aius `405ce97` built in a detached scratch worktree (the
-  upstream repository-era stamp `5151bb21f8be` does not resolve in aius history).
+- **D4 — the gate-1 trim bound.** Three images now fail the ≤ 2 post-settle
+  bound identically (53 / 52 / 53 trims) because the settled carrier estimate
+  hops adjacent ~140 mHz measurement bins against a 50 mHz hysteresis. Choose:
+  (i) a source-qualified bound — raise
+  `AIUS_CLOCK_TARGET_HYSTERESIS_MILLIHZ` to at least one measurement bin, or
+  bound the gate on carrier span / follow error instead of trim count;
+  (ii) a different source; (iii) keep the bound and accept gate 1 as failing.
+  A bound revision re-judges the saved gate-1 evidence offline; only (ii)
+  costs a bench re-run, of gate 1 alone.
+- **D5 — the limiter-lookahead quality trade.** Board share is 16.9 ms on
+  `3570a21` (Phase F's deterministic floor) against the ≤ 16 ms target, ~41
+  frames away; dropping the limiter's 96-frame lookahead buys −2 ms
+  (~15.4 ms) at a quality cost. Take it, or keep the target unmet?
+- **D7 — H3 scheduling.** A date, or a "not scheduled" ruling, for H3b–H3e and
+  the H2 footprint gate (Phase 9).
+- **D8 — the non-48 kHz latency rows.** Name a consumer for a 44.1 kHz latency
+  figure, or the entry is struck as superseded: measuring needs harness work
+  (`firmware/tools/latency/bench.py:36` pins `RATE = 48000`, used at `:1587`
+  and `:2271`), which the register entry did not anticipate.
+- **Slot-agnostic Phase 7 (d).** Keep the legacy `booted_slot == NONE` branch
+  when the dual-slot path retires? Default: keep, behind a compile-time guard.
+- **The queued `CLAUDE.md` promote.** A `the release-promotion step` of
+  `CLAUDE.md` (A/B object = deployed posture, OTA the deploy
+  path, USB only for `recovery.hex`, `booted_slot` on the wire, the
+  `--link-window boot` signing note) was queued 2026-09-03, then superseded
+  the same evening by a second candidate that adds the rehearsal-reset
+  behaviour and the three durable bench gotchas below (`build.sh` sweeping the
+  `aius-ab` dirs, the `--auth <token>` classifier denial, the committed-tool
+  sysfs allowance). Never restate its state from memory: check `git status`
+  on that path — clean means still queued, dirty means it landed and wants a
+  one-path `docs(aius)` commit plus a pointer bump.
 
 ### Traps
 
@@ -187,68 +103,31 @@ captures, `rehearsal-poll.jsonl` (`d261e6c2…`), `upgrade-page.html`, and
   rebuild from clean HEAD before signing anything.
 - `--expect-build` is an exact string compare against `build_revision`
   (`aius_rate_bench.py:788-792`): pass the full `<stamp>+<env>`.
-- The classifier blocks a scratch script writing the U24 sysfs `authorized`
-  flag for agents; a committed tool performs the same write and is allowed —
-  proven 2026-09-03 for `lease_deferral_probe.py` (aius `b4625cf`), which is
-  why the deferral probe was promoted rather than left to the owner's hand.
-  The same classifier denies an `--auth <token>` literal on a command line:
-  drive `aius_ota_flash.py`'s `run()` from a scratch script that reads
-  `.secrets/aius-sd-auth` itself.
+- The permission classifier denies an `--auth <token>` literal on a command
+  line: drive the tool's own `run()` (e.g. `aius_ota_flash.py`) from a script
+  that reads `.secrets/aius-sd-auth` itself, and note that
+  `recorder_transitions.py` takes `--auth-file`. It also blocks a scratch
+  script writing the U24 sysfs `authorized` flag while allowing a COMMITTED
+  tool to perform the same write — proven 2026-09-03 for
+  `lease_deferral_probe.py` (aius `b4625cf`).
 - `lease_deferral_probe.py` needs the candidate slot `(active_slot + 1) %
   slot_count` to be frozen before it starts, and every operator freeze
   advances `active_slot` — so up to three freezes to line the bank up.
-- A Bash `run_in_background` call still blocks the turn for up to 120 s; a
-  lease that must span a de-auth needs the whole sequence in one script.
 - `--slot` and `--link-window` together are a usage error since `afce6a5`; a
   plain image signs with `--link-window boot`, otherwise sign refuses it.
-- `test.sh` suites `event-ring` / `input-dark` print a `RESULT` line since
-  `f0a2005`; `recorder` and `ab` print only on failure (`set -e` carries the
-  exit status).
+- `test.sh` suites `recorder` and `ab` print only on failure (`set -e` carries
+  the exit status); `event-ring` / `input-dark` print a `RESULT` line.
 - `/api/events` serves the OLDEST page after `cursor` since `f0a2005`;
   readers must chain on `next`.
-- Rehearsal on `25109fc` ended in a WDOG reset ~8 s after `pass`
-  (`reset_source 16`) — fixed in `92aae16`; on the deployed image the
-  rehearsal resets deliberately and reads `reset_source 2`. Only pre-`92aae16`
-  evidence shows the watchdog bite, and it was never a crash.
-- API session limit hit at ~19:15 UTC, resets 21:00 UTC (rate_limit 429).
-
-### Findings and loose ends
-
-All recorded in the register or the plans; listed so nothing is inherited as
-a commitment: bank lease-deferral budget is a drain count, a wall-clock bound
-needs `now_ms` threaded into `aius_recorder_bank_drain()` (register post-roll
-entry); plain-posture FCB word0 (`FCFB`) check (this plan §Phase 6 outcome);
-`/api/ota` `activation_available true` on the boot after a rehearsal
-(recorder plan Phase D side observation); one slow-read ended in a board-side
-RST with 374 B undelivered (same bullet); ledger 21/25 read resolved without a
-close statement; `docs/reference/project-scale.md:167-171` and
-`aius-ota-resilience.md:48-50,75-78` carried stale 36/37/38 / drill wording
-(fixed 2026-09-03);
-gate-1 carrier estimate hops ~140 mHz bins on BOTH images (9 on `25109fc`, 8
-on `405ce97`), which refutes the earlier hypothesis that the
-carrier-measurement path in `optical_main.cpp` changed since `405ce97`; the
-reading that replaces it is that the measurement quantum exceeds the tracker's
-50 mHz hysteresis, so a one-bin hop earns a trim at every eligible 10 s window
-and the ≤ 2 bound is unreachable on any source — the D4 question (SRF §Device
-evidence 2026-09-03); slot-agnostic Phase 7 (retire the dual-slot path) with
-its (d) decision.
-
-### Pending decisions
-
-- ~~**Deferral probe (recorder Phase D item 2).**~~ **RESOLVED 2026-09-03** —
-  committed as `firmware/tools/rate_gate_capture/lease_deferral_probe.py`
-  (aius `b4625cf`), the classifier allowed its sysfs write, and the first run
-  on `92aae16706f5` returned PASS (evidence `lease-deferral.json` sha256
-  `2c615ae5…`).
-- **D4 (gate-1 bound)** — the A/B is done and both images hop bins (53 vs 52
-  post-settle trims); the owner chooses one of three: a source-qualified bound
-  (raise `AIUS_CLOCK_TARGET_HYSTERESIS_MILLIHZ` to at least one ~140 mHz
-  measurement bin, or bound the gate on carrier span / follow error instead of
-  trim count), a different source, or keep the bound and accept gate 1 as
-  failing. Nothing moves until the ruling.
-- **D5, D7, D8, D11** unchanged (§Decisions); **slot-agnostic Phase 7 (d)**
-  (keep the legacy `booted_slot == NONE` branch, default keep + compile-time
-  guard).
+- A rehearsal RESETS the board (deliberately, since `92aae16`): it drops the
+  staged OTA session (`/api/ota` returns `idle`, `staged_bytes 0`, so a real
+  activation means staging again) and thaws every frozen recorder slot
+  (`bank_init()` re-arms all four `recording`).
+- Couple the stimulus and the bench in ONE script. Gate 6's first two runs
+  failed only because `aplay` had finished before the bench started — tool
+  inter-call latency, not a board finding.
+- The U24 holds the last carrier it played: after a 44.1 kHz AC-3 stream it
+  sits at 44.1 kHz PCM, so play a short 48 kHz tone before any 48 kHz gate.
 
 ## Ground rules for this plan
 
@@ -679,7 +558,32 @@ D4).
   register entry updated; a firmware fix is its own commit with a clean-stamp
   OTA deploy.
 
-### Phase 4 — One-image sample-rate acceptance re-run
+### Phase 4 — One-image sample-rate acceptance re-run ✓ SHIPPED 2026-09-03
+
+**Shipped 2026-09-03.** Every in-scope gate ran 22:53–23:21 UTC on ONE image,
+`92aae16706f5+teensy41-optical-slot-a` (A/B chooser, `ab.slot 2`), U24 XL
+source and capture at unity, each run pinned with `--expect-build
+92aae16706f5+teensy41-optical-slot-a`. **Gates 2, 4, 5, 6 and 7 PASS**; gate 1
+fails on `trim-cadence` alone — 53 post-settle trims against the ≤ 2 bound,
+with ingress slope 0.00205 words/s, max follow error 693 mHz and every harmful
+counter 0 — which is D4's question, still the owner's. Gate 5 (encoded
+44.1 kHz AC-3, clean source, preceded by the U24 IEC passthrough smoke) passed
+for the first time, so the AC-3 four-hour and by-ear gates are unblocked and
+owner-scheduled (Phase 9). Gate 1's evidence is filed durably as
+`firmware/test/fixtures/gate1-trim-cadence-2026-09-03/gate1-92aae16706f5-7b738639.jsonl.gz`,
+the third data point for D4 (53 / 52 / 53 across three images); the other five
+digests are in the SRF record. SRF Phase 2 stays `device-acceptance-pending`
+on that single bound: a bound revision re-judges the saved gate-1 evidence
+offline with `analyze`, and only "a different source" costs a re-run — of
+gate 1 alone. Record:
+[`aius-sample-rate-following.md`](aius-sample-rate-following.md) §Device
+evidence — 2026-09-03, one-image acceptance re-run; register sample-rate
+entry; [`aius-ac3-support.md`](aius-ac3-support.md) `:157-160`. Three recipe
+notes worth carrying: couple `aplay` and the bench in ONE script (gate 6 runs
+1–2 failed only because the bench started after `aplay` had finished); the U24
+holds a 44.1 kHz PCM carrier after an AC-3 stream ends, so play a short 48 kHz
+tone before the next gate; and `recorder_transitions.py` takes `--auth-file`,
+not an `--auth` literal.
 
 - outcome: SRF acceptance is judged as written: every in-scope device gate on
   ONE exact image (`aius-sample-rate-following.md:959-961`, `:975-979`;
@@ -859,7 +763,20 @@ posture.
   (firmware-before-bench).
 - commit-checkpoint: firmware commit + swagger commit + OTA deploy + docs.
 
-### Phase 7 — Non-48 kHz latency rows and the Phase-3 owner target
+### Phase 7 — Non-48 kHz latency rows and the Phase-3 owner target — BLOCKED (owner: D5, D8)
+
+**Blocked 2026-09-03 on two owner-only decisions.** Both asks are recorded
+where their readers already are, with the numbers behind them: the register's
+`Non-48 kHz latency rows unmeasured` entry now carries the finding that
+measuring them is harness work (`firmware/tools/latency/bench.py:36` pins
+`RATE = 48000`, used at `:1587` and `:2271` — verified at HEAD) plus the
+recommendation to strike as superseded unless a consumer is named (D8); and
+[`aius-e2e-latency.md`](aius-e2e-latency.md) Phase 3 carries the D5 ask —
+16.9 ms board share on `3570a21` against the ≤ 16 ms target, the limiter's
+96-frame lookahead the one lever (−2 ms), a quality trade. Nothing is built
+until D8 names a consumer; the two `dts-production: deferred-by-priority` rows
+(`aius-e2e-latency.md:815`, `:825`) stay deferred and that plan stays
+`in-progress` until D5 and D8 are ruled.
 
 - outcome: D8 (owner-only) applied to the `Non-48 kHz latency rows
   unmeasured` register entry (`:1830-1834`). The rows are NOT bench-only:
@@ -928,7 +845,23 @@ re-derivation. Docs only; no build, no flash.
   `optical_main.cpp`.
 - commit-checkpoint: docs commit; or firmware commit + flash + docs.
 
-### Phase 9 — Owner-scheduled: hardware, by-ear gates, external-source steps
+### Phase 9 — Owner-scheduled: hardware, by-ear gates, external-source steps — BLOCKED (owner scheduling: D7, by-ear gates)
+
+**Blocked on owner scheduling, 2026-09-03.** Nothing here is technically
+blocked any more — Phase 4 removed the last gate. Waiting only for a date:
+the AC-3 four-hour run plus the by-ear dialogue gate
+([`aius-ac3-support.md`](aius-ac3-support.md) `:157-160`, unblocked by gate 5);
+the output-jitter acceptance evening and the pop verdict, re-read against D9's
+"silence on a stall, never a buzz" ([`aius-output-jitter.md`](aius-output-jitter.md));
+the bench first-signal test's external-source/sink steps 2–4 and 6 (register
+`Bench first-signal test`); the ears round and the `lfe_gain` A/B; H3b–H3e plus
+the H2 footprint gate in
+[`aius-h2-h3-manufacturing.md`](aius-h2-h3-manufacturing.md) (D7); the
+two owner-hands assurance drills — a mid-window power cut during an
+activation and a real crash-loop trial image (register `:673-676`;
+[`aius-ota-slot-agnostic.md`](aius-ota-slot-agnostic.md) `:95-97`,
+owner-skipped unless asked). Each item
+gets its date or its "not scheduled" ruling here as the rulings arrive.
 
 - outcome: recorded here so the inventory is complete; this loop does not
   drive them. [`aius-h2-h3-manufacturing.md`](aius-h2-h3-manufacturing.md)
@@ -954,13 +887,13 @@ re-derivation. Docs only; no build, no flash.
 | Id | Decision | Default-able? | Default / note |
 |---|---|---|---|
 | D1 | `aius-ota-slot-agnostic.md` disposition | RULED 2026-09-03 | Re-cutover scheduled (Phase 5): "we should never have superseded the hard-won A/B deployment". |
-| D2 | OTA verify ~80 ms Ed25519 stall | default-able | Accept and document (stage during silence). Alternatives: slice the scalar arithmetic; verify under a gate-aware moment. |
-| D3 | Receive-DMA gating during dark replay | default-able | Leave as recorded (harmless; gating risks SIS error latches). Build only on request. |
+| D2 | OTA verify ~80 ms Ed25519 stall | applied by default 2026-09-03 | Accepted and documented (stage during silence), Phase 6. Alternatives if revisited: slice the scalar arithmetic; verify under a gate-aware moment. |
+| D3 | Receive-DMA gating during dark replay | applied by default 2026-09-03 | Left as recorded (harmless; gating risks SIS error latches), Phase 8. Build only on request. |
 | D4 | Gate-1 trim bound | owner-only (A/B done 2026-09-03: both images match) | Phase 3 returned outcome (b) — 53 vs 52 post-settle trims, both images bin-hopping ~140 mHz against a 50 mHz hysteresis. Owner chooses: source-qualified bound (hysteresis ≥ one bin, or bound carrier span / follow error), different source, or keep the bound and accept gate 1 as failing. No bound change until then. |
-| D5 | e2e latency owner target (limiter lookahead) | owner-only | Phase 7 reports the numbers. |
+| D5 | e2e latency owner target (limiter lookahead) | owner-only (ask presented 2026-09-03) | 16.9 ms board share on `3570a21` against the ≤ 16 ms target; the one lever is the limiter's 96-frame lookahead (−2 ms), a quality trade. Numbers in `aius-e2e-latency.md` Phase 3. |
 | D6 | Recorder Phase D build constraint | decided | Already retired in the doc (`aius-recorder-rolling-buffer.md:695-697`); record. |
-| D7 | Hardware H3 scheduling | owner-only | — |
-| D8 | Non-48 kHz latency rows | owner-only | Recommendation: strike as superseded unless a consumer is named (measuring needs new harness scope). |
+| D7 | Hardware H3 scheduling | owner-only (ask presented 2026-09-03) | H3b–H3e and the H2 footprint gate need a date or a "not scheduled" ruling (Phase 9). |
+| D8 | Non-48 kHz latency rows | owner-only (ask presented 2026-09-03) | Recommendation: strike as superseded unless a consumer is named (measuring needs new harness scope — `bench.py:36` pins `RATE = 48000`). |
 | D9 | TX governor | RULED 2026-09-03 | Not wanted: "systematic latency with repeated triggers"; silence on a stall, never a buzz. Governor stays compiled out; Phase E closed as decomposition, governor retired (Phase 0, orchestrator). |
 | D10 | `aius-optical-prototype.md` disposition | RULED 2026-09-03 | Descope each unshipped item that serves no particular purpose; keep any that does, with what depends on it. |
 | D11 | Input recovery: ceiling exception; `carrier_loss` trigger (`aius-input-recovery.md:143-174`) | owner-only | Only needed if Phase 1 reaches its Phases 2–4. |
@@ -981,3 +914,10 @@ is struck with its pointer or names a phase here, every open ledger defect in
 the plans this plan touched carry truthful `status` fields. The register's
 §Open defects sections then list only Phase 9 items, owner-only decisions
 awaiting a ruling, and the standing proposals.
+
+**As of 2026-09-03 the orchestrator's scope is complete: Phases 0–6 and 8 are
+`✓ SHIPPED`.** The front-matter `status` deliberately stays `in-progress`
+rather than `shipped`, because Phases 7 and 9 are BLOCKED, not shipped — they
+wait on owner decisions (D5, D8) and owner scheduling (D7, the by-ear gates),
+listed in §Owner asks. Phase 4's gate 1 is likewise recorded as failing one
+bound pending D4, not silently passed.

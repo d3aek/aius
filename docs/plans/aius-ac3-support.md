@@ -6,7 +6,7 @@ component: aius
 status: in-progress
 subtype: design
 tags: [aius, firmware, ac3, dolby, decode, iec61937]
-updated: 2026-08-04
+updated: 2026-09-03
 toc: true
 ---
 
@@ -158,6 +158,11 @@ historical implementation evidence:
    investigation verdict~~ (OTA verdict complete 2026-08-01; the owner
    unblocked the four-hour gates 2026-08-04 — still owed: the in-scope
    sample-rate device gates on one exact image, then scheduling the run).
+   **2026-09-03: sample-rate gate 5 (clean-source encoded 44.1 kHz AC-3)
+   passes on `92aae16706f5+teensy41-optical-slot-a`, so these gates are
+   unblocked and owner-scheduled** ([`aius-outstanding-work-2026-09.md`](aius-outstanding-work-2026-09.md)
+   Phase 9; gate 1's remaining trim-cadence failure is a bound question, D4,
+   not an AC-3 blocker).
    The audit-discovered same-boot mixed-codec
    residency gap was closed on 2026-07-30.
 
