@@ -419,3 +419,9 @@ EVT bring-up (H4) and full-path integration (H5) are separate gates in the
 [hardware spec](aius-hardware-spec.md#build-gates-lean). Placing the physical
 order — fabricator account, package upload, payment — is an operator action taken
 after H3e, not a step this plan executes.
+
+H4 also owns the raw-bypass test rows re-homed from
+[`aius-optical-prototype.md`](aius-optical-prototype.md) §Representative test
+matrix row 5 (2026-09-03): the `SN74LVC1G3157` bypass mux exists only on the
+manufactured carrier, so "select bypass while muted; source frames reach the
+sink without the processed path" runs at H4's `raw bypass` bring-up step.

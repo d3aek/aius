@@ -6,7 +6,7 @@ component: aius
 subtype: experiment
 status: in-progress
 tags: [aius, optical-spdif, prototype, ethernet, validation]
-updated: 2026-08-04
+updated: 2026-09-03
 toc: true
 ---
 
@@ -48,7 +48,8 @@ drawings** (3 × Ø0.8 mm pins on 2.54 mm pitch, 3 × Ø2.0 mm pegs, 9.20/6.00/3
 geometry, page 4 of each datasheet) before any board order — the
 `aius:Cliff_ORJ5_TOSLINK` / `aius:Cliff_OTJ5_TOSLINK` footprints were drawn
 from the Cliff drawings and must be re-checked against the RS PRO ones. The
-cost-model rows still carry the old Cliff quotes; bench wiring for the first
+cost-model anchor rows name the RS PRO parts since 2026-09-03 (price not
+re-quoted in-repo); bench wiring for the first
 real signal test: [`../guides/proto-optical-wiring.md`](../guides/proto-optical-wiring.md).
 
 ## Firmware carrier management — the bench TX gate
@@ -734,6 +735,33 @@ clients share one contract artifact.
 
 ## Firmware phases
 
+**Status 2026-09-03: stays `in-progress`; design decision D10 applied
+(descope what serves no purpose, keep what does;
+[`aius-outstanding-work-2026-09.md`](aius-outstanding-work-2026-09.md)
+§Decisions).** Descoped 2026-09-03: **NTP synchronization** — the status frame
+carries a permanent stub (`payload[22] = 0 /* NTP validity: not implemented */`,
+`firmware/src/optical_main.cpp:2362`), its only consumer is
+`tools/net/aius_net_runner.py:72`, and the firmware has no wall clock by design
+([`aius-tls-termination.md`](aius-tls-termination.md) §Expiry: no RTC, no NTP,
+expiry reported not enforced), so nothing depends on it. **Deterministic
+static-fallback address** — no reference in `firmware/src`, `firmware/lib` or
+`firmware/tools/net`; the board lives on the DHCP LAN and DHCP-first bring-up,
+discovery and lease renewal are proven live (register: first observed DHCP
+renewal, 2026-08-04). Kept, still owed: **UDP protocol authentication** — the
+mutating verbs `SET_MODE` / `SET_MIX` / `START_TEST` / `STOP_TEST` /
+`CLEAR_COUNTERS` on 4242 are unauthenticated (`optical_main.cpp:6221-6239`;
+`SET_MODE`/`SET_MIX` are refused as retired but the others act), and
+[`aius-tls-termination.md`](aius-tls-termination.md) §What it does not buy names
+the gap and its open question 2 awaits a ruling — TLS plan Q2 depends on it.
+**Raw-bypass test rows** (row 5) — the bypass mux `SN74LVC1G3157` exists only on
+the manufactured carrier ([`aius-h1-schematic.md`](aius-h1-schematic.md) sheet
+optical-spdif, [`aius-hardware-spec.md`](aius-hardware-spec.md) §Selected
+parts), so the rows are re-homed to EVT bring-up H4
+([`aius-h2-h3-manufacturing.md`](aius-h2-h3-manufacturing.md) §Not in this
+plan; hardware-spec build gate 5). Acceptance gates below are annotated with
+what each proved; one line stays open — the Ethernet-control-loss half of the
+state-table gate. Everything else in this plan is delivered.
+
 Current implementation status (updated 2026-08-04): all three phases below are
 delivered and the runtime is live on bench hardware with real optical input.
 The pipeline now decodes DTS Core, AC-3 and E-AC-3, live output follows the
@@ -875,15 +903,28 @@ PCM, DTS and carrier-loss rows in some form — records live in the
 
 - Native parser/decoder and protocol tests pass with zero allocation violations.
 - Clean PlatformIO build succeeds for the Ethernet-enabled target.
-- DHCP-first startup, discovery, lease renewal, NTP correlation when available,
-  and deterministic static fallback all pass on the isolated fixture network.
+- DHCP-first startup, discovery, lease renewal, ~~NTP correlation when available,
+  and deterministic static fallback~~ all pass on the isolated fixture network.
+  (2026-09-03: DHCP-first, discovery and renewal proven live on the bench LAN —
+  register, first observed DHCP renewal 2026-08-04; the NTP and static-fallback
+  halves are descoped under D10, see §Firmware phases.)
 - USB-controlled optical smoke test passes before USB removal.
 - All remote commands pass with USB physically disconnected.
 - DTS input produces processed PCM at the optical output, not a raw DTS bypass.
 - Carrier loss, reset, watchdog, and Ethernet-control-loss behavior matches the
-  documented state table.
+  documented state table. (2026-09-03: MET for carrier loss, reset and watchdog
+  — [`interfaces-and-states.md`](../reference/interfaces-and-states.md) §Fault
+  scenarios rows `optical-carrier-loss`, `reset`, `firmware-crash`, with live
+  proof in [`aius-network-hardening.md`](aius-network-hardening.md) defect 17
+  "Live proof" and the recorder H2 provocation; **Ethernet-control-loss:
+  UNPROVEN** — the state table has no control-loss row and no bench run has
+  exercised test-matrix row 10. Not a descope: control loss is a real state.
+  This is the one open line of this plan.)
 - Eight-hour observation completes with no unexplained reset, malformed packet,
-  buffer overrun, or output-enable fault.
+  buffer overrun, or output-enable fault. (2026-09-03: MET by the 10.0 h loaded
+  soak of 2026-08-04 and the 8.00 h witness watch on `930f003c6e6e` — register
+  §Open defects — runtime, periodic-watchdog entry; run on the bench, not an
+  isolated fixture network.)
 - The DSP stretch goal is separately accepted only if its host oracle, target
   timing, state continuity, and allocation gates pass; otherwise it remains
   disabled without blocking the optical prototype.
