@@ -18,14 +18,24 @@ a healthy carrier stays stuck until the carrier drops again.
 
 ## State — resume here
 
-**Status:** Phase 1 IN-PROGRESS. Its first half is SHIPPED (the pure rule plus
-its suite, `70009a13f`); its second half — wiring the rule into the epoch, the
-`input_diag` surface, swagger, and the event-ring depth/page split — is
-UNTOUCHED. Phases 2, 3 and 4 are unstarted. Nothing calls the rule, no firmware
-has been built for the target this thread, and nothing has been flashed.
+**Status:** Phase 1 IN-PROGRESS. Premise re-checked in code at aius HEAD
+`a6f7e07` on 2026-09-03 ([§Premise re-check at HEAD](#premise-re-check-at-head-2026-09-03)):
+all three stuck states are STILL REACHABLE; none is closed by `dc16e75`
+(guarded RX staging), `b977488` (acceptance-reset skip), `018c000`/`3570a21`
+(Phase F gate-open floor) or `4c9eb3d` (replay floor). The plan therefore keeps
+its value on its own "observe first" recommendation: the next step is Phase 1
+as written, instrumentation only, no behaviour change (event-ring depth/page
+split, structured recovery record, `input_diag` companion watermark, swagger).
+Phases 2–4 are gated on the Phase-1 record showing a stuck state in the field.
+The pure rule and its suite (`firmware/lib/aius_audio/src/aius_input_liveness.h`,
+`firmware/test/input-liveness/`, upstream repository `70009a13f`) are shipped and stay;
+nothing calls the rule, and no firmware for this plan has been built or
+flashed. The two pending decisions below are D11 in
+[`aius-outstanding-work-2026-09.md`](aius-outstanding-work-2026-09.md)
+§Decisions, needed only if Phases 2–4 open.
 
-The device runs slot A of `ceffc20dae6c+teensy41-optical-slot-a` (built
-2026-08-16T19:31:13Z), `ab.sequence` 11, boot generation 4.
+The deployed image is whatever `/api/status` `build_revision` says; posture and
+deploy path are in [§Gates](#gates).
 
 | Commit | Contents | Proof |
 |---|---|---|
@@ -36,16 +46,20 @@ The device runs slot A of `ceffc20dae6c+teensy41-optical-slot-a` (built
 `git status --porcelain src/hardware/aius` is clean. Dirty paths elsewhere in
 the repo belong to other sessions and are foreign.
 
-**Next action:** wire the rule in. Call `aius_input_liveness_step()` once per
-epoch beside `input_fault_service()` (`firmware/src/optical_main.cpp:7746`,
-called from `platform_replay` at checkpoint `AIUS_BOOT_CHECKPOINT_REPLAY`),
-feeding it `committed_blocks` and `sink_attempts` from
-`aius_pipeline_get_service_diag`, `bursts_ok` from `aius_pipeline_get_parser_diag`
-(`AiusIecDiag`, `aius_iec61937.h:141`), `input_words_consumed` from
-`aius_audio_service_get_diag` (`aius_audio_service.h:22`), and
+**Next action:** Phase 1 instrumentation, at the seams listed under
+[Phase 1](#phase-1--see-the-stuck-states-before-acting-on-them). Wiring the
+rule is Phase 3 and stays gated. When that gate opens, the wiring recipe is:
+call `aius_input_liveness_step()` once per epoch beside `input_fault_service()`
+(`firmware/src/optical_main.cpp:8273`, called at `:8314` from the
+`AIUS_BOOT_CHECKPOINT_REPLAY` checkpoint service), feeding it
+`committed_blocks` and `sink_attempts` from `aius_pipeline_get_service_diag`,
+`bursts_ok` from `aius_pipeline_get_parser_diag` (`AiusIecDiag`,
+`firmware/lib/aius_iec61937/include/aius_iec61937.h:140-148`),
+`input_words_consumed` from `aius_audio_service_get_diag`
+(`firmware/lib/aius_audio_service/include/aius_audio_service.h:72`), and
 `AudioInputSPDIF3::pllLocked()`. Latch per-class max duration, over-count, last
-duration and last-at into new `input_diag` fields at
-`firmware/src/optical_main.cpp:3041`, then update
+duration and last-at into new `input_diag` fields in `http_input_diag_json()`
+(`firmware/src/optical_main.cpp:3183`), then update
 `swagger.json`.
 
 **Decisions taken this session (owner, in chat, 2026-08-18):**
@@ -102,7 +116,7 @@ duration and last-at into new `input_diag` fields at
   `suppressed_triggers` included.
 - **`production_gap_*` is blind to every stuck state this plan targets.** The
   watermark resets its sentinel whenever the transmit gate is closed
-  (`firmware/src/optical_main.cpp:1751`), by design, so an unchanged
+  (`firmware/src/optical_main.cpp:1800-1801`), by design, so an unchanged
   `production_gap_over_count` is not evidence of continuity across a
   gate-closed interval.
 - The deployed image's `gate_open_target_frames` is 128 from a
@@ -116,14 +130,14 @@ duration and last-at into new `input_diag` fields at
 Each is a proposal, none agreed.
 
 - **`http_events_json` conflates ring depth with page size**
-  (`firmware/src/optical_main.cpp:5103-5105`): it starts the walk at
+  (`firmware/src/optical_main.cpp:5365-5375`): it starts the walk at
   `g_event_sequence - 7`, caps at 8, and the ring is `g_events[8]`
-  (`:959`) with the `% 8u` modulus written as a literal in three places
-  (`:1209`, `:5105`, `:5902`). The route already takes a `cursor`, so the two
+  (`:987`) with the `% 8u` modulus written as a literal in three places
+  (`:1237`, `:5375`, `:6182`). The route already takes a `cursor`, so the two
   concerns can separate cleanly. Proposed: fix as part of Phase 1's second
   half, paging via cursor rather than growing the response body.
 - **Deepening the event ring has a placement cost.** `record_event` is
-  reachable from the AUDIO checkpoint (`firmware/src/optical_main.cpp:1661`),
+  reachable from the AUDIO checkpoint (`firmware/src/optical_main.cpp:1710`),
   and DTCM is the scarce bank on this build. Moving the ring to `DMAMEM`
   (OCRAM) frees DTCM but Teensy leaves DMAMEM uninitialised, and the reader's
   staleness check is `event.sequence != sequence` — garbage could coincidentally
@@ -179,10 +193,10 @@ Every reset path in the firmware is an edge:
 
 | Trigger | Site | Fires on |
 |---|---|---|
-| Debounced carrier relock | `firmware/src/optical_main.cpp:7699` | unlocked for at least 3 epochs (~27 ms), then locked. Born saturated, so the first lock after power-on resets too |
-| Rate quiesce | `firmware/src/optical_main.cpp:7582` | tracker sees a changed rate sample: closes the gate, requests a reset |
-| Nominal acceptance | `firmware/src/optical_main.cpp:7595` | 8 samples spanning at least 1 s inside a 1 mHz band, then replans the PLL |
-| Replay start | `firmware/src/optical_main.cpp:5452` | operator action |
+| Debounced carrier relock | `firmware/src/optical_main.cpp:8227-8229` | unlocked for at least 3 epochs (~27 ms), then locked. Born saturated, so the first lock after power-on resets too |
+| Rate quiesce | `firmware/src/optical_main.cpp:8102-8111` | tracker sees a changed rate sample: closes the gate, requests a reset |
+| Nominal acceptance | `firmware/src/optical_main.cpp:8115` | 8 samples spanning at least 1 s inside a 1 mHz band, then replans the PLL |
+| Replay start | `firmware/src/optical_main.cpp:5729` | operator action |
 | PCM to compressed retype | `firmware/lib/aius_pipeline/include/aius_pipeline.h:45` | two preamble pairs spaced 512 to 8192 words, or one header naming an unsafe type |
 | Compressed to PCM starve | `firmware/lib/aius_pipeline/include/aius_pipeline.h:71` | 16,384 words (~170 ms) with no burst outcome |
 
@@ -193,11 +207,11 @@ failure.
 ### The three stuck states
 
 - **Gate never opens.** `g_clock_live_ready` is set true in exactly one place,
-  inside `enqueue()` at `firmware/src/optical_main.cpp:1684`, and only after a
+  inside `enqueue()` at `firmware/src/optical_main.cpp:1733`, and only after a
   decoded block has already cleared the applied-plan and rate-match guards. It
   is forced false on every nominal acceptance
-  (`firmware/src/optical_main.cpp:7605`). The transmit gate needs it
-  (`firmware/lib/aius_replay/include/aius_tx_gate.h:53`). A source flapping
+  (`firmware/src/optical_main.cpp:8130`). The transmit gate needs it
+  (`firmware/lib/aius_replay/include/aius_tx_gate.h:54`). A source flapping
   faster than the pipeline can land one block at the newly accepted rate leaves
   the gate dark under a locked carrier, with no timeout anywhere.
 - **Class latched and silent.** `aius_pipeline.h:75` states it outright:
@@ -205,15 +219,43 @@ failure.
   and therefore never starve. Correct for a genuinely silent source, and
   indistinguishable from a mis-latched class.
 - **Rate latched unsupported.** `g_clock_carrier_unsupported` clears only on
-  carrier loss (`firmware/src/optical_main.cpp:7657`) or on a fresh nominal
-  acceptance (`:7606`). A locked carrier parked at an unsupported measured rate
+  carrier loss (`firmware/src/optical_main.cpp:8182-8183`) or on a fresh nominal
+  acceptance (`:8131`). A locked carrier parked at an unsupported measured rate
   has no timeout.
+
+### Premise re-check at HEAD (2026-09-03)
+
+Code re-check at aius HEAD `a6f7e07` (no hardware), per
+[`aius-outstanding-work-2026-09.md`](aius-outstanding-work-2026-09.md) Phase 1
+step 1. Verdict per state:
+
+| State | Mechanism at HEAD | HEAD file:line | Verdict | Closing commit |
+|---|---|---|---|---|
+| Gate never opens | `g_clock_live_ready` true only in `enqueue()` after the plan-applied and rate-match guards; forced false at acceptance, on `!carrier_ready`, in `close_stream_rate_gate()`; `aius_tx_gate_permitted` needs it | `optical_main.cpp:1721-1733`, `:8100`, `:8130`, `:364`, `:8238`; `aius_tx_gate.h:54` | STILL REACHABLE | none |
+| Gate never opens (tracker clause) | tracker `carrier_ready` true only in `accept_candidate()` after `AIUS_CLOCK_ACCEPT_SAMPLES` agreeing samples; every disagreeing sample clears it; no timer | `aius_clock.c:200`, `:266-292` | STILL REACHABLE | none |
+| Class latched and silent | completed bursts (AC-3, pause, null) never starve the DTS class back to UNKNOWN; the only pipeline commit since the plan re-labels a cut burst TRUNCATED | `aius_pipeline.h:71-77`; `dd9520e` | STILL REACHABLE | none |
+| Rate latched unsupported | set on `result.unsupported_accepted`; cleared only at acceptance or when `!carrier`; no timer | `optical_main.cpp:8172-8183`, `:8131` | STILL REACHABLE | none |
+
+What the cited commits did, and why none closes a row: `dc16e75` re-points the
+receive DMA vector at a guarded stager (`aius_spdif_rx.h`) and adds
+`rx_dropped_halves` / `pool_blocks_used*` to `input_diag`; it closes a fourth
+wedge (RX pool corruption under replay, "pipeline never typed the stream
+again") that was never in this inventory. `b977488` adds
+`g_audio_ingest_since_reset` (`optical_main.cpp:8121-8124`) so acceptance skips
+a redundant pipeline reset; the `g_clock_live_ready = false` at `:8130` is
+untouched. `018c000`/`3570a21` (Phase F) defer the physical gate open to
+`enqueue()` (`tx_gate_actuate(true)` only arms at `:2227`;
+`tx_gate_execute_open()` runs at `:1827`, after the `:1733` set), so the open
+still requires a block to land; `4c9eb3d` sizes the replay floor only. No
+level-triggered path exists in `firmware/lib/aius_clock` or `optical_main.cpp`
+(no timeout, stall or re-accept clause). Disposition: `status: in-progress`;
+Phase 1 (instrumentation) is next; Phases 2–4 gated as stated in §State.
 
 ### The existing instrument is blind exactly here
 
-The production-gap watermark at `firmware/src/optical_main.cpp:1744` is already
+The production-gap watermark at `firmware/src/optical_main.cpp:1798-1819` is already
 the right measurement: micros() between accepted blocks. It resets its sentinel
-whenever the transmit gate is closed (`:1751`), by design, so that a source or
+whenever the transmit gate is closed (`:1800-1801`), by design, so that a source or
 rate switch never spans a bogus gap. Every stuck state above lives in the region
 that reset deliberately ignores. This is why `production_gap_over_count` read
 unchanged through a real 36-minute dark window on 2026-08-18.
@@ -304,9 +346,9 @@ with exponential backoff that resets on reaching steady.
   companion watermark that measures the gate-closed region it currently
   discards. No behaviour changes.
 - seams: the event ring and `record_event()`
-  (`firmware/src/optical_main.cpp:1207`), the production-gap block at
-  `firmware/src/optical_main.cpp:1744`, the `input_diag` serializer at
-  `firmware/src/optical_main.cpp:3041`, swagger.
+  (`firmware/src/optical_main.cpp:1235`), the production-gap block at
+  `firmware/src/optical_main.cpp:1798-1819`, the `input_diag` serializer
+  `http_input_diag_json()` at `firmware/src/optical_main.cpp:3183`, swagger.
 - targeted-proof: host suite rows for the new watermark across gate-open,
   gate-closed and transition sequences; a swagger extractor row for the new
   fields; ring-depth row proving an OSD-rate event burst does not overflow.
@@ -325,8 +367,14 @@ with exponential backoff that resets on reaching steady.
   silence case that must be suppressed (pause bursts, null bursts, digital
   black PCM, deliberate operator pause), the settling boundary, backoff and
   its reset. Property-style sweep over interleavings of the delta inputs.
+  The rule itself (`aius_input_liveness.h` + `input-liveness` suite) already
+  shipped in upstream repository `70009a13f`; what remains here is re-proving it against
+  the Phase-1 record's actual stuck-state shapes.
 - unit: parent-only
-- dependencies: Phase 1
+- dependencies: Phase 1, AND the Phase-1 record showing a stuck state in the
+  field (gate set 2026-09-03; until then Phases 2–4 stay unstarted, per
+  [`aius-outstanding-work-2026-09.md`](aius-outstanding-work-2026-09.md)
+  Phase 1 step 2)
 
 ### Phase 3 — wire it in, default off
 
@@ -335,7 +383,7 @@ with exponential backoff that resets on reaching steady.
   record. Gated by a build flag defaulted OFF, matching how the latency
   governor shipped.
 - seams: the epoch checkpoint that owns `tx_gate_service()`, `request_audio_reset()`
-  (`firmware/src/optical_main.cpp:872`), the status serializer.
+  (`firmware/src/optical_main.cpp:899`), the status serializer.
 - targeted-proof: host runtime-oracle trace showing the rung firing at the
   right epoch and the reset sequence advancing exactly once per walk; a trace
   proving the flag OFF path is inert.
