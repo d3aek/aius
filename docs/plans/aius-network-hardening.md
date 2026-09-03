@@ -5,7 +5,7 @@ scope: component
 component: aius
 status: in-progress
 tags: [firmware, ethernet, recovery, watchdog, testing]
-updated: 2026-09-01
+updated: 2026-09-03
 toc: true
 ---
 
@@ -16,6 +16,14 @@ retry behaviour without proving that initialization, socket ownership, USB
 recovery, or watchdog recovery is bounded. This plan replaces those claims with
 explicit portable state machines, one-shot target adapters, and evidence that
 exercises the deployed firmware.
+
+**Status 2026-09-03: stays `in-progress` because its defect ledger (§Open
+defects) still carries open ids — 4, 21, 23, 25, 27, 40, 41.** Every phase
+and B-series item is delivered; ids 7, 10, 19, 20, 22 and 34 were closed in
+their bodies but unstruck in their headings until the 2026-09-03 reconcile
+against [`aius-open-work-register.md`](aius-open-work-register.md)
+([`aius-outstanding-work-2026-09.md`](aius-outstanding-work-2026-09.md)
+Phase 0).
 
 ## Shared delivery sequence — 2026-07-24
 
@@ -279,7 +287,9 @@ table.
    cap, no gate — and the delete spent `SD.exists()` + `SD.remove()` ungated.
    On a card with a large replays directory that was the most plausible
    unexplained 8 s reset in the image.
-7. **FIXED 2026-07-26, and this entry understated it.** The demotion is
+7. ~~**The FNET poll timer shares the audio ISR's interrupt priority.**~~
+   **FIXED 2026-07-26, and this entry understated it** (heading struck
+   2026-09-03; the register's gist was already closed). The demotion is
    `NVIC_SET_PRIORITY(IRQ_PIT, 224)` in `stack_start()`
    (`aius_network_teensy.cpp`), guarded three ways: a source guard that reads
    the framework's own `IRQ_SOFTWARE` value rather than pinning it, a
@@ -415,7 +425,11 @@ table.
    truncated a response already promised to a client. The `CLOSED`-as-`FAULT` half
    was latent, because for a `WRITE` both arms produce identical control flow and
    the only difference, `last_transport_fault`, has no production reader.
-10. **The network-transport fake models FNET wrongly in five further places**,
+10. ~~**The network-transport fake models FNET wrongly in five further places**~~
+    **CLOSED 2026-07-31 for the five divergences (fixes landed 2026-07-26;
+    heading struck 2026-09-03 to match the register gist). The four further
+    findings at the end of this entry stay recorded, not fixed.** The original
+    entry,
     which matters more than any single one of them: a committed test asserted the
     `read_once()` defect *as correct behaviour* for months. The cause was a
     vocabulary gap rather than a POSIX assumption — `fake/fnet.h` defined only
@@ -769,8 +783,10 @@ table.
    at the drifted position — both corrected, having understated the scarcity by
    about 2x. A seventh decision-era figure in `aius_spdif_tx24.h` was clarified
    in place rather than rewritten.
-19. **`read_once()` has the same latch-substitution hole the send path just had, and
-    a committed row asserts the misclassification.** Found fixing defect 9.
+19. ~~**`read_once()` has the same latch-substitution hole the send path just had, and
+    a committed row asserts the misclassification.**~~ **CLOSED — fixed
+    2026-07-26, verified against code 2026-07-31 (below); heading struck
+    2026-09-03 to match the register gist.** Found fixing defect 9.
     `_fnet_tcp_rcv()` itself fails only with `NOTCONN`/`CONNCLOSED`, so a *latched*
     `CONNRESET`, `TIMEDOUT`, `CONNABORTED`, `HOSTUNREACH`, `NOPROTOOPT` or `MSGSIZE`
     surfacing on a receive equally means the connection is gone — but `read_once()`
@@ -787,9 +803,12 @@ table.
     enumeration for both directions), the once-wrong row now pins
     `NOPROTOOPT` → `CLOSED` with `MSGSIZE` beside it and `INVAL` → `FAULT` as
     the negative control (`test_nativeethernet_behavior.cpp:1297-1329`).
-20. **The fake gets `_fnet_socket_addr_check_len(addr, 0)` backwards, and the suite
+20. ~~**The fake gets `_fnet_socket_addr_check_len(addr, 0)` backwards, and the suite
     asserts the wrong answer — and the real behaviour implicates the vendor's
-    accept path.** `test_nativeethernet_behavior.cpp:871-877` claims a zero length
+    accept path.**~~ **RESOLVED — fake and test row fixed 2026-07-26, vendor
+    `fromlen` patch confirmed applied 2026-09-01 and pinned 2026-09-02 (below);
+    heading struck 2026-09-03 to match the register gist.**
+    `test_nativeethernet_behavior.cpp:871-877` claims a zero length
     "is not checked at all". Real FNET is
     `if (addr && addr_len) {...} else { result = FNET_ERR_INVAL; }`
     (`fnet_socket.c:1856-1893`), and at the accept call site `addr` is
@@ -915,8 +934,11 @@ table.
     quantised at 4,003–4,005 ms or 8,005 ms rather than variable. The deadlines
     that follow from that are in
     [§Runtime order and budgets](#runtime-order-and-budgets).
-22. **`GET /api/dsp/config` cannot report a committed config on a board with no
-    carrier, so a client cannot tell "no SD config" from "config committed".**
+22. ~~**`GET /api/dsp/config` cannot report a committed config on a board with no
+    carrier, so a client cannot tell "no SD config" from "config committed".**~~
+    **FIXED 2026-09-01 (`fc674c6`), corrections (a)–(d) verified live
+    2026-09-02 (below); the host-visible serializer seam stays recorded, not
+    built. Heading struck 2026-09-03 with the register gist.**
     Found by the post-fix B6 gate 5. `source` and `config_generation` are written in
     exactly one place — `AiusAudioProcessor::enqueue()`'s staged-config arm
     (`optical_main.cpp:880-886`) — which runs at an *audio block boundary*. A board
@@ -1705,9 +1727,13 @@ table.
     optional confirmed-stream mute (single-pair, behind a default-off
     config flag) is queued as the escape hatch if that changes.
 
-34. **Defect 34 — an E-AC-3 (Dolby Digital Plus) link would type as PCM and
+34. ~~**Defect 34 — an E-AC-3 (Dolby Digital Plus) link would type as PCM and
     play full-scale burst noise, the exact harm defect 33 exists to
-    prevent.**
+    prevent.**~~ **CLOSED 2026-07-31 (stay-dark generalisation, device-verified
+    on `5adde600f880`, below); type 21 has decoded on the optical image since
+    2026-08-02 ([`aius-eac3-support.md`](aius-eac3-support.md) Phase 4).
+    Heading struck 2026-09-03; [`aius-ac3-support.md`](aius-ac3-support.md)
+    already recorded it superseded.**
     Found 2026-07-28 by the AC-3 phase-3 prebuild gate while checking a
     type-21 corpus vector; NOT yet reproduced on hardware, because nothing
     on this bench sources E-AC-3. Recorded now because the mechanism is
@@ -2187,8 +2213,9 @@ service unaided — a boundary that had never once executed on a real board.
   confirming both the outgoing and incoming identity on each leg. Board
   healthy after restore (`boot_generation` 247, `config_valid 1`,
   `recovery_safe 0`). Details under Phase 16b below.
-- **Open defects 22 and 23**, both raised by the passing run rather than by a
-  failure, and both design calls rather than repairs.
+- **Open defects ~~22 and~~ 23**, both raised by the passing run rather than by a
+  failure, and both design calls rather than repairs (22 fixed 2026-09-01,
+  see its entry; 23 still open).
 - ~~**B9**, the dashboard retirement, which is independent of all of the
   above.~~ **DELIVERED 2026-07-31** (`c8f0c2571`) — see the B9 row in
   [§Critical path](#critical-path).
@@ -5831,6 +5858,7 @@ free-for-locals 22,684 B.
 
 ```yaml
 unit: component-behind-interface
+status: completed
 seams: [aius_optical_http_dispatch, aius_optical_usb_dispatch, fake app callbacks]
 contract-artifact: spec-only
 dependencies: [phase-5, phase-6, phase-7, phase-9, phase-10a]
@@ -5931,6 +5959,7 @@ landed in that window.
 
 ```yaml
 unit: component-behind-interface
+status: completed
 seams: [AiusRuntimeTeensy, portable scheduler, target adapters, fake primitives]
 contract-artifact: spec-only
 dependencies: [phase-1, phase-4, phase-5, phase-6, phase-7, phase-8, phase-9, phase-10, phase-11]
@@ -6667,6 +6696,7 @@ strategy; relocating hot data is not on it.
 
 ```yaml
 unit: phase-task
+status: completed
 seams: [AiusMeter, AiusMeterSnapshot, aius_optical_http_dispatch, audio callback]
 contract-artifact: spec-only
 dependencies: [phase-11, phase-14]
@@ -6719,6 +6749,7 @@ first means writing it twice.
 
 ```yaml
 unit: component-behind-interface
+status: completed
 seams: [AiusReplayReader, aius_replay service start/refill, AIUS_SD_JOB_REPLAY_REFILL]
 contract-artifact: spec-only
 dependencies: [phase-5, phase-10a, phase-14]
@@ -6776,6 +6807,7 @@ SD job runs — would waste the flash.
 
 ```yaml
 unit: parent-only
+status: completed
 seams: [the deployed board, USB CDC control plane, Ethernet, SD, audio output]
 contract-artifact: spec-only
 dependencies: [phase-14, phase-14b, phase-14c]
@@ -7340,6 +7372,7 @@ artifact.
 
 ```yaml
 unit: parent-only
+status: completed
 seams: [every firmware I/O path, the audio block boundary]
 contract-artifact: spec-only
 dependencies: [phase-14, phase-14b, phase-14c]
@@ -7450,6 +7483,7 @@ new checkpoint.
 
 ```yaml
 unit: parent-only
+status: completed
 seams: [S/PDIF input, decode, DSP chain, output, the audio block boundary]
 contract-artifact: spec-only
 dependencies: [phase-14, phase-14b, phase-14c]
@@ -7500,7 +7534,7 @@ chosen over an alternative — fixed versus floating point, the decimation strat
 the ring sizing, where metering taps sit and why — say so, so the next reader
 inherits the reasoning rather than re-deriving it.
 
-### Phase 15 — Button-free flash tooling
+### Phase 15 — Button-free flash tooling ✓ SHIPPED 2026-07-26
 
 **DELIVERED 2026-07-26.** Shipped as `tools/net/aius_cdc_runner.py` (CDC control,
 HalfKay entry, image-identity oracle, verified flash), a thin
@@ -7577,6 +7611,7 @@ step B8 once Phase 15 exists). The runner, its fake-fixture tests, and the
 
 ```yaml
 unit: phase-task
+status: completed
 seams: [USB heartbeat, HTTP status, UDP status, fault selection, deployed fixture]
 contract-artifact: spec-only
 dependencies: [phase-9, phase-13, phase-14, phase-14b]
@@ -7601,6 +7636,11 @@ commit-checkpoint:
     - firmware/scripts/build.sh teensy41-optical-fault 0
   parent-commit: "test(aius): add proportionate recovery smoke runner"
 ```
+
+Status marker added 2026-09-03 from the record in §Next: 16a (steps 2–5) ran
+end to end on 2026-07-26 against `3576c3e3560f` — gates 2, 4 and 5 pass, gate 3
+passes on all seven checkpoints the firmware can recover from (checkpoints 1–2
+structurally unresolvable, recorded there); 16b (step 1) passed the same day.
 
 A single host runner reads USB `ID`, HTTP status, and UDP status, decodes the
 recovery status fields ([§Status compatibility contract](#status-compatibility-contract)),

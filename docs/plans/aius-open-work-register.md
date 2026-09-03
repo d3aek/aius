@@ -30,7 +30,13 @@ numbers on the ballistic cadence (`6560b0f0f`), dirty-vs-factory reset markers
 (current master + those) was OTA-flashed and is decoding cleanly. Two loose
 ends left open:
 
-- **Deployed image revision stamp is a commit behind.** The running OTA image
+- ~~**Deployed image revision stamp is a commit behind.**~~ **CLOSED
+  2026-09-03**: overtaken by the standing convention — every deploy since is a
+  clean-stamp reflash after committing (the 12-char `build_revision` is the
+  HEAD commit with no dirty marker; [`../../CLAUDE.md`](../../CLAUDE.md)
+  §Device access and OTA, [`aius-outstanding-work-2026-09.md`](aius-outstanding-work-2026-09.md)
+  §Ground rules), and the deployed image is read from `/api/status`
+  `build_revision`, never from a doc. Original entry: the running OTA image
   was built from the working tree just before the ITCM-funding commit
   (`db3f554aa`) landed, so it reports `197523cbab76`, not `db3f554aa8df`. The
   code is correct — it cannot link without the biquad-designer FLASHMEM move,
@@ -82,7 +88,9 @@ ends left open:
   and absence is first-class as contracted). Delivery surfaced defects
   25 (open) and 26 (closed, link-gated); see the defect gists below.
 - **Input-side capture tap** — explicit follow-up slice inside the
-  recorder contract; not v1.
+  recorder contract; not v1. Re-confirmed 2026-09-03: stays a contracted
+  follow-up, no phase in
+  [`aius-outstanding-work-2026-09.md`](aius-outstanding-work-2026-09.md).
 
 ## Waiting on the operator
 
@@ -180,6 +188,13 @@ ends left open:
     `0cf5eeda…` (tool plan §Live-run results — 2026-09-03). Run 4 on the
     same image failed `transition-open-gate-underrun` alone, +128 frames at
     replay start — a replay-start race, recorded below as its own defect.
+  - **Re-checked 2026-09-03: every sub-bullet above is struck.** The ITCM
+    census / `.ld` rework (above) is carried as the one standing proposal in
+    [`aius-outstanding-work-2026-09.md`](aius-outstanding-work-2026-09.md)
+    §Decisions, no default, no phase. Two items the 2026-09-03 handover had
+    listed as proposals — a `final_replay_output_blocks_delta` rename and
+    splitting this register by era — have no written source in `docs/` and
+    are dropped; raise either again only with a rationale.
 - ~~**Two deploys owed for the 2026-08-16 status-page rework.**~~ **BOTH DONE
   the same evening, owner-directed ("sync and flash"), with audio playing and
   the interruption accepted after it was costed.**
@@ -239,7 +254,10 @@ ends left open:
   **State 2026-08-04: the jacks ARE soldered and the glass loopback
   locked 2026-07-28** (resolved entry above); what remains of this test
   is the measure flow across glass and the steps needing an EXTERNAL
-  source or sink (steps 2–4, 6), as that entry records.
+  source or sink (steps 2–4, 6), as that entry records. **Handed to
+  [`aius-outstanding-work-2026-09.md`](aius-outstanding-work-2026-09.md)
+  Phase 9 (owner-scheduled) 2026-09-03**: steps 2–4 and 6 need an external
+  source/sink on the bench and are not driven by that plan's loop.
 - ~~**The bench SD card needs service (check on a PC, reformat, or swap)
   before the full-size OTA end-to-end (2026-08-01).**~~ **RETRACTED the
   same day — the card was innocent** (owner challenged the verdict;
@@ -437,10 +455,25 @@ ends left open:
   chooser's IVT-sanity refusal — now field-proven — kept the slot from a
   dead trial boot). Cheap add: validate the staged payload's IVT bounds at
   verify, refusing before the flash is spent. The signer now flattens
-  Intel-hex input (incident row in `test_ota_signer.py`).
+  Intel-hex input (incident row in `test_ota_signer.py`). **Handed 2026-09-03
+  to [`aius-outstanding-work-2026-09.md`](aius-outstanding-work-2026-09.md)
+  Phase 6. Owner ruled D12 the same day: OTA is the primary update method
+  and must be exercised, so the IVT-bounds check at verify ships there (over
+  OTA, after the Phase 5 re-cutover); D2 (accept-and-document default for the
+  Ed25519 stall) is applied in the same phase. Stays open until Phase 6
+  lands.**
 
-- **Flight recorder freezes on the boot bring-up underrun, spending its
-  one-shot trigger before the session exists (2026-08-16).** Field
+- ~~**Flight recorder freezes on the boot bring-up underrun, spending its
+  one-shot trigger before the session exists (2026-08-16).**~~ **FIXED, two
+  causes removed:** the trigger now needs `AIUS_RECORDER_SETTLE_BLOCKS` (8u,
+  `firmware/lib/aius_recorder/include/aius_recorder.h:103`) consecutive clean
+  blocks under an open gate before it arms
+  ([`aius-recorder-rolling-buffer.md`](aius-recorder-rolling-buffer.md)
+  Phase A, aius `cbdaa5b`, 2026-08-28), and the bring-up underrun itself is
+  gone since the gate-open edge pads the ring to its floor
+  ([`aius-output-jitter.md`](aius-output-jitter.md) Phase F, aius `018c000`,
+  2026-09-02: fresh boot with the carrier lit, `tx_underrun_frames 0`, "all
+  four slots stayed recording"). Original entry: field
   observation on `1dc7cbb80397` slot A: `/api/recorder` reported
   `state: frozen`, trigger `underrun` at `at_ms 3289`, `at_block 1`, 512
   valid frames, `postroll_captured 0` — the recorder froze on the trivial
@@ -475,7 +508,18 @@ ends left open:
   real crash-loop trial image, watching `ab.ledger_boots` spend the budget
   and `rollback_observed` persist; (c) Phase 4c's lit-carrier boot row —
   plug an optical source, reboot, confirm the SD dashboard mounts under
-  the lit carrier. Original entry:
+  the lit carrier. **Disposition 2026-09-03:** (a) and (b) are owner-hands
+  drills of the A/B chooser and wait for the scheduled re-cutover (design decision
+  D1, 2026-09-03: the 2026-09-01 plain-image flashes were an interim bench
+  posture, not a decision;
+  [`aius-outstanding-work-2026-09.md`](aius-outstanding-work-2026-09.md)
+  Phase 5 performs the re-cutover, Phase 9 carries the drills as
+  owner-scheduled after it). ~~(c)~~ DONE by evidence: the `b38e8448f5c8` flash of
+  2026-09-02 was a fresh boot with the carrier lit (relocks 0, audio
+  flowing, §Waiting on the operator above) and a round-tripped `PUT
+  /api/dsp/config` on that boot committed to the card (`sd_diag.http_jobs 1`,
+  `http_faults 0`), so the SD mounted and served under the lit carrier.
+  Original entry:
   First field failure of the staged upgrade: the
   `d5dab0618f4c` container staged clean (387 chunks, one transient 500 whose
   poisoned session was aborted and restaged fresh), device-verified,
@@ -744,8 +788,11 @@ ends left open:
     owner LIFTED the gate 2026-08-02 — E-AC-3 Phase 4 (target
     integration) is cleared to flash
     ([`aius-eac3-support.md`](aius-eac3-support.md) Phase 4).
-- **Boot-adjacent interrupts-masked stall, ~1.84 s (observation,
-  2026-08-02).** One boot of the E-AC-3-image flash campaign (boot 6
+- **OBSERVATION — boot-adjacent interrupts-masked stall, ~1.84 s
+  (2026-08-02; relabelled 2026-09-03: no fix owed until it recurs, no phase
+  in [`aius-outstanding-work-2026-09.md`](aius-outstanding-work-2026-09.md);
+  the stall witness names any recurrence).** One boot of the E-AC-3-image
+  flash campaign (boot 6
   of 10) recorded `runtime_epoch_max_us` 1,840,681 — a single stall
   with interrupts masked, arithmetic-consistent with the epoch deficit
   it left (375 epochs/s × 1.84 s ≈ 341 lost ≈ measured 341.7); every
@@ -759,16 +806,25 @@ ends left open:
   convicting. No fix owed until it recurs; a recurrence wants a DWT
   timestamp + caller tag on the longest masked section.
 
-- **Periodic watchdog reset every ~31 min 45 s on the E-AC-3 phase-4
-  image (2026-08-02; ~~FIXED 2026-08-03~~ REOPENED the same morning —
+- ~~**Periodic watchdog reset every ~31 min 45 s on the E-AC-3 phase-4
+  image (2026-08-02).**~~ **FIXED 2026-08-03, standing state confirmed
+  2026-08-04 (heading reworded 2026-09-03; the body is the chase record).**
+  Two death modes, both convicted and closed: the ~1,905 s T1-anchored mode
+  by single-context FNET polling (aius `777b992` + `82f02aa`), and the
+  ~6,176 s / 1.79 s stall family as FlexSPI2 unfitted-tail bus holds with
+  `stall_mpu_tighten()` the standing tripwire fix (aius `a8cc975`, bisect
+  verdict `d3641a1`). The 10.0 h loaded soak then passed with zero stalls
+  and zero deaths and the owner UNBLOCKED the four-hour gates 2026-08-04
+  (aius `244f14a`); the standing-state note at the end of this entry carries
+  the residual dispositions. Chase record — the entry as it was written:
+  (~~FIXED 2026-08-03~~ REOPENED the same morning —
   the single-context fix eliminated the ~1,905 s T1-anchored mode but
   a SECOND death mode at ~6,176 s survives it; chain, premature
   closure, and the reopening evidence at the end of this entry.
   2026-08-03 evening: the surviving stall/death family CONVICTED as
   FlexSPI2 unfitted-tail bus holds, `stall_mpu_tighten()` standing
   tripwire fix. 2026-08-04: 10.0 h loaded soak clean, four-hour gates
-  UNBLOCKED by owner — see the standing-state note at the end of this
-  entry).** Since ~11:23 — right after the phase-4
+  UNBLOCKED by owner.) Since ~11:23 — right after the phase-4
   image (`5151bb21f8be+teensy41-optical`, built 10:51) went on the
   board — the idle bench board has reset on a 1,904±5 s cadence: 17
   resets in the host kernel log through 21:23:29 (each one
@@ -1083,6 +1139,19 @@ ends left open:
     Decision-queue evidence: the pad-2 ring clamp looks UNNECESSARY
     (~1,300 clean tail cycles under load); the OTA `test_key`
     production cutover and a formal `dts` bench mode remain queued.
+    **Dispositions 2026-09-03:** ~~pad-2 ring clamp~~ SUPERSEDED —
+    activation staging moved off pad 2 entirely
+    ([`aius-ota-resilience.md`](aius-ota-resilience.md) Phase 2, aius
+    `b76f8fc`: "the pad-2 straddle risk becomes activation-irrelevant") and
+    the soak evidence here says the clamp is unnecessary; nothing to build.
+    ~~`test_key` production cutover~~ the home-key rotation landed
+    2026-08-04 (aius `e1c835d`, `test_key` false); the off-repo
+    production-key cycle is owner-only and owner-scheduled
+    ([`aius-outstanding-work-2026-09.md`](aius-outstanding-work-2026-09.md)
+    Phase 9). Formal `dts` bench mode: KEPT, owner-scheduled (Phase 9) —
+    checked `firmware/tools/replay_samples/eac3_acceptance.py` (DTS is a
+    20 s control replay, `:38`, `:172`, not a bench mode) and the AC-3 /
+    E-AC-3 plans; no such mode exists and no plan defines its contract.
   - **~20:35 — BISECT VERDICT: the unfitted tail convicts,
     strong-but-provisional.** Three consecutive ~58-minute windows
     on the tightened-window image (boots re-rolled deliberately
@@ -1196,7 +1265,20 @@ ends left open:
     MemManage fault), the recorder-ring pad-2 straddle stands
     recorded (clamp looks unnecessary on the soak evidence), the FEC
     TX-spin bounding decision is unrecorded, and the formal AC-3
-    four-hour acceptance run is still to be scheduled.
+    four-hour acceptance run is still to be scheduled. **Dispositions
+    2026-09-03:** wild-address source — OBSERVATION, no fix owed until
+    recurrence (no recurrence through the 10.0 h and 8.0 h watches or since;
+    `stall_mpu_tighten()` names the toucher's PC if it ever fires). FEC
+    TX-spin bounding — DECISION RECORDED: not built; the bisect (aius
+    `d3641a1`) convicted the FlexSPI2 bus-hold class, not an FEC spin, and
+    the stall witness's IABR snapshot names any ISR spin on sight, so the
+    patch (FNET is vendored, `firmware/vendor/NativeEthernet`) is built only
+    on a witnessed recurrence. Pad-2 straddle — superseded, see the
+    2026-08-04 row above. AC-3 four-hour run — scheduled behind the
+    one-image acceptance re-run
+    ([`aius-outstanding-work-2026-09.md`](aius-outstanding-work-2026-09.md)
+    Phase 4, then Phase 9 owner-scheduled with the by-ear gate;
+    [`aius-ac3-support.md`](aius-ac3-support.md) `:157-160`).
   - **8.00 h witness + heap watch on `930f003c6e6e+teensy41-optical`,
     2026-08-04 14:13–22:13 (boot generation 346 held throughout).**
     Zero deaths, zero resets: the generation never stepped, so this is
@@ -1287,7 +1369,13 @@ ends left open:
   CLOSED 2026-07-28: the preset line names the origin and tracks its
   "(modified)" state live. Still outstanding: the replay upload form sits
   below the full library (R-N5). Sweep the B/D lists against the shipped
-  pages before assuming any other item's state.
+  pages before assuming any other item's state. **Re-checked 2026-09-03:
+  R-N5 stands** — `firmware/sd/www/replays.html` orders Playback (`:22`),
+  Replay library (`:45`), Upload capture (`:54`), Live processing (`:68`), so
+  the upload form is still below the full library. The B/D lists themselves
+  are gone (session scratch, 7-day GC), so only R-N5 is verifiable; no phase
+  in [`aius-outstanding-work-2026-09.md`](aius-outstanding-work-2026-09.md)
+  (UX placement is an owner call).
 - ~~**The DSP editor shipped a spectrogram no device can feed (2026-08-16).**~~
   **CLOSED the same day.** Output-jitter Phase A dropped `analysis_window` from
   `/api/meters` in `b4a3914ce` and its own recorded outcome said "the dsp-editor
@@ -1308,9 +1396,21 @@ ends left open:
   that `#spectrogram` is gone (`#gr-history` keeps its "opens and closes on a
   live graphic" property). Deliberately NOT re-rendered from the deployed board:
   every capture run costs audio dropouts, and the recipe wants a stub anyway.
-- **Cost-model rows carry the old Cliff quotes** for the optical jacks
+  **Re-checked 2026-09-03: still owed** —
+  [`../reference/user-interface.md`](../reference/user-interface.md) `:60-65`
+  and `:337-343` still declare the three captures and the hero anchor stale.
+  The dropout-cost reason is gone while the board is on the bench (no audio to
+  interrupt, owner 2026-09-03), but the re-render needs the recipe's new lower
+  anchor first; owner-scheduled
+  ([`aius-outstanding-work-2026-09.md`](aius-outstanding-work-2026-09.md)
+  Phase 9).
+- ~~**Cost-model rows carry the old Cliff quotes** for the optical jacks
   (`aius-cost-model.md`); the purchased parts are RS PRO 805-1671/805-1680.
-  Update when the cost model is next touched.
+  Update when the cost model is next touched.~~ **CLOSED 2026-09-03**: the
+  anchor rows in [`aius-cost-model.md`](aius-cost-model.md) §Initial
+  component anchors now name the RS PRO ORJ-5 (`805-1671`) / OTJ-5
+  (`805-1680`); the RS PRO unit price is not re-quoted in-repo (RS refuses
+  automated fetches) and is listed as a refresh-gate item there.
 - ~~**Status page misreported the checkpoint vocabulary and read the boot
   config as a standing fault (2026-08-16).**~~ **CLOSED the same day**, owner
   report ("the status html always shows configuration valid no / configuration
@@ -1400,7 +1500,10 @@ ends left open:
   runs with `test_key: true` — the production-key cutover remains the
   documented security-posture follow-up in the plan. (Superseded by
   the 2026-08-04 home-key rotation below: `test_key` is now false;
-  the off-repo production-key cycle stays the queued later step.)
+  the off-repo production-key cycle stays the queued later step — owner-only,
+  owner-scheduled 2026-09-03,
+  [`aius-outstanding-work-2026-09.md`](aius-outstanding-work-2026-09.md)
+  Phase 9.)
   Historic
   sequencing riders below are preserved for the record.
   **2026-08-04 — HOME KEY ROTATION, owner-directed.** The standing
@@ -1450,11 +1553,15 @@ ends left open:
   the LFE −8.9 dB observation was the TEST VECTOR (ffmpeg's DTS encoder
   stores LFE ~9.8 dB down; our decode chain is exact), so an lfe_gain
   A/B (0.316 vs 1.0) joins the ears-round queue for convention-encoded
-  film content.
-- **B9 — the app dashboard retirement**, keeping `swagger.json` and
+  film content. **Owner-scheduled 2026-09-03** (by-ear gate;
+  [`aius-outstanding-work-2026-09.md`](aius-outstanding-work-2026-09.md)
+  Phase 9).
+- ~~**B9 — the app dashboard retirement**, keeping `swagger.json` and
   its contract suite. Independent of everything above
   ([`aius-network-hardening.md`](aius-network-hardening.md), B-series
-  table).
+  table).~~ **DONE 2026-07-31** (aius `735bc8c`, upstream repository `c8f0c2571`;
+  [`aius-optical-prototype.md`](aius-optical-prototype.md) §DSP control
+  protocol and remote dashboard; struck here 2026-09-03).
 - **Open defects** — authoritative list with full context:
   [`aius-network-hardening.md` §Open defects](aius-network-hardening.md#open-defects-in-the-order-they-are-worth-taking).
   Open as of 2026-07-27, gists only:
@@ -1471,8 +1578,13 @@ ends left open:
     [`aius-network-hardening.md` defect 2](aius-network-hardening.md#open-defects-in-the-order-they-are-worth-taking).
   - **4**: `record_event` has two call sites; everything else is a
     counter — prerequisite to any push observability.
-  - **36 — CONVICTED ON HARDWARE 2026-08-05, cause is defect 38, fix
-    committed but NOT FLASHED.** The board came back on Ethernet running
+  - ~~**36**: 2.4 % of `/api/status` polls return no complete body.~~
+    **CLOSED 2026-09-01** — the 37/38 fix is deployed (image `3824579`) and
+    the watch re-ran live: 1,734 responses, zero truncated bodies (ledger
+    entry 36, close-out bullet). The residual ~0.5 % clean 5 s drop is
+    defect 41 below, not a reopening. Register gist as it stood (stale
+    "NOT FLASHED" struck 2026-09-03): **CONVICTED ON HARDWARE 2026-08-05,
+    cause is defect 38, fix committed.** The board came back on Ethernet running
     the same image and the discriminating watch ran: 2.50 h, 4,481 polls,
     3 failures, `http_client_drops` 0 → 3 incrementing exactly once per
     failure. That counter's arm is reachable on a plain GET only via
@@ -1500,14 +1612,16 @@ ends left open:
     change needed.
   - ~~**37**: every accepted socket inherits a 2,048 B send buffer from
     the listener, so the `fnet_user_config.h` 32 KB is dead and a ~7 KB
-    response stalls at least three times.~~ **FIXED 2026-08-05, NOT YET
-    FLASHED**: `accept_once` raises SO_SNDBUF to 8,192 B on the accepted
+    response stalls at least three times.~~ **FIXED 2026-08-05 (aius
+    `9002cbf`); DEPLOYED — image `3824579`, verified live 2026-09-01 (ledger
+    entry 37; the register's "NOT YET FLASHED" was stale until 2026-09-03)**:
+    `accept_once` raises SO_SNDBUF to 8,192 B on the accepted
     socket. Deliberately not `setSocketSize()`, which is global and eager
     and would have added ~98 KB of boot-time OCRAM allocation (defect
     26's bank); measured OCRAM heap is unchanged at 131,232 B. Hosting
     the call needed ITCM the image did not have — 20 bytes of headroom —
     so `accept_once` moved to `FLASHMEM`, leaving 148 bytes free.
-  - **39** (opened 2026-08-05, static): the upgrade page reads six
+  - ~~**39** (opened 2026-08-05, static): the upgrade page reads six
     `/api/ota` fields the firmware does not emit — `latch_armed`,
     `image_length`, `staged_length`, `fail_reason`, `key_fingerprint`
     and a top-level `target_id` — against the firmware's `armed`,
@@ -1516,11 +1630,37 @@ ends left open:
     the page is the stale side. Four cells read wrong on a real device;
     the page still works. `upgrade.test.js` stubs the page's own names,
     so the suite passes and the fixture encodes the bug — any fix must
-    re-pin it to `OtaStatus`.
+    re-pin it to `OtaStatus`.~~ **FIXED in two passes: names 2026-09-01
+    (aius `1abc2b5`), semantics 2026-09-02 (aius `88b9203` — the three byte
+    counts are container-absolute, resume works, the stub derives the
+    firmware's formula); ledger entry 39. Struck here 2026-09-03.**
+  - **40** (opened 2026-09-01, low severity, design call): `/api/status`
+    emits no `target_id`, so the upgrade page shows the device identity as
+    `unknown` and skips its client-side target-mismatch pre-check until a
+    container is offered (`/api/ota` `image.target_id` is empty before an
+    offer). The device re-checks `target_id` at offer time and answers
+    `UNSUPPORTED` itself, so nothing unsafe happens. Fix is a choice, not a
+    rename: emit the fixed `g_ota_target_id` from the status document, or
+    drop the page's promise of a client-side identity check. Ledger entry
+    40; added to this register 2026-09-03.
+  - **41** (opened 2026-09-01): rare ~5 s send-path stall drops a
+    `/api/status` response cleanly — ~0.5 % of serial polls (4 of 869; 23 of
+    4,889 in a 9-minute watch) hit the full `RESPONSE_TIMEOUT_MS` and the
+    connection is dropped (`RemoteDisconnected`, `http_client_drops` +1)
+    rather than the body truncating. NOT the compute/ISR stall family
+    (`stall_diag.events` flat across every drop); a pure FNET send/RTO tail
+    the raised deadline exposed rather than caused. Not a regression — the
+    acceptance runner retries transient drops (`aius_rate_bench.py`
+    `HttpTransport.get_json`, five attempts over 0.25/1/2/3 s). No retained
+    artifact (session scratch, GC'd). Ledger entry 41; added to this register
+    2026-09-03. No phase owns it.
   - ~~**38**: `RESPONSE_TIMEOUT_MS` (100 ms) is not re-armed on
     `WOULD_BLOCK`, so a slow peer makes the firmware truncate a response
     whose `Content-Length` it already promised, then blame the client.~~
-    **FIXED 2026-08-05, NOT YET FLASHED**: raised to 5,000 ms, which
+    **FIXED 2026-08-05 (aius `9002cbf`); DEPLOYED — image `3824579`,
+    verified live 2026-09-01, defect 36's truncation gone (ledger entry 38;
+    the register's "NOT YET FLASHED" was stale until 2026-09-03)**: raised
+    to 5,000 ms, which
     spans two consecutive FNET RTO recoveries. The design is unchanged —
     the deadline still bounds lack of forward progress — but is now
     reachable only by a peer that has genuinely stopped. Regression
@@ -1554,8 +1694,13 @@ ends left open:
     ready ~4 s against a 2 s deadline, DHCP/UDP/HTTP ~9–10.6 s against
     7–8 s, bimodal at exactly 8.90/10.56 s (one discrete retry's step);
     root-caused as NOT the ledger, NOT DHCP negotiation.
-  - **22**: `GET /api/dsp/config` cannot report a committed config on a
-    card-absent board (design call).
+  - ~~**22**: `GET /api/dsp/config` cannot report a committed config on a
+    card-absent board (design call).~~ **FIXED 2026-09-01 (aius `fc674c6`:
+    the GET reports the staged config while a commit is pending; verified
+    live carrier-less), corrections (a)–(d) of 2026-09-02 verified live on
+    `e746cf952dd6` and `b38e8448f5c8` (§Waiting on the operator above;
+    ledger entry 22). The host-visible serializer seam stays recorded there,
+    not built. Struck here 2026-09-03.**
   - **23**: `AIUS_NET_DHCP_DEADLINE_MS` at 9,000 ms bought one mode, not
     headroom (design call).
   - **25**: a flash-driven warm reboot crashes boot twice and latches
@@ -1677,7 +1822,20 @@ where the only prior record was a plan aside.
   authenticated `POST /api/clear` took both fields to zero with no reboot.
   Post-stop silence never latches (legal pause stuffing), which is why only
   the immediate-PCM adjacency ever showed it.
-- **Open-gate 128-frame TX underrun, unexplained.** In the 48→44.1→48
+- ~~**Open-gate 128-frame TX underrun, unexplained.**~~ **EXPLAINED AND
+  FIXED by [`aius-output-jitter.md`](aius-output-jitter.md) Phase F (aius
+  `018c000`, 2026-09-02; struck 2026-09-03).** The shape matches Phase F's
+  finding exactly: `clock_apply_desired_plan` emptied the ring on the rate
+  change, `tx_gate_actuate(true)` only ever trimmed down and never padded, so
+  the post-relock floor was whatever phase the first producer block had
+  against the transmit ISR (0 here — "TX level reached zero"), and clock
+  following then walked the commit one block past the fill for one 128-frame
+  underrun between two open-gate samples (output-jitter Phase F §Finding,
+  2026-09-02). The pad-up floor removes the lottery; on the Phase F image
+  three relocks read `tx_underrun_frames 0`, and the rate-gate tool's
+  2026-09-03 runs record "the pre-Phase-F open-gate underrun is gone"
+  ([`aius-rate-gate-capture-tool.md`](aius-rate-gate-capture-tool.md)
+  §Follow-on work). Original entry: in the 48→44.1→48
   transition run on `01477755955b`, one isolated 128-frame underrun occurred
   at 11.719 s between two open-gate 48 kHz status samples after the TX level
   reached zero; the other 127,488 underrun frames were attributed to dark
@@ -1704,9 +1862,17 @@ where the only prior record was a plan aside.
   the qualified U24 XL, so no gate will ever consume that window. If a
   ±29.6k-class impulse appears in a U24 XL-sourced capture it is a NEW
   observation against the new source, not a revival of this one.
-- **48 kHz gate 1 is unpassable under active CM playback; source
-  QUALIFIED 2026-08-02 (U24 XL, resolution at the end of this entry).**
-  The gate's trim-cadence bound (at most two post-settle trims) assumed a
+- ~~**48 kHz gate 1 is unpassable under active CM playback.**~~ **RESOLVED
+  (source) 2026-08-02 — the U24 XL is the qualified gate-1 source
+  (ten-minute carrier observation at the end of this entry; heading reworded
+  2026-09-03). The gate-1 failure that remains is a different question: the
+  deployed image still fails the trim-cadence bound on the qualified source
+  (52 trims, aius `d6efb28`, 2026-09-01), owned by
+  [`aius-outstanding-work-2026-09.md`](aius-outstanding-work-2026-09.md)
+  Phase 3 (trim-cadence image A/B, then root cause; D4). The 32 kHz U24
+  left-subframe failure below stays with the deferred 32 kHz leg
+  (sample-rate gate 3).** Original entry:
+  the gate's trim-cadence bound (at most two post-settle trims) assumed a
   stable source; with USB playback active this CM wanders across ten values
   spanning 6.3 Hz and produced 53 post-settle trims in 600 s while the audio
   path stayed clean (reconfirmed twice on 2026-07-31: 11 trims/120 s, max
@@ -1826,7 +1992,8 @@ where the only prior record was a plan aside.
   producer, and both A/B legs also perturbed global code layout. Flash
   placement is the proven-safe configuration, enforced by the itcm-placement
   guard. Residual risk: a layout-sensitive latent defect elsewhere in the
-  ingress path.
+  ingress path. Re-confirmed 2026-09-03: kept as recorded residual risk, no
+  phase in [`aius-outstanding-work-2026-09.md`](aius-outstanding-work-2026-09.md).
 - **Non-48 kHz latency rows unmeasured.** Every latency acceptance row pins
   `nominal_rate_hz == 48000` while sample-rate following makes 44.1/32 kHz
   first-class live modes with rate-dependent transmit-ring residence and DSP
