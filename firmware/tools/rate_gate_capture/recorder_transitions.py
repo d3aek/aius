@@ -117,15 +117,18 @@ FIDUCIAL_SEARCH_FRAMES = 96000
 # that window, and a stamp lagging its switch by more than that would be a
 # firmware defect worth seeing as an unresolved fiducial.
 PRE_FIDUCIAL_WINDOW_FRAMES = 4096
-# The status poller's cadence. The board's event ring can overflow between
-# polls, and `event_overflows` is one of the transitions gate's harmful
-# counters, so the cadence is part of the measurement -- see
-# STATUS_POLL_NOTE.
+# The status poller's cadence. The board's 32-entry event ring can overflow
+# between polls (events beyond the depth are lost; up to the depth they are
+# deferred and paged out via `next`), and `event_overflows` is one of the
+# transitions gate's harmful counters, so the cadence is part of the
+# measurement -- see STATUS_POLL_NOTE.
 STATUS_POLL_INTERVAL_S = 0.25
 STATUS_POLL_NOTE = (
     "clock.event_overflows is sensitive to this tool's own status/events "
-    "poll cadence: events the board rings out between two polls are lost and "
-    "counted as an overflow. A transitions `harmful-counter` failure that "
+    "poll cadence: events the board rings out between two polls are deferred "
+    "up to the ring's 32-entry depth and paged out via `next`; only those "
+    "beyond it are lost and counted as an overflow. A transitions "
+    "`harmful-counter` failure that "
     "cites event_overflows ALONE is therefore tool-induced and not a board "
     "defect; any other harmful counter, or event_overflows alongside one, is "
     "a real finding.")

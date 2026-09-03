@@ -124,6 +124,8 @@ extern "C" const uint8_t _flashimagelen;
 #include "../lib/aius_audio/src/aius_spdif_tx24.h"
 #include "../lib/aius_audio/src/aius_spdif_rx.h"
 #include "../lib/aius_audio/src/aius_tx_governor.h"
+#include "../lib/aius_audio/src/aius_input_dark.h"
+#include "aius_event_ring.h"
 #include "aius_boot_teensy.h"
 #include "aius_cdc_teensy.h"
 #include "aius_fault_teensy.h"
@@ -925,13 +927,10 @@ audio_ingress_publish_live(uint16_t *slot, const audio_block_t *left,
 
 static char g_auth_token[AIUS_AUTH_TOKEN_STORAGE_SIZE];
 
-struct AiusEvent {
-	uint32_t sequence;
-	uint32_t uptime_ms;
-	uint8_t type;
-	uint8_t state;
-	uint16_t detail;
-};
+/* AiusEvent and the ring that holds it are lib/aius_net/include/
+ * aius_event_ring.h (depth, overwrite accounting and cursor paging are
+ * host-proven by the event-ring suite); the type values below are this
+ * file's. */
 
 /* The ring's `type` byte is a wire contract: GET /api/events serves it verbatim,
  * tools/net/aius_net_runner.py reads it, and the status compatibility contract
@@ -984,9 +983,11 @@ enum AiusEventType : uint8_t {
 	AIUS_EVENT_CLOCK_FAULT = 13,
 };
 
-static AiusEvent g_events[8];
-static uint32_t g_event_sequence;
-static uint32_t g_event_overflows;
+/* Plain DTCM .bss, deliberately not DMAMEM: OCRAM free sits at the defect-26
+ * heap floor (test/memory/verify_target.py) and a zeroed ring needs no
+ * generation stamp for its staleness test. AIUS_EVENT_RING_DEPTH entries of
+ * 12 bytes plus two counters. */
+static AiusEventRing g_event_ring;
 static uint8_t g_last_state;
 static bool g_test_running;
 static volatile uint32_t g_network_drops;
@@ -1234,14 +1235,7 @@ static FLASHMEM uint32_t sd_job_id(void)
 
 static FLASHMEM void record_event(uint8_t type, uint8_t state, uint16_t detail)
 {
-	AiusEvent &event = g_events[g_event_sequence % 8u];
-	if (g_event_sequence >= 8u)
-		g_event_overflows++;
-	event.sequence = ++g_event_sequence;
-	event.uptime_ms = millis();
-	event.type = type;
-	event.state = state;
-	event.detail = detail;
+	aius_event_ring_record(&g_event_ring, millis(), type, state, detail);
 }
 
 static FLASHMEM void record_state(void)
@@ -1387,6 +1381,15 @@ static uint32_t g_tx_governor_trimmed_frames; /* .bss = 0 */
  *   here approaching the RX buffering depth is the in-firmware loss path
  *   (DMA ring overwrite during ISR starvation); its absence at a pop
  *   acquits the firmware side.
+ * - Dark-interval record + gate-closed watermark (aius-input-recovery
+ *   Phase 1, lib/aius_audio/src/aius_input_dark.h): the region the
+ *   production-gap watermark discards by design. Stepped once per REPLAY
+ *   epoch by input_dark_service() from state the epoch already latches;
+ *   observe-only, nothing reads it back to act. Per gate-ladder phase it
+ *   times each gate-closed run (max / over-count / last / last-at, the
+ *   production gap's shape), and it records the newest eight commit-bounded
+ *   dark intervals with their entry and exit phase, pipeline class, tracker
+ *   acceptance and gate. Plain DTCM .bss like the ring above.
  *
  * All lifetime (not cleared by clear_counters()), served as `input_diag`. */
 #ifndef AIUS_INPUT_GAP_ALERT_US
@@ -1404,6 +1407,7 @@ static uint32_t g_enqueue_gap_last_at_ms;
 static uint32_t g_enqueue_last_us;      /* 0 = no accepted block since reset */
 static volatile uint32_t g_update_gap_max_us; /* ISR-written watermark */
 static volatile uint32_t g_update_last_us;    /* 0 = first call */
+static AiusInputDark g_input_dark;            /* .bss; epoch-owned */
 
 /* The boot-lottery padding-sweep knob: the degraded mode's per-boot odds are
  * a function of the image's exact layout, so hunting a reproducing layout of
@@ -1515,6 +1519,12 @@ public:
 			aius_audio_service_clear_diag(&g_audio_service);
 		if (g_pipeline != nullptr)
 			aius_pipeline_clear_service_diag(g_pipeline);
+		/* The dark-interval instrument diffs committed_blocks, which the
+		 * clear above just zeroed; rebase its baseline in the same epoch-
+		 * serial thread so the drop never reads as a commit (which would
+		 * close an open interval with a bogus exit and mask a stuck state
+		 * spanning the clear). The open interval and phase clock stand. */
+		g_input_dark.last_committed = 0u;
 		g_clock_rate_changes = 0u;
 		g_clock_trim_updates = 0u;
 		g_clock_structural_replans = 0u;
@@ -2340,8 +2350,8 @@ static FLASHMEM void put_status(uint8_t *payload, uint16_t *length)
 {
 	record_state();
 	noInterrupts();
-	uint32_t event_sequence = g_event_sequence;
-	uint32_t event_overflows = g_event_overflows;
+	uint32_t event_sequence = g_event_ring.sequence;
+	uint32_t event_overflows = g_event_ring.overflows;
 	uint32_t network_drops = g_network_drops;
 	uint32_t network_budget_overruns = g_network_budget_overruns;
 	interrupts();
@@ -3183,8 +3193,14 @@ static FLASHMEM bool http_clock_regs_json(char *output, size_t capacity,
 static FLASHMEM bool http_input_diag_json(char *output, size_t capacity,
                                           size_t *length)
 {
-	return http_json_append(
-		output, capacity, length,
+	/* The format strings are PROGMEM (flash, XIP-read) rather than the
+	 * default .rodata the framework script copies into DTCM .data: this
+	 * serializer grew ~1 KB of literals for the dark-interval instrument and
+	 * DTCM's free-for-locals zone is the scarce bank on this build. Flash is
+	 * memory-mapped on the i.MX RT, so vsnprintf reads them directly. The
+	 * swagger extractor (test/swagger.test.js) resolves a
+	 * `static const char <name>[] PROGMEM = "..."` format by name. */
+	static const char format_head[] PROGMEM =
 		",\"input_diag\":{"
 		"\"sis_biterr_events\":%lu,"
 		"\"sis_symerr_events\":%lu,"
@@ -3199,7 +3215,35 @@ static FLASHMEM bool http_input_diag_json(char *output, size_t capacity,
 		"\"update_gap_max_us\":%lu,"
 		"\"rx_dropped_halves\":%lu,"
 		"\"pool_blocks_used\":%lu,"
-		"\"pool_blocks_used_max\":%lu}",
+		"\"pool_blocks_used_max\":%lu,";
+	static const char format_dark[] PROGMEM =
+		"\"dark_alert_ms\":%lu,"
+		"\"dark_record_min_ms\":%lu,"
+		"\"dark_phase\":%u,"
+		"\"dark_phase_ms\":%lu,"
+		"\"dark_open\":%u,"
+		"\"dark_open_ms\":%lu,"
+		"\"dark_open_start_ms\":%lu,"
+		"\"dark_open_entry_phase\":%u,"
+		"\"dark_open_entry_class\":%u,"
+		"\"dark_open_entry_ready\":%u,"
+		"\"dark_open_entry_gate\":%u,"
+		"\"dark_interval_count\":%lu,"
+		"\"dark_phases\":[";
+	static const char format_phase[] PROGMEM =
+		"%s{\"phase\":%u,\"max_ms\":%lu,"
+		"\"over_count\":%lu,\"last_ms\":%lu,\"last_at_ms\":%lu}";
+	static const char format_interval[] PROGMEM =
+		"%s{\"start_ms\":%lu,\"ms\":%lu,"
+		"\"entry_phase\":%u,\"entry_class\":%u,"
+		"\"entry_ready\":%u,\"entry_gate\":%u,"
+		"\"exit_phase\":%u,\"exit_class\":%u,"
+		"\"exit_ready\":%u,\"exit_gate\":%u}";
+	const uint32_t now_ms = millis();
+	const AiusInputDark &dark = g_input_dark;
+
+	if (!http_json_append(
+		output, capacity, length, format_head,
 		(unsigned long)g_sis_biterr_events,
 		(unsigned long)g_sis_symerr_events,
 		(unsigned long)g_sis_lockloss_events,
@@ -3213,7 +3257,63 @@ static FLASHMEM bool http_input_diag_json(char *output, size_t capacity,
 		(unsigned long)g_update_gap_max_us,
 		(unsigned long)aius_spdif_rx_dropped_halves(),
 		(unsigned long)AudioStream::memory_used,
-		(unsigned long)AudioStream::memory_used_max);
+		(unsigned long)AudioStream::memory_used_max))
+		return false;
+	/* The dark-interval instrument (aius-input-recovery Phase 1): the
+	 * current ladder phase and how long it has run, the open interval
+	 * with its entry snapshot, then the per-phase watermark rows and the
+	 * newest recorded intervals oldest-first. */
+	if (!http_json_append(
+		output, capacity, length, format_dark,
+		(unsigned long)AIUS_INPUT_DARK_ALERT_MS,
+		(unsigned long)AIUS_INPUT_DARK_RECORD_MIN_MS,
+		(unsigned)dark.phase,
+		(unsigned long)aius_input_dark_phase_ms(&dark, now_ms),
+		(unsigned)dark.interval_open,
+		(unsigned long)aius_input_dark_open_ms(&dark, now_ms),
+		(unsigned long)(dark.interval_open ? dark.last_commit_ms : 0u),
+		(unsigned)dark.interval_entry.phase,
+		(unsigned)dark.interval_entry.klass,
+		(unsigned)dark.interval_entry.carrier_ready,
+		(unsigned)dark.interval_entry.gate,
+		(unsigned long)dark.interval_count))
+		return false;
+	for (uint32_t phase = 0u; phase < AIUS_INPUT_DARK_CLOSED_PHASES; phase++) {
+		const AiusInputDarkWatermark &watermark = dark.phases[phase];
+		if (!http_json_append(
+			output, capacity, length, format_phase,
+			phase == 0u ? "" : ",", (unsigned)phase,
+			(unsigned long)watermark.max_ms,
+			(unsigned long)watermark.over_count,
+			(unsigned long)watermark.last_ms,
+			(unsigned long)watermark.last_at_ms))
+			return false;
+	}
+	if (!http_json_append(output, capacity, length, "],\"dark_intervals\":["))
+		return false;
+	const uint32_t held = dark.interval_count < AIUS_INPUT_DARK_RECORD_DEPTH
+		? dark.interval_count
+		: AIUS_INPUT_DARK_RECORD_DEPTH;
+	for (uint32_t index = 0u; index < held; index++) {
+		/* Oldest first: the accessor counts back from the newest. */
+		const AiusInputDarkInterval *interval =
+			aius_input_dark_interval(&dark, held - 1u - index);
+		if (!http_json_append(
+			output, capacity, length, format_interval,
+			index == 0u ? "" : ",",
+			(unsigned long)interval->start_ms,
+			(unsigned long)interval->duration_ms,
+			(unsigned)interval->entry.phase,
+			(unsigned)interval->entry.klass,
+			(unsigned)interval->entry.carrier_ready,
+			(unsigned)interval->entry.gate,
+			(unsigned)interval->exit.phase,
+			(unsigned)interval->exit.klass,
+			(unsigned)interval->exit.carrier_ready,
+			(unsigned)interval->exit.gate))
+			return false;
+	}
+	return http_json_append(output, capacity, length, "]}");
 }
 
 /* The previous boot's retained forensics, HTTP-readable (they were CDC-only
@@ -5362,23 +5462,32 @@ static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
 	return http_json_append((char *)body, capacity, &length, "}") ? length : 0;
 }
 
+/* One page of the ring after `cursor`: at most AIUS_EVENT_RING_HTTP_PAGE
+ * entries, oldest first, starting at the later of cursor + 1 and the oldest
+ * retained sequence. `next` is the cursor for the following page (the last
+ * entry served when the page is full, else the newest sequence), so a
+ * client that receives a full page polls again at once and a burst deeper
+ * than one page is paged rather than dropped. */
 static FLASHMEM size_t http_events_json(uint32_t cursor, uint8_t *body, size_t capacity)
 {
+	const uint32_t next = aius_event_ring_page_next(
+		&g_event_ring, cursor, AIUS_EVENT_RING_HTTP_PAGE);
 	int written = snprintf((char *)body, capacity, "{\"cursor\":%lu,\"next\":%lu,\"events\":[",
-		(unsigned long)cursor, (unsigned long)g_event_sequence);
+		(unsigned long)cursor, (unsigned long)next);
 	if (written < 0 || (size_t)written >= capacity)
 		return 0;
 	size_t length = (size_t)written;
 	uint8_t count = 0;
-	uint32_t first = g_event_sequence > 8u ? g_event_sequence - 7u : 1u;
-	for (uint32_t sequence = first; sequence <= g_event_sequence && count < 8; sequence++) {
-		const AiusEvent &event = g_events[(sequence - 1u) % 8u];
-		if (event.sequence != sequence || event.sequence <= cursor)
+	for (uint32_t sequence = aius_event_ring_page_start(&g_event_ring, cursor);
+	     sequence <= g_event_ring.sequence && count < AIUS_EVENT_RING_HTTP_PAGE;
+	     sequence++) {
+		const AiusEvent *event = aius_event_ring_at(&g_event_ring, sequence);
+		if (event == nullptr)
 			continue;
 		written = snprintf((char *)body + length, capacity - length,
 			"%s{\"sequence\":%lu,\"uptime_ms\":%lu,\"type\":%u,\"state\":%u,\"detail\":%u}",
-			count == 0 ? "" : ",", (unsigned long)event.sequence,
-			(unsigned long)event.uptime_ms, event.type, event.state, event.detail);
+			count == 0 ? "" : ",", (unsigned long)event->sequence,
+			(unsigned long)event->uptime_ms, event->type, event->state, event->detail);
 		if (written < 0 || (size_t)written >= capacity - length)
 			return 0;
 		length += (size_t)written;
@@ -6175,19 +6284,22 @@ static FLASHMEM uint16_t udp_put_events(const AiusNetFrame *request)
 	const uint32_t cursor = request->payload_len >= 4 ?
 		aius_net_get_u32(request->payload) : 0u;
 	uint8_t count = 0;
-	uint32_t first = g_event_sequence > 8u ? g_event_sequence - 7u : 1u;
 
-	for (uint32_t sequence = first;
-	     sequence <= g_event_sequence && count < 4; sequence++) {
-		const AiusEvent &event = g_events[(sequence - 1u) % 8u];
-		if (event.sequence != sequence || event.sequence <= cursor)
+	/* Same page walk as http_events_json(): the UDP page is four entries
+	 * (1 + 4 * 12 payload bytes) and the client continues from the last
+	 * sequence it received. */
+	for (uint32_t sequence = aius_event_ring_page_start(&g_event_ring, cursor);
+	     sequence <= g_event_ring.sequence && count < AIUS_EVENT_RING_UDP_PAGE;
+	     sequence++) {
+		const AiusEvent *event = aius_event_ring_at(&g_event_ring, sequence);
+		if (event == nullptr)
 			continue;
 		uint8_t *dst = g_udp_payload + 1 + count * 12;
-		aius_net_put_u32(dst, event.sequence);
-		aius_net_put_u32(dst + 4, event.uptime_ms);
-		dst[8] = event.type;
-		dst[9] = event.state;
-		aius_net_put_u16(dst + 10, event.detail);
+		aius_net_put_u32(dst, event->sequence);
+		aius_net_put_u32(dst + 4, event->uptime_ms);
+		dst[8] = event->type;
+		dst[9] = event->state;
+		aius_net_put_u16(dst + 10, event->detail);
 		count++;
 	}
 	g_udp_payload[0] = count;
@@ -8291,6 +8403,30 @@ static FLASHMEM void input_fault_service(uint32_t now_ms)
 	SPDIF_SIC = errors;
 }
 
+/* Input-fault instrument: the dark-interval record and gate-closed watermark
+ * (aius_input_dark.h). Runs after tx_gate_service() so it reads this epoch's
+ * LATCHED carrier and the gate it just evaluated; every other input is a
+ * clock latch the epoch already owns, plus one 44-byte service-diag copy for
+ * the committed-block count. Field writes and compares only. Observe-only by
+ * contract: nothing consumes the result here, and no reset path reads it. */
+static FLASHMEM void input_dark_service(uint32_t now_ms)
+{
+	AiusPipelineServiceDiag service;
+	AiusInputDarkSample sample;
+
+	g_audio_processor.pipeline_service_diag(&service);
+	sample.now_ms = now_ms;
+	sample.committed_blocks = service.committed_blocks;
+	sample.carrier_locked = g_tx_gate_carrier ? 1u : 0u;
+	sample.gate_open = g_aius_spdif_tx24.gate_open != 0u ? 1u : 0u;
+	sample.carrier_ready = g_clock_carrier_ready ? 1u : 0u;
+	sample.plan_applied = g_clock_plan_applied ? 1u : 0u;
+	sample.live_ready = g_clock_live_ready ? 1u : 0u;
+	sample.rate_unsupported = g_clock_carrier_unsupported ? 1u : 0u;
+	sample.pipeline_class = (uint8_t)g_audio_processor.classification();
+	aius_input_dark_step(&g_input_dark, &sample);
+}
+
 static FLASHMEM bool platform_replay(void *, const AiusRuntimeBudget *budget,
                                      uint32_t now_ms)
 {
@@ -8312,6 +8448,7 @@ static FLASHMEM bool platform_replay(void *, const AiusRuntimeBudget *budget,
 	 * one's. A boolean and at most three register stores; no budget row. */
 	tx_gate_service();
 	input_fault_service(now_ms);
+	input_dark_service(now_ms);
 	/* Flight recorder, after tx_gate_service() by contract: the epoch
 	 * trigger evaluation consumes this epoch's LATCHED gate and carrier
 	 * (underrun qualification at both ends of the delta; carrier falling
@@ -8642,7 +8779,8 @@ FLASHMEM void setup(void)
 /*                                                                     */
 /*  - At most one event per counter per epoch, carrying the delta      */
 /*    rather than one event per increment, so no burst can outrun the  */
-/*    eight-entry ring. Two counters really can advance many times     */
+/*    ring (AIUS_EVENT_RING_DEPTH). Two counters really can advance    */
+/*    many times                                                       */
 /*    between two passes: ingress drops, written by the audio ISR once */
 /*    per missing chunk and unbounded against an epoch that stalls,    */
 /*    and g_config_error_count, which has one HTTP producer and two SD */
@@ -8654,7 +8792,8 @@ FLASHMEM void setup(void)
 /*                                                                     */
 /*  - The ring's accounting stays exactly as truthful as it was. A     */
 /*    burst overwrites the oldest entry and increments                 */
-/*    g_event_overflows in record_event(); that counter is what the    */
+/*    g_event_ring.overflows in record_event(); that counter is what   */
+/*    the                                                              */
 /*    soak reads to know what it missed, and nothing here grows to     */
 /*    avoid incrementing it.                                           */
 /*                                                                     */

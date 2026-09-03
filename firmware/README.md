@@ -401,6 +401,8 @@ Suites (all build with `-Wall -Wextra -Werror` + ASan/UBSan):
 | `tx-gate` | The transmit-gate predicate's whole truth table (no carrier and no replay → no output carrier). |
 | `tx-governor` | The latency governor's window-minimum floor estimator and one-skip trim decision (aius-output-jitter Phase E). |
 | `input-liveness` | Why nothing is reaching the transmit sink and for how long, over the gate-closed region the production-gap watermark discards (aius-input-recovery Phase 1). |
+| `input-dark` | The observe-only dark-interval record (entry/exit phase, class, tracker acceptance, gate) and the per-phase gate-closed watermark served in `input_diag` (aius-input-recovery Phase 1). |
+| `event-ring` | The device event ring: depth against an OSD-navigation burst, overwrite accounting, and `cursor` paging for GET /api/events and UDP GET_EVENTS (aius-input-recovery Phase 1). |
 | `recorder` | The flight recorder's portable core: freeze state machine, trigger edges/qualification, exact eight-step × 512-frame staging burst, PSRAM carve geometry, drain + gap accounting, chunk arithmetic, and the firmware-wide extmem-heap ban. |
 | `boot`, `boot-target` | Retained ledger and recovery-mode rules; the Teensy boot adapter + its post-link verifier. |
 | `sd`, `sd-target` | Portable SD job machine; the one-shot Teensy SD adapter. |

@@ -497,9 +497,11 @@ def check_common(samples, failures, metrics, allow_clock_mismatch=False,
     if allow_event_overflows:
         # Transitions only (plan defect F8): the capture tool polls
         # /api/events on a fixed cadence, and events the board rings out
-        # between two polls are lost and counted as an overflow -- so the
-        # counter measures the tool's cadence against the transition's event
-        # burst, not a board fault. It is reported here the way
+        # between two polls are deferred up to the ring's 32-entry depth
+        # (paged out via `next`); only those beyond it are lost and counted
+        # as an overflow -- so the counter measures the tool's cadence
+        # against the transition's event burst, not a board fault. It is
+        # reported here the way
         # transport_metrics reports http_client_drops_delta, never read as a
         # clean zero. Lost events still cannot break attribution silently:
         # `unsupported-event-count` fails when the event list no longer

@@ -18,19 +18,19 @@ a healthy carrier stays stuck until the carrier drops again.
 
 ## State — resume here
 
-**Status:** Phase 1 IN-PROGRESS. Premise re-checked in code at aius HEAD
+**Status:** Phase 1 SHIPPED 2026-09-03, host-proven; its deploy over OTA is
+pending ([§Gates](#gates)). Premise re-checked in code at aius HEAD
 `a6f7e07` on 2026-09-03 ([§Premise re-check at HEAD](#premise-re-check-at-head-2026-09-03)):
 all three stuck states are STILL REACHABLE; none is closed by `dc16e75`
 (guarded RX staging), `b977488` (acceptance-reset skip), `018c000`/`3570a21`
-(Phase F gate-open floor) or `4c9eb3d` (replay floor). The plan therefore keeps
-its value on its own "observe first" recommendation: the next step is Phase 1
-as written, instrumentation only, no behaviour change (event-ring depth/page
-split, structured recovery record, `input_diag` companion watermark, swagger).
-Phases 2–4 are gated on the Phase-1 record showing a stuck state in the field.
-The pure rule and its suite (`firmware/lib/aius_audio/src/aius_input_liveness.h`,
+(Phase F gate-open floor) or `4c9eb3d` (replay floor). Phase 1 is the plan's
+own "observe first" recommendation delivered: instrumentation only, no
+behaviour change (event-ring depth/page split, the dark-interval record, the
+`input_diag` gate-closed companion watermark, swagger). Phases 2–4 are gated
+on that record showing a stuck state in the field. The pure rule and its suite
+(`firmware/lib/aius_audio/src/aius_input_liveness.h`,
 `firmware/test/input-liveness/`, upstream repository `70009a13f`) are shipped and stay;
-nothing calls the rule, and no firmware for this plan has been built or
-flashed. The two pending decisions below are D11 in
+nothing calls the rule. The two pending decisions below are D11 in
 [`aius-outstanding-work-2026-09.md`](aius-outstanding-work-2026-09.md)
 §Decisions, needed only if Phases 2–4 open.
 
@@ -41,13 +41,31 @@ deploy path are in [§Gates](#gates).
 |---|---|---|
 | `2658efcff` | This plan: stuck-state inventory, decisions, phases | docs only; `doc-index --validate-only` clean |
 | `70009a13f` | `aius_input_liveness.h` pure rule + `input-liveness` suite + registration in all four registry places | `input-liveness` suite green via the firmware runner (`-Werror`, ASan, UBSan); `registry` guard PASS at 58 arms; 3 mutations each caught at the row that owns the behaviour |
+| Phase 1 (2026-09-03, aius firmware commit + upstream repository swagger commit) | `aius_event_ring.h` (ring 8 → 32, cursor paging), `aius_input_dark.h` (dark-interval record + per-phase gate-closed watermark), `input_diag` fields, `event-ring` + `input-dark` suites, swagger | see [Phase 1](#phase-1--see-the-stuck-states-before-acting-on-them---shipped-2026-09-03-host-proven-deploy-over-ota-pending) record |
 
-**Uncommitted tree state:** nothing owned by this thread.
-`git status --porcelain src/hardware/aius` is clean. Dirty paths elsewhere in
-the repo belong to other sessions and are foreign.
+**Uncommitted tree state:** at the time of writing the Phase 1 change is in
+the working tree, owned by this thread, awaiting the orchestrator's commit:
+aius `firmware/lib/aius_net/include/aius_event_ring.h`,
+`firmware/lib/aius_audio/src/aius_input_dark.h`, `firmware/src/optical_main.cpp`,
+`firmware/test/event-ring/`, `firmware/test/input-dark/`,
+`firmware/scripts/test.sh`, `firmware/README.md`, this plan; upstream repository
+`swagger.json`, `test/swagger.test.js`. Dirty
+paths elsewhere belong to other sessions and are foreign.
 
-**Next action:** Phase 1 instrumentation, at the seams listed under
-[Phase 1](#phase-1--see-the-stuck-states-before-acting-on-them). Wiring the
+**Next action:** deploy the Phase 1 image over OTA per [§Gates](#gates) (a
+clean-stamp build, signed WITHOUT `--slot` while `/api/status` `ab` is null),
+then read `input_diag.dark_*` ([Phase 1](#phase-1--see-the-stuck-states-before-acting-on-them---shipped-2026-09-03-host-proven-deploy-over-ota-pending)
+record) after the next OSD session. The evidence rule: stuck states 1 (gate
+never opens, either clause) and 3 (rate latched unsupported) show as
+`dark_phases[1|2|4].over_count > 0` (a completed gate-closed run past
+`dark_alert_ms` in rate_unsupported, clock_acquiring or awaiting_block), or
+live as `dark_phase ∈ {1, 2, 4}` with `dark_phase_ms > dark_alert_ms`; stuck
+state 2 (class latched and silent) shows as a `dark_intervals` entry, or an
+open `dark_open` interval, with `entry_gate 1` (production stopped under an
+open gate). A dark interval closes only on a commit, never on a carrier drop,
+so an interval's exit snapshot is always the recovery; `exit_gate 0` there is
+the normal armed-not-yet-executed shape, not evidence. Any of those readings
+opens Phase 2. Wiring the
 rule is Phase 3 and stays gated. When that gate opens, the wiring recipe is:
 call `aius_input_liveness_step()` once per epoch beside `input_fault_service()`
 (`firmware/src/optical_main.cpp:8273`, called at `:8314` from the
@@ -118,7 +136,14 @@ duration and last-at into new `input_diag` fields in `http_input_diag_json()`
   watermark resets its sentinel whenever the transmit gate is closed
   (`firmware/src/optical_main.cpp:1800-1801`), by design, so an unchanged
   `production_gap_over_count` is not evidence of continuity across a
-  gate-closed interval.
+  gate-closed interval. Since Phase 1 the `input_diag.dark_*` companion
+  measures exactly that region; read it instead.
+- **GET `/api/events` pages since Phase 1.** A page after `cursor` starts at
+  the OLDEST retained entry, not the newest eight, and `next` is the last
+  entry served when the page is full. A one-shot read with `cursor=0` on a
+  busy ring therefore returns the oldest eight of thirty-two; poll with `next`
+  until a page comes back short. The soak, HTTP runner and rate bench already
+  do.
 - The deployed image's `gate_open_target_frames` is 128 from a
   `platformio.ini` override; the source default reads 256. Do not reconcile
   either to the other.
@@ -129,20 +154,19 @@ duration and last-at into new `input_diag` fields in `http_input_diag_json()`
 
 Each is a proposal, none agreed.
 
-- **`http_events_json` conflates ring depth with page size**
-  (`firmware/src/optical_main.cpp:5365-5375`): it starts the walk at
-  `g_event_sequence - 7`, caps at 8, and the ring is `g_events[8]`
-  (`:987`) with the `% 8u` modulus written as a literal in three places
-  (`:1237`, `:5375`, `:6182`). The route already takes a `cursor`, so the two
-  concerns can separate cleanly. Proposed: fix as part of Phase 1's second
-  half, paging via cursor rather than growing the response body.
-- **Deepening the event ring has a placement cost.** `record_event` is
-  reachable from the AUDIO checkpoint (`firmware/src/optical_main.cpp:1710`),
-  and DTCM is the scarce bank on this build. Moving the ring to `DMAMEM`
-  (OCRAM) frees DTCM but Teensy leaves DMAMEM uninitialised, and the reader's
-  staleness check is `event.sequence != sequence` — garbage could coincidentally
-  match. Proposed: if the ring moves, zero it explicitly at setup; decide depth
-  against the `memory` suite rather than by feel.
+- ~~**`http_events_json` conflates ring depth with page size**~~ Resolved in
+  Phase 1: `firmware/lib/aius_net/include/aius_event_ring.h` separates
+  `AIUS_EVENT_RING_DEPTH` (32) from `AIUS_EVENT_RING_HTTP_PAGE` (8) and
+  `AIUS_EVENT_RING_UDP_PAGE` (4); the three `% 8u` literals are gone and both
+  readers page via `cursor`.
+- ~~**Deepening the event ring has a placement cost.**~~ Decided in Phase 1:
+  the ring stays a plain DTCM `.bss` static. OCRAM was checked and is closed
+  (`firmware/test/memory/verify_target.py` holds OCRAM free at the defect-26
+  128 KiB heap floor with 32 B of margin, so a DMAMEM ring would need funding
+  first), and `.bss` zero-initialisation keeps the reader's
+  `event.sequence == sequence` staleness test exact without a generation
+  stamp. Cost: +288 B DTCM for the ring (32 × 12 B + 2 counters, minus the old
+  8-entry ring), decided against the memory report, not by feel.
 - **The live board reports `config_valid: 0`, `config_error_code: 10`,
   `config_error: "not loaded"` with `model_origin: "put"`.** It is running a
   PUT DSP model and has never loaded one off the card. Pre-existing, unrelated
@@ -337,7 +361,7 @@ with exponential backoff that resets on reaching steady.
 
 ## Phases
 
-### Phase 1 — see the stuck states before acting on them
+### Phase 1 — see the stuck states before acting on them — ✓ SHIPPED 2026-09-03 (host-proven; deploy over OTA pending)
 
 - outcome: the three stuck states are observable in the field. The event ring
   is deep enough to survive an OSD navigation burst, a structured recovery
@@ -353,6 +377,61 @@ with exponential backoff that resets on reaching steady.
   gate-closed and transition sequences; a swagger extractor row for the new
   fields; ring-depth row proving an OSD-rate event burst does not overflow.
 - unit: parent-only
+
+**Shipped record (2026-09-03).** Two pure headers, one epoch service, no
+behaviour change: `request_audio_reset()` keeps its five call sites, nothing in
+`firmware/src` references `aius_input_liveness`, and the only new per-epoch
+work is `input_dark_service()` after `input_fault_service()` in the REPLAY
+checkpoint (field writes and one 44-byte service-diag copy).
+
+- **Event ring** — `firmware/lib/aius_net/include/aius_event_ring.h`:
+  `AIUS_EVENT_RING_DEPTH 32`, `AIUS_EVENT_RING_HTTP_PAGE 8`,
+  `AIUS_EVENT_RING_UDP_PAGE 4`; `g_event_ring` (392 B DTCM `.bss`, +288 B over
+  the old ring). Sized from the 2026-08-18 read: 134 ring events over 49 h in
+  ~16 OSD sessions with no poller, at most four entries per polled transition
+  (two state edges, one rate episode, one clock fault or overrun edge), so 32
+  holds eight transitions between two polls. `GET /api/events` and UDP
+  GET_EVENTS page from the oldest retained entry after `cursor`; `next` is the
+  last entry of a full page, else the newest sequence.
+- **Dark-interval record + gate-closed watermark** —
+  `firmware/lib/aius_audio/src/aius_input_dark.h`: `AiusInputDarkPhase`
+  (0 no_carrier, 1 rate_unsupported, 2 clock_acquiring, 3 plan_pending,
+  4 awaiting_block, 5 gate_armed, 6 gate_open), `AIUS_INPUT_DARK_ALERT_MS
+  3000`, `AIUS_INPUT_DARK_RECORD_MIN_MS 500`, `AIUS_INPUT_DARK_RECORD_DEPTH 8`;
+  `g_input_dark` (248 B DTCM `.bss`, `nm` 0xf8). `POST /api/clear` rebases
+  its `last_committed` beside the pipeline service-diag clear so the counter
+  drop never reads as a commit. A dark interval is commit-bounded (the
+  liveness boundary), so production stopping under an open gate is recorded;
+  the watermark is per gate-closed phase run. "Phase" is the gate ladder's
+  position, "class" the pipeline's `AiusPipelineClass` (0/1/2), so the words
+  do not collide with `aius_pipeline.h`.
+- **`input_diag` fields** — `dark_alert_ms`, `dark_record_min_ms`,
+  `dark_phase`, `dark_phase_ms`, `dark_open`, `dark_open_ms`,
+  `dark_open_start_ms`, `dark_open_entry_{phase,class,ready,gate}`,
+  `dark_interval_count`, `dark_phases[6]` (`{phase, max_ms, over_count,
+  last_ms, last_at_ms}`), `dark_intervals[≤8]` (`{start_ms, ms,
+  entry_{phase,class,ready,gate}, exit_{phase,class,ready,gate}}`), oldest
+  first. The serializer's format strings are `PROGMEM` (flash) so the ~1 KB of
+  new literals stays out of DTCM `.data`; the swagger extractor resolves a
+  `static const char <name>[] PROGMEM` format by name.
+- **Memory** (`scripts/build.sh teensy41-optical`, SUCCESS): ITCM 190,956 used
+  / 5,652 free, unchanged from baseline (0 B of the ≤ 512 B budget); DTCM
+  301,760 used / 25,920 free for locals (+544 B `.bss`; the old serializer
+  literal left `.data` and every new literal is in flash);
+  OCRAM 393,216 used / 131,072 free, unchanged. Every post-link guard PASS
+  (hot-object ITCM still 560 audio-block bytes in 5 pinned sections).
+- **Proof** — `event-ring` (8 scenario blocks: empty ring, 32-event OSD burst
+  with zero overflows paged in four full pages, mid-ring / current / stale
+  cursors, 33rd-event overflow, 2× depth burst, reset) and `input-dark` (12:
+  ladder order, stable decode, stack-off then OSD walk with each phase's run in
+  its own bucket, stuck states 1/2/3 each parked in its phase, AC-3 inter-frame
+  gaps not recorded, the 500 ms floor, ring overwrite, millis and counter
+  wraps, reset) green under `-Werror`/ASan/UBSan; `registry` PASS at 63 arms;
+  `optical-cutover` 44/44 unchanged with no pin re-pinned; `itcm-placement`,
+  `memory`, `net`, `input-liveness` green; upstream repository
+  `test/swagger.test.js` 11/11 with the new `InputDiag`,
+  `InputDarkPhase`, `InputDarkInterval` and `Events` paging assertions. Not
+  flashed; deploy is the OTA path in [§Gates](#gates).
 
 ### Phase 2 — the recovery rule, pure and host-proven
 
@@ -406,9 +485,11 @@ with exponential backoff that resets on reaching steady.
 
 By owner instruction (2026-08-18): **no firmware reaches the device until its
 host proof is green and an adversarial review has been run against the changed
-seam and exhausted.** Phases 1 to 3 are host-only. Phase 4 is the first that
-touches the board. Deploy posture re-baselined 2026-09-03 without changing the
-gate: the board ran the plain single-image build (`/api/status` `"ab": null`,
+seam and exhausted.** Phase 1 (instrumentation, no behaviour change) cleared
+that gate on 2026-09-03 (host proof green, delivery audit's six findings
+folded) and deploys over OTA. Phases 2 and 3 are host-only. Phase 4 is the
+first BEHAVIOUR change that touches the board. Deploy posture re-baselined
+2026-09-03 without changing the gate: the board ran the plain single-image build (`/api/status` `"ab": null`,
 no A/B, no chooser) after the 2026-09-01 plain-image flashes, an interim bench
 posture; the "sign for the inactive slot with `--slot`" wording applied to the
 per-slot A/B scheme, and under the slot-agnostic chooser a container is signed

@@ -12,7 +12,7 @@
 #         capability, pipeline, dsp, dsp-vectors, downmix-identity, measure, net, net-runner,
 #         rate-runner, rate-gate-capture, latency-runner,
 #         recovery-runner, flash, http,
-#         usb-control, replay, replay-samples, tx-gate, tx-governor, input-liveness, recorder, boot, boot-target, fault-target, ota,
+#         usb-control, replay, replay-samples, tx-gate, tx-governor, input-liveness, input-dark, event-ring, recorder, boot, boot-target, fault-target, ota,
 #         build-metadata, runtime, network-transport, sd, sd-target, optical-app,
 #         optical-cutover, runtime-target, memory, itcm-placement, fake-fidelity,
 #         registry, sd-editor.
@@ -825,6 +825,27 @@ input-liveness)
 		"$fw_root/test/input-liveness/test_input_liveness.c" \
 		-o "$input_liveness_out"
 	"$input_liveness_out"
+	;;
+input-dark)
+	# Header-only observe-only instrument: the commit-bounded dark-interval
+	# record and the per-phase gate-closed watermark that measures the region
+	# the production-gap watermark discards (aius-input-recovery Phase 1).
+	# Pure stdint header, no implementation linked.
+	input_dark_out="$build_dir/input-dark"
+	"$cc" "${cflags[@]}" "-I$fw_root/lib/aius_audio/src" \
+		"$fw_root/test/input-dark/test_input_dark.c" \
+		-o "$input_dark_out"
+	"$input_dark_out"
+	;;
+event-ring)
+	# The device event ring's depth, overwrite accounting and cursor paging
+	# (aius-input-recovery Phase 1): an OSD-navigation burst at the plan's
+	# event rate is shown to fit rather than assumed to. Header-only.
+	event_ring_out="$build_dir/event-ring"
+	"$cc" "${cflags[@]}" "-I$fw_root/lib/aius_net/include" \
+		"$fw_root/test/event-ring/test_event_ring.c" \
+		-o "$event_ring_out"
+	"$event_ring_out"
 	;;
 recorder)
 	# The flight recorder's portable core (state machine, triggers, staging
