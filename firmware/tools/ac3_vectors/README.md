@@ -53,3 +53,54 @@ The AC-3 sync word is `0x0B77`; every AC-3 frame carries 1536 samples, so the
 target emits six 256-frame blocks per access unit
 ([`aius-ac3-support.md`](../../../docs/plans/aius-ac3-support.md) §Design
 sketch).
+
+## Gate-5 stimulus — `gen_iec_stream.py`
+
+Gate 5 of [`aius-sample-rate-following.md`](../../../docs/plans/aius-sample-rate-following.md)
+(§Acceptance › Device, item 5) is encoded 44.1 kHz AC-3 INTO the board's
+receiver: carrier, decoder and output nominal rates must agree with no
+mismatch or refusal. The board's replays are its output side, so the stimulus
+is host-side and this generator produces it. It is not a corpus vector: the
+output is ~23 MB for 130 s and is written to session scratch, never committed.
+
+- `gen_iec_stream.py --rate {44100,48000} --seconds N --output X.wav` —
+  encodes a tone programme with FFmpeg's `ac3` encoder (`--program tone`, a
+  stereo `--tone-hz` sine at 192 kb/s, default 997 Hz; or
+  `--program surround51_ident`, the corpus's 5.1 channel-identity programme at
+  448 kb/s), muxes it with `-f spdif` exactly as `../latency/bench.py` does,
+  and wraps the 16-bit little-endian wire words as a 2-channel 16-bit PCM WAV
+  at the link rate. `--keep-intermediates` also writes `X.ac3` (raw
+  elementary stream) and `X.iec` (raw spdif words) for the parser-backed
+  oracles (`../../test/replay-samples/test_replay_samples.c` takes a
+  48 kHz 5.1 pair). `--inspect X.wav` re-reads a stream and reports its
+  burst count, data type and period. Exit codes: 1 ffmpeg failed, 2 stream
+  refused (odd byte count, truncated final 6144-byte period, wrong data
+  type), 3 ffmpeg missing, 4 usage.
+- **Unity gain is the precondition.** IEC 61937 rides the PCM link as sample
+  words, so the U24 XL must pass them untouched. It resets to 70/70 (−20 dB)
+  on every USB re-enumeration, and −20 dB destroys IEC sync while passing
+  every PCM level check
+  ([`../source_qualification/README.md`](../source_qualification/README.md)
+  §Re-verify both before EVERY measurement session). Re-apply
+  `amixer -c 0 cset numid=5 110,110` before each playback and after any
+  cable blink.
+- **Gate-5 recipe** (board on the bench, U24 XL optical out → board RX):
+
+  ```bash
+  amixer -c 0 cset numid=5 110,110
+  firmware/tools/ac3_vectors/gen_iec_stream.py --rate 44100 --seconds 130 \
+      --output "$CLAUDE_SESSION_SCRATCH/gate5-ac3-44100.wav"
+  aplay -D hw:0,0 "$CLAUDE_SESSION_SCRATCH/gate5-ac3-44100.wav" &
+  python3 firmware/tools/net/aius_rate_bench.py run encoded --rate 44100 \
+      --codec ac3 --target 192.0.2.66 \
+      --evidence "$CLAUDE_SESSION_SCRATCH/gate5-ac3-44100.jsonl"
+  ```
+
+  Start `aplay` first: the bench's `encoded` scenario polls for 120 s after a
+  10 s settle and requires every settled sample to report `format` 2,
+  `pipeline_diag.class` 2 and `codec_pc` 1 at a live 44.1 kHz rate, so the
+  130 s stream outlasts the run. Before the first 44.1 kHz run, prove the U24
+  passes a bitstream at unity with a 48 kHz smoke (`--rate 48000 --seconds 10
+  --program surround51_ident`) and confirm `/api/status` classifies AC-3.
+  Every burst is 6144 bytes (1536 frames × 4) at either rate; a 130 s
+  44.1 kHz stream is 3733 bursts.

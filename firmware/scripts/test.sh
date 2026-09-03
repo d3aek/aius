@@ -8,7 +8,7 @@
 #   scripts/test.sh --environment native --suite <suite>
 #
 # Suites: ab, arena, audio-ingress, audio-service, auth, clock, clock-target, codec-api-contract, config, dsp-config, json, dts, dts-arena,
-#         dts-fuzz, dts-lfe, a52, a52-fuzz, eac3, eac3-fuzz, iec61937, iec61937-fuzz, capability-protocol,
+#         dts-fuzz, dts-lfe, a52, a52-fuzz, ac3-vectors, eac3, eac3-fuzz, iec61937, iec61937-fuzz, capability-protocol,
 #         capability, pipeline, dsp, dsp-vectors, downmix-identity, measure, net, net-runner,
 #         rate-runner, rate-gate-capture, latency-runner,
 #         recovery-runner, flash, http,
@@ -421,6 +421,14 @@ a52-fuzz)
 	a52_build "$out" "$fw_root/test/a52/fuzz_a52.c"
 	UBSAN_OPTIONS=halt_on_error=1 \
 		"$out" "$fw_root/tools/ac3_vectors/vectors" 50000
+	;;
+ac3-vectors)
+	# The gate-5 stimulus generator beside the AC-3 corpus
+	# (tools/ac3_vectors/gen_iec_stream.py): WAV wrapping at both link rates,
+	# the IEC 61937 burst scan, the odd-byte / truncated-period / wrong-type
+	# refusals and the CLI exit codes. Its one ffmpeg-backed case (a 1 s
+	# 44.1 kHz stream) skips cleanly when ffmpeg is absent. No board, no ALSA.
+	python3 "$fw_root/test/ac3-vectors/test_gen_iec_stream.py"
 	;;
 eac3)
 	# E-AC-3 decode differential vs FFmpeg (committed corpus) + regression
