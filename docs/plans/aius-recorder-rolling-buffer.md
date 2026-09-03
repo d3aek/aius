@@ -755,9 +755,82 @@ teardown, so the lease still leaked permanently mid-stream.
     `AIUS_NET_ACTION_TEARDOWN`, so provoking it on device needs a physical
     Ethernet unplug mid-pull, which is not scheduled and no longer holds this
     phase.
-  - **Still not evidenced on device**: `park()` mid-POSTROLL, the
-    read-lease-deferred recycle, and the rehearsal-activation
-    re-verification. Phase D stays IN-PROGRESS on those.
+- **Device evidence 2026-09-03 (bench, image
+  `f28a347d0a68+teensy41-optical-slot-a`, slot-agnostic A/B posture,
+  `booted_slot 1`; HTTP only, no flash, no activation).** The three owed items
+  were attempted; two are blocked at the same two places, so Phase D stays
+  IN-PROGRESS:
+  - **(1) `park()` mid-POSTROLL then reboot — NOT RUN, blocked twice.** (a) No
+    route reaches `park()`: `aius_recorder_bank_park()` is called only from
+    `service_ota_activation()` and `service_ota_rehearsal()`
+    (`firmware/src/optical_main.cpp:8896`, `:9050`). The operator path is
+    `POST /api/ota/rehearse`, which `app_ota_rehearse()` (`:5044-5061`) admits
+    only with the enable-activation latch set and the session ARMED, and which
+    then erases and programs the inactive flash slot (the A/B scratch window,
+    `:9015-9023`) and leaves the bank parked and audio down until reboot. That
+    is outside this run's stage-only bound and needs an explicit go-ahead.
+    (b) On this image there is no POSTROLL window to enter. The recorder epoch
+    runs at ~6,500/s (`/api/status` `loop_epoch` 17831470 → 17894820 over
+    9.70 s while `blocks` advanced 910 = 93.8 blocks/s), so
+    `AIUS_RECORDER_RECLAIM_EPOCHS` (32) elapses in ~4.9 ms — inside one
+    10.67 ms block period — and the reclaim in `aius_recorder_epoch()`
+    (`firmware/lib/aius_recorder/src/aius_recorder.c:385-398`) fires between
+    any two consecutive blocks. Every operator freeze today read
+    `postroll_captured 0` against `postroll_blocks 188`; the two underrun
+    freezes read 4 and 9 (post-stall bursts). `aius_recorder.h:85-89`
+    calibrates the constant to "~115 epoch/s, ~280 ms". The configured
+    post-roll is therefore effectively never captured — a new defect for the
+    register (not recorded here).
+  - **(2) Read-lease-deferred recycle — release half PASS, deferral half NOT
+    RUN.** Holding a lease on device works: a trickle reader (`SO_RCVBUF`
+    1024, 512 B/s, session-scratch script) kept one
+    `GET /api/recorder/data?offset=0&length=65536&generation=0&slot=0` open
+    for 130 s — `RESPONSE_TIMEOUT_MS` (5 s) is re-armed per completed write,
+    so the hold rate has a floor: at 128 B/s the board dropped the client at
+    34 s (`http_client_drops` +1). Lease release on every terminal reached —
+    PASS: two clean completions, one board-side RST at 65263/65536 B, one
+    board-side RESPONSE_TIMEOUT drop, and one client kill mid-stream (own PID,
+    26240 B received; `http_client_drops` 1 → 2). Each was followed by a fresh
+    `GET /api/recorder/data` (200, 4096 B) and the header read `lease_leaks 0`,
+    `deferred_epochs 0`, `lease_skips 0`, slot 0 `frozen` at `freeze_generation
+    0` intact. The client kill is the mid-stream-abort terminal, not H1's
+    `AIUS_NET_ACTION_TEARDOWN` (still a physical Ethernet unplug). The deferral
+    itself was NOT exercised: the board is single-transaction, so no HTTP verb
+    can fire while the lease is held, and every out-of-band trigger was refused
+    by the permission classifier (U24 sysfs de-auth via `Write` and via shell;
+    `speaker-test` / `ffmpeg` / python tone generation for the 44.1 kHz
+    rate-switch carrier loss). Expected when it runs against a frozen, leased
+    candidate slot (`aius_recorder_bank.c:159-190`): `deferred_epochs 33`,
+    `lease_skips 1`, the leased slot untouched, the next unleased slot recycled;
+    then the next round-robin pass recycles the released slot.
+  - **(3) Rehearsal activation vs the bank — stage-only half PASS, rehearsal
+    NOT RUN.** `aius_ota_flash.py` without `--activate` staged
+    `canonical-2.aiuo` (575,744 B, image `build_revision acfd6e3baba9`, 0
+    retried faults) → verify → arm → `GET /api/ota` `state armed`,
+    `activation_available false`; `POST /api/ota/abort` → `state idle`,
+    `staged_bytes 0`. Staging never calls `ota_psram_staging()` or `park()`
+    (both live only in activation/rehearsal, `optical_main.cpp:8898`,
+    `:9052`), and the header confirmed exactly that: no slot ABSENT,
+    `deferred_epochs 0`, `lease_skips 0`, `lease_leaks 0`,
+    `config_pending false`. What staging did do is the documented SD-traffic
+    cost: `tx_underrun_frames` 1280 → 8576 (+152 ms) and two honest `underrun`
+    freezes — slot 3 (`at_ms 2679478`, `postroll_captured 4`) recycled slot 0
+    to generation 1, which froze 3.5 s later (`at_block 324`,
+    `valid_frames 165888`) and recycled slot 1 to generation 1;
+    `slots_recycled 0 → 2`. Header before: `active_slot 3`, slots 0/1/2
+    `frozen` gen 0 (`underrun` / `operator` / `operator`), slot 3 `recording`.
+    After: `active_slot 1` (`recording`, gen 1), slot 0 `frozen` gen 1
+    `underrun`, slot 2 `frozen` gen 0 `operator`, slot 3 `frozen` gen 0
+    `underrun`. The `park()` / `ota_psram_staging()` half needs
+    `POST /api/ota/rehearse` (item 1a).
+  - End state: recorder recording on slot 1, OTA `idle`, board image and slot
+    unchanged, U24 not re-enumerated, mixer 110,110.
+  - **Still not evidenced on device**: `park()` mid-POSTROLL (no operator
+    route to `park()` short of `POST /api/ota/rehearse`, and no POSTROLL window
+    on this image — item 1), the deferral/skip itself (needs an out-of-band
+    freeze while a lease is held — item 2), and the rehearsal's
+    `park()` / `ota_psram_staging()` against the populated bank (item 3).
+    Phase D stays IN-PROGRESS on those.
 
 ## Residual risks / non-goals
 
