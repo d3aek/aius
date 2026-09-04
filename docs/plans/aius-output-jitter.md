@@ -5,7 +5,7 @@ scope: component
 component: aius
 status: in-progress
 tags: [aius, firmware, audio, latency, jitter, monitoring]
-updated: 2026-09-03
+updated: 2026-09-04
 ---
 
 # Aius output jitter elimination
@@ -76,6 +76,8 @@ resets its sentinel whenever the transmit gate is closed
 only works for a pop that happens with the gate OPEN.** A locked-but-dark
 interval is invisible to it, and that failure class now has its own plan,
 [`aius-input-recovery.md`](aius-input-recovery.md).
+**2026-09-04: the pop verdict rides the in-situ soak after redeploy (owner
+ruling); ask duration at redeploy.**
 
 Also stale: the running image is `ceffc20dae6c+teensy41-optical-slot-a`
 (built 2026-08-16T19:31:13Z, `ab.sequence` 11, boot generation 4), not the
@@ -150,6 +152,8 @@ historical), with gate 2 passing for the first time on it.
   the Phase C bring-up fix flashes, or fold both into one image first?"
   Recommendation: run acceptance now — the bring-up bug only bites boots
   under a lit carrier and does not touch the counters being proven.
+  **2026-09-04: in-situ soak after redeploy (design decision); ask duration at
+  redeploy.**
 - **PCM decomposition** needs ~2 min of genuine PCM playing (owner
   action); the poll itself is scripted in this plan's Phase E.
 
@@ -314,6 +318,8 @@ at the gate-open edge. The decomposition below is the phase's delivered value;
 the "live verify owed" step is void. The acceptance evening and the pop verdict
 are re-read against that preference — a stall must produce silence, never a buzz
 — and are owner-scheduled listening (that plan's Phase 9).
+**2026-09-04: in-situ soak after redeploy (design decision); ask duration at
+redeploy.**
 
 **Finding, 2026-08-16 (the attempt's value):** `AIUS_PIPELINE_PCM_BLOCK_FRAMES`
 at 512 is **load-bearing for re-type containment**, not just a buffer size. A

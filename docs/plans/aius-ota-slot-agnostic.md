@@ -6,7 +6,7 @@ component: aius
 status: in-progress
 subtype: design
 tags: [aius, firmware, ota, flash, flexspi, boot]
-updated: 2026-09-03
+updated: 2026-09-04
 toc: true
 ---
 
@@ -431,7 +431,8 @@ and a fallback whose retirement is a design call, not because it is large.
   slot tag — stays as the safety under an old chooser, or goes now that no
   board runs the old chooser. Default: keep the branch but make `AIUS_AB_SLOT`
   values other than 1 a compile-time error, so a slot-B-linked build cannot be
-  produced by accident. (e) `tools/ota/aius_ota_sign.py` and `aius_ota_cli.c`
+  produced by accident. **Default applied 2026-09-04: keep, behind a
+  compile-time guard** — an un-re-cutover board keeps booting and taking OTA. (e) `tools/ota/aius_ota_sign.py` and `aius_ota_cli.c`
   either keep `--slot` deprecated (default, so a legacy tagged container can
   still be produced for a test row) or remove it; the device-side
   `expected_slot` gate and `slot_id` header field stay either way — they are
@@ -453,7 +454,8 @@ and a fallback whose retirement is a design call, not because it is large.
   unchanged beyond the boot pad; a legacy `--slot`-tagged container (if the
   flag is kept) still refused at chunk 0 with `400 ota_unsupported`.
 - unit: parent-only
-- dependencies: Phase 5 re-cutover (done 2026-09-03); the (d) decision.
+- dependencies: Phase 5 re-cutover (done 2026-09-03); the (d) decision
+  (default applied 2026-09-04: keep, behind a compile-time guard).
 
 ## Bench cutover runbook (next USB session)
 

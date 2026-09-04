@@ -3,10 +3,10 @@ title: Aius end-to-end audio latency
 type: plans
 scope: component
 component: aius
-status: in-progress
+status: shipped
 subtype: implementation
 tags: [aius, firmware, audio, latency, spdif, cm6206]
-updated: 2026-09-03
+updated: 2026-09-04
 toc: true
 ---
 
@@ -29,10 +29,17 @@ CM6206 capture path. (Source update: the CM6206 was retired from the bench
 Phase 2 rows were re-measured through it on 2026-08-03. The measurement
 model is unchanged.)
 
-**Status 2026-09-03: stays `in-progress` until
-[`aius-outstanding-work-2026-09.md`](aius-outstanding-work-2026-09.md) Phase 7
-dispositions the `dts-production: deferred-by-priority` rows and the non-48 kHz
-rows (D8), and the owner rules D5 on Phase 3's unmet board-share target.**
+**Status 2026-09-04: `shipped`.** All three phases are complete and the two
+rulings that held this plan open landed 2026-09-04
+([`aius-outstanding-work-2026-09.md`](aius-outstanding-work-2026-09.md) Phase 7):
+D5 relaxes the owner target to ≤ 17 ms board share, which the standing 16.9 ms
+on `3570a21` meets, so Phase 3's residue is closed and the limiter-lookahead
+trade is not taken; D8 makes 48 kHz the only target, so the non-48 kHz rows are
+struck as superseded rather than measured. The `dts-production` row stays
+deferred by that ruling — 48 kHz PCM/AC-3 are the production rows and DTS
+production latency has no consumer named 2026-09-04 — and is measurable on
+request, since its type-I fixture, IEC validator and direct-loop DTS carrier
+baseline are all supported bench scenarios at 48 kHz.
 
 ## Measurement boundaries
 
@@ -812,7 +819,7 @@ not a counter to waive in this plan.
 
 ```yaml
 phase: 2
-status: complete # dts-production row deferred by priority; all other rows + baselines measured 2026-08-03
+status: complete # dts-production row deferred (D8, 2026-09-04: 48 kHz PCM/AC-3 are the production rows, DTS production latency has no consumer named; measurable on request); all other rows + baselines measured 2026-08-03
 unit: parent-only
 depends-on: [phase-1]
 blockers: [] # resolved 2026-08-03: the self-loop rewire happened and all three direct-loop baselines ran in one sitting
@@ -822,7 +829,7 @@ matrix:
   direct-loop-ac3-carrier: complete
   pcm-bypass: complete
   pcm-production: complete
-  dts-production: deferred-by-priority
+  dts-production: deferred-by-priority # D8 2026-09-04: no consumer for a DTS production latency row; 48 kHz PCM/AC-3 are the production rows; measurable on request
   ac3-production: complete
 remaining-diagnostics:
   ac3-to-pcm-transition-latched-malformed: resolved-clear-op-device-verified
@@ -997,10 +1004,10 @@ bypass row completed — recorded above.)
 
 ```yaml
 phase: 3
-status: complete # R1-R4 delivered 2026-08-03; owner-target not yet met (16.9 ms board share on 3570a21; limiter-lookahead lever is the owner's call, asked as D5 on 2026-09-03)
+status: complete # R1-R4 delivered 2026-08-03; owner target MET after D5 (ruled 2026-09-04: <= 17 ms board share accepted; standing 16.9 ms on 3570a21 meets it; no limiter-lookahead trade)
 unit: parent-only
 depends-on: [phase-2]
-owner-target: board share at or under 16 ms e2e (owner, 2026-08-03)
+owner-target: board share at or under 17 ms e2e (owner, D5, 2026-09-04; was 16 ms, 2026-08-03)
 ```
 
 Two riders on one image, contracted 2026-08-03 after the Phase 2
@@ -1102,14 +1109,18 @@ image: pass for the first time
 ([`aius-sample-rate-following.md`](aius-sample-rate-following.md) §Device
 evidence — 2026-09-02).
 
-**D5 ask recorded 2026-09-03**
+**D5 RULED 2026-09-04: ≤ 17 ms board share accepted**
 ([`aius-outstanding-work-2026-09.md`](aius-outstanding-work-2026-09.md)
-Phase 7): the latest board share is 16.9 ms on `3570a21` (the Phase F
-deterministic floor) against the owner's ≤ 16 ms target, ~41 frames away; the
-one identified lever is the limiter's 96-frame lookahead (−2 ms), a quality
-trade that is the owner's call. Until D5 and D8 are ruled, the two
-`dts-production: deferred-by-priority` rows (Phase 2's matrix, `:825`, and its
-status comment at `:815`) stay deferred, and this plan stays `in-progress`.
+Phase 7). The owner target relaxes from ≤ 16 ms to ≤ 17 ms, so the standing
+16.9 ms on `3570a21` (the Phase F deterministic floor) MEETS it as measured —
+the limiter's 96-frame lookahead stays, the quality trade is not taken, and
+Phase 3's "owner target not met" residue is closed. D8 the same day rules
+48 kHz the only target: the non-48 kHz rows are struck as superseded in the
+register, and the two `dts-production: deferred-by-priority` rows (Phase 2's
+matrix, `:825`, and its status comment at `:815`) stay deferred because DTS
+production latency has no consumer named 2026-09-04 — measurable on request,
+the fixture and its direct-loop baseline being supported bench scenarios. This
+plan is `shipped`.
 
 ## Outstanding-work audit
 

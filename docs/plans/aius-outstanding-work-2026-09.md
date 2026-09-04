@@ -5,7 +5,7 @@ scope: component
 component: aius
 status: in-progress
 tags: [aius, firmware, backlog, bench, register]
-updated: 2026-09-03
+updated: 2026-09-04
 toc: true
 ---
 
@@ -22,18 +22,23 @@ entry this plan does not account for. Inventory sources: the register, every
 tool plan's follow-on list, swept 2026-09-03 and adversarially reviewed the same
 day (17 findings folded; the review's corrections are cited inline as "review").
 
-## Status — 2026-09-03 close
+## Status — 2026-09-04
 
-**Shipped: Phases 0–6 and 8.** The record is reconciled, input recovery's
-instrumentation is deployed, the recorder's three device items are proven, the
-gate-1 A/B returned outcome (b), the slot-agnostic A/B posture is restored with
-OTA as the deploy path, the OTA IVT-bounds check is live, and the receive-DMA
-proposal is recorded rather than built. Phase 4's one-image acceptance re-run
-ran on 2026-09-03: gates 2, 4, 5, 6 and 7 PASS on
+**Shipped: Phases 0–6, 8 and — as of today — 7.** The record is reconciled,
+input recovery's instrumentation is deployed, the recorder's three device items
+are proven, the gate-1 A/B returned outcome (b), the slot-agnostic A/B posture
+is restored with OTA as the deploy path, the OTA IVT-bounds check is live, and
+the receive-DMA proposal is recorded rather than built. Phase 4's one-image
+acceptance re-run ran on 2026-09-03: gates 2, 4, 5, 6 and 7 PASS on
 `92aae16706f5+teensy41-optical-slot-a`, and gate 1 fails only its trim-cadence
-bound, which is D4's question. Open: Phase 7 (blocked on D5 and D8) and
-Phase 9 (blocked on owner scheduling, D7) — both owner-side, neither
-technically blocked.
+bound. Phase 7 shipped on the 2026-09-04 rulings — D8 (48 kHz is the only
+target; the non-48 kHz register entry is struck as superseded) and D5 (≤ 17 ms
+board share accepted, met by the standing 16.9 ms, no limiter-lookahead trade)
+— with no tool change. Phase 9's by-ear and listening items are re-homed to an
+in-situ soak after the listening-room redeploy; H3 (D7) is not scheduled. **The
+only open technical item is the D4 follow-up:**
+`AIUS_CLOCK_TARGET_HYSTERESIS_MILLIHZ` 50 → 500 mHz, firmware in flight, gate 1
+re-runs on the new image.
 
 **Board:** `92aae16706f5+teensy41-optical-slot-a`, slot 2, `rollback_observed
 false`, tracking, OTA idle, `boot_generation 22`.
@@ -57,41 +62,43 @@ false`, tracking, OTA idle, `boot_generation 22`.
 | (this commit) | Phase 4 one-image acceptance re-run: SRF §Device evidence 2026-09-03, register + AC-3 + e2e updates, this §Status | six gate runs on `92aae16706f5`, digests in the SRF section; gate-1 JSONL filed under `firmware/test/fixtures/` |
 | upstream pointers through `3a004aead` (one bump per aius commit above) | | |
 
-### Owner asks
+### Rulings 2026-09-04
 
-Every open item in this plan is one of these; nothing else waits on anything.
+- **D4 — the gate-1 trim bound. Ruled 2026-09-04 (orchestrator's call): (i).**
+  Raise `AIUS_CLOCK_TARGET_HYSTERESIS_MILLIHZ` 50 → 500 mHz (≈ 10 ppb, ≈ 3.5
+  measurement bins; ring drift at 500 mHz is one frame per ~1,000 s). The ≤ 2
+  post-settle bound is NOT changed. Firmware in flight; gate 1 re-runs on the
+  new image. See the Phase 3 follow-up. Not marked done.
+- **D5 — the limiter-lookahead quality trade. Ruled 2026-09-04: ≤ 17 ms
+  accepted.** The owner target relaxes to ≤ 17 ms board share; the standing
+  16.9 ms on `3570a21` (Phase F's deterministic floor) meets it, so the
+  lookahead trade is not taken and the e2e-latency Phase 3 residue is closed.
+- **D7 — H3 scheduling. No ruling 2026-09-04: not scheduled.** H3b–H3e and the
+  H2 footprint gate carry no date.
+- **D8 — the non-48 kHz latency rows. Ruled 2026-09-04: 48 kHz is the only
+  target.** The register's `Non-48 kHz latency rows unmeasured` entry is struck
+  as superseded (no consumer); the e2e plan's `dts-production:
+  deferred-by-priority` rows stay deferred with that reason.
+- **By-ear scheduling. Ruled 2026-09-04: in situ, not on the bench.** Every
+  by-ear / listening item (AC-3 four-hour + by-ear gates, the output-jitter
+  acceptance evening and pop verdict, the ears round + `lfe_gain` A/B, the
+  first-signal external-source steps) moves to an in-situ soak after the
+  listening-room redeploy. The owner reports glitches in real time; a reported
+  glitch means a flight-recorder pull plus a register entry. The mid-window
+  power-cut and crash-loop drills stay owner-hands and stay unscheduled.
+- **Slot-agnostic Phase 7 (d). Default applied 2026-09-04.** The question was:
+  when the dual-slot code path is retired, should the firmware keep accepting a
+  ledger written by the OLD per-slot chooser (`booted_slot == NONE`) so an
+  un-re-cutover board still boots and takes OTA? Answer: keep, behind a
+  compile-time guard, when that plan's Phase 7 runs.
+- **The queued `CLAUDE.md` promote. Approved and landed 2026-09-04**, committed
+  in the same session.
 
-- **D4 — the gate-1 trim bound.** Three images now fail the ≤ 2 post-settle
-  bound identically (53 / 52 / 53 trims) because the settled carrier estimate
-  hops adjacent ~140 mHz measurement bins against a 50 mHz hysteresis. Choose:
-  (i) a source-qualified bound — raise
-  `AIUS_CLOCK_TARGET_HYSTERESIS_MILLIHZ` to at least one measurement bin, or
-  bound the gate on carrier span / follow error instead of trim count;
-  (ii) a different source; (iii) keep the bound and accept gate 1 as failing.
-  A bound revision re-judges the saved gate-1 evidence offline; only (ii)
-  costs a bench re-run, of gate 1 alone.
-- **D5 — the limiter-lookahead quality trade.** Board share is 16.9 ms on
-  `3570a21` (Phase F's deterministic floor) against the ≤ 16 ms target, ~41
-  frames away; dropping the limiter's 96-frame lookahead buys −2 ms
-  (~15.4 ms) at a quality cost. Take it, or keep the target unmet?
-- **D7 — H3 scheduling.** A date, or a "not scheduled" ruling, for H3b–H3e and
-  the H2 footprint gate (Phase 9).
-- **D8 — the non-48 kHz latency rows.** Name a consumer for a 44.1 kHz latency
-  figure, or the entry is struck as superseded: measuring needs harness work
-  (`firmware/tools/latency/bench.py:36` pins `RATE = 48000`, used at `:1587`
-  and `:2271`), which the register entry did not anticipate.
-- **Slot-agnostic Phase 7 (d).** Keep the legacy `booted_slot == NONE` branch
-  when the dual-slot path retires? Default: keep, behind a compile-time guard.
-- **The queued `CLAUDE.md` promote.** A `the release-promotion step` of
-  `CLAUDE.md` (A/B object = deployed posture, OTA the deploy
-  path, USB only for `recovery.hex`, `booted_slot` on the wire, the
-  `--link-window boot` signing note) was queued 2026-09-03, then superseded
-  the same evening by a second candidate that adds the rehearsal-reset
-  behaviour and the three durable bench gotchas below (`build.sh` sweeping the
-  `aius-ab` dirs, the `--auth <token>` classifier denial, the committed-tool
-  sysfs allowance). Never restate its state from memory: check `git status`
-  on that path — clean means still queued, dirty means it landed and wants a
-  one-path `docs(aius)` commit plus a pointer bump.
+Still open, and nothing else waits on anything:
+
+- **At the listening-room redeploy, ask the owner for the soak duration** (the
+  in-situ soak that now owns every by-ear item).
+- **H3 (D7) is not scheduled** — it needs a date or a standing "not scheduled".
 
 ### Traps
 
@@ -500,6 +507,13 @@ Phase 4 on the acceptance image. Record:
 evidence — 2026-09-03, and the register's gate-1 entry (which stays open on
 D4).
 
+**Follow-up — D4 ruled 2026-09-04 (orchestrator's call): option (i).**
+`AIUS_CLOCK_TARGET_HYSTERESIS_MILLIHZ` goes 50 → 500 mHz (≈ 10 ppb, ≈ 3.5
+measurement bins; ring drift at 500 mHz is one frame per ~1,000 s), so the
+settled estimate stops hopping adjacent bins. The ≤ 2 post-settle bound itself
+is NOT changed. Firmware is in flight; gate 1 re-runs on the new image, and the
+register's gate-1 entry stays open until it passes.
+
 - outcome: the 52-post-settle-trim gate-1 failure on `3824579`
   ([`aius-sample-rate-following.md`](aius-sample-rate-following.md)
   `:1004-1021`, the only gate-1 analyzer runs on record) is explained. Either
@@ -763,20 +777,20 @@ posture.
   (firmware-before-bench).
 - commit-checkpoint: firmware commit + swagger commit + OTA deploy + docs.
 
-### Phase 7 — Non-48 kHz latency rows and the Phase-3 owner target — BLOCKED (owner: D5, D8)
+### Phase 7 — Non-48 kHz latency rows and the Phase-3 owner target ✓ SHIPPED 2026-09-04
 
-**Blocked 2026-09-03 on two owner-only decisions.** Both asks are recorded
-where their readers already are, with the numbers behind them: the register's
-`Non-48 kHz latency rows unmeasured` entry now carries the finding that
-measuring them is harness work (`firmware/tools/latency/bench.py:36` pins
-`RATE = 48000`, used at `:1587` and `:2271` — verified at HEAD) plus the
-recommendation to strike as superseded unless a consumer is named (D8); and
-[`aius-e2e-latency.md`](aius-e2e-latency.md) Phase 3 carries the D5 ask —
-16.9 ms board share on `3570a21` against the ≤ 16 ms target, the limiter's
-96-frame lookahead the one lever (−2 ms), a quality trade. Nothing is built
-until D8 names a consumer; the two `dts-production: deferred-by-priority` rows
-(`aius-e2e-latency.md:815`, `:825`) stay deferred and that plan stays
-`in-progress` until D5 and D8 are ruled.
+**Shipped 2026-09-04 on the two rulings; no tool change.** D8: 48 kHz is the
+only target, so the register's `Non-48 kHz latency rows unmeasured` entry is
+struck as superseded rather than measured — nobody consumes a 44.1 kHz figure,
+and measuring one would have meant harness work
+(`firmware/tools/latency/bench.py:36` pins `RATE = 48000`, used at `:1587` and
+`:2271`). D5: the owner target relaxes to ≤ 17 ms board share, which the
+standing 16.9 ms on `3570a21` (Phase F's deterministic floor) already meets, so
+the limiter's 96-frame lookahead stays and the e2e plan's Phase 3 residue is
+closed. The two `dts-production: deferred-by-priority` rows
+([`aius-e2e-latency.md`](aius-e2e-latency.md) `:815`, `:825`) stay deferred with
+the reason recorded: 48 kHz PCM/AC-3 are the production rows, and DTS production
+latency has no consumer named 2026-09-04. Docs only.
 
 - outcome: D8 (owner-only) applied to the `Non-48 kHz latency rows
   unmeasured` register entry (`:1830-1834`). The rows are NOT bench-only:
@@ -845,10 +859,18 @@ re-derivation. Docs only; no build, no flash.
   `optical_main.cpp`.
 - commit-checkpoint: docs commit; or firmware commit + flash + docs.
 
-### Phase 9 — Owner-scheduled: hardware, by-ear gates, external-source steps — BLOCKED (owner scheduling: D7, by-ear gates)
+### Phase 9 — Owner-scheduled: hardware, by-ear gates, external-source steps — BLOCKED
 
-**Blocked on owner scheduling, 2026-09-03.** Nothing here is technically
-blocked any more — Phase 4 removed the last gate. Waiting only for a date:
+**In-situ soak (owner: ask duration at redeploy; H3 not scheduled), ruled
+2026-09-04.** The heading keeps `BLOCKED` because that is the only status word
+the plan-parser recognises for a phase still waiting; what it waits on changed.
+Every by-ear / listening item below now runs as one in-situ soak after the
+listening-room redeploy rather than as a scheduled bench evening: the next session
+ASKS the owner for the soak duration at redeploy time, and the owner reports
+glitches in real time (a reported glitch → flight-recorder pull + register
+entry). H3b–H3e and the H2 footprint gate (D7) received no date: not scheduled.
+The two owner-hands assurance drills stay unscheduled. Nothing here is
+technically blocked — Phase 4 removed the last gate. The items:
 the AC-3 four-hour run plus the by-ear dialogue gate
 ([`aius-ac3-support.md`](aius-ac3-support.md) `:157-160`, unblocked by gate 5);
 the output-jitter acceptance evening and the pop verdict, re-read against D9's
@@ -860,8 +882,8 @@ the H2 footprint gate in
 two owner-hands assurance drills — a mid-window power cut during an
 activation and a real crash-loop trial image (register `:673-676`;
 [`aius-ota-slot-agnostic.md`](aius-ota-slot-agnostic.md) `:95-97`,
-owner-skipped unless asked). Each item
-gets its date or its "not scheduled" ruling here as the rulings arrive.
+owner-skipped unless asked). The first four are the soak's
+content; the rest carry their "not scheduled" ruling above.
 
 - outcome: recorded here so the inventory is complete; this loop does not
   drive them. [`aius-h2-h3-manufacturing.md`](aius-h2-h3-manufacturing.md)
@@ -889,15 +911,16 @@ gets its date or its "not scheduled" ruling here as the rulings arrive.
 | D1 | `aius-ota-slot-agnostic.md` disposition | RULED 2026-09-03 | Re-cutover scheduled (Phase 5): "we should never have superseded the hard-won A/B deployment". |
 | D2 | OTA verify ~80 ms Ed25519 stall | applied by default 2026-09-03 | Accepted and documented (stage during silence), Phase 6. Alternatives if revisited: slice the scalar arithmetic; verify under a gate-aware moment. |
 | D3 | Receive-DMA gating during dark replay | applied by default 2026-09-03 | Left as recorded (harmless; gating risks SIS error latches), Phase 8. Build only on request. |
-| D4 | Gate-1 trim bound | owner-only (A/B done 2026-09-03: both images match) | Phase 3 returned outcome (b) — 53 vs 52 post-settle trims, both images bin-hopping ~140 mHz against a 50 mHz hysteresis. Owner chooses: source-qualified bound (hysteresis ≥ one bin, or bound carrier span / follow error), different source, or keep the bound and accept gate 1 as failing. No bound change until then. |
-| D5 | e2e latency owner target (limiter lookahead) | owner-only (ask presented 2026-09-03) | 16.9 ms board share on `3570a21` against the ≤ 16 ms target; the one lever is the limiter's 96-frame lookahead (−2 ms), a quality trade. Numbers in `aius-e2e-latency.md` Phase 3. |
+| D4 | Gate-1 trim bound | RULED 2026-09-04 (orchestrator's call) | (i): hysteresis 50 → 500 mHz; gate 1 re-run pending. The ≤ 2 post-settle bound is unchanged; firmware in flight. Phase 3 follow-up. |
+| D5 | e2e latency owner target (limiter lookahead) | RULED 2026-09-04 | ≤ 17 ms accepted. The standing 16.9 ms on `3570a21` meets it; the lookahead trade is not taken. |
 | D6 | Recorder Phase D build constraint | decided | Already retired in the doc (`aius-recorder-rolling-buffer.md:695-697`); record. |
-| D7 | Hardware H3 scheduling | owner-only (ask presented 2026-09-03) | H3b–H3e and the H2 footprint gate need a date or a "not scheduled" ruling (Phase 9). |
-| D8 | Non-48 kHz latency rows | owner-only (ask presented 2026-09-03) | Recommendation: strike as superseded unless a consumer is named (measuring needs new harness scope — `bench.py:36` pins `RATE = 48000`). |
+| D7 | Hardware H3 scheduling | no date (2026-09-04) | H3b–H3e and the H2 footprint gate stay unscheduled; the by-ear items move to the in-situ soak after the listening-room redeploy (Phase 9). |
+| D8 | Non-48 kHz latency rows | RULED 2026-09-04 | 48 kHz is the only target — the register entry is struck as superseded; the e2e plan's DTS rows stay deferred with that reason. |
 | D9 | TX governor | RULED 2026-09-03 | Not wanted: "systematic latency with repeated triggers"; silence on a stall, never a buzz. Governor stays compiled out; Phase E closed as decomposition, governor retired (Phase 0, orchestrator). |
 | D10 | `aius-optical-prototype.md` disposition | RULED 2026-09-03 | Descope each unshipped item that serves no particular purpose; keep any that does, with what depends on it. |
 | D11 | Input recovery: ceiling exception; `carrier_loss` trigger (`aius-input-recovery.md:143-174`) | owner-only | Only needed if Phase 1 reaches its Phases 2–4. |
 | D12 | OTA on the deployed posture | RULED 2026-09-03 | OTA is the primary update method and must be exercised; USB is for the cutover only (Phase 5); the IVT check is real value (Phase 6). |
+| — | Slot-agnostic Phase 7 (d): the legacy `booted_slot == NONE` branch | default applied 2026-09-04 | Keep it, behind a compile-time guard, when that plan's Phase 7 retires the dual-slot path, so an un-re-cutover board still boots and takes OTA. |
 
 Standing proposal carried from earlier sessions, not agreed, no default: the
 ITCM census / ldscript rework (register `:144-148`). Two items the 2026-09-03
@@ -907,17 +930,19 @@ raise them again only with a written rationale.
 
 ## Completion
 
-This plan is `shipped` when Phases 0–8 are marked `✓ SHIPPED` (Phase 9 when
-its items each carry a date or a "not scheduled" ruling), every register entry
+This plan is `shipped` when Phases 0–8 are marked `✓ SHIPPED` (Phase 9 is the
+in-situ soak after the listening-room redeploy — it closes when that soak has run
+at the duration the owner names at redeploy time, its hardware items carrying
+their standing "not scheduled"), every register entry
 is struck with its pointer or names a phase here, every open ledger defect in
 `aius-network-hardening.md` appears in the register with the same state, and
 the plans this plan touched carry truthful `status` fields. The register's
 §Open defects sections then list only Phase 9 items, owner-only decisions
 awaiting a ruling, and the standing proposals.
 
-**As of 2026-09-03 the orchestrator's scope is complete: Phases 0–6 and 8 are
+**As of 2026-09-04 the orchestrator's scope is complete: Phases 0–8 are
 `✓ SHIPPED`.** The front-matter `status` deliberately stays `in-progress`
-rather than `shipped`, because Phases 7 and 9 are BLOCKED, not shipped — they
-wait on owner decisions (D5, D8) and owner scheduling (D7, the by-ear gates),
-listed in §Owner asks. Phase 4's gate 1 is likewise recorded as failing one
-bound pending D4, not silently passed.
+rather than `shipped` for two reasons: Phase 9 is the in-situ soak, which has
+not run, and the D4 follow-up (hysteresis 50 → 500 mHz, gate-1 re-run) is in
+flight. Phase 4's gate 1 stays recorded as failing one bound until that re-run,
+not silently passed. The open asks are in §Rulings 2026-09-04.

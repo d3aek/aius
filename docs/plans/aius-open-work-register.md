@@ -6,7 +6,7 @@ component: aius
 subtype: backlog
 status: in-progress
 tags: [aius, backlog, debt, defects]
-updated: 2026-09-03
+updated: 2026-09-04
 toc: true
 ---
 
@@ -258,6 +258,8 @@ ends left open:
   [`aius-outstanding-work-2026-09.md`](aius-outstanding-work-2026-09.md)
   Phase 9 (owner-scheduled) 2026-09-03**: steps 2–4 and 6 need an external
   source/sink on the bench and are not driven by that plan's loop.
+  **2026-09-04: in-situ soak after the listening-room redeploy; owner reports
+  glitches in real time; ask duration at redeploy.**
 - ~~**The bench SD card needs service (check on a PC, reformat, or swap)
   before the full-size OTA end-to-end (2026-08-01).**~~ **RETRACTED the
   same day — the card was innocent** (owner challenged the verdict;
@@ -523,6 +525,8 @@ ends left open:
   format-plus-rate change — the dark-pad drain the negative analyzer already
   permits — not open-gate underruns; the gated window itself read zero. No fix
   owed unless a by-ear gate hears it.
+  **2026-09-04: in-situ soak after the listening-room redeploy; owner reports
+  glitches in real time; ask duration at redeploy.**
 
 - ~~**`au_abandons` +1 at every carrier return during replay** (`pipeline_
   last_failure 3`, `drop_staged_compressed_input()` at the source
@@ -1447,6 +1451,8 @@ ends left open:
     and the by-ear gate are now owner-scheduled only
     ([`aius-outstanding-work-2026-09.md`](aius-outstanding-work-2026-09.md)
     Phase 9; [`aius-ac3-support.md`](aius-ac3-support.md) `:157-160`).
+    **2026-09-04: in-situ soak after the listening-room redeploy; owner reports
+    glitches in real time; ask duration at redeploy.**
   - **8.00 h witness + heap watch on `930f003c6e6e+teensy41-optical`,
     2026-08-04 14:13–22:13 (boot generation 346 held throughout).**
     Zero deaths, zero resets: the generation never stepped, so this is
@@ -1739,7 +1745,9 @@ ends left open:
   A/B (0.316 vs 1.0) joins the ears-round queue for convention-encoded
   film content. **Owner-scheduled 2026-09-03** (by-ear gate;
   [`aius-outstanding-work-2026-09.md`](aius-outstanding-work-2026-09.md)
-  Phase 9).
+  Phase 9). **2026-09-04: the ears round and the `lfe_gain` A/B run in the
+  in-situ soak after the listening-room redeploy; owner reports glitches in real
+  time; ask duration at redeploy.**
 - ~~**B9 — the app dashboard retirement**, keeping `swagger.json` and
   its contract suite. Independent of everything above
   ([`aius-network-hardening.md`](aius-network-hardening.md), B-series
@@ -1969,7 +1977,8 @@ ends left open:
   layout drawings before any board order; evidence filed (datasheets +
   AP214 STEP models), gate recorded in
   [`aius-h1-schematic.md`](aius-h1-schematic.md). Activates with the H2
-  layout phase.
+  layout phase. **Not scheduled (no ruling 2026-09-04)** — H3b–H3e and this
+  gate got no date (D7).
 
 ## Open defects — sample-rate and latency delivery
 
@@ -2230,7 +2239,8 @@ where the only prior record was a plan aside.
   guard. Residual risk: a layout-sensitive latent defect elsewhere in the
   ingress path. Re-confirmed 2026-09-03: kept as recorded residual risk, no
   phase in [`aius-outstanding-work-2026-09.md`](aius-outstanding-work-2026-09.md).
-- **Non-48 kHz latency rows unmeasured.** Every latency acceptance row pins
+- ~~**Non-48 kHz latency rows unmeasured.**~~ **STRUCK 2026-09-04 —
+  superseded: 48 kHz is the only target (owner, D8)**. Every latency acceptance row pins
   `nominal_rate_hz == 48000` while sample-rate following makes 44.1/32 kHz
   first-class live modes with rate-dependent transmit-ring residence and DSP
   coefficients. Deferred until the sample-rate device gates pass; recorded in
@@ -2241,4 +2251,5 @@ where the only prior record was a plan aside.
   measuring them needs a rate parameter, a 44.1 kHz stimulus and renderer path,
   and a host row — new harness scope this entry did not anticipate.
   Recommendation: strike as superseded unless the owner names a consumer for a
-  44.1 kHz latency figure. Awaiting D8 (owner-only).
+  44.1 kHz latency figure. **D8 ruled 2026-09-04: no consumer — 48 kHz is the
+  only target, so the entry is struck and the harness work is not done.**

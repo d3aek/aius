@@ -6,7 +6,7 @@ component: aius
 status: in-progress
 subtype: design
 tags: [aius, firmware, ac3, dolby, decode, iec61937]
-updated: 2026-09-03
+updated: 2026-09-04
 toc: true
 ---
 
@@ -163,6 +163,8 @@ historical implementation evidence:
    unblocked and owner-scheduled** ([`aius-outstanding-work-2026-09.md`](aius-outstanding-work-2026-09.md)
    Phase 9; gate 1's remaining trim-cadence failure is a bound question, D4,
    not an AC-3 blocker).
+   **2026-09-04: in-situ soak after redeploy (design decision); ask duration at
+   redeploy.**
    The audit-discovered same-boot mixed-codec
    residency gap was closed on 2026-07-30.
 
@@ -2258,6 +2260,8 @@ Bench first, TV second, because the bench is scriptable and the TV is not:
   This is the only gate that confirms the mission rather than the instrument.
 - By-ear checks already owed (squelch seam silence, layout-aware stereo
   level) fold into the same session.
+  **2026-09-04: in-situ soak after redeploy (design decision); ask duration at
+  redeploy.**
 
 ### Phase 4 exact-image evidence (2026-07-29)
 
@@ -2338,6 +2342,8 @@ investigation verdict (verdict complete 2026-08-01, `67c44a381`; gates
 unblocked from the WDOG defect's side 2026-08-04). This evidence does not
 substitute a temporary
 clock-matched run for production acceptance.
+**2026-09-04: in-situ soak after redeploy (design decision); ask duration at
+redeploy.**
 
 ### Phase boundary and exact-image proof
 
