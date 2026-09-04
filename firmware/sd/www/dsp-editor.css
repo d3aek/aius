@@ -12,6 +12,26 @@ code{color:var(--aius-accent-info)}
 .controls button,.controls input,.controls select{height:36px}
 .controls input[type="file"]{padding:6px 8px;font-size:.78rem}
 
+/* The one action bar. Sticky so the single Apply, the unapplied-changes count
+   and the token lock stay reachable at any scroll position on a page thousands
+   of pixels tall; the z-index lifts it over the signal-flow canvases it scrolls
+   past, and the opaque raised surface keeps content legible behind it. */
+.action-bar{position:sticky;top:0;z-index:20;display:flex;gap:12px 18px;align-items:center;flex-wrap:wrap;justify-content:space-between;margin:0 0 14px;padding:10px 14px;background:var(--aius-surface-raised);border:1px solid var(--aius-border-strong);border-radius:9px;box-shadow:0 6px 14px -10px rgba(0,0,0,.6)}
+.action-bar__group{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.action-bar__state{flex:1 1 auto}
+.action-bar button,.action-bar input,.action-bar select{height:34px}
+.action-bar__actions #apply{padding:0 16px}
+.action-bar .form-fact{align-self:center}
+/* Typed inline, not stacked: the bar is a strip, so the caption sits beside the
+   field rather than above it. */
+.action-bar__token-field{display:flex;gap:6px;align-items:center;color:var(--aius-text-muted);font-size:.72rem}
+.action-bar__token-field input{width:150px}
+/* The lock chip states, in one word, why Apply and the preset writes are
+   disabled. Its border is the state light: amber-warning locked, primary
+   unlocked. */
+.token-lock{padding:3px 9px;border:1px solid var(--aius-accent-warning);border-radius:999px;font-size:.72rem;letter-spacing:.04em;color:var(--aius-text-warning)}
+.token-lock[data-state="unlocked"]{border-color:var(--aius-accent-primary);color:var(--aius-accent-primary)}
+
 /* auto-fill (not auto-fit) so a one-field row keeps a column's width instead of
    stretching a lone input across the card. */
 .form-mount{margin-top:14px}
@@ -100,14 +120,29 @@ code{color:var(--aius-accent-info)}
    against them rather than letting it hang off their baseline. */
 .controls .pill{align-self:center}
 
-/* The preset name takes the slack in its own row: it is the widest control the
-   card asks for, and both buttons beside it read it. */
-.preset-name-field{flex:1 1 260px}
+/* One compact row: a picker for the whole saved list, Load + Save beside it,
+   and the rare/destructive file operations folded behind the More menu. The
+   picker takes the slack because it is the widest control and Load/Download/
+   Delete all read it; the save-name field is secondary and stays narrow. */
+.presets-row{align-items:flex-end}
+.preset-select-field{flex:1 1 200px}
+.preset-select-field select{width:100%}
+.preset-name-field{flex:0 1 200px}
 .preset-name-field input{width:100%}
 
-.preset-list{list-style:none;margin:12px 0 0;padding:0;display:grid;gap:6px}
-.preset-list li{display:flex;gap:10px;align-items:center;padding:6px 10px;background:var(--aius-surface-recessed);border-radius:6px}
-.preset-list__name{flex:1;color:var(--aius-text-secondary);font-size:.82rem;overflow-wrap:anywhere}
+/* The More menu is a native disclosure: closed it is one chip, open it drops the
+   file browser, import, downloads, delete and refresh. Its body wraps so it
+   never widens the card past the row above it. */
+.preset-menu{position:relative}
+.preset-menu>summary{list-style:none;cursor:pointer;height:36px;display:inline-flex;align-items:center;gap:6px;padding:0 12px;background:var(--aius-surface-secondary-action);border:1px solid var(--aius-border-control);border-radius:5px;color:var(--aius-text-secondary);font-size:.78rem}
+.preset-menu>summary::-webkit-details-marker{display:none}
+.preset-menu>summary:focus-visible{outline:3px solid var(--aius-accent-info);outline-offset:2px}
+/* Scoped to [open] so the flex layout never fights the UA's own closed-details
+   hiding: a bare `.preset-menu__body{display:flex}` would paint the body even
+   when the disclosure is shut. */
+.preset-menu[open] .preset-menu__body{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:10px;padding:12px;background:var(--aius-surface-recessed);border:1px solid var(--aius-border-strong);border-radius:6px}
+.preset-menu__body button{height:36px}
+.preset-menu__body input[type="file"]{padding:6px 8px;font-size:.78rem}
 /* Last action and current provenance on one line, as two elements: the
    sentence moves when something happens, the origin with every keystroke. */
 .preset-line{display:flex;gap:10px;flex-wrap:wrap;align-items:baseline}

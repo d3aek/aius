@@ -282,6 +282,15 @@ async function click(id) {
   await settle();
 }
 
+/* Typing the token, event and all: the page gates its mutating controls on the
+ * token being present (refreshControlAvailability), and that gate re-runs on the
+ * field's `input` event, exactly as a keystroke fires it. A bare `.value =`
+ * assignment never dispatches one, so it would leave Apply disabled. */
+const setToken = (value) => {
+  el('token').value = value;
+  el('token').dispatchEvent(new Event('input'));
+};
+
 const putCalls = () => device.calls.filter((call) => call.method === 'PUT');
 const callsTo = (url) => device.calls.filter((call) => call.url === url);
 
@@ -740,7 +749,7 @@ describe('Aius SD DSP editor — writing the model back', () => {
   it('PUTs the loaded model verbatim with the auth header and concurrency token', async () => {
     const loaded = fixture('dsp-config-sd.json');
     await boot({ config: loaded });
-    el('token').value = '0123456789abcdef';
+    setToken('0123456789abcdef');
 
     await click('apply');
 
@@ -768,7 +777,7 @@ describe('Aius SD DSP editor — writing the model back', () => {
    * a human actually types a different one. */
   it('sends the exact rendered value, and the typed one once it is typed', async () => {
     await boot();
-    el('token').value = '0123456789abcdef';
+    setToken('0123456789abcdef');
 
     await click('apply');
     expect(JSON.parse(putCalls()[0].body).matrix.center_gain_linear).toBe(0.7071067811865475);
@@ -780,7 +789,7 @@ describe('Aius SD DSP editor — writing the model back', () => {
 
   it('sends an edited trim and a newly added peaking section', async () => {
     await boot();
-    el('token').value = '0123456789abcdef';
+    setToken('0123456789abcdef');
     await setNumber('input_channels.fc.gain_db', '3.5');
     await setChoice('input_channels.fc.eq.0.type', 'peaking');
     await setNumber('input_channels.fc.eq.0.frequency_hz', '2500');
@@ -801,7 +810,7 @@ describe('Aius SD DSP editor — writing the model back', () => {
 
   it('drops a section switched back to none', async () => {
     await boot({ config: fixture('dsp-config-sd.json') });
-    el('token').value = '0123456789abcdef';
+    setToken('0123456789abcdef');
     await setChoice('output.eq.0.type', 'none');
 
     await click('apply');
@@ -809,13 +818,21 @@ describe('Aius SD DSP editor — writing the model back', () => {
     expect(JSON.parse(putCalls()[0].body).output_eq).toEqual([]);
   });
 
-  it('refuses to write without an SD auth token', async () => {
+  it('disables Apply until an SD auth token is entered, and the lock chip says why', async () => {
     await boot();
+    // No token: Apply is disabled with a stated reason, and a click is a no-op.
+    expect(el('apply').disabled).toBe(true);
+    expect(el('apply').title).toContain('SD auth token');
+    expect(el('token-lock').dataset.state).toBe('locked');
     await click('apply');
-
     expect(putCalls()).toHaveLength(0);
-    expect(el('errors').hidden).toBe(false);
-    expect(el('errors').textContent).toContain('SD auth token required');
+
+    // Typing a token unlocks Apply live, before it is even saved to the browser.
+    setToken('0123456789abcdef');
+    expect(el('apply').disabled).toBe(false);
+    expect(el('token-lock').dataset.state).toBe('unlocked');
+    await click('apply');
+    expect(putCalls()).toHaveLength(1);
   });
 
   /* A double-click on Apply used to land a second PUT built from the same
@@ -831,16 +848,15 @@ describe('Aius SD DSP editor — writing the model back', () => {
         return jsonResponse(200, { ok: true });
       },
     });
-    el('token').value = '0123456789abcdef';
+    setToken('0123456789abcdef');
 
     el('apply').click();
     await settle();
     expect(el('apply').disabled).toBe(true);
     expect(el('reload').disabled).toBe(true);
     expect(el('preset-save').disabled).toBe(true);
-    // Every panel's own Apply is in the same one-in-flight discipline: a
-    // section write during another write would carry a stale base_generation.
-    expect(el('apply:matrix').disabled).toBe(true);
+    // Read-only controls are held too: one request at a time on the wire.
+    expect(el('preset-load').disabled).toBe(true);
 
     // A second press during the flight is not a second write.
     el('apply').click();
@@ -875,7 +891,7 @@ describe('Aius SD DSP editor — bounds validation', () => {
   for (const [path, raw, message] of cases) {
     it(`rejects ${path} = ${JSON.stringify(raw)}`, async () => {
       await boot();
-      el('token').value = '0123456789abcdef';
+      setToken('0123456789abcdef');
       await setNumber(path, raw);
 
       expect(errorOf(path)).toBe(message);
@@ -900,7 +916,7 @@ describe('Aius SD DSP editor — bounds validation', () => {
   for (const [name, raw, message] of eqCases) {
     it(`rejects an EQ section ${name} of ${raw}`, async () => {
       await boot();
-      el('token').value = '0123456789abcdef';
+      setToken('0123456789abcdef');
       await setChoice('input_channels.fl.eq.0.type', 'peaking');
       await setNumber(`input_channels.fl.eq.0.${name}`, raw);
 
@@ -921,7 +937,7 @@ describe('Aius SD DSP editor — bounds validation', () => {
     wide.input_channels.fl.eq[0].gain_db = -18;
     wide.input_channels.fr.eq[0].gain_db = -18;
     await boot({ config: wide });
-    el('token').value = '0123456789abcdef';
+    setToken('0123456789abcdef');
 
     expect(valueOf('input_channels.fl.eq.0.gain_db')).toBe('-18');
     expect(errorOf('input_channels.fl.eq.0.gain_db')).toBe('');
@@ -960,7 +976,7 @@ describe('Aius SD DSP editor — bounds validation', () => {
     await setChoice('input_channels.fl.eq.0.type', 'bypass');
     expect(errorOf('input_channels.fl.eq.0.frequency_hz')).toBe('');
 
-    el('token').value = '0123456789abcdef';
+    setToken('0123456789abcdef');
     await click('apply');
     expect(JSON.parse(putCalls()[0].body).input_channels.fl.eq).toEqual([
       { type: 'bypass', frequency_hz: 5, q: 0.707, gain_db: 0 },
@@ -972,7 +988,7 @@ describe('Aius SD DSP editor — bounds validation', () => {
    * of its own fields are wrong (UX finding E6). */
   it('anchors each error to its field and marks the owning card', async () => {
     await boot();
-    el('token').value = '0123456789abcdef';
+    setToken('0123456789abcdef');
     await setNumber('matrix.lfe_crossover_hz', '10');
     await setNumber('limiter.release_ms', '1200');
 
@@ -1005,9 +1021,11 @@ describe('Aius SD DSP editor — bounds validation', () => {
 });
 
 /* Each processing stage is a PANEL (operator request 2026-07-28): the feature
- * flag that governs it, its own dirty marker and its own Apply all ride the
- * head of the card that holds its controls, so a 4000 px page never sends the
- * operator back to the top to commit one change. */
+ * flag that governs it and its own dirty marker ride the head of the card that
+ * holds its controls, so an edit reads where it is made. There is no per-panel
+ * Apply -- the single sticky-bar Apply sends the whole form as one generation
+ * bump (UX consolidation 2026-09-04) -- so a panel head is a switch and a
+ * locator, and the dirty markers together add up to the bar's change count. */
 describe('Aius SD DSP editor — stage panels', () => {
   const SECTION_CARDS = [
     ['input_eq', 'card-input-channels'],
@@ -1018,23 +1036,29 @@ describe('Aius SD DSP editor — stage panels', () => {
   ];
   const factory = () => fixture('dsp-config-default.json');
 
-  it('mounts every stage enable, dirty marker and Apply in the head of the panel it governs', async () => {
+  it('mounts every stage enable and dirty marker in the head of the panel it governs, and no per-panel Apply', async () => {
     await boot();
 
     for (const [key, card] of SECTION_CARDS) {
       const head = el(card).querySelector('.section-title');
       expect(head.contains(fieldOf(`features.${key}`))).toBe(true);
       expect(head.contains(el(`dirty:${key}`))).toBe(true);
-      expect(head.contains(el(`apply:${key}`))).toBe(true);
+      // The per-panel Apply is gone: the sticky bar's is the only writer.
+      expect(el(`apply:${key}`)).toBe(null);
     }
-    // The cluster they came from is gone, not merely emptied.
+    // The cluster the flags came from is gone, not merely emptied.
     expect(el('card-features')).toBe(null);
     expect(el('features')).toBe(null);
+    // There is exactly one Apply on the page, and it lives in the action bar.
+    expect([...document.querySelectorAll('button')].filter((button) => button.textContent === 'Apply')).toEqual([
+      el('apply'),
+    ]);
+    expect(el('action-bar').contains(el('apply'))).toBe(true);
   });
 
   it('round-trips a stage enable through features.* in the PUT body', async () => {
     await boot({ config: fixture('dsp-config-sd.json') });
-    el('token').value = '0123456789abcdef';
+    setToken('0123456789abcdef');
     // The SD fixture ships output_eq off, and the box in that panel says so.
     expect(fieldOf('features.output_eq').checked).toBe(false);
 
@@ -1113,16 +1137,17 @@ describe('Aius SD DSP editor — stage panels', () => {
     expect(el('dirty-state').hidden).toBe(false);
   });
 
-  /* THE discriminating case: two panels dirty, one applied. The body is the
-   * baseline the device already confirmed with only the applied panel written
-   * over it, so the other panel's edit stays local and unsent. */
-  it('sends only its own section, leaving another dirty section unapplied', async () => {
+  /* One Apply is the whole change set: two panels dirty, one click, one PUT
+   * carrying both edits (UX consolidation 2026-09-04). There is no way to send
+   * one panel and strand another -- the aggregate count is what Apply resolves. */
+  it('sends every dirty panel in one Apply', async () => {
     await boot();
-    el('token').value = '0123456789abcdef';
+    setToken('0123456789abcdef');
     await setNumber('matrix.center_gain_linear', '0.5');
     await setNumber('limiter.release_ms', '250');
+    expect(el('dirty-state').textContent).toBe('2 unapplied changes');
 
-    await click('apply:matrix');
+    await click('apply');
 
     expect(putCalls()).toHaveLength(1);
     const put = putCalls()[0];
@@ -1130,11 +1155,9 @@ describe('Aius SD DSP editor — stage panels', () => {
     expect(put.headers['X-Aius-SD-Auth']).toBe('0123456789abcdef');
     const body = JSON.parse(put.body);
     expect(body.matrix.center_gain_linear).toBe(0.5);
-    expect(body.limiter).toEqual(factory().limiter);
+    expect(body.limiter.release_ms).toBe(250);
     expect(body.input_channels).toEqual(factory().input_channels);
     expect(body.base_generation).toBe(0);
-    // ... and the limiter edit is still on the page, waiting.
-    expect(valueOf('limiter.release_ms')).toBe('250');
   });
 
   /* matrix.layout_aware: a matrix-panel FIELD, not a stage enable. It decides
@@ -1143,12 +1166,12 @@ describe('Aius SD DSP editor — stage panels', () => {
    * travels in the matrix group like every other value on that panel. */
   it('round-trips the layout-aware headroom checkbox in the matrix body', async () => {
     await boot();
-    el('token').value = '0123456789abcdef';
+    setToken('0123456789abcdef');
     expect(fieldOf('matrix.layout_aware').checked).toBe(true);
 
     await setCheck('matrix.layout_aware', false);
     expect(el('dirty:matrix').hidden).toBe(false);
-    await click('apply:matrix');
+    await click('apply');
 
     const body = JSON.parse(putCalls()[0].body);
     expect(body.matrix.layout_aware).toBe(false);
@@ -1172,7 +1195,7 @@ describe('Aius SD DSP editor — stage panels', () => {
 
     // And back on: the box is the only thing that decides what the device gets.
     await setCheck('matrix.layout_aware', true);
-    await click('apply:matrix');
+    await click('apply');
     expect(JSON.parse(putCalls()[1].body).matrix.layout_aware).toBe(true);
   });
 
@@ -1186,39 +1209,26 @@ describe('Aius SD DSP editor — stage panels', () => {
     const older = JSON.parse(JSON.stringify(fixture('dsp-config-default.json')));
     delete older.matrix.layout_aware;
     await boot({ config: older });
-    el('token').value = '0123456789abcdef';
+    setToken('0123456789abcdef');
 
     expect(fieldOf('matrix.layout_aware').checked).toBe(true);
     // Nothing was touched, so the page is clean: an absent key reading ON is not
     // an edit the operator has to notice.
     expect(el('dirty:matrix').hidden).toBe(true);
 
-    await click('apply:matrix');
+    await click('apply');
     expect(JSON.parse(putCalls()[0].body).matrix.layout_aware).toBe(true);
   });
 
-  it('carries its own enable flag and leaves every other panel flag at the baseline', async () => {
+  /* The meters panel governs a flag and nothing else (its `groups` is empty), so
+   * toggling it and applying moves exactly one bit and leaves every other group
+   * at the baseline the device already accepted. */
+  it('toggles the meters flag through a single Apply, and leaves every other group untouched', async () => {
     await boot();
-    el('token').value = '0123456789abcdef';
-    await setCheck('features.matrix', false);
-    await setCheck('features.limiter', false);
-
-    await click('apply:matrix');
-
-    const body = JSON.parse(putCalls()[0].body);
-    expect(body.features.matrix).toBe(false);
-    expect(body.features.limiter).toBe(true);
-    // The unchecked limiter box is a local edit until ITS panel is applied.
-    expect(fieldOf('features.limiter').checked).toBe(false);
-    expect(el('dirty:limiter').hidden).toBe(false);
-  });
-
-  it('applies the meters panel, which governs a flag and nothing else', async () => {
-    await boot();
-    el('token').value = '0123456789abcdef';
+    setToken('0123456789abcdef');
     await setCheck('features.meters', false);
 
-    await click('apply:meters');
+    await click('apply');
 
     const body = JSON.parse(putCalls()[0].body);
     expect(body.features).toEqual({
@@ -1230,110 +1240,6 @@ describe('Aius SD DSP editor — stage panels', () => {
     });
     expect(body.matrix).toEqual(factory().matrix);
     expect(body.limiter).toEqual(factory().limiter);
-  });
-
-  /* A panel answers for its OWN fields. What it sends for every other group is
-   * the baseline the device already accepted, so a neighbour's broken field is
-   * not this panel's problem. */
-  it('refuses a section whose own field is out of range, and sends one whose neighbour is', async () => {
-    await boot();
-    el('token').value = '0123456789abcdef';
-    await setNumber('limiter.release_ms', '1200');
-
-    await click('apply:limiter');
-    expect(putCalls()).toHaveLength(0);
-    expect(el('apply-state').textContent).toBe('invalid');
-    expect(el('errors').textContent).toContain('Release must be between 1 and 1000 ms.');
-
-    await setNumber('matrix.center_gain_linear', '0.5');
-    await click('apply:matrix');
-
-    expect(putCalls()).toHaveLength(1);
-    expect(JSON.parse(putCalls()[0].body).limiter).toEqual(factory().limiter);
-  });
-
-  /* THE rebase: the baseline moves onto what was WRITTEN, so the applied panel
-   * goes clean and every other panel's edits become diffs against the new
-   * baseline rather than being silently declared applied. */
-  it('rebases only the applied panel when the write lands, and keeps the rest dirty', async () => {
-    await boot();
-    el('token').value = '0123456789abcdef';
-    await setNumber('matrix.center_gain_linear', '0.5');
-    await setNumber('limiter.release_ms', '250');
-
-    await click('apply:matrix');
-    device.config = { ...factory(), source: 'sd', config_generation: 1 };
-    await vi.advanceTimersByTimeAsync(500);
-    await settle();
-
-    expect(el('generation').textContent).toBe('1');
-    expect(el('dirty:matrix').hidden).toBe(true);
-    expect(el('dirty:limiter').hidden).toBe(false);
-    // The aggregate still says the page as a whole has unsent work.
-    expect(el('dirty-state').hidden).toBe(false);
-    expect(el('apply-state').textContent).toBe('edited');
-    expect(el('status').textContent).toContain('this write did not carry');
-    // The form is untouched by the landing: both edits are still on screen.
-    expect(valueOf('matrix.center_gain_linear')).toBe('0.5');
-    expect(valueOf('limiter.release_ms')).toBe('250');
-
-    // Applying the other panel now diffs against the NEW baseline, so its body
-    // carries the matrix value that already landed.
-    await click('apply:limiter');
-    const second = JSON.parse(putCalls()[1].body);
-    expect(second.limiter.release_ms).toBe(250);
-    expect(second.matrix.center_gain_linear).toBe(0.5);
-    expect(second.base_generation).toBe(1);
-  });
-
-  it('puts a section apply through the same token and 409 discipline as the top-level one', async () => {
-    await boot({ put: () => jsonResponse(409, { ok: false, error: 'stale_generation' }) });
-    await setNumber('matrix.center_gain_linear', '0.5');
-
-    await click('apply:matrix');
-    expect(putCalls()).toHaveLength(0);
-    expect(el('errors').textContent).toContain('SD auth token required');
-
-    el('token').value = '0123456789abcdef';
-    await click('apply:matrix');
-
-    expect(putCalls()).toHaveLength(1);
-    expect(el('apply-state').textContent).toBe('stale');
-    expect(el('stale').hidden).toBe(false);
-    expect(el('status').textContent).toContain('Nothing was written');
-  });
-
-  /* setBusy spans the REQUEST; the pending window after it is up to 20 s of
-   * re-enabled buttons. A second FULL apply into that window is harmless -- it
-   * carries the entire form and supersedes the first -- but a SECTION apply
-   * composes from a baseline that has not rebased yet, so it would write the
-   * first section's landed change straight back out. */
-  it('refuses a second section apply while the first is still waiting to land', async () => {
-    await boot();
-    el('token').value = '0123456789abcdef';
-    await setNumber('matrix.center_gain_linear', '0.5');
-    await click('apply:matrix');
-    expect(el('apply-state').textContent).toBe('pending');
-
-    await setNumber('limiter.release_ms', '250');
-    await click('apply:limiter');
-
-    expect(putCalls()).toHaveLength(1);
-    expect(el('errors').textContent).toContain('already waiting to land');
-
-    // The whole-form apply is NOT refused: it carries both edits anyway.
-    await click('apply');
-    expect(putCalls()).toHaveLength(2);
-    expect(JSON.parse(putCalls()[1].body).limiter.release_ms).toBe(250);
-
-    // Once it lands, a section apply composes from the new baseline again.
-    device.config = { ...factory(), source: 'sd', config_generation: 1 };
-    await vi.advanceTimersByTimeAsync(500);
-    await settle();
-    await click('apply:limiter');
-
-    expect(putCalls()).toHaveLength(3);
-    expect(JSON.parse(putCalls()[2].body).matrix.center_gain_linear).toBe(0.5);
   });
 
   it('clears every section marker on a reload', async () => {
@@ -1356,7 +1262,7 @@ describe('Aius SD DSP editor — optimistic concurrency', () => {
   it('surfaces a stale generation on 409 and re-reads on demand', async () => {
     const advanced = { ...fixture('dsp-config-default.json'), source: 'sd', config_generation: 7 };
     await boot({ put: () => jsonResponse(409, { ok: false, error: 'stale_generation' }) });
-    el('token').value = '0123456789abcdef';
+    setToken('0123456789abcdef');
 
     await click('apply');
 
@@ -1379,7 +1285,7 @@ describe('Aius SD DSP editor — optimistic concurrency', () => {
 
   it('holds a pending state until the block-boundary apply bumps the generation', async () => {
     await boot();
-    el('token').value = '0123456789abcdef';
+    setToken('0123456789abcdef');
 
     await click('apply');
     expect(el('apply-state').textContent).toBe('pending');
@@ -1402,7 +1308,7 @@ describe('Aius SD DSP editor — optimistic concurrency', () => {
    * during it (delivery audit finding). */
   it('keeps edits made during the pending window, and says the device moved', async () => {
     await boot();
-    el('token').value = '0123456789abcdef';
+    setToken('0123456789abcdef');
     await click('apply');
 
     await setNumber('limiter.release_ms', '250');
@@ -1418,7 +1324,7 @@ describe('Aius SD DSP editor — optimistic concurrency', () => {
 
   it('surfaces a rejected write without touching the loaded model', async () => {
     await boot({ put: () => jsonResponse(400, { ok: false, error: 'dsp_config_invalid' }) });
-    el('token').value = '0123456789abcdef';
+    setToken('0123456789abcdef');
 
     await click('apply');
 
@@ -1441,15 +1347,21 @@ describe('Aius SD DSP editor — protecting unapplied work', () => {
    * SAID the form had diverged (operator request 2026-07-28). The pill is that
    * predicate made visible, so it is a comparison rather than a latch: typing
    * a value back clears it. */
-  it('shows an unsaved-changes pill exactly while the form differs from the device', async () => {
+  it('counts the unapplied changes exactly while the form differs from the device', async () => {
     await boot();
     expect(el('dirty-state').hidden).toBe(true);
 
     await setNumber('limiter.release_ms', '250');
     expect(el('dirty-state').hidden).toBe(false);
-    expect(el('dirty-state').textContent).toBe('unsaved changes');
+    // One stage changed reads as one change; the shared amber tone stays keyed
+    // on the data-state, not the (now dynamic) text.
+    expect(el('dirty-state').textContent).toBe('1 unapplied change');
     expect(el('dirty-state').dataset.state).toBe('unsaved changes');
 
+    await setNumber('matrix.center_gain_linear', '0.5');
+    expect(el('dirty-state').textContent).toBe('2 unapplied changes');
+
+    await setNumber('matrix.center_gain_linear', '0.70711');
     await setNumber('limiter.release_ms', '100');
     expect(el('dirty-state').hidden).toBe(true);
   });
@@ -1462,7 +1374,7 @@ describe('Aius SD DSP editor — protecting unapplied work', () => {
    * depend on the same rebase). */
   it('clears the unsaved-changes pill when a full apply lands, and when the device is re-read', async () => {
     await boot();
-    el('token').value = '0123456789abcdef';
+    setToken('0123456789abcdef');
     await setNumber('limiter.release_ms', '250');
     await click('apply');
     expect(el('dirty-state').hidden).toBe(false);
@@ -1485,7 +1397,7 @@ describe('Aius SD DSP editor — protecting unapplied work', () => {
    * against the newly rebased baseline. */
   it('keeps a mid-flight edit dirty after the apply it was not part of lands', async () => {
     await boot();
-    el('token').value = '0123456789abcdef';
+    setToken('0123456789abcdef');
     await setNumber('limiter.release_ms', '250');
     await click('apply');
 
@@ -1738,7 +1650,7 @@ describe('Aius SD DSP editor — serialised polling', () => {
    * a slow read there stacks exactly as a slow meter read did. */
   it('holds the pending-window loop while the generation read hangs', async () => {
     await boot();
-    el('token').value = '0123456789abcdef';
+    setToken('0123456789abcdef');
     await setNumber('matrix.center_gain_linear', '0.5');
     await click('apply');
     expect(el('apply-state').textContent).toBe('pending');
@@ -1872,7 +1784,7 @@ describe('Aius SD DSP editor — transport failures', () => {
 
   it('shows a visible error when the write transport fails mid-apply', async () => {
     await boot();
-    el('token').value = '0123456789abcdef';
+    setToken('0123456789abcdef');
     device.transportFailure = true;
 
     await click('apply');
@@ -1946,7 +1858,7 @@ describe('Aius SD DSP editor — ergonomics', () => {
    * row, resetting the whole section through the same per-field path. */
   it('section reset returns an output slot to the factory none and drops it from the PUT', async () => {
     await boot({ config: fixture('dsp-config-sd.json') });
-    el('token').value = '0123456789abcdef';
+    setToken('0123456789abcdef');
 
     el('sr:output.eq.0').click();
     await settle();
@@ -1958,7 +1870,7 @@ describe('Aius SD DSP editor — ergonomics', () => {
 
   it('section reset clears one input-channel row and leaves its neighbours alone', async () => {
     await boot({ config: fixture('dsp-config-sd.json') });
-    el('token').value = '0123456789abcdef';
+    setToken('0123456789abcdef');
 
     // fr carries two sections; reset only the second (the 45 Hz highpass).
     el('sr:input_channels.fr.eq.1').click();
@@ -2033,7 +1945,7 @@ describe('Aius SD DSP editor — ergonomics', () => {
    * not weaken it: the exact value rides the input until a human retypes it. */
   it('resetting every field reproduces the factory model in the PUT body', async () => {
     await boot({ config: fixture('dsp-config-sd.json') });
-    el('token').value = '0123456789abcdef';
+    setToken('0123456789abcdef');
 
     /* Two passes: resetting clipfree re-enables the headroom field, whose own
      * reset was disabled (skipped) when the first pass walked past it. */
@@ -2069,12 +1981,12 @@ describe('Aius SD DSP editor — presets', () => {
       limiter,
     };
   };
-  const presetNames = () => [...document.querySelectorAll('.preset-list__name')].map((node) => node.textContent);
-  const presetRowButton = (name, label) => {
-    const row = [...document.querySelectorAll('#preset-list li')].find(
-      (li) => li.querySelector('.preset-list__name').textContent === name,
-    );
-    return [...row.querySelectorAll('button')].find((button) => button.textContent === label);
+  /* The whole saved list is ONE picker now (UX consolidation 2026-09-04): its
+   * option values are the names, and Load/Download/Delete act on the selection. */
+  const presetNames = () =>
+    [...el('preset-select').options].map((option) => option.value).filter((value) => value !== '');
+  const selectPreset = (name) => {
+    el('preset-select').value = name;
   };
 
   it('lists .json presets from the directory index: sorted, dirs and ../ and foreign files skipped', async () => {
@@ -2121,7 +2033,7 @@ describe('Aius SD DSP editor — presets', () => {
   for (const [name, message] of nameCases) {
     it(`refuses the preset name ${JSON.stringify(name)}`, async () => {
       await boot();
-      el('token').value = '0123456789abcdef';
+      setToken('0123456789abcdef');
       el('preset-name').value = name;
       await click('preset-save');
       expect(putCalls()).toHaveLength(0);
@@ -2145,7 +2057,7 @@ describe('Aius SD DSP editor — presets', () => {
 
   it('refuses a case-variant of an existing preset name, naming the collision', async () => {
     await boot({ presetsIndex: PRESET_INDEX_DEFAULT });
-    el('token').value = '0123456789abcdef';
+    setToken('0123456789abcdef');
     el('preset-name').value = 'bass';
     await click('preset-save');
     expect(putCalls()).toHaveLength(0);
@@ -2163,7 +2075,7 @@ describe('Aius SD DSP editor — presets', () => {
     await click('preset-refresh');
     expect(el('preset-errors').textContent).toContain('sd_busy');
 
-    el('token').value = '0123456789abcdef';
+    setToken('0123456789abcdef');
     el('preset-name').value = 'bass';
     await click('preset-save');
     expect(putCalls()).toHaveLength(0);
@@ -2179,7 +2091,7 @@ describe('Aius SD DSP editor — presets', () => {
 
   it('saves the five editable groups with the auth header, then refreshes the list', async () => {
     await boot({ config: fixture('dsp-config-sd.json'), presetsIndex: PRESET_INDEX_DEFAULT });
-    el('token').value = '0123456789abcdef';
+    setToken('0123456789abcdef');
     el('preset-name').value = 'evening';
     await click('preset-save');
 
@@ -2192,14 +2104,16 @@ describe('Aius SD DSP editor — presets', () => {
     expect(el('preset-status').textContent).toBe('Saved evening.json.');
   });
 
-  it('refuses to save without a token, and with an invalid form', async () => {
+  it('disables Save without a token, and refuses an invalid form once unlocked', async () => {
     await boot();
     el('preset-name').value = 'quiet';
+    // No token: Save is a disabled, mutating control, so a click does nothing.
+    expect(el('preset-save').disabled).toBe(true);
     await click('preset-save');
     expect(putCalls()).toHaveLength(0);
-    expect(el('preset-errors').textContent).toContain('SD auth token required');
 
-    el('token').value = '0123456789abcdef';
+    setToken('0123456789abcdef');
+    expect(el('preset-save').disabled).toBe(false);
     await setNumber('limiter.release_ms', '1200');
     await click('preset-save');
     expect(putCalls()).toHaveLength(0);
@@ -2219,9 +2133,9 @@ describe('Aius SD DSP editor — presets', () => {
       presetsIndex: PRESET_INDEX_DEFAULT,
       presetFiles: { movie: preset },
     });
-    el('token').value = '0123456789abcdef';
-    presetRowButton('movie', 'Load').click();
-    await settle();
+    setToken('0123456789abcdef');
+    selectPreset('movie');
+    await click('preset-load');
 
     expect(valueOf('matrix.headroom_linear')).toBe('0.5');
     expect(fieldOf('limiter.enabled').checked).toBe(true);
@@ -2245,8 +2159,8 @@ describe('Aius SD DSP editor — presets', () => {
     await setNumber('limiter.release_ms', '250');
     window.confirm = vi.fn(() => false);
 
-    presetRowButton('movie', 'Load').click();
-    await settle();
+    selectPreset('movie');
+    await click('preset-load');
 
     expect(window.confirm).toHaveBeenCalledTimes(1);
     expect(valueOf('limiter.release_ms')).toBe('250');
@@ -2261,8 +2175,8 @@ describe('Aius SD DSP editor — presets', () => {
       { type: 'bypass', frequency_hz: 0, q: 0, gain_db: 0 },
     ];
     await boot({ presetsIndex: PRESET_INDEX_DEFAULT, presetFiles: { movie: overfull } });
-    presetRowButton('movie', 'Load').click();
-    await settle();
+    selectPreset('movie');
+    await click('preset-load');
     expect(el('preset-errors').textContent).toContain('output_eq must be an array of at most 2');
     expect(el('apply-state').textContent).toBe('loaded');
   });
@@ -2272,17 +2186,17 @@ describe('Aius SD DSP editor — presets', () => {
       presetsIndex: PRESET_INDEX_DEFAULT,
       presetFiles: { movie: fiveGroups('dsp-config-default.json') },
     });
-    el('token').value = '0123456789abcdef';
+    setToken('0123456789abcdef');
 
     window.confirm = vi.fn(() => false);
-    presetRowButton('movie', 'Delete').click();
-    await settle();
+    selectPreset('movie');
+    await click('preset-delete');
     expect(device.calls.some((call) => call.method === 'DELETE')).toBe(false);
     expect(el('preset-status').textContent).toContain('was kept');
 
     window.confirm = vi.fn(() => true);
-    presetRowButton('movie', 'Delete').click();
-    await settle();
+    selectPreset('movie');
+    await click('preset-delete');
     const del = device.calls.find((call) => call.method === 'DELETE');
     expect(window.confirm.mock.calls[0][0]).toContain('movie.json');
     expect(del.url).toBe('/sd/www/presets/movie.json');
@@ -2295,7 +2209,7 @@ describe('Aius SD DSP editor — presets', () => {
       presetsIndex: PRESET_INDEX_DEFAULT,
       presetPut: () => jsonResponse(507, { ok: false, error: 'sd_upload' }),
     });
-    el('token').value = '0123456789abcdef';
+    setToken('0123456789abcdef');
     el('preset-name').value = 'evening';
     await click('preset-save');
     expect(el('preset-errors').textContent).toContain('busy');
@@ -2304,7 +2218,7 @@ describe('Aius SD DSP editor — presets', () => {
 
   it('uploads a local file as a preset, dropping device facts on the way in', async () => {
     await boot({ presetsIndex: PRESET_INDEX_DEFAULT });
-    el('token').value = '0123456789abcdef';
+    setToken('0123456789abcdef');
     const smuggling = {
       ...fiveGroups('dsp-config-default.json'),
       sample_rate_hz: 96000,
@@ -2327,7 +2241,7 @@ describe('Aius SD DSP editor — presets', () => {
 
   it('lets the preset-name field rename an upload', async () => {
     await boot({ presetsIndex: PRESET_INDEX_DEFAULT });
-    el('token').value = '0123456789abcdef';
+    setToken('0123456789abcdef');
     el('preset-name').value = 'renamed';
     const file = new File([JSON.stringify(fiveGroups('dsp-config-default.json'))], 'party.json');
     Object.defineProperty(el('preset-file'), 'files', { value: [file], configurable: true });
@@ -2336,22 +2250,26 @@ describe('Aius SD DSP editor — presets', () => {
     expect(device.calls.find((call) => call.method === 'PUT').url).toBe('/sd/www/presets/renamed.json');
   });
 
-  /* The name is the widest thing this card asks for and both buttons beside it
-   * read it, so it owns a row; the file controls are a separate errand and
-   * take the row below (operator request 2026-07-28). */
-  it('gives the preset name its own row and puts the file operations below it', async () => {
+  /* One compact row carries the everyday controls -- the picker, Load, the save
+   * name and Save; the rare and destructive file operations fold into the More
+   * menu so the card is a row tall, not a screenful (UX consolidation
+   * 2026-09-04). */
+  it('keeps the picker, Load and Save in one row and folds file operations into the More menu', async () => {
     await boot();
-    const rows = [...el('preset-name').closest('.card').querySelectorAll('.controls')];
+    const row = el('preset-select').closest('.presets-row');
+    expect(row.contains(el('preset-load'))).toBe(true);
+    expect(row.contains(el('preset-name'))).toBe(true);
+    expect(row.contains(el('preset-save'))).toBe(true);
 
-    expect(rows).toHaveLength(2);
-    expect(rows[0].contains(el('preset-name'))).toBe(true);
-    expect(rows[0].contains(el('preset-save'))).toBe(true);
-    expect(rows[0].contains(el('preset-download'))).toBe(true);
-    expect(rows[1].contains(el('preset-file'))).toBe(true);
-    expect(rows[1].contains(el('preset-upload'))).toBe(true);
-    expect(rows[1].contains(el('preset-refresh'))).toBe(true);
-    // The name takes the slack in its row rather than sitting at label width.
-    expect(el('preset-name').closest('label').className).toBe('preset-name-field');
+    const menu = el('preset-menu');
+    expect(menu.contains(el('preset-file'))).toBe(true);
+    expect(menu.contains(el('preset-upload'))).toBe(true);
+    expect(menu.contains(el('preset-download-selected'))).toBe(true);
+    expect(menu.contains(el('preset-download'))).toBe(true);
+    expect(menu.contains(el('preset-delete'))).toBe(true);
+    expect(menu.contains(el('preset-refresh'))).toBe(true);
+    // The picker takes the slack in its row rather than sitting at label width.
+    expect(el('preset-select').closest('label').className).toBe('preset-select-field');
   });
 
   /* Saving to a FILE is the mirror of the upload: a browser save that touches
@@ -2398,8 +2316,8 @@ describe('Aius SD DSP editor — presets', () => {
       presetFiles: { movie: fiveGroups('dsp-config-default.json') },
     });
 
-    presetRowButton('movie', 'Download').click();
-    await settle();
+    selectPreset('movie');
+    await click('preset-download-selected');
 
     expect(downloads[0].name).toBe('movie.json');
     expect(await downloadBody()).toEqual(fiveGroups('dsp-config-default.json'));
@@ -2422,8 +2340,8 @@ describe('Aius SD DSP editor — presets', () => {
     });
     expect(el('preset-origin').textContent).toBe('');
 
-    presetRowButton('movie', 'Load').click();
-    await settle();
+    selectPreset('movie');
+    await click('preset-load');
     expect(el('preset-origin').textContent).toBe('preset: movie');
     expect(el('dirty-state').hidden).toBe(false);
 
@@ -2440,8 +2358,8 @@ describe('Aius SD DSP editor — presets', () => {
       presetsIndex: PRESET_INDEX_DEFAULT,
       presetFiles: { movie: fiveGroups('dsp-config-sd.json') },
     });
-    presetRowButton('movie', 'Load').click();
-    await settle();
+    selectPreset('movie');
+    await click('preset-load');
     expect(el('preset-origin').textContent).toBe('preset: movie');
 
     await click('reload');
@@ -2756,7 +2674,7 @@ describe('Aius SD DSP editor — editing through the plot', () => {
   it('writes a dragged handle into the same fields text mode edits', async () => {
     await boot({ config: fixture('dsp-config-sd.json') });
     stubRect();
-    el('token').value = '0123456789abcdef';
+    setToken('0123456789abcdef');
 
     pointer('pointerdown', atHz(120), atDb(-4.5));
     pointer('pointermove', atHz(300), atDb(6));
@@ -3061,7 +2979,7 @@ describe('Aius SD DSP editor — editing through the plot', () => {
    * works, but a wheel is invisible and touch has none. */
   it('edits the selected section Q from the visible box, into both pair members', async () => {
     await boot({ config: fixture('dsp-config-sd.json') });
-    el('token').value = '0123456789abcdef';
+    setToken('0123456789abcdef');
     expect(el('curve-q').disabled).toBe(false);
     expect(el('curve-q').value).toBe('1.2');
 
@@ -3172,7 +3090,7 @@ describe('Aius SD DSP editor — adding sections from the plot', () => {
 
   it('removes the active section from BOTH pair members via the visible button', async () => {
     await boot({ config: fixture('dsp-config-sd.json') });
-    el('token').value = '0123456789abcdef';
+    setToken('0123456789abcdef');
     stubRect();
 
     // fl.eq.0 is the SD fixture's 120 Hz peaking; it is the active section.
@@ -3505,7 +3423,7 @@ describe('Aius SD DSP editor — the downmix matrix diagram', () => {
   it('writes a touch-dragged centre gain into the same field text mode edits', async () => {
     await boot();
     stubMatrixRect();
-    el('token').value = '0123456789abcdef';
+    setToken('0123456789abcdef');
     const handle = matrixHandle('center');
 
     // Grabbed near the handle rather than exactly on it, as a hand would.
@@ -4017,7 +3935,9 @@ describe('Aius SD DSP editor — page structure', () => {
     expect(labels).toContain('Config');
     expect(labels).not.toContain('Source');
     expect(el('source').textContent).toBe('default');
-    expect(el('reload').textContent).toBe('Reload from device');
+    // Revert re-reads the device and discards the page's edits; the stale notice
+    // keeps its own fuller wording.
+    expect(el('reload').textContent).toBe('Revert');
     expect(el('stale-reload').textContent).toBe('Reload device config');
   });
 

@@ -625,13 +625,6 @@
   const CARD_IDS = CARD_OF_PREFIX.map(([, id]) => id);
   const cardIdOf = (path) => (CARD_OF_PREFIX.find(([prefix]) => path.startsWith(prefix)) || [null, null])[1];
 
-  /* A section owns its own enable flag plus every field its card owns -- so a
-   * per-section apply validates and sends exactly the panel the operator is
-   * looking at, and nothing else. */
-  const sectionOwnsPath = (section, path) => path === `features.${section.key}` || cardIdOf(path) === section.card;
-  const sectionFields = (section) =>
-    [...document.querySelectorAll('[data-field]')].filter((input) => sectionOwnsPath(section, input.dataset.field));
-
   const field = (path) => $(`f:${path}`);
 
   /* ---- DOM construction -------------------------------------------------- */
@@ -885,13 +878,14 @@
     return wrap;
   }
 
-  /* ---- the panel head (operator request 2026-07-28) ----------------------
-   * The five feature flags used to sit in one "Processing stages" cluster,
-   * nowhere near the controls they govern, and the only Apply was at the top of
-   * the page. Each flag now rides the head of its own panel, beside that
-   * panel's dirty marker and its own Apply. The descriptor is the SAME one the
-   * field table would have produced, through the SAME buildInput(), so
-   * render/collect/validate never learn that the chrome moved. */
+  /* ---- the panel head ----------------------------------------------------
+   * Each stage's enable flag rides the head of its own panel (operator request
+   * 2026-07-28), beside a dirty marker that names WHICH stage diverged. There is
+   * no per-panel Apply: the single sticky-bar Apply is the only writer (UX
+   * consolidation 2026-09-04), so a stage head is a switch and a locator, never
+   * a send button. The descriptor is the SAME one the field table would have
+   * produced, through the SAME buildInput(), so render/collect/validate never
+   * learn that the chrome moved. */
 
   function buildStageEnable(section) {
     const descriptor = {
@@ -931,15 +925,7 @@
     shared.setPill(dirty, 'edited');
     dirty.hidden = true;
 
-    const apply = document.createElement('button');
-    apply.type = 'button';
-    apply.className = 'secondary';
-    apply.id = `apply:${section.key}`;
-    apply.textContent = 'Apply';
-    apply.setAttribute('aria-label', `Apply ${section.label} to the device`);
-    apply.addEventListener('click', () => void act(() => applySection(section)));
-
-    head.append(note, dirty, buildStageEnable(section), apply);
+    head.append(note, dirty, buildStageEnable(section));
     $(section.card).querySelector('.section-title').append(head);
   }
 
@@ -1297,15 +1283,6 @@
 
   const isDirty = () => state.clean !== null && state.clean !== JSON.stringify(collectPresetGroups());
 
-  /* The same fact the confirm() guards and beforeunload have always consulted,
-   * finally SAID on the page (operator request 2026-07-28). It rides the Apply
-   * row because Apply is what resolves it, and it is absent rather than
-   * negative when the form matches the device -- "no unsaved changes" is not
-   * news. It stays the AGGREGATE; each panel answers for itself below. */
-  function refreshDirtyPill() {
-    $('dirty-state').hidden = !isDirty();
-  }
-
   /* One section's slice of the same comparison: its enable flag, plus the model
    * groups it edits. Called with the baseline parsed and the form collected
    * once for the whole sweep -- this runs on every keystroke. */
@@ -1314,11 +1291,34 @@
     return section.groups.some((group) => JSON.stringify(form[group]) !== JSON.stringify(baseline[group]));
   }
 
+  /* The stages that differ from the device's baseline. Every editable group and
+   * every feature flag maps to exactly one section, so this list IS the set of
+   * unapplied changes: the action bar counts it, and each panel reads its own
+   * membership below. Empty until the first successful read (state.clean null). */
+  function changedSections() {
+    if (state.clean === null) return [];
+    const baseline = JSON.parse(state.clean);
+    const form = collectPresetGroups();
+    return SECTIONS.filter((section) => sectionDiffers(section, baseline, form));
+  }
+
+  /* The aggregate fact the confirm() guards and beforeunload have always
+   * consulted, SAID on the page (operator request 2026-07-28) as a count in the
+   * action bar beside the single Apply that resolves it. Absent rather than
+   * negative when the form matches the device -- "no unapplied changes" is not
+   * news. */
+  function refreshDirtyPill() {
+    const count = changedSections().length;
+    const pill = $('dirty-state');
+    pill.hidden = count === 0;
+    pill.dataset.state = 'unsaved changes';
+    pill.textContent = `${count} unapplied change${count === 1 ? '' : 's'}`;
+  }
+
   function refreshSectionDirty() {
-    const baseline = state.clean === null ? null : JSON.parse(state.clean);
-    const form = baseline === null ? null : collectPresetGroups();
+    const changed = new Set(changedSections().map((section) => section.key));
     for (const section of SECTIONS) {
-      $(`dirty:${section.key}`).hidden = baseline === null || !sectionDiffers(section, baseline, form);
+      $(`dirty:${section.key}`).hidden = !changed.has(section.key);
     }
   }
 
@@ -1483,26 +1483,54 @@
     };
   }
 
-  /* One in-flight request at a time from the page's own buttons: a second
-   * click on Apply during a >7 s first save used to land a stale PUT and paint
-   * a false 409 (UX finding E4). */
-  const BUSY_BUTTONS = [
-    'apply',
+  /* Two gates on the page's own controls, resolved together in
+   * refreshControlAvailability():
+   *   BUSY -- one in-flight request at a time. A second click on Apply during a
+   *   >7 s first save used to land a stale PUT and paint a false 409 (UX finding
+   *   E4), so every button that starts a request is disabled while one is out.
+   *   TOKEN -- a mutating operation needs the SD auth token, so it is disabled
+   *   (with a stated reason) until one is entered (UX consolidation 2026-09-04).
+   *   Read-only controls -- Revert/reload, preset Load/Download/Refresh, the
+   *   preset picker -- gate on BUSY only, so viewing the device never needs a
+   *   token. */
+  const TOKEN_REQUIRED_HINT = 'Enter the SD auth token to make changes.';
+  const MUTATING_CONTROLS = ['apply', 'preset-save', 'preset-upload', 'preset-delete'];
+  const READONLY_BUSY_CONTROLS = [
     'reload',
     'stale-reload',
-    'preset-save',
+    'preset-load',
     'preset-download',
-    'preset-upload',
+    'preset-download-selected',
     'preset-refresh',
-    /* Every panel's own Apply is the same one-in-flight discipline: a section
-     * write during another write would carry a stale base_generation. */
-    ...SECTIONS.map((section) => `apply:${section.key}`),
+    'preset-select',
   ];
+
+  const tokenPresent = () => $('token').value.trim() !== '';
+
+  /* The lock chip in the action bar states, in one word, why the mutating
+   * controls beside it are disabled -- so the disabled Apply reads as a locked
+   * door rather than a broken button. */
+  function refreshTokenLock() {
+    const lock = $('token-lock');
+    const present = tokenPresent();
+    lock.dataset.state = present ? 'unlocked' : 'locked';
+    lock.textContent = present ? 'unlocked' : 'locked';
+  }
+
+  function refreshControlAvailability() {
+    const locked = !tokenPresent();
+    for (const id of MUTATING_CONTROLS) {
+      const button = $(id);
+      button.disabled = state.busy || locked;
+      button.title = locked ? TOKEN_REQUIRED_HINT : '';
+    }
+    for (const id of READONLY_BUSY_CONTROLS) $(id).disabled = state.busy;
+    refreshTokenLock();
+  }
 
   function setBusy(busy) {
     state.busy = busy;
-    for (const id of BUSY_BUTTONS) $(id).disabled = busy;
-    for (const button of document.querySelectorAll('#preset-list button')) button.disabled = busy;
+    refreshControlAvailability();
   }
 
   async function act(run) {
@@ -1553,14 +1581,15 @@
   }
 
   /* ---- applying ----------------------------------------------------------
-   * Two entry points, one write. `applyConfig` sends the whole form; a panel's
-   * own Apply sends the BASELINE with only that panel's groups and enable flag
-   * taken from the form, so every other pending edit stays local and unsent
-   * (operator request 2026-07-28). Everything after the body -- the size cap,
-   * the PUT, the 409, the pending poll -- is written once. */
+   * One writer: `applyConfig` sends the whole form as a single generation bump
+   * (UX consolidation 2026-09-04). Everything below -- the size cap, the PUT,
+   * the 409, the pending poll -- runs once for that one path. */
 
-  /* Shared preflight. `fields` is the validation scope; the return is the token
-   * to write with, or null when the page has already said why it will not. */
+  /* Preflight for the whole-form write. The return is the token to write with,
+   * or null when the page has already said why it will not. The token check is a
+   * defensive backstop: Apply is disabled until a token is present
+   * (refreshControlAvailability), so this branch is reached only if a caller
+   * bypasses the button. */
   function applyPreflight(fields) {
     clearError();
     if (!state.model) {
@@ -1620,43 +1649,6 @@
     const token = applyPreflight(document.querySelectorAll('[data-field]'));
     if (token === null) return;
     await writeModel(collectModel(), token, 'Writing /aius/dsp.json...');
-  }
-
-  /* The baseline with one panel's worth of the form written over it. The
-   * features object is REBUILT in table order rather than spread, so the
-   * baseline's key order can never diverge from a fresh collect's -- isDirty()
-   * and every section marker are JSON.stringify comparisons. */
-  function sectionModel(section) {
-    const baseline = JSON.parse(state.clean);
-    const form = collectPresetGroups();
-    const groups = { ...baseline, features: {} };
-    for (const [key] of FEATURES) {
-      groups.features[key] = key === section.key ? form.features[key] : baseline.features[key];
-    }
-    for (const group of section.groups) groups[group] = form[group];
-    return { ...collectModel(), ...presetGroupsOf(groups) };
-  }
-
-  async function applySection(section) {
-    clearError();
-    if (state.clean === null) {
-      showError('No configuration loaded yet -- reload the device before applying one stage.');
-      return;
-    }
-    /* setBusy spans the REQUEST; the pending window after it is up to 20 s of
-     * re-enabled buttons. A second FULL apply into that window is harmless --
-     * it carries the entire form and simply supersedes the first. A SECTION
-     * apply is not: it composes from a baseline that has not rebased yet, so it
-     * would write the first section's landed change straight back out. */
-    if (state.pendingStop !== null) {
-      showError(
-        'A write is already waiting to land at the next audio block boundary. Wait for it before applying another stage.',
-      );
-      return;
-    }
-    const token = applyPreflight(sectionFields(section));
-    if (token === null) return;
-    await writeModel(sectionModel(section), token, `Writing ${section.label} to /aius/dsp.json...`);
   }
 
   /* The same no-overlap loop the meters and the status use: a slow generation
@@ -1778,33 +1770,61 @@
 
   const presetUrl = (name) => `${PRESET_DIR_URL}${encodeURIComponent(name)}.json`;
 
-  function renderPresetList() {
-    const list = $('preset-list');
-    list.textContent = '';
-    for (const name of state.presets) {
-      const row = document.createElement('li');
-      const title = document.createElement('span');
-      title.className = 'preset-list__name';
-      title.textContent = name;
-      const load = document.createElement('button');
-      load.type = 'button';
-      load.textContent = 'Load';
-      load.addEventListener('click', () => void act(() => loadPreset(name)));
-      /* A browser save of the card's own bytes: a public GET and a blob, so no
-       * token, no write, and nothing on the device moves. */
-      const download = document.createElement('button');
-      download.type = 'button';
-      download.className = 'secondary';
-      download.textContent = 'Download';
-      download.addEventListener('click', () => void act(() => downloadPreset(name)));
-      const remove = document.createElement('button');
-      remove.type = 'button';
-      remove.className = 'danger';
-      remove.textContent = 'Delete';
-      remove.addEventListener('click', () => void act(() => deletePreset(name)));
-      row.append(title, load, download, remove);
-      list.append(row);
+  /* The whole saved list is ONE compact picker (UX consolidation 2026-09-04):
+   * Load, Download selected and Delete selected all read its value, so a card
+   * with fifty presets is one control tall rather than fifty rows. The previous
+   * selection survives a refresh when it is still on the card; otherwise the
+   * first name is selected so an action never fires against a stale value. */
+  function renderPresetSelect() {
+    const select = $('preset-select');
+    const previous = select.value;
+    select.textContent = '';
+    if (state.presets.length === 0) {
+      const option = document.createElement('option');
+      option.value = '';
+      option.textContent = 'no presets';
+      select.append(option);
+      select.value = '';
+      return;
     }
+    for (const name of state.presets) {
+      const option = document.createElement('option');
+      option.value = name;
+      option.textContent = name;
+      select.append(option);
+    }
+    select.value = state.presets.includes(previous) ? previous : state.presets[0];
+  }
+
+  const selectedPreset = () => $('preset-select').value;
+
+  /* Load/Download/Delete act on the picker's value; a card with no presets has
+   * an empty value, so each says so rather than requesting `.json`. */
+  async function loadSelectedPreset() {
+    const name = selectedPreset();
+    if (name === '') {
+      showPresetError('No preset is selected. Save one, or refresh the list.');
+      return;
+    }
+    await loadPreset(name);
+  }
+
+  async function downloadSelectedPreset() {
+    const name = selectedPreset();
+    if (name === '') {
+      showPresetError('No preset is selected to download.');
+      return;
+    }
+    await downloadPreset(name);
+  }
+
+  async function deleteSelectedPreset() {
+    const name = selectedPreset();
+    if (name === '') {
+      showPresetError('No preset is selected to delete.');
+      return;
+    }
+    await deletePreset(name);
   }
 
   async function refreshPresets() {
@@ -1816,7 +1836,7 @@
     if (result.status === 404 && result.token === 'sd_not_found') {
       state.presets = [];
       state.presetsFaulted = false;
-      renderPresetList();
+      renderPresetSelect();
       setPresetState('idle');
       setPresetStatus('No presets on the card yet.');
       return;
@@ -1839,7 +1859,7 @@
     names.sort((a, b) => a.localeCompare(b));
     state.presets = names;
     state.presetsFaulted = false;
-    renderPresetList();
+    renderPresetSelect();
     setPresetState('idle');
     const footer = result.text.match(/truncated: (yes|no)\./);
     if (footer && footer[1] === 'yes') {
@@ -2069,7 +2089,7 @@
     hint.textContent =
       `${name.length} / ${PRESET_NAME_MAX} characters. ` +
       (problem === ''
-        ? "An upload uses this name when it is filled, and the file's own name when it is empty."
+        ? "An import uses this name when it is filled, and the file's own name when it is empty."
         : problem);
     hint.classList.toggle('hint--warn', problem !== '');
   }
@@ -4031,16 +4051,23 @@
     if ($('token').readOnly) {
       setTokenLocked(false);
       $('token').focus();
+      refreshControlAvailability();
       return;
     }
     const value = $('token').value.trim();
     shared.storeToken(value);
     setTokenLocked(value !== '');
     setStatus(value === '' ? 'SD auth token cleared from this browser.' : 'SD auth token saved in this browser.');
+    refreshControlAvailability();
   });
+  /* Gate live on the field, not just on Save: typing a token unlocks Apply and
+   * the preset writes at once, and clearing it re-locks them, so the disabled
+   * state always matches what the next request would carry. */
+  $('token').addEventListener('input', refreshControlAvailability);
   $('token').value = shared.readStoredToken();
   setTokenLocked($('token').value !== '');
   $('preset-name').addEventListener('input', refreshPresetNameHint);
+  $('preset-load').onclick = () => void act(loadSelectedPreset);
   $('preset-save').onclick = () =>
     void act(async () => {
       clearPresetError();
@@ -4056,6 +4083,8 @@
       await savePreset($('preset-name').value.trim(), collectPresetGroups());
     });
   $('preset-download').onclick = () => void act(downloadCurrent);
+  $('preset-download-selected').onclick = () => void act(downloadSelectedPreset);
+  $('preset-delete').onclick = () => void act(deleteSelectedPreset);
   $('preset-upload').onclick = () => void act(uploadPreset);
   $('preset-refresh').onclick = () => void act(refreshPresets);
   /* The last guard on the way out: an unapplied edit is work, and the browser
@@ -4066,9 +4095,9 @@
     event.returnValue = '';
   });
   setApplyState('loading');
-  /* Authored text, JS-stamped data-state: the shared tone map in replays.css
-   * keys off the state, and dsp-editor.css adds this one word to it. */
-  shared.setPill($('dirty-state'), 'unsaved changes');
+  /* Mutating controls start disabled until a token is present (or restored from
+   * localStorage above): the lock chip in the bar says why. */
+  refreshControlAvailability();
   refreshPresetNameHint();
   void guard(loadConfig);
   void guard(refreshPresets);
