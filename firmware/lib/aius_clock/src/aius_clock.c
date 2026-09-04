@@ -15,7 +15,16 @@
 #define AIUS_CLOCK_NOMINAL_INTERVAL_MS UINT32_C(1000)
 #define AIUS_CLOCK_WINDOW_MS UINT32_C(1000)
 #define AIUS_CLOCK_TARGET_INTERVAL_MS UINT32_C(10000)
-#define AIUS_CLOCK_TARGET_HYSTERESIS_MILLIHZ UINT32_C(50)
+/* The receiver's physical-rate estimate is quantized to roughly 140 mHz at
+ * 48 kHz, so a settled carrier still hops between adjacent bins: a deadband
+ * under about two bins retrims on quantization noise alone (48 kHz gate 1
+ * measured ~53 post-settle trims in 10 minutes at 50 mHz, one per 10.8 s,
+ * each costing a 512-frame invalid window). 500 mHz is about 3.5 bins, so a
+ * one-bin hop can no longer request a target. Not trimming inside the
+ * deadband costs at most 500 mHz / 48 kHz, about 1e-8 of ring drift: one
+ * frame per ~1000 s, far under the 128-frame ring floor and the 0.25 words/s
+ * ingress-slope bound, and well inside the 1000 mHz follow-error bound. */
+#define AIUS_CLOCK_TARGET_HYSTERESIS_MILLIHZ UINT32_C(500)
 #define AIUS_CLOCK_PLL_REFERENCE_MILLIHZ UINT64_C(24000000000)
 #define AIUS_CLOCK_PLL_MIN_MILLIHZ UINT64_C(648000000000)
 #define AIUS_CLOCK_PLL_MAX_MILLIHZ UINT64_C(1296000000000)

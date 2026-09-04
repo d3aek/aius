@@ -263,17 +263,31 @@ static void test_tracker_average_hysteresis_and_cadence(void)
 		           second * 1000u, &result);
 		CHECK(!result.target_update);
 	}
-	run_window(&tracker, 48000049u, 48000049u, 11000u, &result);
+	/* Deadband edge, pinned to the 500 mHz hysteresis: below 500 mHz of
+	 * departure from the applied target the tracker holds, at 500 mHz it
+	 * requests. Raised from 50 mHz because the rate estimate quantizes to
+	 * ~140 mHz bins and the old edge trimmed on one-bin hops. */
+	run_window(&tracker, 48000499u, 48000499u, 11000u, &result);
 	CHECK(!result.target_update);
-	run_window(&tracker, 48000050u, 48000050u, 12001u, &result);
+	run_window(&tracker, 48000500u, 48000500u, 12001u, &result);
 	CHECK(result.target_update);
-	CHECK(result.target_rate_millihz == 48000050u);
+	CHECK(result.target_rate_millihz == 48000500u);
 	CHECK(aius_rate_tracker_note_target_applied(
 		&tracker, result.target_rate_millihz, 13001u));
-	run_window(&tracker, 48000150u, 48000150u, 13002u, &result);
+	run_window(&tracker, 48001100u, 48001100u, 13002u, &result);
 	CHECK(!result.target_update);
-	run_window(&tracker, 48000150u, 48000150u, 23002u, &result);
+	run_window(&tracker, 48001100u, 48001100u, 23002u, &result);
 	CHECK(result.target_update);
+	/* A one-bin (~140 mHz) hop of the window mean is quantization noise and
+	 * must not request a trim even when the 10 s cadence is eligible; a
+	 * 600 mHz step is real drift and must. */
+	CHECK(aius_rate_tracker_note_target_applied(
+		&tracker, 48001100u, 24003u));
+	run_window(&tracker, 48001240u, 48001240u, 34004u, &result);
+	CHECK(!result.target_update);
+	run_window(&tracker, 48001700u, 48001700u, 35005u, &result);
+	CHECK(result.target_update);
+	CHECK(result.target_rate_millihz == 48001700u);
 }
 
 static void check_plan(
