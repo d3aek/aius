@@ -1,29 +1,36 @@
 :root {
   color-scheme: dark;
-  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  --aius-surface-page: Canvas;
-  --aius-surface-raised: color-mix(in srgb, Canvas 92%, CanvasText);
-  --aius-surface-recessed: color-mix(in srgb, Canvas 96%, CanvasText);
-  --aius-surface-input: color-mix(in srgb, Canvas 97%, CanvasText);
-  --aius-surface-canvas: color-mix(in srgb, Canvas 98%, CanvasText);
-  --aius-surface-warning: color-mix(in srgb, Canvas 88%, Highlight);
-  --aius-surface-action: color-mix(in srgb, Highlight 72%, Canvas);
-  --aius-surface-secondary-action: color-mix(in srgb, Canvas 85%, CanvasText);
-  --aius-surface-danger: color-mix(in srgb, Canvas 82%, CanvasText);
-  --aius-border-strong: color-mix(in srgb, Canvas 80%, CanvasText);
-  --aius-border-control: color-mix(in srgb, Canvas 68%, CanvasText);
-  --aius-border-subtle: color-mix(in srgb, Canvas 87%, CanvasText);
-  --aius-border-emphasis: color-mix(in srgb, Canvas 74%, CanvasText);
-  --aius-accent-primary: Highlight;
-  --aius-accent-info: Highlight;
-  --aius-accent-warning: color-mix(in srgb, Highlight 70%, CanvasText);
-  --aius-accent-danger: color-mix(in srgb, Highlight 55%, CanvasText);
-  --aius-text-primary: CanvasText;
-  --aius-text-secondary: color-mix(in srgb, CanvasText 76%, Canvas);
-  --aius-text-muted: color-mix(in srgb, CanvasText 62%, Canvas);
-  --aius-text-disabled: color-mix(in srgb, CanvasText 46%, Canvas);
-  --aius-text-warning: color-mix(in srgb, CanvasText 84%, Highlight);
-  --aius-text-danger: color-mix(in srgb, CanvasText 84%, Highlight);
+  font-family: ui-monospace, SFMono-Regular, "Cascadia Code", Consolas, monospace;
+
+  /* High-contrast dark palette (2026-09-04 modernization). Concrete values, not
+     the old color-mix(Canvas/CanvasText) system-colour mixes -- those low
+     percentages were the source of the muddy, low-contrast look this replaces.
+     Tokens are the ONLY place a literal colour lives; every SD sheet consumes
+     these names, so a value change here reskins all four pages at once.
+     Accent cyan matches the signal-flow canvas palette in dsp-editor.js. */
+  --aius-surface-page: #0a0d12;
+  --aius-surface-raised: #141a22;
+  --aius-surface-recessed: #1b232e;
+  --aius-surface-input: #0f141b;
+  --aius-surface-canvas: #0b0f15;
+  --aius-surface-warning: color-mix(in srgb, #f5b445 16%, #141a22);
+  --aius-surface-action: color-mix(in srgb, #4cc2ff 22%, #141a22);
+  --aius-surface-secondary-action: #232d39;
+  --aius-surface-danger: color-mix(in srgb, #ff6b6b 16%, #141a22);
+  --aius-border-strong: #2c3a49;
+  --aius-border-control: #3c4b5d;
+  --aius-border-subtle: #212a35;
+  --aius-border-emphasis: #4a5d73;
+  --aius-accent-primary: #4cc2ff;
+  --aius-accent-info: #8ab4ff;
+  --aius-accent-warning: #f5b445;
+  --aius-accent-danger: #ff6b6b;
+  --aius-text-primary: #f3f7fc;
+  --aius-text-secondary: #c7d3e0;
+  --aius-text-muted: #93a4b7;
+  --aius-text-disabled: #667588;
+  --aius-text-warning: #ffce85;
+  --aius-text-danger: #ff9d9d;
   --aius-white-space-atomic: nowrap;
   background: var(--aius-surface-page);
   color: var(--aius-text-primary);
@@ -32,16 +39,30 @@
 * { box-sizing: border-box; }
 body { margin: 0; }
 main { max-width: 1100px; margin: 0 auto; padding: 28px 18px 60px; }
-header, .section-title, .controls, .upload, .meter-row { display: flex; gap: 14px; align-items: center; justify-content: space-between; }
-header { align-items: flex-start; margin-bottom: 22px; }
-nav { display: flex; gap: 14px; flex-wrap: wrap; }
+.section-title, .controls, .upload, .meter-row { display: flex; gap: 14px; align-items: center; justify-content: space-between; }
+/* Header stacks: the tab menu is a full-width strip on top, then the title block
+   takes the whole column so the lede is no longer squeezed beside a nav. */
+header { margin-bottom: 26px; }
 a { color: var(--aius-accent-info); }
 h1, h2, p { margin: 0; }
-h1 { font-size: clamp(1.6rem, 4vw, 2.7rem); }
+h1 { font-size: clamp(1.7rem, 4vw, 2.8rem); letter-spacing: -0.01em; }
 h2 { font-size: 1rem; }
-.eyebrow { color: var(--aius-accent-primary); font-size: .75rem; letter-spacing: .14em; margin-bottom: 8px; }
-.lede { color: var(--aius-text-secondary); max-width: 720px; line-height: 1.5; margin-top: 8px; }
-.card { background: var(--aius-surface-raised); border: 1px solid var(--aius-border-strong); border-radius: 9px; padding: 18px; margin: 14px 0; }
+.eyebrow { color: var(--aius-accent-primary); font-size: .75rem; letter-spacing: .16em; margin-bottom: 8px; }
+/* Full column width (2026-09-04): the lede no longer shares a flex row with the
+   nav, so it reads across the whole page instead of a 720 px measure. */
+.lede { color: var(--aius-text-secondary); max-width: none; line-height: 1.6; margin-top: 10px; }
+
+/* ---- the firmware page menu ------------------------------------------------
+   An obvious tab strip at the top of every SD page: the same four tabs in the
+   same order on all four, so it reads as one menu, with the current page marked
+   by aria-current (2026-09-04). */
+nav { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 22px; padding-bottom: 18px; border-bottom: 1px solid var(--aius-border-subtle); }
+nav a { display: inline-flex; align-items: center; padding: 9px 15px; border: 1px solid var(--aius-border-control); border-radius: 8px; background: var(--aius-surface-recessed); color: var(--aius-text-secondary); text-decoration: none; font-size: .82rem; transition: background 120ms ease, border-color 120ms ease, color 120ms ease; }
+nav a:hover { background: var(--aius-surface-secondary-action); border-color: var(--aius-border-emphasis); color: var(--aius-text-primary); }
+nav a[aria-current="page"] { background: var(--aius-surface-action); border-color: var(--aius-accent-primary); color: var(--aius-accent-primary); font-weight: 600; }
+nav a:focus-visible { outline: 2px solid var(--aius-accent-info); outline-offset: 2px; }
+
+.card { background: var(--aius-surface-raised); border: 1px solid var(--aius-border-strong); border-radius: 10px; padding: 18px; margin: 14px 0; box-shadow: 0 1px 3px rgba(0, 0, 0, .35); }
 .section-title { margin-bottom: 16px; }
 .pill { border: 1px solid var(--aius-border-emphasis); border-radius: 999px; padding: 4px 9px; font-size: .75rem; }
 .status-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
@@ -55,9 +76,16 @@ h2 { font-size: 1rem; }
 .controls, .upload { flex-wrap: wrap; justify-content: flex-start; margin-top: 12px; }
 .controls label, .upload label { display: grid; gap: 6px; color: var(--aius-text-secondary); font-size: .78rem; }
 .check { display: flex !important; align-items: center; margin-top: 20px; }
-select, input, button { font: inherit; color: inherit; background: var(--aius-surface-input); border: 1px solid var(--aius-border-control); border-radius: 5px; padding: 8px; }
-button { cursor: pointer; background: var(--aius-surface-action); border-color: var(--aius-accent-primary); }
-button.secondary { background: var(--aius-surface-secondary-action); }
+select, input, button { font: inherit; color: inherit; background: var(--aius-surface-input); border: 1px solid var(--aius-border-control); border-radius: 6px; padding: 8px; }
+button { cursor: pointer; background: var(--aius-surface-action); border-color: var(--aius-accent-primary); border-radius: 7px; transition: background 120ms ease, border-color 120ms ease; }
+button:hover:not(:disabled) { border-color: var(--aius-accent-info); background: color-mix(in srgb, var(--aius-accent-primary) 32%, var(--aius-surface-raised)); }
+button:disabled { opacity: .5; cursor: not-allowed; }
+button.secondary { background: var(--aius-surface-secondary-action); border-color: var(--aius-border-control); }
+button.secondary:hover:not(:disabled) { border-color: var(--aius-border-emphasis); background: color-mix(in srgb, var(--aius-text-primary) 8%, var(--aius-surface-secondary-action)); }
+/* One focus ring for the chrome's own controls; page sheets keep their richer
+   3px canvas/toolbar rings, which win on specificity. */
+a:focus-visible, button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--aius-accent-info); outline-offset: 2px; }
+input:focus-visible, select:focus-visible { border-color: var(--aius-accent-info); }
 .file-list { display: grid; gap: 8px; }
 .file { display: grid; grid-template-columns: minmax(130px, 1fr) auto auto auto; gap: 12px; align-items: center; padding: 10px; background: var(--aius-surface-recessed); border-radius: 5px; }
 .file small { color: var(--aius-text-muted); }
@@ -67,11 +95,19 @@ button.secondary { background: var(--aius-surface-secondary-action); }
 .meters .section-title a { font-size: .75rem; }
 
 @media (max-width: 650px) {
-  header { display: block; }
-  nav { margin-top: 16px; }
+  main { padding: 20px 14px 48px; }
   .file { grid-template-columns: 1fr auto auto; }
   .file strong { grid-column: 1 / 4; }
   .file small { grid-column: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  nav a, button { transition: none; }
+}
+
+@media (forced-colors: active) {
+  nav a[aria-current="page"] { border-color: Highlight; color: Highlight; }
+  nav a:focus-visible, a:focus-visible, button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid Highlight; }
 }
 
 /* ---- shared layer, grown 2026-07-27 (UX consolidation, task #7 slice 5) ----

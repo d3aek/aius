@@ -648,11 +648,16 @@ describe('Aius SD device status — polling', () => {
     expect(el('flow').dataset.stale).toBeUndefined();
   });
 
-  it('links only to its sibling pages, by relative href', async () => {
+  it('carries the four-tab firmware menu, marking the current page', async () => {
     await boot();
 
-    const hrefs = Array.from(document.querySelectorAll('nav a')).map((anchor) => anchor.getAttribute('href'));
-    /* The firmware upgrade page joined the strip with OTA slice 3A. */
-    expect(hrefs).toEqual(['index.html', 'replays.html', 'upgrade.html']);
+    const tabs = Array.from(document.querySelectorAll('nav a'));
+    const hrefs = tabs.map((anchor) => anchor.getAttribute('href'));
+    /* Every SD page carries the same four tabs in the same order (2026-09-04
+       modernization); the strip reads as one menu because it never reorders. */
+    expect(hrefs).toEqual(['index.html', 'replays.html', 'status.html', 'upgrade.html']);
+    /* This is the status page, so its own tab is the current one. */
+    const current = tabs.filter((anchor) => anchor.getAttribute('aria-current') === 'page');
+    expect(current.map((anchor) => anchor.getAttribute('href'))).toEqual(['status.html']);
   });
 });
