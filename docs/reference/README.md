@@ -22,8 +22,7 @@ measurements behind them, so a claim can be re-checked. Future work lives in
   editor, device status, replay manager, firmware upgrade), with screenshots,
   the routes each reads and writes, and how the interface is served. The closest
   thing to using the device without having one. Screenshots live in `images/`
-  and are rendered from the committed page assets against stubbed responses, not
-  captured from a live device.
+  and are live captures from the deployed board, driven by a real 5.1 source.
 - **[AIUS USB application control protocol](usb-control-protocol.md)** — the
   line-oriented ASCII protocol on the Teensy USB virtual serial port
   (`/dev/ttyACM*`): transport limits, requests, responses and error vocabulary,

@@ -5,3 +5,5 @@
 *.o binary filter=lfs diff=lfs merge=lfs -text
 *.a binary filter=lfs diff=lfs merge=lfs -text
 *.jsonl.gz binary filter=lfs diff=lfs merge=lfs -text
+docs/reference/images/*.png filter=lfs diff=lfs merge=lfs -text
+docs/reference/images/*.jpg filter=lfs diff=lfs merge=lfs -text

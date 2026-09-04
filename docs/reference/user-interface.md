@@ -14,8 +14,8 @@ toc: true
 Aius serves its whole operator interface from the Teensy's SD card: four HTML
 pages that read and write the device's own HTTP routes. This document shows each
 page with a populated response behind it, what it reads and writes, and what a
-reader could not guess from the markup. The screenshots were rendered locally
-rather than captured from a live device; see
+reader could not guess from the markup. The screenshots are live captures from
+the deployed board at `http://192.0.2.66`, driven by a real 5.1 source; see
 [how these screenshots were made](#how-these-screenshots-were-made).
 
 ## How the interface is served
@@ -52,17 +52,10 @@ rather than captured from a live device; see
 ## DSP editor
 
 ![The Aius DSP editor in its default dashboard view: an effective configuration
-loaded from SD at generation 4, a preset list, then the signal-flow stages as
-one column of full-width bands — input levels, the stacked EQ plot with a
-spectrum underlay, the downmix routing diagram, limiter gain reduction, output
-levels and a live spectrogram.](images/dsp-editor.png)
-
-**The three captures in this section are stale as of 2026-08-16** and are the
-one thing here that still shows the spectrum underlay and the spectrogram. Both
-were deleted that day with their feed (see the analyser bullet below); the
-capture recipe's own lower anchor, `#spectrogram`, no longer exists either.
-Regenerating them is an open item in the
-[work register](../plans/aius-open-work-register.md).
+loaded from SD at generation 1 while a live 5.1 AC-3 carrier plays, a preset
+list, then the signal-flow stages as one column of full-width bands — input
+levels, the stacked EQ plot, the downmix routing diagram, limiter gain
+reduction, output levels and the live processing meters.](images/dsp-editor.png)
 
 `index.html` + `dsp-editor.js` + `dsp-editor.css`. The main page: it edits the
 single effective DSP configuration — per-channel input trim and EQ, the downmix
@@ -175,9 +168,10 @@ Non-obvious:
 
 ## Device status
 
-![The Aius device status page with an optical carrier locked: the audio path
-card shows the derived input source and the transmit gate, over configuration,
-network, storage and board cards, every pill reading live.](images/status.png)
+![The Aius device status page with a 5.1 AC-3 optical carrier locked: the audio
+path card shows the derived input source and the transmit gate, over
+configuration, network, storage and board cards, every pill reading
+live.](images/status.png)
 
 `status.html` + `status.js`. One whole `GET /api/status` per second, rendered
 into five cards. It is read-only and public — nothing on the page writes to the
@@ -231,19 +225,19 @@ Non-obvious:
 the input source reads replay, the carrier reads absent, the sample rate is
 withheld and the gate's replay term reads running.](images/status-replay.png)
 
-The second capture is the same page against a device with no carrier and a
-replay running — the case that exercises the derivation above. The sample rate
-reads `-- (no carrier)` rather than inventing a zero. It also carries the states
-the first capture cannot show at the same time: a boot config file that is
-absent, a slot A image running **on trial** against committed slot B with three
-boots of budget, and a previous boot whose first aborting checkpoint was `sd`.
+The second capture is the same page against the same board with its carrier
+dropped and a replay running — the case that exercises the derivation above. The
+input source reads `replay`, the optical carrier reads `absent`, the sample rate
+reads `-- (no carrier)` rather than inventing a zero, and the gate's replay term
+reads `running`. Only the audio-path card changes; the configuration, network,
+storage and board cards read the same live board as the first capture.
 
 ## Firmware upgrade
 
-![The Aius firmware upgrade page with a container selected: the device OTA grid
-reads idle with the feature latch armed, and the parsed container header shows
-target, build revision, payload length, signature scheme, payload digest and
-header CRC-32.](images/upgrade.png)
+![The Aius firmware upgrade page in its idle state: the device OTA grid reads
+idle with the feature latch armed and the signing key a rotated non-test key,
+and the signed-container card waits with its header fields unread until a
+container is chosen.](images/upgrade.png)
 
 `upgrade.html` + `upgrade.js` + `upgrade.css`. Stages a signed firmware
 container and walks it through the device's own upgrade machine: parsed,
@@ -285,82 +279,56 @@ Non-obvious:
   restarts at 0 and *Abort* is the escape hatch.
 - A red **TEST KEY** banner appears when the device reports it trusts the
   published development signing key — anyone holding the repository could sign
-  firmware it would accept. The stub behind these captures reports a rotated key
-  (`test_key: false`), so the banner is absent from them.
-- The page's `/api/ota` field names and the firmware's current serializer have
-  drifted. `upgrade.js` reads `latch_armed`, `staged_length`, `image_length`,
-  `fail_reason`, `test_key`, `key_fingerprint` and a top-level `target_id`;
-  `ota_status_document()` in
-  [`firmware/src/aius_optical_app.cpp`](../../firmware/src/aius_optical_app.cpp)
-  emits `armed`, `staged_bytes`, `total_bytes`, `fault`, a nested
-  `key.{fingerprint,test_key}` and a nested `image.target_id`. `state`,
-  `next_offset`, `verifier_fault` and `activation_available` agree. Against the
-  firmware as committed, the affected cells would read their empty defaults
-  (`disarmed`, `0.0 KiB`, `unreported`, `unknown`) while the run itself still
-  works. The two captures in this section were rendered against a stub serving
-  the names the page reads.
+  firmware it would accept. The live board reports a rotated key
+  (`test_key: false`), so the banner is absent here.
+- Since the defect-39 fix the page reads the firmware's real `OtaStatus` shape,
+  so the idle grid above shows the device's own `armed`, `staged_bytes`,
+  `total_bytes` and key fingerprint rather than the empty defaults the earlier
+  field-name drift produced. Device identity still reads `unknown`: `/api/status`
+  does not emit `target_id` (defect 40, open).
 
-![The same page after a completed staging run: the device OTA state reads armed,
-and the progress log carries seven green steps from container selection through
-upload, staging, digest, signature and arming, ending at a disabled Activate
-button.](images/upgrade-armed.png)
-
-The second capture is the end of a full run. The log appends a step when it
-starts and settles it from the route's answer plus a read of `/api/ota`, so it
-never shows a step the run did not reach. The final entry stays disabled with
-its reason stated, because activation is the device-gated step.
+The staged, digest-verified, signature-verified and armed states are not shown
+here: reaching them means signing and staging a real container onto the device,
+which this capture pass deliberately skips. The page drives them from one log
+that appends a step when it starts and settles it from the route's answer plus a
+read of `/api/ota`, so it never shows a step the run did not reach, and the final
+Activate entry stays disabled until the device gates it.
 
 ## How these screenshots were made
 
-These are **not captures from a live device.** They were rendered on 2026-08-05
-from the committed [`firmware/sd/www`](../../firmware/sd/www) assets, loaded in
-headless Chromium (1280x900, `deviceScaleFactor: 2`) against a local stub HTTP
-server that answers the `/api/*` and `/sd/*` routes each page polls. The stub's
-responses are derived from the vitest fixtures and stub data in
-[`test/sd-editor`](../../test/sd-editor) — `meters-snapshot.json`,
-`dsp-config-sd.json`, the `/api/status` snapshot in `status.test.js`, and the
-replay and OTA wire shapes those suites pin — cross-checked against
-[`swagger.json`](../../../../apps/aius/swagger.json) and the firmware's own
-serializers. The captures were taken only after each page's data had populated.
+These are live captures from the deployed board at `http://192.0.2.66`, taken on
+2026-09-04 in headless Chromium (1280x900, `deviceScaleFactor: 2`, full-page)
+through `the repo tooling tool playwright-inspect` — navigate, wait for the page's
+own data to populate, screenshot. Nothing is stubbed; every value on every page
+is what the running firmware served at capture time.
 
-The two **status** captures were re-rendered the same way on 2026-08-16 for the
-configuration and board rework above, from `status.test.js`'s `SNAPSHOT`
-verbatim (the replay one additionally overriding the carrier, gate, boot-config
-and A/B fields named beside it).
+The board decodes and downmixes a 5.1 surround source, so the meter-driven pages
+need one playing. The **DSP editor** and the carrier-locked **status** capture
+were driven by a real 5.1 AC-3 carrier: the reproducible sample pack from
+[`generate.sh`](../../firmware/tools/replay_samples/generate.sh) (the `_ac3.iec`
+IEC 61937 form) played out an ESI U24XL's optical S/PDIF into the board's TOSLINK
+input with `aplay` at unity mixer, so the board locks a genuine AC-3 carrier and
+every input channel reads live.
 
-**The three DSP editor captures are stale from the same day** and are owed a
-re-render: the spectrum underlay and spectrogram they show were deleted with
-their feed. They are the only images here that picture something the page no
-longer has. The replay and upgrade captures predate that session and are
-unaffected — the rework touched neither page.
+The **replay manager** and the no-carrier **status** capture show the replay
+path instead, driven by the on-card DTS replay `cinematic_program_51` with the
+U24 carrier dropped
+([`u24_carrier.py`](../../firmware/tools/rate_gate_capture/u24_carrier.py)
+`drop`). The board serves the SD-hosted UI and the replay stream from the one
+card, so a running replay returns `503 sd_busy` for a page's own CSS and JS while
+it streams. Each of these two pages was therefore loaded with the replay stopped
+— the card free — and the replay started once the assets had cached, so the
+meters populate from the in-memory `/api/meters` without another SD read.
 
-`images/dsp-editor-hero.png` is not one of the seven page captures: it is the
-README's hero, the same dashboard captured the same way and clipped in the
-browser between two measured element edges — flush with the top of the `#curve`
-canvas, down to just past `#spectrogram`. It therefore opens and closes on the
-two live graphics and carries everything between them. The *Signal flow* header
-and the input level meters sit above the cut and are absent. **That recipe no
-longer resolves**: `#spectrogram` was deleted, so the re-render needs a new
-lower anchor — `#gr-history`, the limiter gain-reduction canvas, keeps the
-"opens and closes on a live graphic" property.
+`images/dsp-editor-hero.png` is not one of the six page captures: it is the
+README's hero, the same dashboard clipped between two measured element edges —
+flush with the top of the `#curve` canvas down to the bottom of `#gr-history`,
+the limiter gain-reduction canvas. It opens and closes on a live graphic and
+carries everything between them; the *Signal flow* header and the input level
+meters sit above the cut and are absent. `#gr-history` is the lower anchor
+because `#spectrogram`, the old one, was deleted with the analyser.
 
-Four things in the images are authored rather than fixture-derived, because no
-fixture states them:
-
-- The replay IDs, sizes and playback counters, and the preset names. These are
-  operator-chosen values on the card; `replays.test.js` builds its rows from
-  helpers rather than a checked-in fixture, so these follow that shape.
-- The meter `analysis_window` and `waveform` arrays, which are synthesised. The
-  window is what the deleted analyser consumed, so it survives only inside these
-  stale captures; the 128-point per-mille envelope is the firmware's own
-  constant and still real.
-- `matrix.surround_delay_ms: 0`, added to `dsp-config-sd.json`. That fixture
-  predates the field, and the editor collects it, so a config omitting it loads
-  as *unsaved changes* on arrival.
-- The firmware container on the upgrade page. Its 256-byte header is written to
-  `aius_ota.h`'s published offsets over a payload that is not a real image, and
-  its signature is a placeholder rather than a real Ed25519 signature.
-
-Everything else — the `/api/status` snapshot, the DSP model, the meter levels,
-the limiter reduction, the card capacity and the OTA record — is the fixture
-value verbatim.
+`images/aius-workbench.jpg` is a photograph of the bench hardware, not a render.
+The firmware upgrade capture is the idle state only: its staged and armed states
+are described above but not screenshotted, because reaching them means signing
+and staging a container onto the live device.

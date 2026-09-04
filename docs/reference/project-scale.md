@@ -5,7 +5,7 @@ scope: component
 component: aius
 status: current
 tags: [aius, measurement, provenance]
-updated: 2026-09-03
+updated: 2026-09-04
 toc: true
 ---
 
@@ -15,7 +15,8 @@ This records the measured size of the Aius subtree and the method behind each
 figure. Everything below was measured on 2026-08-05 against repository HEAD
 `99eba92f5`, over the path `src/hardware/aius`. Where a count is known to be a
 floor rather than a total, that is stated at the figure and again under
-[limitations](#limitations).
+[limitations](#limitations). [Work since 2026-08-05](#work-since-2026-08-05)
+carries the delta to 2026-09-04, measured the same way.
 
 ## Measurement basis
 
@@ -326,6 +327,97 @@ composed inside each toolchain partitions them cleanly, with no subject
 appearing in both: **Codex 319, Claude 330, unattributed 34**. This shows where
 a message was composed, not which toolchain made the commit, and is
 corroborative rather than conclusive.
+
+## Work since 2026-08-05
+
+The figures above are pinned to 2026-08-05. This section records what changed
+between then and 2026-09-04, measured the same way. In the interval the subtree
+was extracted from the upstream repository path `src/hardware/aius` into a standalone
+submodule, so the delta is measured in the submodule's own history: baseline
+commit `7304689` (the 2026-08-05 tip, 702 ancestors) to HEAD `d9fc07c` (856), a
+window of 154 commits. A 9.3-day quiet gap sits between the baseline and the
+window's first commit on 2026-08-14; the active span is 2026-08-14 to
+2026-09-04, 13 calendar days carrying a commit, with 24,741 words of commit body.
+
+Line and word counts here are measured on one consistent basis at both endpoints
+(`git grep -c` physical lines against each commit), which reads ~0.1% above the
+`wc -l` basis of the tables above; the baseline therefore re-reads 109,265
+first-party C/C++ lines against the 109,081 headline, and the deltas are exact on
+this basis.
+
+### Code, docs and tests
+
+| Measure | 2026-08-05 | 2026-09-04 | Δ |
+|---|---|---|---|
+| First-party C/C++ lines | 109,265 | 120,475 | +11,210 |
+| First-party C/C++ files | 201 | 222 | +21 |
+| Python lines | 30,404 | 38,079 | +7,675 |
+| JavaScript lines | 12,453 | 12,928 | +475 |
+| Shell lines | 2,673 | 2,959 | +286 |
+| Documentation words | 224,987 | 294,432 | +69,445 |
+| Documentation files | 53 | 64 | +11 |
+| Test cases | 1,166 | 1,400 | +234 |
+
+Vendored C/C++ is unchanged (53,121 lines across 136 files). The C/C++ growth is
+`firmware/test` (+5,261), `firmware/lib` (+3,826) and `firmware/src` (+1,796),
+plus a new slot chooser (`firmware/chooser/chooser.c`, 217 lines). Test growth is
+heaviest in Python (+165 cases, 358 to 523), then C/C++ (+55, 511 to 566) and
+JavaScript (+14, 297 to 311). The documentation word count is the full non-vendor
+markdown set (53 to 64 files), a broader basis than the 29-file subset the
+headline figure counted.
+
+### Churn
+
+Over the 154-commit window: 68,221 insertions, 14,093 deletions, 568
+file-changes across 177 distinct files. Excluding vendored code and
+`electronics/`, that is 33,069 insertions and 6,075 deletions. The electronics
+delta is dominated by a new machine-generated KiCad PCB layout
+(`electronics/aius-carrier.kicad_pcb`, +25,230 lines); evidence artifacts, source
+snapshots, schematic sheets and the connectivity nets and components are
+otherwise unchanged in the window.
+
+### Defects
+
+The numbered register moved from 39 entries to 41: defects 40 and 41 both opened
+2026-09-01 (40, `/api/status` omits `target_id`; 41, a rare send-path stall drops
+a `/api/status` response). Eight more entries closed (26 to 34), leaving 7 open
+by markup. Twelve design decisions, D1 to D12, were recorded in the new
+[`aius-outstanding-work-2026-09.md`](../plans/aius-outstanding-work-2026-09.md);
+none existed at the baseline.
+
+### Agent cost
+
+Same rule as [above](#agent-cost): a session counts if its transcript names the
+subtree. Because the path moved mid-window, the rule now matches either
+`hardware/aius` or `git_modules/aius`, and the union is reported. Codex's last
+activity on the subtree was 2026-08-13, before the move, so its `git_modules`
+count is zero and its figures are the `hardware/aius` set.
+
+| Measure | Claude Code | Codex | Combined |
+|---|---|---|---|
+| API calls | 38,145 | 40,559 | 78,704 |
+| Uncached input tokens | 177,791,729 | 94,084,408 | 271,876,137 |
+| Output tokens | 25,675,613 | 9,483,500 | 35,159,113 |
+| Total tokens incl. cache reads | 10,753,615,327 | 5,208,018,724 | 15,961,634,051 |
+| Tool invocations | 47,866 | 29,551 | 77,417 |
+| Active hours | 109.37 | 30.06 | 138.88 |
+
+Claude bucketed 369 transcript files (142 top-level sessions plus 227 sub-agent
+files, newer Claude Code storing sub-agents as separate files; 151 parent
+sessions). Codex bucketed 59 rollout threads, 7 user-initiated and 52 sub-agent.
+Cache reads are again ~98% of each toolchain's billed total, so the uncached row
+is the meaningful measure of production. Combined active hours subtract 0.55 h of
+concurrency, low because Codex ended on 08-13 while Claude ran throughout. Claude
+API calls by model: `claude-opus-4-8` 13,709, `claude-opus-5` 12,686,
+`claude-fable-5` 5,077, `claude-sonnet-5` 3,125, `claude-fable-5-1` 2,108,
+`claude-opus-4-7` 1,131, `claude-haiku-4-5` 285, synthetic 24. Codex is
+effectively single-model: `gpt-5.6-sol` 40,549.
+
+Every limitation under [§Agent cost](#agent-cost) still applies. Two are sharper
+here: the string-match bucket now spans two path strings across the migration,
+and the Claude session *count* is not comparable to the baseline's 40 because
+sub-agents were inline transcripts then and separate files now — the token and
+call totals remain comparable.
 
 ## Limitations
 
