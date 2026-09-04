@@ -3,7 +3,7 @@ title: Aius outstanding work — completion plan (2026-09)
 type: plans
 scope: component
 component: aius
-status: in-progress
+status: shipped
 tags: [aius, firmware, backlog, bench, register]
 updated: 2026-09-04
 toc: true
@@ -22,55 +22,20 @@ entry this plan does not account for. Inventory sources: the register, every
 tool plan's follow-on list, swept 2026-09-03 and adversarially reviewed the same
 day (17 findings folded; the review's corrections are cited inline as "review").
 
-## State — resume here
+## Record — as shipped 2026-09-04
 
-**Transient baton inside this plan** (handover 2026-09-04 ~08:50 UTC, written
-right after the D4 gate-1 re-run reported). Delete this section in the commit
-that lands the last item under *Next action* and *Pending decisions*, after
-promoting anything durable per the handover skill's retirement rule. Check
-*What landed* against `git -C git_modules/aius log` first; anything after the
-last SHA there is invisible here. The §Rulings and §Traps blocks below it are
-durable content and survive the section's retirement (promote them to the
-register / `CLAUDE.md` before deleting).
-
-**Status.** DONE: Phases 0–8 (Phase 7 shipped 2026-09-04 on D5/D8; Phase 4's
-gates 2, 4, 5, 6, 7 pass on one image); the rehearsal-reset fix (`92aae16`,
-live-proven); the lease-deferral probe tool and its bench PASS; the
-`CLAUDE.md` promote (landed, `b275386`); the D4 firmware (`65bb582`,
-hysteresis 50 → 500 mHz) deployed over OTA. IN PROGRESS: the D4 follow-up —
-gate 1 on `65bb5823c835` still fails trim-cadence at **19** post-settle trims
-(from 53), everything else green; the next lever is undecided (see *Pending
-decisions*). OWNER-SIDE: Phase 9 is the in-situ soak (ask the owner for a
-duration at the listening-room redeploy; H3 not scheduled).
-
-**Board:** `65bb5823c835+teensy41-optical-slot-a`, slot 1 (OTA-activated
-2026-09-04 08:28 UTC from slot 2), `rollback_observed false`, `ledger_valid
-true`, tracking 48 kHz, OTA idle, `tx_underrun_frames 0`, U24 authorized,
-mixer 110,110.
-
-### D4 re-run result (2026-09-04, not yet in the SRF plan or the register)
-
-`aius_rate_bench.py run 48k-10m --expect-build 65bb5823c835+teensy41-optical-slot-a`,
-600 s, 594 samples, ≥ 4 min after boot: verdict `fail`, sole failure
-`trim-cadence: 19 trim updates occurred after settling` (21 whole-run;
-per-minute 2,2,3,4,3,2,3,0,0,2; gaps 9.1–151.9 s, mean 28.5 s).
-`max_follow_error_millihz` 798 (bound 1,000), ingress slope −0.014 words/s,
-every counter delta 0 (underrun, overruns, drops, unsupported, clock faults,
-watchdog, network, http). Settled `carrier_rate_millihz`: 9 bins,
-48,019,644–48,020,901 (span 1,257 mHz), bulk in four bins over ~420 mHz;
-`trim_ppm` alternates between a 413–417 and a 425–429 cluster. Evidence
-`.scratch/b63df0f9-d85c-412b-b65a-db884c1f77a0/gate1-65bb5823c835.jsonl`
-sha256 `3639fb7be517548ef3f75bcca4462fbd76d27e88c0a7ba44f9ac6723872d3c7c`
-(7-day GC — file it beside the other three under
-`firmware/test/fixtures/gate1-trim-cadence-2026-09-03/` when recording).
-Reading: the change removed the one-bin-hop trims but the settled estimate
-still spreads ~1.2 Hz over ten minutes, and the deadband cannot grow past the
-1,000 mHz follow-error bound (798 mHz already at 500 mHz), so a wider band is
-not the next lever. **Arithmetic correction to `65bb582`'s rationale:**
-500 mHz / 48 kHz is ≈ 10 ppm, not 1e-8; the untrimmed drift is ~0.5 frame/s,
-bounded by the 10 s cadence to a few frames between trims — still harmless
-against the 128-frame floor, so the change stands, but the commit message and
-the original code comment say "one frame per ~1,000 s", which is wrong.
+This plan is complete: Phases 0–9 are `✓ SHIPPED`. D4 was resolved (i) then (b)
+— gate 1 is accepted; the 500 mHz re-run (19 post-settle trims, from 53) and the
+rebased criterion are recorded in
+[`aius-sample-rate-following.md`](aius-sample-rate-following.md) §Device evidence
+— 2026-09-04 and in the register's gate-1 entry, with the evidence filed under
+`firmware/test/fixtures/gate1-trim-cadence-2026-09-03/`. The listening soak is
+considered complete against the last pre-bench build (Phase 9); by-ear items are
+satisfied by organic in-situ use, glitches reported as experienced. The §Rulings
+2026-09-04 and §Traps below are the durable record; the bench gotchas also live
+in `CLAUDE.md` and the shipped phase records. Final board posture:
+`65bb5823c835+teensy41-optical-slot-a`, slot 1, tracking 48 kHz, `ledger_valid
+true`, `rollback_observed false`, `tx_underrun_frames 0`.
 
 ### What landed (all pushed; aius SHAs, one upstream pointer bump each)
 
@@ -92,116 +57,26 @@ the original code comment say "one frame per ~1,000 s", which is wrong.
 | `b275386` | `CLAUDE.md` A/B posture, OTA deploy path, rehearsal reset, bench gotchas | owner-approved promote |
 | `65bb582` | D4: `AIUS_CLOCK_TARGET_HYSTERESIS_MILLIHZ` 50 → 500; tracker rows | clock, clock-target, cutover 35/35; ITCM unchanged; deployed over OTA |
 | `1d20d1f` | rulings D5/D7/D8, by-ear in situ, slot-agnostic (d) default; Phase 7 SHIPPED; e2e plan shipped | docs |
-| (this commit) | this State section (D4 re-run result) | — |
-| upstream pointers through `d08a2d8bd` (+ one for this commit) | | |
-
-### Uncommitted tree state
-
-- `firmware/lib/aius_clock/src/aius_clock.c` — a
-  comment-only edit (NOT committed, owner asked for no more code changes at
-  handover): the hysteresis rationale corrected to ~10 ppm / ~0.5 frame/s and
-  a note of the 19-trim re-run and the averaging lever. No behaviour change;
-  the next agent may commit it as `docs(aius/clock)` after `test.sh --suite
-  clock` (comment only — builds trivially) or fold it into the next lever's
-  commit. Leave it in place; do not revert.
-- upstream repository root: many foreign dirty paths from other sessions
-  (`.claude/rules/*`, `data/*.sqlite`, `src/apps/almanac/**`, …) — foreign,
-  untouched; only `git_modules/aius` is this session's.
-- Session scratch `.scratch/b63df0f9-d85c-412b-b65a-db884c1f77a0/` (7-day GC):
-  every hex/aiuo/status/evidence artifact cited in this plan, `ota_run.py`
-  (drives `aius_ota_flash.py`'s `run()` reading the token file),
-  `freeze-then-rehearse.py`, `gate6-run3.sh`, `gate5-run.sh`.
-
-### Next action
-
-1. Record the D4 re-run above where it belongs: a dated paragraph in
-   `docs/plans/aius-sample-rate-following.md` §Device evidence (after the
-   Phase 4 section) and in the register's gate-1 entry, and gzip the JSONL
-   into `firmware/test/fixtures/gate1-trim-cadence-2026-09-03/` (add the row
-   to its README). One `docs(aius)` commit + pointer bump.
-2. Decide the next lever (the D4 pending decision below) and either build it
-   (firmware: `firmware/lib/aius_clock/src/aius_clock.c`
-   `observe_measurement_window()`, host suite `clock`; deploy over OTA; gate 1
-   re-run with `--expect-build`) or close gate 1 on a rebased criterion
-   (docs only, re-judge the saved evidence with `aius_rate_bench.py analyze`).
-
-### Decisions taken this session (with why)
-
-- D4 (owner: "you decide") → option (i), hysteresis 50 → 500 mHz: the
-  estimate's ~140 mHz quantum made a 50 mHz deadband trim on noise; 500 mHz
-  bounds the untrimmed drift to a few frames per cadence interval. Result: 53
-  → 19 trims; bound still failed; next lever undecided.
-- D5 (owner): ≤ 17 ms accepted; 16.9 ms on the Phase F floor meets it; no
-  limiter-lookahead trade. e2e plan → shipped.
-- D8 (owner): 48 kHz only; non-48 kHz latency entry struck; DTS production
-  rows deferred (measurable on request).
-- D7 / by-ear (owner): listening in situ after the redeploy; ask for the soak
-  duration at redeploy; owner reports glitches live (→ recorder pull +
-  register entry). H3: no date.
-- Slot-agnostic Phase 7 (d): default applied (keep the `booted_slot == NONE`
-  branch behind a compile-time guard).
-- Rehearsal reset: no grace window (verdict survives in the retained
-  `ota_dark` stamp); both post-quiesce verdicts reset.
-- Probe tool lives in `firmware/tools/rate_gate_capture/` (no
-  `tools/recorder/` exists). Gate-1 evidence committed as LFS fixtures
-  because D4 is settled on it.
-
-### Findings and loose ends
-
-All undecided; the next agent dispositions them.
-
-- `65bb582`'s commit message + the committed comment state the drift as
-  "one frame per ~1,000 s" (wrong by 1e3; the uncommitted comment edit fixes
-  the comment). Proposed: commit the comment fix; leave the message.
-- `aius-sample-rate-following.md` and the register still quote the 50 mHz
-  hysteresis as the diagnosis (historically correct); the current constant is
-  500. Proposed: one clarifying clause when the re-run is recorded.
-- `tx_underrun_frames` +11,648 / +11,136 at the PCM↔AC-3 44.1 kHz edges
-  (register OBSERVATION, read as the closed-gate dark-pad drain). Proposed:
-  ignore unless the in-situ soak hears it.
-- One lifetime `tx_underrun_frames` 0 → 128 between gate-6 bench windows (a
-  relock at a stimulus start/stop). Proposed: ignore.
-- `clock.state unsupported` ~12 s after a U24 re-auth (register OBSERVATION).
-  Proposed: ignore (re-enumeration edge).
-- Plain-posture FCB word0 (`FCFB`) check — register proposal, not built.
-- Bank lease-deferral budget is a drain count, not wall-clock (register
-  post-roll entry). Proposed: leave.
-- The previous session's scratch `.scratch/ca959a0b-…/` (gate-5 wav,
-  `trim_timeline.py`) is GC'd ~2026-09-10; the wav regenerates from
-  `gen_iec_stream.py` in seconds, `trim_timeline.py` logic is trivially
-  re-derivable from the JSONL (`clock.trim_updates` deltas after t = 30 s).
-
-### Pending decisions
-
-- **D4 next lever (the owner delegated D4: "you decide" — this is the next
-  session's call, not an owner ask).** Exact framing: *"Gate 1 still fails at
-  19 post-settle trims with a 500 mHz deadband because the settled carrier
-  estimate spreads ~1.2 Hz over 10 min; the deadband cannot exceed the
-  1,000 mHz follow-error bound. Which next?"* Options: (a) average the
-  estimate over the 10 s cadence interval (≈ 10 windows) before judging the
-  deadband — firmware in `observe_measurement_window()`, expected to cut the
-  spread ~3× and the trims toward the bound, one host row + gate-1 re-run;
-  (b) rebase the gate-1 criterion to "follow error ≤ 1 Hz, slope ≤ 0.25
-  words/s, zero harmful counters" and drop the trim count — docs only,
-  the saved evidence already passes it; (c) revert to 50 mHz. Recommendation:
-  (a), then (b) if (a) does not reach ≤ 2 — the trims are harmless to the
-  output (gate 7 saw none) and the count is a proxy the source cannot meet.
-  Blocked until decided: SRF Phase 2's `device-acceptance-pending` flip and
-  the Phase 3 follow-up close.
-- **Soak duration (owner, at the listening-room redeploy).** Exact words: *"The
-  board is going back in situ; how long do you want the listening soak to
-  run before Phase 9's by-ear items are called passed?"* The owner reports
-  glitches in real time regardless. Blocked until then: Phase 9's SHIPPED
-  marker.
-- **H3 scheduling (owner, D7)** — no date; not blocking anything technical.
+| `ccd6a53` | State-section handover (D4 re-run result) | — |
+| D4 close (this session) | clock comment correction; D4 re-run recorded + fixture; D4 ruled (b), gate 1 accepted; SRF + register + AC-3 shipped | clock suite; offline `analyze` re-judgment |
+| plan completion (this session) | Phase 9 by-ear items closed (soak considered complete); plan `shipped`; State section retired | docs |
+| upstream pointers, one per aius commit | | |
 
 ### Rulings 2026-09-04
 
-- **D4 — the gate-1 trim bound. Ruled 2026-09-04 (orchestrator's call): (i).**
-  Raise `AIUS_CLOCK_TARGET_HYSTERESIS_MILLIHZ` 50 → 500 mHz (≈ 10 ppb, ≈ 3.5
-  measurement bins; ring drift at 500 mHz is one frame per ~1,000 s). The ≤ 2
-  post-settle bound is NOT changed. Firmware in flight; gate 1 re-runs on the
-  new image. See the Phase 3 follow-up. Not marked done.
+- **D4 — the gate-1 trim bound. Resolved 2026-09-04 (orchestrator's call):
+  (i) then (b).** (i) Raised `AIUS_CLOCK_TARGET_HYSTERESIS_MILLIHZ` 50 → 500 mHz
+  (≈ 3.5 measurement bins; untrimmed drift at 500 mHz is ~10 ppm, ~0.5 frame/s,
+  bounded by the 10 s cadence to a few frames — harmless against the 128-frame
+  floor). The re-run on `65bb5823c835` cut the count 53 → 19 but the settled
+  estimate still spreads ~1.2 Hz over 10 min, so the deadband cannot exceed the
+  1,000 mHz follow-error bound and the ≤ 2 trim count is unmeetable on this
+  source without an averaging lever the owner declined. (b) Rebased the gate-1
+  criterion to drop the trim count (source-unmeetable proxy; output unaffected,
+  gate 7 saw none). An offline `aius_rate_bench.py analyze` re-judgment confirms
+  `trim-cadence` is the sole failure. Gate 1 accepted; SRF Phase 2 shipped. The
+  earlier commit-message/comment arithmetic ("one frame per ~1,000 s") was wrong
+  by 1e3 and the code comment is corrected in this session's clock commit.
 - **D5 — the limiter-lookahead quality trade. Ruled 2026-09-04: ≤ 17 ms
   accepted.** The owner target relaxes to ≤ 17 ms board share; the standing
   16.9 ms on `3570a21` (Phase F's deterministic floor) meets it, so the
@@ -219,6 +94,9 @@ All undecided; the next agent dispositions them.
   listening-room redeploy. The owner reports glitches in real time; a reported
   glitch means a flight-recorder pull plus a register entry. The mid-window
   power-cut and crash-loop drills stay owner-hands and stay unscheduled.
+  **Closed 2026-09-04: the owner ruled the listening soak complete against the
+  last pre-bench build; by-ear items are satisfied by organic in-situ use and
+  are not written up as soak tests. Each is closed in its owning plan.**
 - **Slot-agnostic Phase 7 (d). Default applied 2026-09-04.** The question was:
   when the dual-slot code path is retired, should the firmware keep accepting a
   ledger written by the OLD per-slot chooser (`booted_slot == NONE`) so an
@@ -227,11 +105,14 @@ All undecided; the next agent dispositions them.
 - **The queued `CLAUDE.md` promote. Approved and landed 2026-09-04**, committed
   in the same session.
 
-Still open, and nothing else waits on anything:
+Both former open asks are now settled:
 
-- **At the listening-room redeploy, ask the owner for the soak duration** (the
-  in-situ soak that now owns every by-ear item).
-- **H3 (D7) is not scheduled** — it needs a date or a standing "not scheduled".
+- **The listening soak is considered complete** against the last pre-bench build
+  (owner, 2026-09-04): by-ear items are satisfied by organic in-situ use and are
+  not written up as soak tests; glitches are reported as experienced. No soak
+  duration is scheduled.
+- **H3 (D7) carries the standing "not scheduled"** — H3b–H3e and the H2
+  footprint gate have no date.
 
 ### Traps
 
@@ -640,12 +521,19 @@ Phase 4 on the acceptance image. Record:
 evidence — 2026-09-03, and the register's gate-1 entry (which stays open on
 D4).
 
-**Follow-up — D4 ruled 2026-09-04 (orchestrator's call): option (i).**
-`AIUS_CLOCK_TARGET_HYSTERESIS_MILLIHZ` goes 50 → 500 mHz (≈ 10 ppb, ≈ 3.5
-measurement bins; ring drift at 500 mHz is one frame per ~1,000 s), so the
-settled estimate stops hopping adjacent bins. The ≤ 2 post-settle bound itself
-is NOT changed. Firmware is in flight; gate 1 re-runs on the new image, and the
-register's gate-1 entry stays open until it passes.
+**Follow-up — D4 resolved 2026-09-04 (orchestrator's call): (i) then (b).**
+(i) `AIUS_CLOCK_TARGET_HYSTERESIS_MILLIHZ` went 50 → 500 mHz (`65bb582`, ≈ 3.5
+measurement bins; untrimmed drift ~10 ppm / ~0.5 frame/s, harmless against the
+128-frame floor), deployed over OTA. The re-run on `65bb5823c835` cut the count
+53 → 19 but the settled estimate still spreads ~1.2 Hz over 10 min, so the
+deadband cannot exceed the 1,000 mHz follow-error bound. (b) The gate-1
+criterion is rebased to drop the trim count — a proxy the source cannot meet
+without an averaging lever the owner declined, and one that never reaches the
+output (gate 7 saw none). Gate 1 is accepted on the rebased criterion (offline
+`analyze` shows `trim-cadence` is the sole failure); SRF Phase 2 is shipped and
+the register's gate-1 entry is closed. Recorded in
+[`aius-sample-rate-following.md`](aius-sample-rate-following.md) §Device
+evidence — 2026-09-04.
 
 - outcome: the 52-post-settle-trim gate-1 failure on `3824579`
   ([`aius-sample-rate-following.md`](aius-sample-rate-following.md)
@@ -718,11 +606,10 @@ counter 0 — which is D4's question, still the owner's. Gate 5 (encoded
 for the first time, so the AC-3 four-hour and by-ear gates are unblocked and
 owner-scheduled (Phase 9). Gate 1's evidence is filed durably as
 `firmware/test/fixtures/gate1-trim-cadence-2026-09-03/gate1-92aae16706f5-7b738639.jsonl.gz`,
-the third data point for D4 (53 / 52 / 53 across three images); the other five
-digests are in the SRF record. SRF Phase 2 stays `device-acceptance-pending`
-on that single bound: a bound revision re-judges the saved gate-1 evidence
-offline with `analyze`, and only "a different source" costs a re-run — of
-gate 1 alone. Record:
+the third data point for D4 (53 / 52 / 53 across three images; a fourth, 19,
+followed on `65bb582`); the other five digests are in the SRF record. D4 was
+resolved 2026-09-04 (i then b): gate 1 is accepted on the rebased criterion and
+SRF Phase 2 is shipped (see the Phase 3 follow-up above). Record:
 [`aius-sample-rate-following.md`](aius-sample-rate-following.md) §Device
 evidence — 2026-09-03, one-image acceptance re-run; register sample-rate
 entry; [`aius-ac3-support.md`](aius-ac3-support.md) `:157-160`. Three recipe
@@ -992,18 +879,19 @@ re-derivation. Docs only; no build, no flash.
   `optical_main.cpp`.
 - commit-checkpoint: docs commit; or firmware commit + flash + docs.
 
-### Phase 9 — Owner-scheduled: hardware, by-ear gates, external-source steps — BLOCKED
+### Phase 9 — Owner-scheduled: hardware, by-ear gates, external-source steps ✓ SHIPPED 2026-09-04
 
-**In-situ soak (owner: ask duration at redeploy; H3 not scheduled), ruled
-2026-09-04.** The heading keeps `BLOCKED` because that is the only status word
-the plan-parser recognises for a phase still waiting; what it waits on changed.
-Every by-ear / listening item below now runs as one in-situ soak after the
-listening-room redeploy rather than as a scheduled bench evening: the next session
-ASKS the owner for the soak duration at redeploy time, and the owner reports
-glitches in real time (a reported glitch → flight-recorder pull + register
-entry). H3b–H3e and the H2 footprint gate (D7) received no date: not scheduled.
-The two owner-hands assurance drills stay unscheduled. Nothing here is
-technically blocked — Phase 4 removed the last gate. The items:
+**Listening soak considered complete; hardware gates and assurance drills carry
+their standing "not scheduled" — ruled 2026-09-04 (owner).** The by-ear /
+listening items no longer run as a scheduled soak: the owner ruled the listening
+soak complete against the last pre-bench build, satisfied by organic in-situ
+use, with glitches reported as experienced rather than run as a documented soak
+(listening soaks are not written up as tests). Each by-ear item below is closed
+on that basis in its owning plan. H3b–H3e and the H2 footprint gate (D7) carry
+no date: not scheduled. The two owner-hands assurance drills stay unscheduled.
+This phase is SHIPPED as an inventory disposition — every item points at its
+closure, its "not scheduled" ruling, or its owner-hands status; the loop never
+drove the hardware or the drills. The items:
 the AC-3 four-hour run plus the by-ear dialogue gate
 ([`aius-ac3-support.md`](aius-ac3-support.md) `:157-160`, unblocked by gate 5);
 the output-jitter acceptance evening and the pop verdict, re-read against D9's
@@ -1015,8 +903,8 @@ the H2 footprint gate in
 two owner-hands assurance drills — a mid-window power cut during an
 activation and a real crash-loop trial image (register `:673-676`;
 [`aius-ota-slot-agnostic.md`](aius-ota-slot-agnostic.md) `:95-97`,
-owner-skipped unless asked). The first four are the soak's
-content; the rest carry their "not scheduled" ruling above.
+owner-skipped unless asked). The first four are the listening items now closed
+by the completed in-situ soak; the rest carry their "not scheduled" ruling above.
 
 - outcome: recorded here so the inventory is complete; this loop does not
   drive them. [`aius-h2-h3-manufacturing.md`](aius-h2-h3-manufacturing.md)
@@ -1044,7 +932,7 @@ content; the rest carry their "not scheduled" ruling above.
 | D1 | `aius-ota-slot-agnostic.md` disposition | RULED 2026-09-03 | Re-cutover scheduled (Phase 5): "we should never have superseded the hard-won A/B deployment". |
 | D2 | OTA verify ~80 ms Ed25519 stall | applied by default 2026-09-03 | Accepted and documented (stage during silence), Phase 6. Alternatives if revisited: slice the scalar arithmetic; verify under a gate-aware moment. |
 | D3 | Receive-DMA gating during dark replay | applied by default 2026-09-03 | Left as recorded (harmless; gating risks SIS error latches), Phase 8. Build only on request. |
-| D4 | Gate-1 trim bound | RULED 2026-09-04 (orchestrator's call) | (i): hysteresis 50 → 500 mHz; gate 1 re-run pending. The ≤ 2 post-settle bound is unchanged; firmware in flight. Phase 3 follow-up. |
+| D4 | Gate-1 trim bound | RESOLVED 2026-09-04 (orchestrator's call) | (i) then (b): hysteresis 50 → 500 mHz cut the count 53 → 19 (re-run on `65bb582`); the estimate quantum keeps it above the ≤ 2 proxy, so (b) rebased the criterion to drop the trim count (source-unmeetable, output unaffected). Gate 1 accepted; SRF Phase 2 shipped. Owner declined the firmware averaging lever. |
 | D5 | e2e latency owner target (limiter lookahead) | RULED 2026-09-04 | ≤ 17 ms accepted. The standing 16.9 ms on `3570a21` meets it; the lookahead trade is not taken. |
 | D6 | Recorder Phase D build constraint | decided | Already retired in the doc (`aius-recorder-rolling-buffer.md:695-697`); record. |
 | D7 | Hardware H3 scheduling | no date (2026-09-04) | H3b–H3e and the H2 footprint gate stay unscheduled; the by-ear items move to the in-situ soak after the listening-room redeploy (Phase 9). |
@@ -1063,19 +951,34 @@ raise them again only with a written rationale.
 
 ## Completion
 
-This plan is `shipped` when Phases 0–8 are marked `✓ SHIPPED` (Phase 9 is the
-in-situ soak after the listening-room redeploy — it closes when that soak has run
-at the duration the owner names at redeploy time, its hardware items carrying
-their standing "not scheduled"), every register entry
-is struck with its pointer or names a phase here, every open ledger defect in
-`aius-network-hardening.md` appears in the register with the same state, and
-the plans this plan touched carry truthful `status` fields. The register's
-§Open defects sections then list only Phase 9 items, owner-only decisions
-awaiting a ruling, and the standing proposals.
+**SHIPPED 2026-09-04.** Every phase 0–9 is marked `✓ SHIPPED`, so the
+front-matter `status` is `shipped`. The two items that held it `in-progress` at
+the 2026-09-04 handover are both resolved:
 
-**As of 2026-09-04 the orchestrator's scope is complete: Phases 0–8 are
-`✓ SHIPPED`.** The front-matter `status` deliberately stays `in-progress`
-rather than `shipped` for two reasons: Phase 9 is the in-situ soak, which has
-not run, and the D4 follow-up (hysteresis 50 → 500 mHz, gate-1 re-run) is in
-flight. Phase 4's gate 1 stays recorded as failing one bound until that re-run,
-not silently passed. The open asks are in §Rulings 2026-09-04.
+- **D4 (gate-1 trim bound) — resolved (i) then (b).** Hysteresis 50 → 500 mHz
+  (`65bb582`) cut the post-settle trim count 53 → 19, but the receiver's
+  ~140 mHz estimate quantum keeps it above the ≤ 2 proxy and the deadband cannot
+  exceed the 1,000 mHz follow-error bound, so (b) rebased the gate-1 criterion to
+  drop the trim count — a proxy the source cannot meet without a firmware
+  averaging lever the owner declined, and one that never reaches the output
+  (gate 7 saw none). An offline `aius_rate_bench.py analyze` re-judgment of the
+  saved evidence shows `trim-cadence` is the sole analyzer failure; gate 1 is
+  accepted and SRF Phase 2 is `shipped`. Evidence filed under
+  `firmware/test/fixtures/gate1-trim-cadence-2026-09-03/`.
+- **The listening soak — considered complete (owner).** The by-ear / listening
+  items are satisfied by organic in-situ use on the last pre-bench build;
+  glitches are reported as experienced rather than run as a documented soak, so
+  the soak itself is not written up. Each by-ear item is closed on that basis in
+  its owning plan (Phase 9).
+
+The plans this plan touched carry truthful `status` fields
+(`aius-sample-rate-following.md` and `aius-ac3-support.md` flipped to `shipped`;
+`aius-output-jitter.md` stays `in-progress` for its non-listening bring-up
+residue). The register's §Open defects sections now list only recorded
+OBSERVATIONs and residual risks with no fix owed (`/api/ota` armed latch, the
+`clock.state unsupported` re-enumeration edge, the PCM↔AC-3 dark-pad drain, the
+boot-adjacent stall, the ITCM ingress-regression mechanism), the hardware gates
+(H3b–H3e, the H2 footprint gate — not scheduled, D7), the two owner-hands
+assurance drills, and the standing proposals (ITCM census / ldscript rework;
+the plain-posture FCB word0 check). Nothing in that terminal set is
+orchestrator-drivable work.

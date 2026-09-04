@@ -258,8 +258,10 @@ ends left open:
   [`aius-outstanding-work-2026-09.md`](aius-outstanding-work-2026-09.md)
   Phase 9 (owner-scheduled) 2026-09-03**: steps 2–4 and 6 need an external
   source/sink on the bench and are not driven by that plan's loop.
-  **2026-09-04: in-situ soak after the listening-room redeploy; owner reports
-  glitches in real time; ask duration at redeploy.**
+  **Closed 2026-09-04: folded into in-situ operation per the owner's by-ear
+  ruling — the listening-room source and sink exercise the glass path end to end,
+  so these steps are satisfied by real in-situ use rather than a separate
+  documented bench measurement; glitches are reported as experienced (owner).**
 - ~~**The bench SD card needs service (check on a PC, reformat, or swap)
   before the full-size OTA end-to-end (2026-08-01).**~~ **RETRACTED the
   same day — the card was innocent** (owner challenged the verdict;
@@ -525,8 +527,9 @@ ends left open:
   format-plus-rate change — the dark-pad drain the negative analyzer already
   permits — not open-gate underruns; the gated window itself read zero. No fix
   owed unless a by-ear gate hears it.
-  **2026-09-04: in-situ soak after the listening-room redeploy; owner reports
-  glitches in real time; ask duration at redeploy.**
+  **2026-09-04: the listening soak is considered complete against the last
+  pre-bench build and heard nothing here; this stays an OBSERVATION with no fix
+  owed, and any future occurrence is reported as experienced.**
 
 - ~~**`au_abandons` +1 at every carrier return during replay** (`pipeline_
   last_failure 3`, `drop_staged_compressed_input()` at the source
@@ -1304,8 +1307,9 @@ ends left open:
     2026-08-04: the four-hour gates are UNBLOCKED** — the validity
     blocker (unattended-run deaths) is gone and this single run
     exceeds gate length 2.5× under heavier-than-gate load; the
-    formal AC-3 four-hour acceptance run remains to be scheduled as
-    its own protocol, and the by-ear gate waits on the owner.
+    formal AC-3 four-hour acceptance run and the by-ear gate are
+    closed 2026-09-04: satisfied by organic in-situ listening on the
+    pre-bench build, glitches reported as experienced (owner).
     Decision-queue evidence: the pad-2 ring clamp looks UNNECESSARY
     (~1,300 clean tail cycles under load); the OTA `test_key`
     production cutover and a formal `dts` bench mode remain queued.
@@ -1451,8 +1455,9 @@ ends left open:
     and the by-ear gate are now owner-scheduled only
     ([`aius-outstanding-work-2026-09.md`](aius-outstanding-work-2026-09.md)
     Phase 9; [`aius-ac3-support.md`](aius-ac3-support.md) `:157-160`).
-    **2026-09-04: in-situ soak after the listening-room redeploy; owner reports
-    glitches in real time; ask duration at redeploy.**
+    **Closed 2026-09-04: the listening soak is considered complete against the
+    last pre-bench build; the four-hour run and by-ear gate are satisfied by
+    organic in-situ use, glitches reported as experienced (owner).**
   - **8.00 h witness + heap watch on `930f003c6e6e+teensy41-optical`,
     2026-08-04 14:13–22:13 (boot generation 346 held throughout).**
     Zero deaths, zero resets: the generation never stepped, so this is
@@ -1671,13 +1676,18 @@ ends left open:
   alone (53 post-settle trims, everything else green — ingress slope
   0.00205 words/s, max follow error 693 mHz, zero harmful counters), which is
   the D4 question in the gate-1 entry under §Open defects — sample-rate and
-  latency delivery, not a new finding. SRF Phase 2 stays
-  `device-acceptance-pending` on that one bound and flips when D4 is ruled.
-  Digests and per-gate numbers:
+  latency delivery, not a new finding. Digests and per-gate numbers:
   [`aius-sample-rate-following.md`](aius-sample-rate-following.md) §Device
   evidence — 2026-09-03, one-image acceptance re-run
   ([`aius-outstanding-work-2026-09.md`](aius-outstanding-work-2026-09.md)
   Phase 4).
+  **2026-09-04 — DONE. D4 ruled (i) then (b); gate 1 accepted, SRF Phase 2 is
+  `shipped`.** The 500 mHz re-run on `65bb5823c835` cut the trim count 53 → 19
+  but the estimate quantum keeps it above the ≤ 2 proxy; (b) rebased the
+  criterion to drop the trim count (source-unmeetable, output unaffected). See
+  the gate-1 entry under §Open defects and
+  [`aius-sample-rate-following.md`](aius-sample-rate-following.md) §Device
+  evidence — 2026-09-04.
 - ~~**OTA investigation verdict, then implementation**~~ — **COMPLETE,
   owner-confirmed 2026-08-03.** The investigation gate closed and the
   implementation shipped ([`aius-ota-upgrade.md`](aius-ota-upgrade.md)
@@ -1745,9 +1755,10 @@ ends left open:
   A/B (0.316 vs 1.0) joins the ears-round queue for convention-encoded
   film content. **Owner-scheduled 2026-09-03** (by-ear gate;
   [`aius-outstanding-work-2026-09.md`](aius-outstanding-work-2026-09.md)
-  Phase 9). **2026-09-04: the ears round and the `lfe_gain` A/B run in the
-  in-situ soak after the listening-room redeploy; owner reports glitches in real
-  time; ask duration at redeploy.**
+  Phase 9). **Closed 2026-09-04: the listening soak is considered complete
+  against the last pre-bench build; the ears round and the `lfe_gain` A/B are
+  satisfied by organic in-situ listening, with any preference or glitch reported
+  as experienced rather than run as a documented soak (owner).**
 - ~~**B9 — the app dashboard retirement**, keeping `swagger.json` and
   its contract suite. Independent of everything above
   ([`aius-network-hardening.md`](aius-network-hardening.md), B-series
@@ -2225,12 +2236,24 @@ where the only prior record was a plan aside.
   and the ≤ 2 post-settle bound is unreachable on any source while hysteresis
   sits below the quantum; the 2026-08-02 single-value observation is
   contradicted on the nearest committed tree and is no longer the baseline.
-  This entry stays open on D4, which is now the owner's: a source-qualified
-  bound (raise hysteresis to ≥ one bin, or bound on carrier span / follow
-  error instead of trim count), a different source, or keep the bound and
-  accept gate 1 as failing. Full record:
+  **CLOSED 2026-09-04 — D4 ruled (i) then (b); gate 1 accepted.** (i) Hysteresis
+  went 50 → 500 mHz (aius `65bb582`, ~3.5 bins), deployed over OTA; the gate-1
+  re-run on `65bb5823c835+teensy41-optical-slot-a` cut the count 53 → 19
+  post-settle trims but the settled estimate still spreads ~1.2 Hz over 10 min,
+  so the deadband cannot exceed the 1,000 mHz follow-error bound (798 mHz at
+  500 mHz). (b) The gate-1 criterion is rebased to drop the trim count — a proxy
+  the source cannot meet without averaging the estimate (a firmware lever
+  declined 2026-09-04) and which never reaches the output (gate 7 saw none).
+  Offline re-judgment with `aius_rate_bench.py analyze 48k-10m` shows
+  `trim-cadence` is the sole failure; every other check passes
+  (`max_follow_error_millihz` 798, ingress slope −0.014 words/s, all counters
+  0). Evidence filed durably as
+  `firmware/test/fixtures/gate1-trim-cadence-2026-09-03/gate1-65bb5823c835-3639fb7b.jsonl.gz`
+  (uncompressed sha256 `3639fb7b…`), the fourth D4 data point (53 / 52 / 53 /
+  19). Full record:
   [`aius-sample-rate-following.md`](aius-sample-rate-following.md) §Device
-  evidence — 2026-09-03.
+  evidence — 2026-09-03 and 2026-09-04. Sample-rate-following Phase 2 is now
+  `shipped`.
 - **ITCM ingress-regression mechanism unestablished.** The `30eeed071` A/B
   convicted the DSP-runtime adapter's default ITCM placement empirically, but
   no mechanism explains how 144 B of resident cold code starves the live

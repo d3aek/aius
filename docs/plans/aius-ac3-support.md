@@ -3,7 +3,7 @@ title: Aius AC-3 decode support
 type: plans
 scope: component
 component: aius
-status: in-progress
+status: shipped
 subtype: design
 tags: [aius, firmware, ac3, dolby, decode, iec61937]
 updated: 2026-09-04
@@ -163,8 +163,10 @@ historical implementation evidence:
    unblocked and owner-scheduled** ([`aius-outstanding-work-2026-09.md`](aius-outstanding-work-2026-09.md)
    Phase 9; gate 1's remaining trim-cadence failure is a bound question, D4,
    not an AC-3 blocker).
-   **2026-09-04: in-situ soak after redeploy (design decision); ask duration at
-   redeploy.**
+   **Closed 2026-09-04: the listening soak is considered complete against the
+   last pre-bench build. The four-hour live-TV run and by-ear dialogue gate are
+   satisfied by organic in-situ use, with glitches reported as experienced
+   rather than run as a documented soak (owner).**
    The audit-discovered same-boot mixed-codec
    residency gap was closed on 2026-07-30.
 

@@ -1,8 +1,8 @@
 # Gate-1 trim-cadence image A/B — 2026-09-03 evidence
 
-The two `aius_rate_bench.py run 48k-10m` evidence files the completion plan's
-Phase 3 A/B was judged on, kept because decision D4 (the gate-1 trim bound)
-is settled on them and session scratch is GC'd after 7 days. Both are the
+The `aius_rate_bench.py run 48k-10m` evidence files the completion plan's
+Phase 3 A/B and the D4 follow-up were judged on, kept because decision D4 (the
+gate-1 trim bound) is settled on them and session scratch is GC'd after 7 days. Both are the
 tool's JSONL, gzip-compressed, LFS-tracked (`*.jsonl.gz`). Decompress with
 `gunzip -k` and re-analyze with
 `python3 firmware/tools/net/aius_rate_bench.py analyze 48k-10m --evidence <file>`.
@@ -12,8 +12,10 @@ tool's JSONL, gzip-compressed, LFS-tracked (`*.jsonl.gz`). Decompress with
 | `gate1-legA-25109fca3f97-ebc7a4c9.jsonl.gz` | `25109fca3f97+teensy41-optical-slot-a` (deployed, A/B chooser) | 53 | `ebc7a4c9ac3e915a0bf9944485dbbb90c4217586513a949ce60a7b17bcda67e7` |
 | `gate1-legB-405ce9768532-451c2748.jsonl.gz` | `405ce9768532+teensy41-optical` (nearest committed tree to the 2026-08-02 observation) | 52 | `451c2748d22400e6e081b0a5032c07ee0508628d7e8a8dbb458217bf4c6a3f80` |
 | `gate1-92aae16706f5-7b738639.jsonl.gz` | `92aae16706f5+teensy41-optical-slot-a` (Phase 4 acceptance image; every other check green) | 53 | `7b738639e224fcd9fc103b5151dbd2f5f10456ec7351d72b83edd923ab600422` |
+| `gate1-65bb5823c835-3639fb7b.jsonl.gz` | `65bb5823c835+teensy41-optical-slot-a` (D4 follow-up: hysteresis 500 mHz; 2026-09-04) | 19 | `3639fb7be517548ef3f75bcca4462fbd76d27e88c0a7ba44f9ac6723872d3c7c` |
 
-Same source (ESI U24 XL, free-running 48 kHz, mixer at unity), same day,
-same bench. Record and reading:
+The first three are the same day (2026-09-03); the fourth is the 2026-09-04
+D4 follow-up re-run after hysteresis went 50 -> 500 mHz. Same source (ESI U24
+XL, free-running 48 kHz, mixer at unity), same bench. Record and reading:
 [`../../../../docs/plans/aius-sample-rate-following.md`](../../../../docs/plans/aius-sample-rate-following.md)
 §Device evidence — 2026-09-03.

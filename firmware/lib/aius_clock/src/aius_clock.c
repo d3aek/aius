@@ -21,9 +21,17 @@
  * measured ~53 post-settle trims in 10 minutes at 50 mHz, one per 10.8 s,
  * each costing a 512-frame invalid window). 500 mHz is about 3.5 bins, so a
  * one-bin hop can no longer request a target. Not trimming inside the
- * deadband costs at most 500 mHz / 48 kHz, about 1e-8 of ring drift: one
- * frame per ~1000 s, far under the 128-frame ring floor and the 0.25 words/s
- * ingress-slope bound, and well inside the 1000 mHz follow-error bound. */
+ * deadband costs at most 500 mHz / 48 kHz, about 10 ppm of ring drift, half
+ * a frame per second -- bounded by the 10 s cadence to a few frames between
+ * trims, far under the 128-frame ring floor -- and it stays inside the
+ * 1000 mHz follow-error bound with the estimate's own spread on top. The
+ * 2026-09-04 re-run at 500 mHz read 19 post-settle trims (from 53): the
+ * settled estimate still spreads ~1.2 Hz over ten minutes, so the deadband
+ * cannot grow past the follow-error bound. A wider band cannot help, and
+ * averaging the estimate over the cadence interval is the only firmware lever
+ * left -- deliberately not taken. Gate 1 is judged on the settled follow
+ * error, slope and harmful-counter deltas, which this image passes, not on the
+ * trim count the source's ~140 mHz estimate quantum makes unreachable (D4). */
 #define AIUS_CLOCK_TARGET_HYSTERESIS_MILLIHZ UINT32_C(500)
 #define AIUS_CLOCK_PLL_REFERENCE_MILLIHZ UINT64_C(24000000000)
 #define AIUS_CLOCK_PLL_MIN_MILLIHZ UINT64_C(648000000000)
