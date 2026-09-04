@@ -54,6 +54,7 @@ from `interfaces-and-states.md`, `functional-topology.md`, and
   evidence table, what it excludes, and the quarantine fingerprint. Consult it
   when a capture shows isolated one-frame impulses, or when judging whether a
   measurement adapter is trustworthy.
-- **[Aius project scale](project-scale.md)** — the measured size of the
-  `src/hardware/aius` subtree with the exact command behind each figure, pinned
-  to a commit. Cite it for a figure; re-run the commands for a current one.
+- **[Aius project scale](project-scale.md)** — the measured size of the Aius
+  subtree as one current snapshot (code, docs, tests, churn, defects, per-day
+  commit history and agent cost), with the exact command behind each figure,
+  pinned to a commit. Cite it for a figure; re-run the commands for a current one.

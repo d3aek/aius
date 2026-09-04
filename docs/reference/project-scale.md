@@ -12,73 +12,115 @@ toc: true
 # Aius project scale
 
 This records the measured size of the Aius subtree and the method behind each
-figure. Everything below was measured on 2026-08-05 against repository HEAD
-`99eba92f5`, over the path `src/hardware/aius`. Where a count is known to be a
-floor rather than a total, that is stated at the figure and again under
-[limitations](#limitations). [Work since 2026-08-05](#work-since-2026-08-05)
-carries the delta to 2026-09-04, measured the same way.
+figure. Everything below is measured as of 2026-09-04 against HEAD `da68887`,
+over the Aius submodule and its full history. The subtree began as the upstream repository
+path `src/hardware/aius` and was later extracted into this standalone submodule;
+the history was preserved across the move, so every figure spans the first
+commit to now in one line — not a snapshot plus a delta. The repository is live:
+re-running any command later returns different numbers.
 
 ## Measurement basis
 
-- **Path** — every repository figure is scoped to `src/hardware/aius` unless the
-  command says otherwise.
-- **Commit pin** — HEAD `99eba92f5`. The repository is live; re-running any
-  command later returns different numbers.
-- **Line counts** — physical lines, including blanks and comments. No SLOC
-  normalisation.
+- **Path** — every figure is scoped to the Aius submodule (`git_modules/aius`
+  from the repository root), full working tree and full history.
+- **Commit pin** — HEAD `da68887`, 2026-09-04.
+- **Line counts** — physical lines, including blanks and comments, no SLOC
+  normalisation. Counted with `git grep -c` against the commit, which reads
+  ~0.1% above a `wc -l` count (it counts a final newline-less line) but is
+  applied identically everywhere.
 - **Commands** — run from the repository root, with `TZ=UTC` wherever a date or
   hour enters the result.
 
 ## Timeline
 
-First subtree commit `8be0f3228`, 2026-07-15 23:44:32 UTC,
-`docs(aius): establish capability and hardware plans`. Working activity starts
-earlier than that: the first Codex session touching the subtree is
-2026-07-13, so the git history understates the span by two days (see
-[agent cost](#agent-cost)).
+First submodule commit `19978ed`, 2026-07-15, `docs(aius): establish capability
+and hardware plans`. Working activity starts earlier: the first Codex session
+touching the subtree is 2026-07-13, so the git history understates the span by
+two days (see [agent cost](#agent-cost)).
 
 | Measure | Value |
 |---|---|
-| Commits touching the subtree | 683 |
-| Span, first to last commit | 20.35 days |
-| Calendar days with a commit | 21 of 22 |
-| Commits 00:00–06:59 UTC | 180 (26.4%) |
-| Days with both a pre-07:00 and a post-19:00 commit | 15 |
-| Longest gap between consecutive commits | 59.8 h |
-| Commit body text | 102,487 words |
-| Mean commit body | 150 words |
+| Commits | 857 |
+| Span, first to last commit | 51 days |
+| Calendar days with a commit | 34 |
+| Longest gap between consecutive commits | 223.3 h |
+| Commit body text | 132,401 words |
+| Mean commit body | 154 words |
 
-Commits land in all 24 hours; 2026-07-16 alone spans all 24.
-Busiest days by commit count: 07-16 (99), 07-24 (79), 07-25 (62), 07-22 (56).
+Commits per day (bar = commit count), with that day's authored line churn
+(insertions + deletions, excluding vendored code and machine-generated
+electronics):
+
+```text
+date          commits                                authored lines
+2026-07-15    2  #                                        926
+2026-07-16   99  ##################################     56437
+2026-07-17   37  ############                          101253
+2026-07-18   16  #####                                 146691
+2026-07-19    6  ##                                       172
+2026-07-21   19  ######                                  6904
+2026-07-22   56  ###################                     6798
+2026-07-23   24  ########                                5436
+2026-07-24   79  ###########################            43140
+2026-07-25   62  #####################                  29766
+2026-07-26   45  ###############                        21465
+2026-07-27   38  #############                          16872
+2026-07-28   34  ###########                            17665
+2026-07-29   21  #######                                21524
+2026-07-30   16  #####                                   8123
+2026-07-31   43  ##############                         20611
+2026-08-01   27  #########                              14173
+2026-08-02   15  #####                                   3810
+2026-08-03   28  #########                               1915
+2026-08-04   14  ####                                    3604
+2026-08-05   21  #######                                 3503
+                 — 223 h gap, 2026-08-06 to 2026-08-13, no commits —
+2026-08-14    6  ##                                       234
+2026-08-15    9  ###                                      439
+2026-08-16   26  ########                                8108
+2026-08-17    1  #                                         22
+2026-08-18    2  #                                        838
+2026-08-19    3  #                                        195
+2026-08-22    5  #                                        794
+2026-08-28    5  #                                       1788
+2026-08-31    1  #                                         78
+2026-09-01   18  ######                                  3080
+2026-09-02   30  ##########                             10436
+2026-09-03   41  ##############                         10888
+2026-09-04    8  ##                                      2606
+```
+
+Activity is dense through late July (busiest day 2026-07-16, 99 commits),
+pauses for the 223 h gap around the upstream repository-to-submodule move, then resumes at
+a lower rate into September.
 
 ```bash
-git log --reverse --format='%h %ad %s' --date=iso-strict -- src/hardware/aius | head -1
-git log --oneline -- src/hardware/aius | wc -l
-TZ=UTC git log --format='%ad' --date=format:'%Y-%m-%d %H' -- src/hardware/aius | sort | uniq -c
-git log --format='%b' -- src/hardware/aius | wc -w
+git log --date=short --format='%ad' | awk '{c[$0]++} END{for(x in c) print x,c[x]}' | sort
+git log --numstat --format='' | awk 'NF>=3 && $1 ~ /^[0-9]+$/ {i+=$1;d+=$2} END{print i,d}'
 ```
 
 ## Code
 
-First-party firmware C and C++ is 109,081 lines across 201 files.
+First-party firmware C and C++ is 120,475 lines across 222 files.
 
 | Area | Lines | Files |
 |---|---|---|
-| `firmware/test` | 56,357 | 61 |
-| `firmware/lib` | 28,385 | 87 |
-| `firmware/src` | 17,414 | 26 |
-| `firmware/tools` | 3,325 | 14 |
+| `firmware/test` | 61,666 | 67 |
+| `firmware/lib` | 32,293 | 101 |
+| `firmware/src` | 19,264 | 26 |
+| `firmware/tools` | 3,435 | 14 |
+| `firmware/chooser` | 217 | 1 |
 | `evidence/**` | 3,600 | 13 |
-| Total | 109,081 | 201 |
+| Total | 120,475 | 222 |
 
-`firmware/lib` holds 26 library modules. Other first-party languages:
+Other first-party languages:
 
-- **Python** — 30,400 lines across 62 files.
-- **JavaScript** — 12,630 lines across 9 files.
-- **Shell** — 2,673 lines across 19 files.
+- **Python** — 38,079 lines across 80 files.
+- **JavaScript** — 12,928 lines across 10 files.
+- **Shell** — 2,959 lines across 21 files.
 
 ```bash
-find firmware/src \( -name '*.c' -o -name '*.cpp' -o -name '*.h' \) | xargs wc -l | tail -1
+git grep -cE '$' HEAD -- 'firmware/src/*.c' 'firmware/src/*.cpp' 'firmware/src/*.h' | awk -F: '{s+=$NF} END{print s, NR}'
 ```
 
 The same form was run per area, and per extension for Python, JavaScript and
@@ -86,92 +128,71 @@ shell.
 
 ### Vendored code
 
-A further 53,066 lines of C and C++ across 136 files sit under
-`firmware/vendor`. **This is third-party code, not first-party authorship.**
-It is excluded from every figure in the table above and from the churn rows
-below that say "excluding vendored".
+A further 53,121 lines of C and C++ across 136 files sit under
+`firmware/vendor`. **This is third-party code, not first-party authorship.** It
+is excluded from every figure above and from the churn rows below that say
+"excluding vendored".
 
 | Vendored component | Lines |
 |---|---|
-| `ffmpeg-eac3` | 31,829 |
+| `ffmpeg-eac3` | 31,853 |
 | `dcadec-core` | 17,432 |
-| `NativeEthernet` | 2,724 |
+| `NativeEthernet` | 2,755 |
 | `tweetnacl` | 1,081 |
-| Total | 53,066 |
+| Total | 53,121 |
 
 ## Documentation
 
-205,001 words across 29 markdown files.
-
-| Location | Words | Files |
-|---|---|---|
-| `docs/**` | 197,411 | 25 |
-| `firmware/README.md` | 5,443 | 1 |
-| Root `README.md` + `CLAUDE.md` | 1,297 | 2 |
-| `electronics/README.md` | 850 | 1 |
-| Total | 205,001 | 29 |
+294,432 words across 64 markdown files (excluding vendored).
 
 ```bash
-find src/hardware/aius -name '*.md' -not -path '*/vendor/*' | xargs wc -w | tail -1
+git grep -h '$' HEAD -- '*.md' ':(exclude)firmware/vendor/*' | wc -w
 ```
 
 ## Tests
 
-1,163 test cases across 48 suite directories, counted by pattern match against
-the source rather than by running the suites.
+1,400 test cases, counted by pattern match against the source rather than by
+running the suites.
 
 | Language | Cases | Pattern |
 |---|---|---|
-| C/C++ | 510 | `^\s*(static\s+)?void\s+test_\w+\s*\(` |
-| Python | 358 | `^\s*def\s+test_\w+\s*\(` |
-| JavaScript | 295 | vitest `it(` / `test(` |
+| C/C++ | 566 | `^\s*(static\s+)?void\s+test_\w+\s*\(` |
+| Python | 523 | `^\s*def\s+test_\w+\s*\(` |
+| JavaScript | 311 | vitest `it(` / `test(` |
 
-The JavaScript cases sit inside 42 `describe(` blocks. Largest suites by case
-count: `latency-runner` 114, `dsp` 80, `recovery-runner` 71, `ota` 59, `http`
-53.
-
-**1,163 is a floor.** 15 of the 48 suite directories return zero under these
-patterns because they hold fixture and vector corpora rather than case
-functions.
+**1,400 is a floor.** Fixture and vector corpora that hold no case functions
+return zero under these patterns.
 
 ```bash
-grep -rEc '^\s*(static\s+)?void\s+test_\w+\s*\(' firmware/test
-grep -rEc '^\s*def\s+test_\w+\s*\(' src/hardware/aius --include='*.py'
-grep -rEc '\b(it|test)\(' src/hardware/aius --include='*.test.js'
+git grep -cP '^\s*(static\s+)?void\s+test_\w+\s*\(' HEAD -- 'firmware/test/*' | awk -F: '{s+=$NF} END{print s}'
 ```
 
 ## Churn
 
-Totals over the whole subtree history: 565,135 insertions, 185,366 deletions,
-4,551 file-changes, touching 1,571 distinct files.
+Totals over the whole submodule history: 636,512 insertions, 200,225 deletions,
+5,213 file-changes, touching 1,736 distinct files.
 
-| Basis | Insertions |
-|---|---|
-| All subtree paths | 565,135 |
-| Excluding vendored | 506,838 |
-| Excluding vendored and `electronics/` | 364,417 |
+| Basis | Insertions | Deletions |
+|---|---|---|
+| All paths | 636,512 | 200,225 |
+| Excluding vendored | 581,111 | 199,276 |
+| Excluding vendored and `electronics/` | 403,184 | 167,110 |
 
-**142,421 of the `electronics/` insertions are machine-generated.** They are
-KiCad S-expressions emitted by [`generate.py`](../../electronics/generate.py) —
-real committed output, but not hand-authored. The third row removes them.
+The `electronics/` insertions are dominated by machine-generated KiCad
+S-expressions — the schematic sheets and the `aius-carrier.kicad_pcb` layout,
+real committed output but not hand-authored. The third row removes them along
+with vendored code.
 
 ```bash
-git log --numstat --format='' -- src/hardware/aius | awk '{i+=$1; d+=$2; n++} END {print i, d, n}'
-git log --name-only --format='' -- src/hardware/aius | sort -u | wc -l
+git log --name-only --format='' | sort -u | wc -l
 ```
 
 ## Defects
 
-35 numbered defects at the time of measurement, contiguous 1–35: 29 closed and
-6 remaining. 4 of the 6 remaining carry no closure language.
-
-Three further defects, 36–38, were opened on 2026-08-05 from static analysis of
-an 8 h bench log, putting the count at that measurement at 38. All three are
-closed now. Two of them, 37 and 38, were fixed the same day with a host
-regression and a linking target build, and are deployed and verified live on
-image `3824579` (2026-09-01); 36, the symptom that led to them, closed the same
-day when its watch re-ran clean. (Register is authoritative; snapshot updated
-2026-09-03.)
+41 numbered defects, contiguous 1–41: 34 closed and 7 open by markup (open:
+4, 21, 23, 25, 27, 40, 41). Defects 40 and 41 were opened 2026-09-01. Twelve
+design decisions, D1–D12, are recorded in
+[`aius-outstanding-work-2026-09.md`](../plans/aius-outstanding-work-2026-09.md).
 
 The authoritative list is the §Open defects section of
 [`aius-network-hardening.md`](../plans/aius-network-hardening.md);
@@ -179,279 +200,130 @@ The authoritative list is the §Open defects section of
 per-defect gists. Closure state is inferred from markup — strikethrough and
 closure wording — not read from a status field.
 
-### Bench and verdict lines
-
-540 dated bench or verdict lines across `docs/plans` and `docs/reference`,
-spanning 17 distinct dates from 2026-07-18 to 2026-08-04. Densest dates: 07-28
-(90 lines), 08-04 (84), 07-26 (69).
-
-```bash
-grep -rEn '(bench|verdict).*20[0-9]{2}-[0-9]{2}-[0-9]{2}' docs/plans docs/reference | wc -l
-```
-
 ## Bench operations
 
-| Measure | Value |
-|---|---|
-| Highest observed `boot_generation` | 346 |
-| Instrumented bench observation | 36.14 h |
-| Bench logs | 19 |
-| Samples | 62,856 |
-| Flash logs retained in scratch | 32 |
-| Build logs retained in scratch | 66 |
+The device's retained `boot_generation` counter reads 23 on the deployed board;
+the highest the register recorded is 346. It is a lower bound on boots since the
+retained slot was last initialised, and undercounts across power loss and slot
+reinitialisation.
 
-The five longest single runs are 10.00 h (17,932 samples), 8.00 h (13,854
-samples), 4.05 h, 3.06 h and 3.00 h.
-
-`boot_generation` is a device counter held in retained memory. 346 is therefore
-a lower bound on boots since that retained slot was last initialised, and it
-undercounts across power loss.
-
-Scratch is garbage-collected at 7 days, so the flash-log count and the
-observation hours are floors for the project as a whole, not totals.
+Flash, build and bench-capture logs live in scratch under a 7-day GC, so there
+is no cumulative count of runs — only a rolling recent window is ever retained.
 
 ### Evidence and electronics
 
-- **Evidence** — 45 Git LFS artifacts across 35 subdirectories, plus 20
-  reviewable source snapshots across 10.
-- **Electronics** — 5 KiCad sheets and 5 connectivity JSON specs declaring 76
-  nets and 65 components.
+- **Evidence** — 45 Git LFS artifacts across 33 subdirectories, plus 20
+  reviewable source snapshots across 9.
+- **Electronics** — 5 KiCad schematic sheets and 5 connectivity JSON specs
+  declaring 76 nets and 65 components, plus the `aius-carrier.kicad_pcb` layout.
 
 ```bash
-find docs/reference/datasheets.md -type f | wc -l
+git -C git_modules/aius lfs ls-files | grep -c docs/reference/datasheets.md
 jq '[.nets | length] | add' electronics/connectivity/*.json
 ```
 
 ## Agent cost
 
 Two AI toolchains worked on this subtree: Claude Code and the OpenAI Codex CLI.
-Both keep local session transcripts on this machine, so both are measured here
-by the same rule — a session counts if the string `hardware/aius` appears
-anywhere in its transcript. A session which merely read the path counts in
-full, and one that touched the subtree without emitting the string is missed.
+Both keep local session transcripts on this machine, measured by the same rule —
+a session counts if its transcript names the subtree. Because the subtree moved
+from `src/hardware/aius` to the submodule mid-history, that rule matches either
+`hardware/aius` or `git_modules/aius`.
+
+These figures are the sum of two measurement passes taken the same way — one
+covering activity through 2026-08-05, one from 2026-08-05 to 2026-09-04. The
+2026-08-05 boundary day sits in both, a negligible double-count.
 
 ### Claude Code
 
 | Measure | Value |
 |---|---|
-| Sessions referencing the subtree | 40 |
-| API calls | 16,582 |
-| Tokens excluding cache reads | 67,906,233 |
-| — of which output | 12,544,977 |
-| Total tokens including cache reads | 7,252,167,646 |
-| Tool calls | 19,012 |
-| Tool calls per session | median 375, max 1,667 |
+| API calls | 54,727 |
+| Tokens excluding cache reads | 245,697,962 |
+| — of which output | 38,220,590 |
+| Total tokens including cache reads | 18,005,782,973 |
+| Tool calls | 66,878 |
 
-Cache reads are 98.9% of the billed total. **The non-cache-read figure is the
+Cache reads are 98.6% of the billed total. **The non-cache-read figure is the
 meaningful measure of distinct token production**; the billed total measures
-volume and overstates production by about two orders of magnitude if read as
-production. Both are recorded so neither is mistaken for the other.
+volume. By API call: `claude-opus-5` 17,592, `claude-opus-4-8` 15,878,
+`claude-fable-5` 13,138, `claude-sonnet-5` 4,559, `claude-fable-5-1` 2,108,
+`claude-opus-4-7` 1,131, `claude-haiku-4-5` 285, synthetic 36.
 
-By API call: `claude-fable-5` 8,061, `claude-opus-5` 4,906, `claude-opus-4-8`
-2,169, `claude-sonnet-5` 1,434, synthetic 12. These sum to the 16,582 total.
-
-```bash
-grep -rl 'hardware/aius' ~/.claude/projects/*/*.jsonl
-```
+Claude's session unit changed across the history — older transcripts bundled
+sub-agents inline, newer ones store them as separate files — so a single
+end-to-end session count is not meaningful; the token and call totals are.
 
 ### Codex CLI
 
-Transcripts are `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`; 968 of 1,823
-rollout threads reference the subtree. Codex records usage as `token_count`
-events carrying a running `total_token_usage`. Its `input_tokens` is
-cache-inclusive, unlike Claude's, so the two schemas are normalised before any
-comparison below. Forked rollouts replay the parent's event log verbatim, so
-figures are deduplicated by fork lineage; that dedup was validated at a 1.83%
-false-collapse rate on single-file control lineages.
-
 | Measure | Value |
 |---|---|
-| Rollout threads referencing the subtree | 968 (81 user-initiated, 887 sub-agent) |
-| API calls | 144,325 |
-| Uncached input tokens | 346,128,199 |
-| Output tokens | 32,230,724 (12,578,041 reasoning) |
-| Total tokens | 16,857,768,661 (97.9% cached input) |
-| Tool calls | 136,815 |
-| Patch applications | 10,982 (10,981 succeeded) |
-| Human prompts typed | 1,183 (141,610 characters) |
+| Rollout threads referencing the subtree | 1,027 |
+| API calls | 184,884 |
+| Uncached input tokens | 440,212,607 |
+| Output tokens | 41,714,224 (16,304,643 reasoning) |
+| Total tokens | 22,065,787,385 (~98% cached input) |
+| Tool calls | 166,366 |
+| Patch applications | 14,135 |
+| Human prompts typed | 1,289 |
 
-Independent corroboration for the token figure: `state_5.sqlite` records
-`threads.tokens_used` summing to 65,294,864,888 across the aius rollouts,
-matching the raw pre-dedup cumulative sum from the transcripts.
-
-By API call: `gpt-5.6-sol` 100,111, `gpt-5.6-luna` 25,738, `gpt-5.6-terra`
-17,928, `gpt-5.4-mini` 443, `codex-auto-review` 105.
-
-Codex records no cost, no request identifiers, no per-call model field (it is
-inferred from the preceding `turn_context`), and no commit trailer.
+Codex `input_tokens` is cache-inclusive, unlike Claude's, so the two schemas are
+normalised before any combined figure. Forked rollouts replay the parent's event
+log, so figures are deduplicated by fork lineage. By API call: `gpt-5.6-sol`
+140,660, `gpt-5.6-luna` 25,738, `gpt-5.6-terra` 17,928, `gpt-5.4-mini` 443,
+`codex-auto-review` 105.
 
 ### Combined
 
-Only like-for-like categories are added. Session counts are **not** combinable:
-a Codex thread includes each sub-agent separately, while a Claude transcript
-bundles its sub-agents inline.
+Only like-for-like categories are added. Session and rollout counts are **not**
+combinable across toolchains: a Codex thread includes each sub-agent separately,
+while a Claude transcript bundles its sub-agents inline.
 
 | Measure | Claude Code | Codex | Combined |
 |---|---|---|---|
-| API calls | 16,582 | 144,325 | 160,907 |
-| Uncached input tokens | 67,906,233 | 346,128,199 | 414,034,432 |
-| Output tokens | 12,544,977 | 32,230,724 | 44,775,701 |
-| Total tokens processed | 7,252,167,646 | 16,857,768,661 | 24,109,936,307 |
-| Tool invocations | 19,012 | 136,815 | 155,827 |
-| Active hours | 94.79 | 258.04 | 303.41 |
+| API calls | 54,727 | 184,884 | 239,611 |
+| Uncached input tokens | 245,697,962 | 440,212,607 | 685,910,569 |
+| Output tokens | 38,220,590 | 41,714,224 | 79,934,814 |
+| Total tokens processed | 18,005,782,973 | 22,065,787,385 | 40,071,570,358 |
+| Tool invocations | 66,878 | 166,366 | 233,244 |
+| Active hours | 204.16 | 288.10 | 442.29 |
 
-Combined active hours are lower than the sum because 49.42 h had both
-toolchains running concurrently and are counted once.
-
-### Wall clock
-
-Codex activity begins 2026-07-13, two days before the first commit, so the
-project's working span starts earlier than its git history shows.
-
-- **560.73 h** — calendar span across both toolchains, 2026-07-13 to
-  2026-08-05. An outer bound containing all idle time.
-- **303.41 h** — union of active periods, summing inter-event gaps under 600 s
-  across the merged event stream of both toolchains, so concurrent sessions
-  count once.
-
-Per-session sums are higher (1,813.86 h span and 630.97 h active for Codex
-alone) because up to nine sessions ran in parallel. Those inflated figures are
-not used.
-
-### Commit attribution
-
-All 683 subtree commits carry the same git author, so author identity separates
-nothing. 282 carry a `Co-Authored-By: Claude` trailer and 401 carry none; Codex
-emits no trailer. Matching commit subjects against the commit-message files
-composed inside each toolchain partitions them cleanly, with no subject
-appearing in both: **Codex 319, Claude 330, unattributed 34**. This shows where
-a message was composed, not which toolchain made the commit, and is
-corroborative rather than conclusive.
-
-## Work since 2026-08-05
-
-The figures above are pinned to 2026-08-05. This section records what changed
-between then and 2026-09-04, measured the same way. In the interval the subtree
-was extracted from the upstream repository path `src/hardware/aius` into a standalone
-submodule, so the delta is measured in the submodule's own history: baseline
-commit `7304689` (the 2026-08-05 tip, 702 ancestors) to HEAD `d9fc07c` (856), a
-window of 154 commits. A 9.3-day quiet gap sits between the baseline and the
-window's first commit on 2026-08-14; the active span is 2026-08-14 to
-2026-09-04, 13 calendar days carrying a commit, with 24,741 words of commit body.
-
-Line and word counts here are measured on one consistent basis at both endpoints
-(`git grep -c` physical lines against each commit), which reads ~0.1% above the
-`wc -l` basis of the tables above; the baseline therefore re-reads 109,265
-first-party C/C++ lines against the 109,081 headline, and the deltas are exact on
-this basis.
-
-### Code, docs and tests
-
-| Measure | 2026-08-05 | 2026-09-04 | Δ |
-|---|---|---|---|
-| First-party C/C++ lines | 109,265 | 120,475 | +11,210 |
-| First-party C/C++ files | 201 | 222 | +21 |
-| Python lines | 30,404 | 38,079 | +7,675 |
-| JavaScript lines | 12,453 | 12,928 | +475 |
-| Shell lines | 2,673 | 2,959 | +286 |
-| Documentation words | 224,987 | 294,432 | +69,445 |
-| Documentation files | 53 | 64 | +11 |
-| Test cases | 1,166 | 1,400 | +234 |
-
-Vendored C/C++ is unchanged (53,121 lines across 136 files). The C/C++ growth is
-`firmware/test` (+5,261), `firmware/lib` (+3,826) and `firmware/src` (+1,796),
-plus a new slot chooser (`firmware/chooser/chooser.c`, 217 lines). Test growth is
-heaviest in Python (+165 cases, 358 to 523), then C/C++ (+55, 511 to 566) and
-JavaScript (+14, 297 to 311). The documentation word count is the full non-vendor
-markdown set (53 to 64 files), a broader basis than the 29-file subset the
-headline figure counted.
-
-### Churn
-
-Over the 154-commit window: 68,221 insertions, 14,093 deletions, 568
-file-changes across 177 distinct files. Excluding vendored code and
-`electronics/`, that is 33,069 insertions and 6,075 deletions. The electronics
-delta is dominated by a new machine-generated KiCad PCB layout
-(`electronics/aius-carrier.kicad_pcb`, +25,230 lines); evidence artifacts, source
-snapshots, schematic sheets and the connectivity nets and components are
-otherwise unchanged in the window.
-
-### Defects
-
-The numbered register moved from 39 entries to 41: defects 40 and 41 both opened
-2026-09-01 (40, `/api/status` omits `target_id`; 41, a rare send-path stall drops
-a `/api/status` response). Eight more entries closed (26 to 34), leaving 7 open
-by markup. Twelve design decisions, D1 to D12, were recorded in the new
-[`aius-outstanding-work-2026-09.md`](../plans/aius-outstanding-work-2026-09.md);
-none existed at the baseline.
-
-### Agent cost
-
-Same rule as [above](#agent-cost): a session counts if its transcript names the
-subtree. Because the path moved mid-window, the rule now matches either
-`hardware/aius` or `git_modules/aius`, and the union is reported. Codex's last
-activity on the subtree was 2026-08-13, before the move, so its `git_modules`
-count is zero and its figures are the `hardware/aius` set.
-
-| Measure | Claude Code | Codex | Combined |
-|---|---|---|---|
-| API calls | 38,145 | 40,559 | 78,704 |
-| Uncached input tokens | 177,791,729 | 94,084,408 | 271,876,137 |
-| Output tokens | 25,675,613 | 9,483,500 | 35,159,113 |
-| Total tokens incl. cache reads | 10,753,615,327 | 5,208,018,724 | 15,961,634,051 |
-| Tool invocations | 47,866 | 29,551 | 77,417 |
-| Active hours | 109.37 | 30.06 | 138.88 |
-
-Claude bucketed 369 transcript files (142 top-level sessions plus 227 sub-agent
-files, newer Claude Code storing sub-agents as separate files; 151 parent
-sessions). Codex bucketed 59 rollout threads, 7 user-initiated and 52 sub-agent.
-Cache reads are again ~98% of each toolchain's billed total, so the uncached row
-is the meaningful measure of production. Combined active hours subtract 0.55 h of
-concurrency, low because Codex ended on 08-13 while Claude ran throughout. Claude
-API calls by model: `claude-opus-4-8` 13,709, `claude-opus-5` 12,686,
-`claude-fable-5` 5,077, `claude-sonnet-5` 3,125, `claude-fable-5-1` 2,108,
-`claude-opus-4-7` 1,131, `claude-haiku-4-5` 285, synthetic 24. Codex is
-effectively single-model: `gpt-5.6-sol` 40,549.
-
-Every limitation under [§Agent cost](#agent-cost) still applies. Two are sharper
-here: the string-match bucket now spans two path strings across the migration,
-and the Claude session *count* is not comparable to the baseline's 40 because
-sub-agents were inline transcripts then and separate files now — the token and
-call totals remain comparable.
+Combined active hours are lower than the sum of the two columns because ~50 h
+had both toolchains running concurrently and are counted once. The combined
+active span runs 2026-07-13 (Codex, two days before the first commit) to
+2026-09-04, and active hours are the union of active periods (inter-event gaps
+under 600 s).
 
 ## Limitations
 
 1. **One machine.** Only Claude Code and Codex CLI sessions recorded on this
-   machine are counted. Any work done through another interface, or on another
-   machine, is absent from every agent-cost figure. True totals are higher by an
-   unmeasured amount; no multiplier is estimated.
-2. **Codex fork dedup is inferred**, from rollout lineage and cumulative-token
-   identity rather than a recorded parent link. It was validated at a 1.83%
-   false-collapse rate on single-file control lineages. Raw event counts that
-   remain fork-inflated (agent messages, turns, task starts) are deliberately
-   excluded rather than reported.
-3. **The two token schemas differ.** Codex `input_tokens` is cache-inclusive
-   and Claude's is not; combined figures normalise for this, but any comparison
-   drawn from the vendors' own raw fields will not agree with the table here.
-4. **Commit attribution rests on message composition**, not a provenance
-   trailer. 34 commits (5%) resist attribution.
-5. **Scratch is reaped at 7 days.** Flash-log counts and bench-observation hours
-   are floors. Anything older than the retention window is gone.
-6. **`boot_generation` 346 is a floor.** It counts boots since the retained
-   memory slot was last initialised and is lost on power loss.
-7. **Human bench time is not measured.** Cable swaps, probe placement,
-   listening tests and power cycles appear in no figure here.
+   machine are counted. Work through another interface or on another machine is
+   absent from every agent-cost figure; true totals are higher by an unmeasured
+   amount.
+2. **Agent cost is summed from two passes.** The cumulative figures add a
+   through-2026-08-05 pass and a 2026-08-05-to-2026-09-04 pass measured the same
+   way; the boundary day is a negligible double-count, and Claude's session unit
+   changed between them (§Claude Code).
+3. **Codex fork dedup is inferred**, from rollout lineage and cumulative-token
+   identity rather than a recorded parent link.
+4. **The two token schemas differ.** Codex `input_tokens` is cache-inclusive and
+   Claude's is not; combined figures normalise for this, and will not match the
+   vendors' own raw fields.
+5. **Scratch is reaped at 7 days.** Flash, build and bench-capture logs are a
+   rolling window, not a cumulative count; bench-observation hours are not
+   recoverable across the retention window.
+6. **`boot_generation` is a floor.** It counts boots since the retained memory
+   slot was last initialised and is lost on power loss and slot reinitialisation.
+7. **Human bench time is not measured.** Cable swaps, probe placement, listening
+   tests and power cycles appear in no figure here.
 8. **Physical lines, not SLOC.** Line counts include blanks and comments and are
    not normalised.
-9. **Session bucketing is a string match.** A session counts if `hardware/aius`
-   appears anywhere in its transcript. That over-counts, when a passing mention
-   pulls in an otherwise unrelated session, and under-counts, when subtree work
-   never wrote the path. The same rule is applied to both toolchains.
-10. **Test counts undercount.** 15 of the 48 suite directories return zero under
-    the stated patterns, so 1,163 is a floor.
-11. **Defect closure is inferred from markup**, not read from a status field. A
-    defect closed without the expected wording reads as open.
-12. **Both datasets are live.** Repository figures are pinned to HEAD
-    `99eba92f5` as of 2026-08-05; the transcript stores grew during measurement,
-    which is why the Claude API-call total is 16,582 rather than the 16,496
-    recorded by an earlier pass the same day.
+9. **Session bucketing is a string match**, now spanning two path strings
+   (`hardware/aius` and `git_modules/aius`) across the migration. It over-counts
+   when a passing mention pulls in an unrelated session and under-counts when
+   subtree work never wrote either string.
+10. **Test counts undercount.** Fixture-only suite directories return zero under
+    the stated patterns, so 1,400 is a floor.
+11. **Defect closure is inferred from markup**, not read from a status field.
+12. **Both datasets are live.** Figures are pinned to HEAD `da68887` as of
+    2026-09-04; re-running any command later returns different numbers.
