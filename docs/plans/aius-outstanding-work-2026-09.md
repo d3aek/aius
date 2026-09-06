@@ -235,7 +235,9 @@ Both former open asks are now settled:
 10. **Hardware and owner-scheduled gates** (Phase 9).
 
 The governor (output-jitter Phase E) is not a phase: D9 ruled it unwanted, and
-its disposition is a record correction in Phase 0 (orchestrator).
+its disposition is a record correction in Phase 0 (orchestrator). D9 was
+reversed 2026-09-06 on measurement (output-jitter Phase G); the governor is now
+enabled on the optical env.
 
 ## Phases
 
@@ -937,7 +939,7 @@ by the completed in-situ soak; the rest carry their "not scheduled" ruling above
 | D6 | Recorder Phase D build constraint | decided | Already retired in the doc (`aius-recorder-rolling-buffer.md:695-697`); record. |
 | D7 | Hardware H3 scheduling | no date (2026-09-04) | H3b–H3e and the H2 footprint gate stay unscheduled; the by-ear items move to the in-situ soak after the listening-room redeploy (Phase 9). |
 | D8 | Non-48 kHz latency rows | RULED 2026-09-04 | 48 kHz is the only target — the register entry is struck as superseded; the e2e plan's DTS rows stay deferred with that reason. |
-| D9 | TX governor | RULED 2026-09-03 | Not wanted: "systematic latency with repeated triggers"; silence on a stall, never a buzz. Governor stays compiled out; Phase E closed as decomposition, governor retired (Phase 0, orchestrator). |
+| D9 | TX governor | RULED 2026-09-03; REVERSED 2026-09-06 | Was: not wanted, "systematic latency with repeated triggers". Reversed on device measurement (output-jitter Phase G): the healthy AC-3 window-minimum is 128, the same floor as PCM, so the governor never trims healthy audio; it fires only on a stall-driven ratchet, one skip per correction. Enabled on the optical env. |
 | D10 | `aius-optical-prototype.md` disposition | RULED 2026-09-03 | Descope each unshipped item that serves no particular purpose; keep any that does, with what depends on it. |
 | D11 | Input recovery: ceiling exception; `carrier_loss` trigger (`aius-input-recovery.md:143-174`) | owner-only | Only needed if Phase 1 reaches its Phases 2–4. |
 | D12 | OTA on the deployed posture | RULED 2026-09-03 | OTA is the primary update method and must be exercised; USB is for the cutover only (Phase 5); the IVT check is real value (Phase 6). |

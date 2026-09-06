@@ -1291,8 +1291,10 @@ static FLASHMEM void record_state(void)
 
 /* Boot-lottery conviction counters (register §Open defects — runtime): the
  * audio update ISR's invocation count and its longest single run. Normal is
- * ~93.75 calls/s and a sub-millisecond maximum; a storm shows as calls far
- * above the block rate, a stall inside the callback as a huge maximum.
+ * ~375 calls/s (fs/128 at 48 kHz, carrier locked) and a sub-millisecond
+ * maximum; an unlocked DPLL storms far above that (the idle no-carrier
+ * state, ~2,465/s measured), a stall inside the callback shows as a huge
+ * maximum.
  * Written in ISR context, read by the status route -- volatile u32. */
 static volatile uint32_t g_audio_update_calls;
 static volatile uint32_t g_audio_update_max_cycles;
@@ -1355,11 +1357,13 @@ static AiusTxGovernor g_tx_governor;         /* .bss; the zero window_min can
 static uint32_t g_tx_governor_trims;          /* .bss = 0 */
 static uint32_t g_tx_governor_trimmed_frames; /* .bss = 0 */
 
-/* HELD by operator decision (2026-08-16, in chat): the governor is compiled
- * and its counters/JSON stay live (serving zeros), but the enqueue() tap is
- * off until the input-fault instruments below deliver a verdict on the pop
- * mechanism -- a trimmed cushion re-exposes any real input hole the ratchet
- * was accidentally absorbing. Enable with -DAIUS_TX_GOVERNOR_ENABLED=1. */
+/* Held 2026-08-16 (pop verdict owed), retired 2026-09-03 (design decision D9:
+ * "systematic latency with repeated triggers"), ENABLED 2026-09-06 for the
+ * optical env by platformio.ini (output-jitter Phase G, reversing D9 on
+ * measurement): the healthy AC-3 window-minimum is 128, the same floor as
+ * PCM, so the rule never trims healthy audio and fires only on a
+ * stall-driven ratchet. The source default stays off so a host or bench env
+ * that does not opt in serves the counters as zeros. */
 #ifndef AIUS_TX_GOVERNOR_ENABLED
 #define AIUS_TX_GOVERNOR_ENABLED 0
 #endif
@@ -1547,7 +1551,7 @@ protected:
 	{
 		/* Boot-lottery conviction counters (register §Open defects —
 		 * runtime): a storm on this ISR shows as calls far above the
-		 * 93.75 Hz block rate; a stall inside one call shows in the
+		 * 375 Hz locked block rate; a stall inside one call shows in the
 		 * cycle maximum. DWT differences, wrap-correct. */
 		const uint32_t entered_cycles = ARM_DWT_CYCCNT;
 		g_audio_update_calls++;
@@ -5478,8 +5482,9 @@ static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
 	                      (unsigned long)(g_ckpt_total_us[9] / 1000u),
 	                      (unsigned long)(g_ckpt_total_us[10] / 1000u)))
 		return 0;
-	/* The audio update ISR's conviction pair: calls (normal ~93.75/s
-	 * against uptime) and the longest single run in µs. */
+	/* The audio update ISR's conviction pair: calls (normal ~375/s locked
+	 * against uptime, far higher when the input is unlocked) and the longest
+	 * single run in µs. */
 	if (!http_json_append((char *)body, capacity, &length,
 	                      ",\"audio_update_calls\":%lu"
 	                      ",\"audio_update_max_us\":%lu",

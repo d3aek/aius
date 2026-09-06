@@ -5,7 +5,7 @@ scope: component
 component: aius
 status: in-progress
 tags: [aius, firmware, audio, latency, jitter, monitoring]
-updated: 2026-09-04
+updated: 2026-09-06
 ---
 
 # Aius output jitter elimination
@@ -14,7 +14,8 @@ Eliminate the audible output dropouts observed on 2026-08-16 during live 5.1
 decode, without adding a frame of output latency. The owner's constraint is
 explicit: the current 13 ms 5.1 residence is below the perception floor and
 must not grow; the fix is to remove the loop-jitter sources, not to widen the
-transmit cushion.
+transmit cushion. (13 ms is the MEDIAN residence the DSP page reports, not the
+ring floor: the floor is 128 frames on PCM and AC-3 alike — Phase G.)
 
 ## State — resume here
 
@@ -97,6 +98,17 @@ Phase F below makes the floor deterministic at the gate-open edge; built
 and flashed the same day (`3570a216216d+teensy41-optical`, plain
 single-image posture, no A/B — the "slot B" statements above are
 historical), with gate 2 passing for the first time on it.
+
+**Update 2026-09-06 — Phase G: the governor is ENABLED, reversing D9.** The
+DSP page's ~25-30 ms over a glitch-free AC-3 session was decomposed by device
+measurement into AC-3's inherent ~16 ms median (the 1536-frame access-unit
+sawtooth over a 128-frame floor) plus a stall-driven ratchet of the floor. Two
+same-carrier reset designs built that session (underrun-gated per-block trim;
+one-shot trim at a codec transition) were both killed by adversarial review and
+discarded unmerged; the measured floor showed the existing window-minimum
+governor is the correct regulator and cannot fire on healthy AC-3. Enabled via
+`-DAIUS_TX_GOVERNOR_ENABLED=1` in `platformio.ini` for the optical env; Phase G
+below carries the capture table and the argument.
 
 **Decisions taken this session (owner, in chat):**
 - Jitter is fixed by removing sources, never by widening the transmit
@@ -309,7 +321,11 @@ same day in `725e280`), B in aius `9748752` (2026-08-16); the register's
   adversarial hot-path review together with Phase B.
 - unit: parent-only
 
-### Phase E — PCM latency decomposition + ratchet governor ✓ SHIPPED 2026-09-03 (decomposition; governor RETIRED)
+### Phase E — PCM latency decomposition + ratchet governor ✓ SHIPPED 2026-09-03 (decomposition; governor retired, then ENABLED 2026-09-06 by Phase G)
+
+**Reopened 2026-09-06 (Phase G):** D9 is reversed on measurement — the governor
+is enabled on the optical env. The paragraph below records the ruling as it
+stood; the argument for the reversal and its live guard are Phase G's.
 
 **Closed 2026-09-03 by design decision D9
 ([`aius-outstanding-work-2026-09.md`](aius-outstanding-work-2026-09.md)
@@ -530,6 +546,89 @@ target policy are untouched. Live: three `--with-replay` gate-4 runs on
 `4c82434311f0`, `tx_underrun_frames` 0 across all three replay starts
 ([`aius-rate-gate-capture-tool.md`](aius-rate-gate-capture-tool.md)
 §Live-run results — 2026-09-03, replay floor).
+
+### Phase G — AC-3 residence decomposition + governor enabled (D9 reversed) IN-PROGRESS 2026-09-06
+
+**The question:** the DSP editor page reported ~25-30 ms "estimated latency"
+over a live AC-3 5.1 session that was itself glitch-free, ~2x the expected
+~13 ms. Real firmware ratchet, or inherent AC-3 behaviour, and can a
+same-carrier automatic reset fix it? The gate-open trim (Phase F) re-bases the
+ring only at a carrier close→open edge; a same-carrier program transition
+(PCM menu → AC-3 content during OSD navigation) never closes the gate.
+
+**Two designs built and killed (2026-09-05/06, adversarial review; discarded
+unmerged):**
+
+- Design A, underrun-gated per-block trim to 128: trims healthy AC-3 bursts
+  and loops into sustained dropouts. The instantaneous ring level is useless
+  as a park detector on AC-3 — healthy AC-3 legitimately sweeps 128 → 1536
+  every 32 ms (measured below).
+- Design B, one-shot trim at a class/codec transition: a no-op at the empty
+  transition ring, and a spurious trim on every AC-3 start because AC-3 sets
+  `codec_pc` one whole access unit late
+  (`firmware/lib/aius_pipeline/src/aius_pipeline.c:1043`, versus DTS/E-AC-3 at
+  arm, `:947`/`:950`). It also targeted the wrong event: the clean capture
+  below shows codec transitions do NOT ratchet.
+- Host tests validated neither: they feed hand-picked level sequences and
+  never model the closed ring loop. Both dead designs passed their host suites.
+- Both mis-read this plan's "13 ms residence" (the median) as the floor and
+  mis-targeted twice as a result. The floor is 128.
+
+**The capture (the measured answer).** Deployed board, `GET /api/status`
+`clock.tx_level_frames` polled at 4 Hz through a full power-on → OSD
+navigation → AC-3 content sequence including an operator preview→OSD→content
+bounce; a clean 6-minute run, 2026-09-06. Raw trace in session scratch only
+(7-day GC).
+
+| Stream | `tx_level` floor (window-min) | peak / high-water | median (~DSP page) | underruns |
+|---|---|---|---|---|
+| Idle (no carrier) | 0 | 0 | 0 | 0 |
+| PCM menu (state 3) | 128 | 640 | ~8 ms (~384 fr) | 0 |
+| AC-3 content (state 4) | 128 | 1536 (one AU) | ~16 ms (~768 fr) | 0 |
+
+1. **The AC-3 ring floor is 128 frames (2.67 ms), the SAME as PCM.** The ring
+   drains fully to 128 between access units (hit every few seconds throughout).
+2. **AC-3's ring sweeps 128 → 1536 (one full 32 ms access unit) and back,
+   roughly uniformly.** High-water never exceeded 1536. The DSP-page median of
+   that sawtooth is ~768 frames ≈ 16 ms — AC-3's INHERENT residence from its
+   32 ms AU granularity, unfixable without breaking the codec. AC-3 will always
+   read ~2x PCM on the DSP page for this reason alone.
+3. **The clean session never ratcheted and logged zero underruns**, codec
+   transitions included. Transitions do not cause the park.
+4. **So 25-30 ms = inherent ~16 ms + a stall-driven ratchet.** The glitch
+   session had 768 underrun frames plus unsupported episodes; those stalls
+   shift the FLOOR up (128 → ~500-700), lifting the whole sawtooth to a
+   25-30 ms median. No stalls, no ratchet.
+5. **The governor is the correct and safe regulator.** It samples the
+   pre-commit level every accepted block (~375/s, denser than the 4 Hz poll),
+   so its 4 s window-minimum on healthy AC-3 is ≤ the poll's, i.e. 128-384;
+   with target 128 and deadband 256 it provably never fires on healthy AC-3.
+   It fires only when a stall holds the floor > 384 for a full 4 s window (a
+   genuine ratchet), trimming back to 128 in one skip. It cannot reduce AC-3
+   below ~16 ms.
+
+**Owner decision 2026-09-06 (reversing D9):** enable the governor. D9's
+objection ("systematic latency with repeated triggers") rested on the
+floor-vs-residence confusion; on healthy audio the trigger never fires. The
+residual cost D9 named is real on a stall-PRONE session (bad reception): one
+audible skip per stall-ratchet correction. The alternative — accept ~16 ms
+AC-3 as inherent and clear the rare ratchet by carrier-cycle/reboot — was
+declined.
+
+- outcome: `-DAIUS_TX_GOVERNOR_ENABLED=1` on `[env:teensy41-optical]` (and
+  so the canonical slot-A image); the `optical_main.cpp` governor comment
+  rewritten; the design-A/B code discarded; the three stale `~93.75/s` →
+  `~375/s` audio-update-rate comments in `optical_main.cpp` corrected
+  (independent, kept). Live: OTA the image, then a stall-ratchet auto-clears
+  to ~16 ms with `clock.governor_trims` +1.
+- seams: `firmware/platformio.ini` (build flag only); `optical_main.cpp`
+  comments; this plan; `aius-outstanding-work-2026-09.md` D9 row.
+- targeted-proof: `tx-governor` host suite green (unchanged rule);
+  `build_ab.sh` green with the `g_tx_governor` unused-variable warning gone;
+  OTA activation + healthy-boot self-commit; then the live guard — a clean
+  session (`tx_underrun_frames` delta 0) must show `governor_trims` 0, and
+  the AC-3 DSP-page number must sit at ~16 ms, not below.
+- unit: parent-only
 
 ## Acceptance
 
