@@ -107,8 +107,9 @@ same-carrier reset designs built that session (underrun-gated per-block trim;
 one-shot trim at a codec transition) were both killed by adversarial review and
 discarded unmerged; the measured floor showed the existing window-minimum
 governor is the correct regulator and cannot fire on healthy AC-3. Enabled via
-`-DAIUS_TX_GOVERNOR_ENABLED=1` in `platformio.ini` for the optical env; Phase G
-below carries the capture table and the argument.
+`-DAIUS_TX_GOVERNOR_ENABLED=1` in `platformio.ini` for the optical env and
+deployed over OTA as `861252098a01+teensy41-optical-slot-a`; Phase G below
+carries the capture table and the argument.
 
 **Decisions taken this session (owner, in chat):**
 - Jitter is fixed by removing sources, never by widening the transmit
@@ -547,7 +548,15 @@ target policy are untouched. Live: three `--with-replay` gate-4 runs on
 ([`aius-rate-gate-capture-tool.md`](aius-rate-gate-capture-tool.md)
 §Live-run results — 2026-09-03, replay floor).
 
-### Phase G — AC-3 residence decomposition + governor enabled (D9 reversed) IN-PROGRESS 2026-09-06
+### Phase G — AC-3 residence decomposition + governor enabled (D9 reversed) ✓ SHIPPED 2026-09-06
+
+**Shipped 2026-09-06** (aius `8612520`): deployed over OTA the same day as
+`861252098a01+teensy41-optical-slot-a` (home-signed, untagged; slot 1 → 2,
+`ab.sequence` 7, dark window 578,560 B programmed = verified, fault 0,
+healthy-boot self-commit on the first boot, `rollback_observed` false). First
+read on the new image: carrier locked, gate open, `governor_trims` 0,
+`tx_underrun_frames` 0. The live guard below is the standing check, not a
+scheduled soak (owner, 2026-09-04: glitches are reported as experienced).
 
 **The question:** the DSP editor page reported ~25-30 ms "estimated latency"
 over a live AC-3 5.1 session that was itself glitch-free, ~2x the expected

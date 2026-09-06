@@ -182,10 +182,13 @@ bench/operator surfaces and are deliberately not in the OpenAPI contract (only
 The feature latch is armed at composition — the arm/verify/abort verbs run the
 staged-upgrade state machine up to and including `ARMED` (`POST /api/ota/arm` is
 `aius_ota_arm_image`, verified → armed). The compiled-in key is the committed
-**test-only** dev keypair (`test/ota/test-only-signing-key.pub`) per the owner's
-2026-07-31 decision, reported as `test_key` true until rotation; its fingerprint
-is the first 8 bytes of `SHA-256(key)` in hex. Verify runs the Ed25519 check over
-the header's authentication digest against that key.
+**home** deployment keypair (`config/ota-home-signing-key.{pub,sec}`, the
+2026-08-04 rotation; fingerprint `df29355e5a8d7b8c`, reported as `test_key`
+false). The `test/ota/test-only-signing-key.{pub,sec}` pair is the host suite's
+fixture only: a container it signs is refused by the device at verify with
+`409 ota_signature`. The fingerprint is the first 8 bytes of `SHA-256(key)` in
+hex. Verify runs the Ed25519 check over the header's authentication digest
+against that key.
 
 **Durable staging.** `PUT /api/ota/image` drives `aius_ota_absorb` (incremental
 SHA-256, which is what `verify` checks) AND writes each container chunk to
