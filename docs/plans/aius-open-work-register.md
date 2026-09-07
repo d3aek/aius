@@ -349,8 +349,13 @@ ends left open:
   committed corpus in `test/pipeline/test_ac3_crc.c`, substitution pinned by
   `crc-substitute` in the `pipeline` suite.
 
-- **OPEN — the post-link guards do not fire on the slot-A env (found
-  2026-09-07 while building `abc59a9`).** The four `[common]` post-link hooks
+- ~~**OPEN — the post-link guards do not fire on the slot-A env (found
+  2026-09-07 while building `abc59a9`).**~~ **FIXED 2026-09-07:** each of the
+  four guards now gates on one named `OPTICAL_IMAGE_ENVS` set
+  (`teensy41-optical`, `-slot-a`, `-slot-b`, `-fault`), and `build_ab.sh`
+  prints every guard's PASS for the slot-A image, `network-transport`
+  included, so the canonical image is guarded at link time rather than by
+  hand. Original entry: The four `[common]` post-link hooks
   (`firmware/test/{network-transport,boot-target,itcm-placement,memory}/verify_target.py`)
   gate their `AddPostAction` on `$PIOENV in {teensy41-optical,
   teensy41-optical-fault}`, so a `build_ab.sh` run of `teensy41-optical-slot-a`

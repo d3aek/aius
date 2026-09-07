@@ -68,5 +68,17 @@ def verify_nativeethernet(source, target, env):
     print("NativeEthernet target resolution and linked symbols: PASS")
 
 
-if env.subst("$PIOENV") == "teensy41-optical":
+# Every env that links the optical image, not only the bench one: the A/B slot
+# envs extend teensy41-optical and ARE the deployed image since the slot-agnostic
+# chooser (aius-ota-slot-agnostic.md), and the fault env is the same image with
+# an injected fault. A guard that fires only for the bench env leaves the
+# canonical image unguarded (register, 2026-09-07).
+OPTICAL_IMAGE_ENVS = frozenset({
+    "teensy41-optical",
+    "teensy41-optical-slot-a",
+    "teensy41-optical-slot-b",
+    "teensy41-optical-fault",
+})
+
+if env.subst("$PIOENV") in OPTICAL_IMAGE_ENVS:
     env.AddPostAction("$BUILD_DIR/${PROGNAME}.elf", verify_nativeethernet)

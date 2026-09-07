@@ -232,10 +232,18 @@ try:
 except NameError:
     env = None
 
-if env is not None and env.subst("$PIOENV") in {
+# Every env that links the optical image: the A/B slot envs extend
+# teensy41-optical and are the deployed image since the slot-agnostic chooser,
+# so a guard keyed on the bench env alone leaves the canonical image unguarded
+# (register, 2026-09-07).
+OPTICAL_IMAGE_ENVS = frozenset({
     "teensy41-optical",
+    "teensy41-optical-slot-a",
+    "teensy41-optical-slot-b",
     "teensy41-optical-fault",
-}:
+})
+
+if env is not None and env.subst("$PIOENV") in OPTICAL_IMAGE_ENVS:
     env.AddPostAction("$BUILD_DIR/${PROGNAME}.elf", verify_retained_slots)
 
 
