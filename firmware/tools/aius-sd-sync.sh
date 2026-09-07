@@ -9,8 +9,10 @@
 set -euo pipefail
 
 usage() {
-    printf '%s\n' "Usage: $0 --device URL --www DIRECTORY --token TOKEN"
+    printf '%s\n' "Usage: $0 --device URL --www DIRECTORY (--token TOKEN | --token-file PATH)"
     printf '%s\n' "Uploads a web tree to the Aius device over HTTP PUT."
+    printf '%s\n' "The token may also come from AIUS_SD_AUTH. --token-file is the form an"
+    printf '%s\n' "agent session uses: the token never appears on a command line."
 }
 
 device_url=''
@@ -32,6 +34,14 @@ while (($# > 0)); do
         --token)
             (($# >= 2)) || { usage >&2; exit 2; }
             auth_token=$2
+            shift 2
+            ;;
+        --token-file)
+            (($# >= 2)) || { usage >&2; exit 2; }
+            [[ -r "$2" ]] || { printf 'token file not readable: %s\n' "$2" >&2; exit 2; }
+            # First line only, trailing whitespace stripped: one secret per file.
+            IFS= read -r auth_token < "$2" || true
+            auth_token=${auth_token%%[[:space:]]*}
             shift 2
             ;;
         -h|--help)

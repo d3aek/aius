@@ -80,6 +80,11 @@ board and the enclosure engineering around it.
 - **Signed OTA upgrades**, staged and Ed25519-verified on the device.
 - **PSRAM flight recorder** that can be triggered to capture the audio ring when
   something goes wrong.
+- **Every audible fault class is counted and time-stamped** — underrun
+  episodes, governor and gate splices, clock trims, missed transmit fills and
+  CRC-rejected frames each carry a stamp, post to the event ring and can freeze
+  a recorder capture, so a glitch heard in the room is read against a record
+  rather than a lifetime total.
 
 ## How it is built
 

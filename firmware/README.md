@@ -384,7 +384,7 @@ Suites (all build with `-Wall -Wextra -Werror` + ASan/UBSan):
 | `eac3-fuzz` | E-AC-3 adapter robustness fuzz: seam hunt + random corruption under the termination oracle. |
 | `iec61937`, `iec61937-fuzz` | IEC 61937 parser known-answer + fuzz. |
 | `replay-samples` | Generate additive DTS/AC-3 replay packs, validate AC-3 IEC periods and payloads, and consume them through the production IEC parser. |
-| `pipeline` | Classifier + parser→decoder end-to-end. |
+| `pipeline` | Classifier + parser→decoder end-to-end, including the AC-3 / E-AC-3 syncframe CRC gate (corpus spans, single-bit flips) and its silent substitution (output-jitter Phase I). |
 | `capability-protocol`, `capability` | USB protocol goldens + sim device round-trip. |
 | `dsp`, `dsp-vectors` | Downmix + EQ known-answer, shared production-model runtime resolution, and the public DSP interface over the DTS corpus. |
 | `downmix-identity` | Decode → downmix composed channel identity: each source channel's own tone reaching the stereo slot its route names, at that route's coefficient, for DTS and AC-3, with a rotated-front-three negative control. |

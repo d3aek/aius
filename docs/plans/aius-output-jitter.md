@@ -111,6 +111,23 @@ governor is the correct regulator and cannot fire on healthy AC-3. Enabled via
 deployed over OTA as `861252098a01+teensy41-optical-slot-a`; Phase G below
 carries the capture table and the argument.
 
+**Update 2026-09-07 — Phases H and I: the loop's blind spots, timestamped and
+fixed.** One brief stutter on stable AC-3 playback had no timed record. A
+read-only audit of the audio loop found two wire-level faults the counters could
+not see: the S/PDIF validity bit was inverted (V=1 transmitted permanently since
+the first rate apply, with a 10.67 ms V=0 window per clock trim) and a transmit
+interrupt more than one period late let the circular DMA repeat a stale half
+with no counter moving. Both fixed, with timestamps and durations added for
+every splice class (Phase H, `abc59a96f2bb`, deployed 13:22 UTC), then the one
+remaining invisible — a corrupt-but-complete AC-3/E-AC-3 frame decoding as
+garbage — closed by a syncframe CRC gate with silent substitution (Phase I,
+`cd7ad191ac77`, deployed 16:10 UTC). Deployed image: `cd7ad191ac77` on slot 2;
+`spdif_scr 0x00070737` (bit 5 set = V=0 on the wire). Owner rulings: dark
+intervals are intentional pauses and never the fault; glitches are sub-second on
+stable playback; records need timestamps and durations; known gaps are fixed in
+firmware regardless of which DAC is downstream (the listening-room DAC is a Topping
+D50 III, ES9039Q2M, which ignores V for muting). Owed: the listening pass.
+
 **Decisions taken this session (owner, in chat):**
 - Jitter is fixed by removing sources, never by widening the transmit
   cushion: added latency is unacceptable; 13 ms is below the perception

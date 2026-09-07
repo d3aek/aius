@@ -984,3 +984,13 @@ boot-adjacent stall, the ITCM ingress-regression mechanism), the hardware gates
 assurance drills, and the standing proposals (ITCM census / ldscript rework;
 the plain-posture FCB word0 check). Nothing in that terminal set is
 orchestrator-drivable work.
+
+**Postscript 2026-09-07.** The "reported as experienced" ruling was exercised the
+first time three days later: one brief stutter on stable AC-3 playback with no
+timed record. The read-only audit it triggered, the two wire-level faults it
+found (inverted S/PDIF validity bit; uncounted missed transmit fills), the
+timestamped instruments, the AC-3/E-AC-3 CRC gate and the two same-day OTA
+deploys are recorded as output-jitter Phases H and I
+([`aius-output-jitter.md`](aius-output-jitter.md)); the register's runtime section
+gained and then struck three entries the same day. This record is otherwise
+unchanged.

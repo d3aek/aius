@@ -312,8 +312,11 @@ ends left open:
 
 ## Open defects — runtime
 
-- **OPEN — `optical-app` suite is red at HEAD on its `test_bitstream_ui.py`
-  arm (seen 2026-09-07, both Phase H and Phase I runs).**
+- ~~**OPEN — `optical-app` suite is red at HEAD on its `test_bitstream_ui.py`
+  arm (seen 2026-09-07, both Phase H and Phase I runs).**~~ **FIXED
+  2026-09-07:** the word "bitstream" was dropped from the page's hint in
+  `6635e6c` (the action-bar consolidation); restored, the oracle passes, and
+  the page was re-synced to the card. Original entry:
   `firmware/test/optical-app/test_bitstream_ui.py:49` requires
   `firmware/sd/www/index.html` to contain the sentence "IEC 61937 bitstream
   framing and decoding cannot be bypassed"; the committed page contains no
