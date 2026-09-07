@@ -639,7 +639,17 @@ declined.
   the AC-3 DSP-page number must sit at ~16 ms, not below.
 - unit: parent-only
 
-### Phase H — glitch timestamps, validity polarity, missed-fill witness IN-PROGRESS (built 2026-09-07, OTA pending)
+### Phase H — glitch timestamps, validity polarity, missed-fill witness IN-PROGRESS (deployed 2026-09-07, listening pass owed)
+
+**Deployed 2026-09-07 ~12:35 UTC** over untagged home-signed OTA
+(`abc59a96f2bb+teensy41-optical-slot-a`, slot 2 → 1, `ab.sequence` 8, dark
+window 579,584 B programmed = verified, fault 0, `rollback_observed false`).
+First read on the new image: `clk_regs.spdif_scr 0x00070737` — bit 5 SET, V=0
+on the wire for the first time (the previous image read `0x…0717`); every new
+`clock.*` stamp present at 0, `invalid_windows 0`. The deploy tool grew
+`--auth-file` (`firmware/tools/ota/aius_ota_flash.py`) because the token-on-argv
+form is what the session guards refuse. Owed: the listening pass and the next
+reported glitch read against the stamps.
 
 **Trigger (2026-09-07, 11:14 UTC):** the owner heard one brief stutter (not a
 buzz) during stable AC-3 playback on `861252098a01`. Every timed board record

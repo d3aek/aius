@@ -322,6 +322,18 @@ ends left open:
   `crc_rejects` with a stamp, and substitute the AU (silence or repeat) so the
   fault is an underrun-class event with a record rather than audible garbage.
 
+- **OPEN — the post-link guards do not fire on the slot-A env (found
+  2026-09-07 while building `abc59a9`).** The four `[common]` post-link hooks
+  (`firmware/test/{network-transport,boot-target,itcm-placement,memory}/verify_target.py`)
+  gate their `AddPostAction` on `$PIOENV in {teensy41-optical,
+  teensy41-optical-fault}`, so a `build_ab.sh` run of `teensy41-optical-slot-a`
+  — the canonical deployed image since Phase 5 — prints no PASS lines by
+  construction. `itcm-placement`, `memory` and `boot-target` have standalone
+  CLIs and were run by hand over the slot-A build (all PASS); `network-transport`
+  has none and did not run. Fix shape: add the slot-A env to the gate (and the
+  slot-B env if it is ever built) so the canonical image is guarded, not only
+  the bench image.
+
 - **OBSERVATION — one brief stutter on stable AC-3 playback, 2026-09-07
   ~11:14 UTC, `861252098a01`, no timed record.** Every timed record placed only
   the intentional pause/sleep/jingle edges (11:10:54–11:11:49 UTC); the

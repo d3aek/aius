@@ -3,8 +3,9 @@
 operator client, promoted from the 2026-08-16 session's working uploader
 (aius-ota-resilience.md Phase 4b) with the incident's lessons folded in.
 
-  tools/ota/aius_ota_flash.py --device http://<addr> --auth <token> firmware.aiuo
-  tools/ota/aius_ota_flash.py --device http://<addr> --auth <token> --activate firmware.aiuo
+  tools/ota/aius_ota_flash.py --device http://<addr> --auth-file .secrets/aius-sd-auth firmware.aiuo
+  tools/ota/aius_ota_flash.py --device http://<addr> --auth-file .secrets/aius-sd-auth --activate firmware.aiuo
+  (--auth <token> is accepted for a hand-typed session; agents must use --auth-file)
 
 What it drives, in the state machine's ACTUAL order (aius_ota.h):
   stage (resumable chunked PUT) -> verify -> arm -> [enable-activation ->
@@ -186,7 +187,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--device", required=True,
                         help="base URL, e.g. http://192.0.2.66")
-    parser.add_argument("--auth", required=True, help="X-Aius-SD-Auth token")
+    auth = parser.add_mutually_exclusive_group(required=True)
+    auth.add_argument("--auth", help="X-Aius-SD-Auth token")
+    # The token on a command line is what the repo's guards refuse (aius
+    # CLAUDE.md §Device access); a file path is the sanctioned form, the same
+    # one the SD sync and recorder tools take.
+    auth.add_argument("--auth-file",
+                      help="file holding the X-Aius-SD-Auth token (one line)")
     parser.add_argument("--activate", action="store_true",
                         help="continue past ARMED through enable-activation "
                              "and activate (the commitment point; see the "
@@ -194,9 +201,13 @@ def main():
     parser.add_argument("container", help="signed .aiuo container")
     args = parser.parse_args()
 
+    token = args.auth
+    if args.auth_file is not None:
+        with open(args.auth_file, "r", encoding="utf-8") as handle:
+            token = handle.read().strip()
     with open(args.container, "rb") as handle:
         image = handle.read()
-    return run(Device(args.device, args.auth), image, args.activate)
+    return run(Device(args.device, token), image, args.activate)
 
 
 if __name__ == "__main__":
