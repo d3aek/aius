@@ -732,7 +732,15 @@ firmware regardless of which DAC is downstream.
   first time), and the next reported glitch read against the new stamps.
 - unit: parent-only
 
-### Phase I — AC-3 / E-AC-3 syncframe CRC before decode BUILT 2026-09-07 (OTA pending)
+### Phase I — AC-3 / E-AC-3 syncframe CRC before decode ✓ SHIPPED 2026-09-07
+
+**Deployed 2026-09-07 16:10 UTC** over untagged home-signed OTA
+(`cd7ad191ac77+teensy41-optical-slot-a`, slot 1 → 2, `ab.sequence` 11 after
+the healthy-boot self-commit, dark window 581,632 B programmed = verified,
+fault 0, `rollback_observed false`; one resumable `sd_busy` chunk retry during
+staging). First read: `spdif_scr 0x00070737` (V=0 held), `pipeline_diag.crc_rejects
+0`. Owed live, folded into Phase H's listening pass: `crc_rejects` static
+across a clean session.
 
 The one invisible fault Phase H's audit found and deliberately did not build
 (audit item 3): a burst that arrives complete and framed but corrupt inside.

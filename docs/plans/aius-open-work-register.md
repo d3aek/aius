@@ -330,7 +330,7 @@ ends left open:
   (class kept, `optical_main.cpp` ~8061) with bit errors inside a complete
   IEC 61937 frame decodes and plays as a crackle; the only hint is a
   same-window SIS `BITERR`/`SYMERR` latch.~~ **FIXED 2026-09-07 (output-jitter
-  Phase I), BUILT, OTA pending.** Mechanism: `aius_ac3_crc_check()` in
+  Phase I), deployed the same day as `cd7ad191ac77`.** Mechanism: `aius_ac3_crc_check()` in
   `lib/aius_pipeline/src/aius_pipeline.c` verifies every AC-3 **and** E-AC-3
   access unit before it is ever staged for decode — one table-driven
   CRC-16/0x8005 pass over at most 3,840 bytes, the 512-byte table pinned to
