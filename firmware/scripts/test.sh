@@ -550,6 +550,21 @@ pipeline)
 		"$fw_root/lib/aius_iec61937/src/aius_iec61937.c" \
 		"${eac3_objects[@]}"
 	"$out" "$fw_root/tools/iec_corpus/vectors"
+	# The AC-3 / E-AC-3 syncframe CRC that gates every compressed access
+	# unit before decode. It links the same pipeline TU (the check ships
+	# inside it) but exercises no decoder route, so it stays on the
+	# flag-off build and reads the RAW codec corpora rather than the
+	# IEC-framed one -- the frame sizes, odd-word 44.1 kHz variants and
+	# frame_size_code range it needs live there.
+	crc_out="$build_dir/ac3-crc"
+	pipeline_build "$crc_out" \
+		"-I$fw_root/lib/aius_pipeline/include" \
+		"-I$fw_root/lib/aius_iec61937/include" \
+		"$fw_root/test/pipeline/test_ac3_crc.c" \
+		"$fw_root/lib/aius_pipeline/src/aius_pipeline.c" \
+		"$fw_root/lib/aius_iec61937/src/aius_iec61937.c"
+	"$crc_out" "$fw_root/tools/ac3_vectors/vectors" \
+		"$fw_root/tools/eac3_vectors/vectors"
 	;;
 dsp)
 	# 5.1->stereo downmix + Direct Form I biquad EQ known-answer tests. -ffp-contract=off

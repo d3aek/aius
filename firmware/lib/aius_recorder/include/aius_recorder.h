@@ -135,7 +135,7 @@ typedef enum {
 	AIUS_RECORDER_TRIGGER_CARRIER_LOSS,
 	AIUS_RECORDER_TRIGGER_LIMITER_GR,
 	AIUS_RECORDER_TRIGGER_OPERATOR,
-	/* The two producer-posted triggers, appended rather than inserted: the
+	/* The producer-posted triggers, appended rather than inserted: the
 	 * value is a wire fact (GET /api/recorder serves its name) and every
 	 * other one keeps its number.
 	 *
@@ -143,24 +143,32 @@ typedef enum {
 	 * to its target in one deliberate skip.
 	 * MISSED_FILL: a transmit interrupt arrived a whole period late, so the
 	 * DMA re-transmitted a stale half -- an audible repeat that advances no
-	 * underrun counter. */
+	 * underrun counter.
+	 * CRC_REJECT: a compressed access unit failed its own syncframe CRC and
+	 * was replaced by silence rather than decoded. The capture is what says
+	 * whether the source or the receiver produced the corruption, so it is
+	 * worth freezing on: the ring holds the audio either side of the
+	 * substituted unit. */
 	AIUS_RECORDER_TRIGGER_GOVERNOR_TRIM,
-	AIUS_RECORDER_TRIGGER_MISSED_FILL
+	AIUS_RECORDER_TRIGGER_MISSED_FILL,
+	AIUS_RECORDER_TRIGGER_CRC_REJECT
 } AiusRecorderTrigger;
 
 /* Automatic-trigger enable bits (the operator is never masked). Defaults at
- * boot: overrun, underrun, carrier, governor-trim and missed-fill enabled; GR
- * disabled until configured (a threshold has no universal default). */
+ * boot: overrun, underrun, carrier, governor-trim, missed-fill and crc-reject
+ * enabled; GR disabled until configured (a threshold has no universal
+ * default). */
 #define AIUS_RECORDER_MASK_OVERRUN (1u << 0)
 #define AIUS_RECORDER_MASK_UNDERRUN (1u << 1)
 #define AIUS_RECORDER_MASK_CARRIER_LOSS (1u << 2)
 #define AIUS_RECORDER_MASK_LIMITER_GR (1u << 3)
 #define AIUS_RECORDER_MASK_GOVERNOR_TRIM (1u << 4)
 #define AIUS_RECORDER_MASK_MISSED_FILL (1u << 5)
+#define AIUS_RECORDER_MASK_CRC_REJECT (1u << 6)
 #define AIUS_RECORDER_MASK_DEFAULT \
 	(AIUS_RECORDER_MASK_OVERRUN | AIUS_RECORDER_MASK_UNDERRUN | \
 	 AIUS_RECORDER_MASK_CARRIER_LOSS | AIUS_RECORDER_MASK_GOVERNOR_TRIM | \
-	 AIUS_RECORDER_MASK_MISSED_FILL)
+	 AIUS_RECORDER_MASK_MISSED_FILL | AIUS_RECORDER_MASK_CRC_REJECT)
 #define AIUS_RECORDER_MASK_ALL \
 	(AIUS_RECORDER_MASK_DEFAULT | AIUS_RECORDER_MASK_LIMITER_GR)
 
@@ -385,8 +393,8 @@ AiusStatus aius_recorder_freeze(AiusRecorder *r);
  * the decision -- it is the one that made the splice or lost the period.
  *
  * `which` must be one of the producer-posted triggers (GOVERNOR_TRIM,
- * MISSED_FILL); anything else is a no-op, so a trigger with an epoch-side or
- * block-side evaluation can never be armed from here by mistake.
+ * MISSED_FILL, CRC_REJECT); anything else is a no-op, so a trigger with an
+ * epoch-side or block-side evaluation can never be armed from here by mistake.
  *
  * Called from the producer immediately BEFORE the block that follows the event,
  * so that block's aius_recorder_producer_block() acknowledges the token and the

@@ -893,7 +893,7 @@ static FLASHMEM void fault_record_capture(void)
 	g_fault_record_valid = true;
 }
 /* The dispatcher's mask mirror must equal the recorder's own bits -- the
- * measure probe-cap rule, applied to six constants. */
+ * measure probe-cap rule, applied to seven constants. */
 static_assert(AIUS_OPTICAL_APP_RECORDER_MASK_OVERRUN ==
               AIUS_RECORDER_MASK_OVERRUN, "recorder mask mirror drifted");
 static_assert(AIUS_OPTICAL_APP_RECORDER_MASK_UNDERRUN ==
@@ -906,6 +906,8 @@ static_assert(AIUS_OPTICAL_APP_RECORDER_MASK_GOVERNOR_TRIM ==
               AIUS_RECORDER_MASK_GOVERNOR_TRIM, "recorder mask mirror drifted");
 static_assert(AIUS_OPTICAL_APP_RECORDER_MASK_MISSED_FILL ==
               AIUS_RECORDER_MASK_MISSED_FILL, "recorder mask mirror drifted");
+static_assert(AIUS_OPTICAL_APP_RECORDER_MASK_CRC_REJECT ==
+              AIUS_RECORDER_MASK_CRC_REJECT, "recorder mask mirror drifted");
 
 /* Reset requests stay in epoch context. AUDIO flushes queued ingress and resets
  * the pipeline before acknowledging the sequence; update() only publishes
@@ -1007,7 +1009,18 @@ static char g_auth_token[AIUS_AUTH_TOKEN_STORAGE_SIZE];
  *                              many since the previous post. Posted from the
  *                              producer's block tap; the ISR itself has
  *                              already corrected the ring and stamped the bus
- *                              registers (clock.tx_missed_fill_*). */
+ *                              registers (clock.tx_missed_fill_*).
+ *   18  AC3_CRC_REJECT         one compressed access unit failed its own
+ *                              syncframe CRC and was replaced by silence
+ *                              instead of decoded. detail: the rejected
+ *                              frame's byte length (64..3,840 for AC-3), which
+ *                              is what identifies WHICH unit against a capture
+ *                              and distinguishes a corrupt frame from a
+ *                              plausible one. Posted from the producer's block
+ *                              tap on the first substituted block, so the
+ *                              event lands beside the audio it replaced;
+ *                              pipeline_diag.crc_rejects is the lifetime total
+ *                              and crc_reject_last_at_ms the stamp. */
 enum AiusEventType : uint8_t {
 	AIUS_EVENT_STATE = 1,
 	AIUS_EVENT_TEST_TONE = 2,
@@ -1026,6 +1039,7 @@ enum AiusEventType : uint8_t {
 	AIUS_EVENT_GOVERNOR_TRIM = 15,
 	AIUS_EVENT_CLOCK_TRIM = 16,
 	AIUS_EVENT_TX_MISSED_FILL = 17,
+	AIUS_EVENT_AC3_CRC_REJECT = 18,
 };
 
 /* Plain DTCM .bss, deliberately not DMAMEM: OCRAM free sits at the defect-26
@@ -1442,6 +1456,17 @@ static inline void underrun_episode_observe(uint32_t now_ms, bool gate_open)
 /* Thread-side baseline for the ISR's missed-fill counter. */
 static uint32_t g_tx_missed_fills_published;
 
+/* The AC-3 / E-AC-3 syncframe-CRC reject edge: the baseline the block tap
+ * diffs against, and WHEN the last reject happened. The lifetime total lives
+ * in the pipeline's own service diag (pipeline_diag.crc_rejects); what the
+ * pipeline cannot supply is a wall clock, because it is portable C with no
+ * notion of one. So the stamp is taken here, at the first substituted block --
+ * the same division of labour the governor and the missed-fill witness use.
+ * 0 = no CRC reject this boot (millis() is 0 only in the first millisecond,
+ * long before any compressed unit has been framed). */
+static uint32_t g_pipeline_crc_rejects_published;
+static uint32_t g_pipeline_crc_reject_at_ms; /* .bss = 0 */
+
 /* The missed-fill counter's edge, observed from the same per-block tap. The ISR
  * has already corrected the ring's occupancy and stamped the fault
  * (aius_spdif_tx24.h); what it cannot do from interrupt context is post an
@@ -1607,6 +1632,18 @@ public:
 			? aius_pipeline_get_parser_diag(g_pipeline, out)
 			: AIUS_INVALID_ARG;
 	}
+	/* Two words, not the whole service diag: this is read on EVERY
+	 * committed output block (crc_reject_observe) and the struct copy is
+	 * too much at that cadence. AUDIO owns the pipeline and this tap runs
+	 * inside its own call stack, so no critical section is needed. */
+	AiusStatus pipeline_crc_rejects(uint32_t *rejects,
+	                                uint32_t *last_bytes) const
+	{
+		return g_pipeline != nullptr
+			? aius_pipeline_get_crc_rejects(g_pipeline, rejects,
+			                                last_bytes)
+			: AIUS_INVALID_ARG;
+	}
 	AiusStatus reclass_counters(uint32_t *retype, uint32_t *reclassify) const
 	{
 		return g_pipeline != nullptr
@@ -1638,6 +1675,13 @@ public:
 			aius_audio_service_clear_diag(&g_audio_service);
 		if (g_pipeline != nullptr)
 			aius_pipeline_clear_service_diag(g_pipeline);
+		/* The CRC-reject edge baseline and its stamp rebase with the
+		 * counter they describe -- a zeroed count beside a live
+		 * timestamp reads as a reject that never happened, and a stale
+		 * baseline above a zeroed counter would swallow the next real
+		 * edge. Same epoch-serial thread as the clear itself. */
+		g_pipeline_crc_rejects_published = 0u;
+		g_pipeline_crc_reject_at_ms = 0u;
 		/* The dark-interval instrument diffs committed_blocks, which the
 		 * clear above just zeroed; rebase its baseline in the same epoch-
 		 * serial thread so the drop never reads as a commit (which would
@@ -1817,6 +1861,53 @@ private:
 	AiusStatus consume_block(void *ctx, const AiusPcmBlock *block)
 	{
 		return static_cast<AiusAudioProcessor *>(ctx)->enqueue(block);
+	}
+
+	/* The pipeline's CRC-reject edge, published from the per-block tap for
+	 * exactly the reason the missed-fill edge is: the pipeline counted the
+	 * refusal from inside its own service call, and from there it can
+	 * neither post an event nor freeze a capture.
+	 *
+	 * Read on the block that FOLLOWS the reject -- which is the first
+	 * substituted (silent) block, because the substitution is set up and
+	 * then emitted in the same service step -- so the stamp, the event and
+	 * the recorder token all land beside the silence they describe. The
+	 * token set here is acknowledged by THIS block's recorder tap below,
+	 * so the capture ends at the substituted block with the audio from
+	 * before the corruption intact: exactly the shape a governor splice
+	 * and an underrun freeze have.
+	 *
+	 * Collapsed like every other counter edge (one event carrying the
+	 * newest reject's size, a decrease resyncs rather than reporting four
+	 * billion), because the operator's counter clear zeroes the source.
+	 * Cost per block when nothing is wrong: two loads and a compare. */
+	__attribute__((section(".flashmem.audio_crc_observe")))
+	void crc_reject_observe(void)
+	{
+		uint32_t rejects = 0u;
+		uint32_t last_bytes = 0u;
+		if (pipeline_crc_rejects(&rejects, &last_bytes) != AIUS_OK)
+			return;
+		const uint32_t delta = rejects - g_pipeline_crc_rejects_published;
+		if (delta == 0u || delta > 0x7FFFFFFFu) {
+			g_pipeline_crc_rejects_published = rejects;
+			return;
+		}
+		g_pipeline_crc_rejects_published = rejects;
+		g_pipeline_crc_reject_at_ms = millis();
+		if (g_recorder_present) {
+			aius_recorder_bank_note_producer_event(
+				&g_recorder_bank,
+				AIUS_RECORDER_TRIGGER_CRC_REJECT);
+		}
+		/* detail is the REJECTED FRAME'S BYTE LENGTH, not the delta:
+		 * the delta is 1 in every case that matters, and the length is
+		 * what names the unit against a capture and separates a
+		 * plausible frame from a nonsense one. AC-3 tops out at 3,840
+		 * bytes so the clamp is a contract statement, not a path. */
+		record_event(AIUS_EVENT_AC3_CRC_REJECT, current_state(),
+		             last_bytes > 0xFFFFu ? (uint16_t)0xFFFFu
+		                                  : (uint16_t)last_bytes);
 	}
 
 	__attribute__((section(".flashmem.audio_enqueue")))
@@ -2028,6 +2119,11 @@ private:
 		 * half. The ISR corrected the ring; this publishes it. Cost per
 		 * block when nothing is wrong: one load and a compare. */
 		tx_missed_fill_observe();
+		/* And the fault the OUTPUT counters cannot see at all: a
+		 * compressed access unit that arrived complete and corrupt, was
+		 * refused by its own syncframe CRC and is being substituted by
+		 * the zeros in this very block. */
+		crc_reject_observe();
 		/* Into the transmit ring, at OUTPUT_WIDTH_BITS.
 		 *
 		 * At 24 bits -- the shipped selection -- this is a copy and nothing else:
@@ -3701,6 +3797,15 @@ static FLASHMEM bool http_pipeline_diag_json(char *output, size_t capacity,
 	                        "\"eac3_decode_cycles\":%llu,"
 	                        "\"eac3_alloc_count\":%lu,"
 	                        "\"decode_rejects\":%lu,"
+	                        /* Complete-but-corrupt compressed units refused
+	                         * before decode and substituted with silence,
+	                         * and when the last one happened. A climbing
+	                         * count with decode_rejects and au_abandons
+	                         * flat is a SOURCE fault (or a receiver
+	                         * micro-flap), not a board one -- and the stamp
+	                         * is what places it against a heard crackle. */
+	                        "\"crc_rejects\":%lu,"
+	                        "\"crc_reject_last_at_ms\":%lu,"
 	                        "\"bursts_ok\":%lu,"
 	                        "\"rejects_no_space\":%lu,"
 	                        "\"rejects_malformed\":%lu,"
@@ -3727,6 +3832,8 @@ static FLASHMEM bool http_pipeline_diag_json(char *output, size_t capacity,
 	                        (unsigned long long)eac3_metrics.decode_cycles,
 	                        (unsigned long)eac3_metrics.alloc_count,
 	                        (unsigned long)service.decode_rejects,
+	                        (unsigned long)service.crc_rejects,
+	                        (unsigned long)g_pipeline_crc_reject_at_ms,
 	                        (unsigned long)iec.bursts_ok,
 	                        (unsigned long)iec.rejects_no_space,
 	                        (unsigned long)iec.rejects_malformed,
@@ -6994,6 +7101,7 @@ static FLASHMEM const char *recorder_trigger_name(uint32_t trigger)
 	case AIUS_RECORDER_TRIGGER_OPERATOR: return "operator";
 	case AIUS_RECORDER_TRIGGER_GOVERNOR_TRIM: return "governor_trim";
 	case AIUS_RECORDER_TRIGGER_MISSED_FILL: return "missed_fill";
+	case AIUS_RECORDER_TRIGGER_CRC_REJECT: return "crc_reject";
 	case AIUS_RECORDER_TRIGGER_NONE:
 	default: return "none";
 	}
@@ -7015,6 +7123,7 @@ static FLASHMEM const char *recorder_trigger_name(uint32_t trigger)
  *                                                        500 + 11 x M
  *
  *   envelope: 15 bank scalars + the config object + "slots":[]       616
+ *             "crc_reject":false, (2026-09-07)                        20
  *             rounded up for arithmetic drift                        680
  *
  * Every append is still capacity-checked, so exceeding the real buffer would
@@ -7217,6 +7326,7 @@ static FLASHMEM size_t app_write_recorder(void *, uint8_t *body,
 		"\"config\":{\"overrun\":%s,\"underrun\":%s,"
 		"\"carrier_loss\":%s,\"limiter_gr\":%s,"
 		"\"governor_trim\":%s,\"missed_fill\":%s,"
+		"\"crc_reject\":%s,"
 		"\"gr_threshold_db\":%.1f,\"gr_hold_blocks\":%lu,"
 		"\"postroll_blocks\":%lu},",
 		(active.trigger_mask & AIUS_RECORDER_MASK_OVERRUN) ? "true"
@@ -7230,6 +7340,8 @@ static FLASHMEM size_t app_write_recorder(void *, uint8_t *body,
 		(active.trigger_mask & AIUS_RECORDER_MASK_GOVERNOR_TRIM)
 			? "true" : "false",
 		(active.trigger_mask & AIUS_RECORDER_MASK_MISSED_FILL)
+			? "true" : "false",
+		(active.trigger_mask & AIUS_RECORDER_MASK_CRC_REJECT)
 			? "true" : "false",
 		(double)active.gr_threshold_db,
 		(unsigned long)active.gr_hold_blocks,

@@ -2453,7 +2453,7 @@ static void test_recorder_routes(void)
 	static const char *const good_config =
 		"{\"overrun\":true,\"underrun\":false,\"carrier_loss\":true,"
 		"\"limiter_gr\":true,\"governor_trim\":true,"
-		"\"missed_fill\":true,"
+		"\"missed_fill\":true,\"crc_reject\":true,"
 		"\"gr_threshold_db\":-6.5,"
 		"\"gr_hold_blocks\":3,\"postroll_blocks\":0}";
 	static const struct { const char *line; const char *body; } gated[] = {
@@ -2464,42 +2464,48 @@ static void test_recorder_routes(void)
 		{ "PUT /api/recorder/config",
 		  "{\"overrun\":true,\"underrun\":true,\"carrier_loss\":true,"
 		  "\"limiter_gr\":false,\"governor_trim\":true,"
-		  "\"missed_fill\":true,"
+		  "\"missed_fill\":true,\"crc_reject\":true,"
 		  "\"gr_threshold_db\":0,"
 		  "\"gr_hold_blocks\":1,\"postroll_blocks\":188}" }
 	};
-	/* Refused shapes: a missing key, a duplicate, an unknown key, a
-	 * positive threshold, an exponent-carrying number, and trailing
-	 * bytes. */
+	/* Refused shapes: a missing key (twice -- once for the newest flag, so
+	 * an added key is proven REQUIRED and not merely accepted), a
+	 * duplicate, an unknown key, a positive threshold, an
+	 * exponent-carrying number, and trailing bytes. */
 	static const char *const bad_bodies[] = {
+		"{\"overrun\":true,\"underrun\":false,\"carrier_loss\":true,"
+		"\"limiter_gr\":true,\"governor_trim\":true,"
+		"\"missed_fill\":true,\"crc_reject\":true,"
+		"\"gr_threshold_db\":-6.5,"
+		"\"gr_hold_blocks\":3}",
 		"{\"overrun\":true,\"underrun\":false,\"carrier_loss\":true,"
 		"\"limiter_gr\":true,\"governor_trim\":true,"
 		"\"missed_fill\":true,"
 		"\"gr_threshold_db\":-6.5,"
-		"\"gr_hold_blocks\":3}",
+		"\"gr_hold_blocks\":3,\"postroll_blocks\":0}",
 		"{\"overrun\":true,\"overrun\":true,\"underrun\":false,"
 		"\"carrier_loss\":true,\"limiter_gr\":true,"
-		"\"governor_trim\":true,\"missed_fill\":true,"
+		"\"governor_trim\":true,\"missed_fill\":true,\"crc_reject\":true,"
 		"\"gr_threshold_db\":-6.5,\"gr_hold_blocks\":3,"
 		"\"postroll_blocks\":0}",
 		"{\"overrun\":true,\"underrun\":false,\"carrier_loss\":true,"
 		"\"limiter_gr\":true,\"governor_trim\":true,"
-		"\"missed_fill\":true,"
+		"\"missed_fill\":true,\"crc_reject\":true,"
 		"\"gr_threshold_db\":-6.5,"
 		"\"gr_hold_blocks\":3,\"postroll_blocks\":0,\"extra\":1}",
 		"{\"overrun\":true,\"underrun\":false,\"carrier_loss\":true,"
 		"\"limiter_gr\":true,\"governor_trim\":true,"
-		"\"missed_fill\":true,"
+		"\"missed_fill\":true,\"crc_reject\":true,"
 		"\"gr_threshold_db\":6.5,"
 		"\"gr_hold_blocks\":3,\"postroll_blocks\":0}",
 		"{\"overrun\":true,\"underrun\":false,\"carrier_loss\":true,"
 		"\"limiter_gr\":true,\"governor_trim\":true,"
-		"\"missed_fill\":true,"
+		"\"missed_fill\":true,\"crc_reject\":true,"
 		"\"gr_threshold_db\":-1e2,"
 		"\"gr_hold_blocks\":3,\"postroll_blocks\":0}",
 		"{\"overrun\":true,\"underrun\":false,\"carrier_loss\":true,"
 		"\"limiter_gr\":true,\"governor_trim\":true,"
-		"\"missed_fill\":true,"
+		"\"missed_fill\":true,\"crc_reject\":true,"
 		"\"gr_threshold_db\":-6.5,"
 		"\"gr_hold_blocks\":3,\"postroll_blocks\":0}x"
 	};
@@ -2539,7 +2545,7 @@ static void test_recorder_routes(void)
 	fixture.fake.recorder_accept = true;
 
 	/* A good config passes every parsed value through: mask bits from the
-	 * six booleans, the dB as scanned, hold and post-roll verbatim
+	 * seven booleans, the dB as scanned, hold and post-roll verbatim
 	 * (post-roll 0 is legal: freeze at the trigger boundary). */
 	expect_immediate(dispatch_request(&fixture, "PUT /api/recorder/config",
 	                                  auth, good_config, -1),
@@ -2549,7 +2555,8 @@ static void test_recorder_routes(void)
 	        AIUS_OPTICAL_APP_RECORDER_MASK_CARRIER_LOSS |
 	        AIUS_OPTICAL_APP_RECORDER_MASK_LIMITER_GR |
 	        AIUS_OPTICAL_APP_RECORDER_MASK_GOVERNOR_TRIM |
-	        AIUS_OPTICAL_APP_RECORDER_MASK_MISSED_FILL));
+	        AIUS_OPTICAL_APP_RECORDER_MASK_MISSED_FILL |
+	        AIUS_OPTICAL_APP_RECORDER_MASK_CRC_REJECT));
 	assert(fixture.fake.last_recorder_gr_db == -6.5f);
 	assert(fixture.fake.last_recorder_hold == 3u);
 	assert(fixture.fake.last_recorder_postroll == 0u);
@@ -3666,7 +3673,7 @@ static void test_route_coverage(void)
 		{ "PUT /api/recorder/config", "X-Aius-SD-Auth: token\r\n",
 		  "{\"overrun\":true,\"underrun\":true,\"carrier_loss\":true,"
 		  "\"limiter_gr\":false,\"governor_trim\":true,"
-		  "\"missed_fill\":true,"
+		  "\"missed_fill\":true,\"crc_reject\":true,"
 		  "\"gr_threshold_db\":0,"
 		  "\"gr_hold_blocks\":1,\"postroll_blocks\":188}", -1 },
 		{ "GET /api/recorder/data?offset=0&length=8&generation=0",

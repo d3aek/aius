@@ -5,7 +5,7 @@ scope: component
 component: aius
 status: current
 tags: [aius, firmware, teensy, audio, memory, io]
-updated: 2026-08-04
+updated: 2026-09-07
 toc: true
 ---
 
@@ -284,6 +284,52 @@ slot; it was 131,072 B before the slot grew past the DTS need), and the post-lin
 memory gate also proves the arena sum and that at least 131,232 B of OCRAM remains
 free — a regression ratchet whose dated lowering history lives beside the constant
 (`test/memory/verify_target.py:21`, `:46`).
+
+**A complete-but-corrupt compressed burst is now refused, not decoded (2026-09-07).**
+A DPLL micro-flap shorter than three epochs keeps the pipeline class, so the parser
+hands over a full-length access unit with bit errors inside it. Neither liba52 nor the
+vendored E-AC-3 fork validates a frame's own CRC, so that unit used to decode and play:
+one 32 ms burst of full-scale crackle, counted by nothing and placed by nothing. Every
+AC-3 and E-AC-3 access unit is now verified before decode by
+`aius_ac3_crc_check()` (`lib/aius_pipeline/src/aius_pipeline.c`), one table-driven
+CRC-16/0x8005 pass over at most 3,840 bytes with the 512-byte table in `.progmem` (that
+is FLASH; the framework's link script copies every other `.rodata` into DTCM):
+
+- **The spans.** crc2 is the CRC over `frame[2 .. size)` with init 0 and a zero
+  residue — the trailing two bytes *are* the CRC, so including them makes it a
+  residue test rather than a compare. crc1 (AC-3 only; an E-AC-3 syncframe's bytes
+  2-3 are `strmtyp`/`frmsiz`) is the same accumulation stopped at
+  `((size >> 2) + (size >> 4)) << 1`, i.e. 5/8 of the frame rounded DOWN to an even
+  byte count. The rounding is load-bearing at 44.1 kHz, whose frame sizes are odd
+  word counts: a 138-byte frame's exact 5/8 is 86.25 bytes and the encoder's boundary
+  is 84. Because crc1's span is a byte-for-byte PREFIX of crc2's, one pass checks
+  both — crc1 costs nothing on an accepted frame and short-circuits a header-corrupt
+  one after 5/8 of the bytes. Both spans are pinned by the committed corpus rather
+  than by prose: `test/pipeline/test_ac3_crc.c` walks every interior end offset of a
+  real frame of each family and requires the residue to be zero at exactly those two
+  ends for AC-3 and at the frame end alone for E-AC-3.
+- **The substitution.** A rejected AC-3 unit is replaced by the six 256-frame blocks
+  of zeros the decode would have produced, carrying the channel count, mask and rate
+  of the last unit that DID decode — remembered rather than read from the corrupt
+  frame's own header, which is precisely what crc1 may have failed. The class, the
+  parser lock, the codec residency, the audio generation and the transmit ring's
+  occupancy all survive; the decoder-reject path that abandons the unit and resets the
+  class is far too heavy for a fault the source committed. Before any unit of that
+  family has decoded there is no cadence to hold and no ring to protect, so the unit
+  is simply dropped. The cut to zero is a hard step by design: a fade-out would need
+  the previous block's tail, which is already committed and whose plane the decoder
+  has reused, and the fade-in at the far end is not implementable without delaying the
+  decoded stream by a block — so a ramp removes one of two clicks for real hot-path
+  cost, and the downstream true-peak limiter reduces gain on peaks but has no floor
+  behaviour to soften either step.
+- **The record.** `pipeline_diag.crc_rejects` and `pipeline_diag.crc_reject_last_at_ms`
+  on `GET /api/status`, event type 18 carrying the rejected frame's byte length, and
+  the `crc_reject` flight-recorder trigger (§PSRAM flight recorder). The counter is
+  the pipeline's; the stamp, the event and the recorder freeze are published by the
+  producer's block tap on the first substituted block, because the pipeline is
+  portable C with no wall clock and no event ring — the same division of labour the
+  governor trim and the missed-fill witness use. A climbing `crc_rejects` with
+  `decode_rejects` and `au_abandons` flat is a SOURCE fault, not a board one.
 
 ## S/PDIF output — the transmit half of the hot path
 
@@ -743,18 +789,19 @@ gate and carrier: at most 32 KiB per epoch, ~2× the 384 KiB/s fill rate, so a
 post-stall backlog clears (`src/optical_main.cpp:7029`). Both producer and drain are
 serial epoch work — nothing DMAs the PSRAM, so there is deliberately no cache
 maintenance. Event triggers (overrun, underrun, carrier loss, limiter gain reduction,
-governor trim, missed fill) are a configurable mask mirrored against the recorder's own
-bits by `static_assert` (`src/optical_main.cpp:773`).
+governor trim, missed fill, CRC reject) are a configurable mask mirrored against the
+recorder's own bits by `static_assert` (`src/optical_main.cpp:773`).
 
-**The two producer-posted triggers (2026-09-07) freeze on an output fault the audio
-itself carries.** `governor_trim` and `missed_fill` are set through one entry point,
-`aius_recorder_note_producer_event()`, by the caller that detected the fault — the
-governor at its trim, the block tap at the ISR's missed fill — rather than being
-re-evaluated inside the recorder: the caller is the one that made the splice or lost
-the period. The token is consumed by the very next producer block, so the capture ends
-at the damaged block with the history before it intact, exactly as an underrun freeze
-does. Both default to enabled and are wire-configurable as `governor_trim` /
-`missed_fill` in `PUT /api/recorder/config`.
+**The three producer-posted triggers (2026-09-07) freeze on a fault the audio itself
+carries.** `governor_trim`, `missed_fill` and `crc_reject` are set through one entry
+point, `aius_recorder_note_producer_event()`, by the caller that detected the fault —
+the governor at its trim, the block tap at the ISR's missed fill, the block tap again
+at the pipeline's CRC reject — rather than being re-evaluated inside the recorder: the
+caller is the one that made the splice, lost the period, or refused the access unit.
+The token is consumed by the very next producer block, so the capture ends at the
+damaged block with the history before it intact, exactly as an underrun freeze does.
+All three default to enabled and are wire-configurable as `governor_trim` /
+`missed_fill` / `crc_reject` in `PUT /api/recorder/config`.
 
 **HTTP surface.** `GET /api/recorder` (state), `POST /api/recorder/freeze` / `thaw`,
 `PUT /api/recorder/config` (mask + GR threshold), and

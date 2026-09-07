@@ -6,7 +6,7 @@ component: aius
 subtype: backlog
 status: in-progress
 tags: [aius, backlog, debt, defects]
-updated: 2026-09-04
+updated: 2026-09-07
 toc: true
 ---
 
@@ -312,15 +312,42 @@ ends left open:
 
 ## Open defects — runtime
 
-- **OPEN — corrupted-but-complete AC-3 burst decodes as garbage, uncounted
+- **OPEN — `optical-app` suite is red at HEAD on its `test_bitstream_ui.py`
+  arm (seen 2026-09-07, both Phase H and Phase I runs).**
+  `firmware/test/optical-app/test_bitstream_ui.py:49` requires
+  `firmware/sd/www/index.html` to contain the sentence "IEC 61937 bitstream
+  framing and decoding cannot be bypassed"; the committed page contains no
+  occurrence of "bitstream" at all, so the copy was dropped in a page rewrite
+  (the 2026-09 SD UI palette/tab-menu/lede work is the likely edge) and the
+  contract test was left behind. The suite's C oracle passes. Fix shape: either
+  restore the sentence to the page (the test's intent was that the UI says
+  bitstream decoding is not bypassable) or retire the assertion with the
+  owner's say-so; a one-line copy edit, not code.
+
+- ~~**OPEN — corrupted-but-complete AC-3 burst decodes as garbage, uncounted
   (found 2026-09-07, audit for output-jitter Phase H).** liba52 performs no
   CRC check, so a burst hit by a DPLL micro-flap shorter than three epochs
   (class kept, `optical_main.cpp` ~8061) with bit errors inside a complete
   IEC 61937 frame decodes and plays as a crackle; the only hint is a
-  same-window SIS `BITERR`/`SYMERR` latch. Not a stutter mechanism. Fix shape:
-  validate the AC-3 CRC1/CRC2 in the parser or the decoder wrapper, count
-  `crc_rejects` with a stamp, and substitute the AU (silence or repeat) so the
-  fault is an underrun-class event with a record rather than audible garbage.
+  same-window SIS `BITERR`/`SYMERR` latch.~~ **FIXED 2026-09-07 (output-jitter
+  Phase I), BUILT, OTA pending.** Mechanism: `aius_ac3_crc_check()` in
+  `lib/aius_pipeline/src/aius_pipeline.c` verifies every AC-3 **and** E-AC-3
+  access unit before it is ever staged for decode — one table-driven
+  CRC-16/0x8005 pass over at most 3,840 bytes, the 512-byte table pinned to
+  `.progmem` (FLASH, not the DTCM every other `.rodata` is copied into), with
+  crc1's 5/8-prefix residue read out of the same accumulation so it costs
+  nothing on an accepted frame. The vendored E-AC-3 fork does not CRC-check
+  either, hence both families. A rejected AC-3 unit is SUBSTITUTED rather than
+  abandoned: six 256-frame blocks of zeros at the shape of the last unit that
+  did decode (remembered, never read from the corrupt frame's own header —
+  that is what crc1 may have failed), so the class, the parser lock, the codec
+  residency, the audio generation and the ring's occupancy all survive; the
+  decoder-reject path that resets the class was far too heavy for a fault the
+  source committed. Recorded as `pipeline_diag.crc_rejects` +
+  `crc_reject_last_at_ms`, event type 18 (detail: the rejected frame's byte
+  length) and the `crc_reject` flight-recorder trigger. Spans pinned by the
+  committed corpus in `test/pipeline/test_ac3_crc.c`, substitution pinned by
+  `crc-substitute` in the `pipeline` suite.
 
 - **OPEN — the post-link guards do not fire on the slot-A env (found
   2026-09-07 while building `abc59a9`).** The four `[common]` post-link hooks

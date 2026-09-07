@@ -47,7 +47,12 @@ typedef enum {
 	 * sliced on output). Only ever set when AIUS_PIPELINE_EAC3 compiled the
 	 * route in: dispatch refuses family 21 before staging otherwise. */
 	PENDING_EAC3_AU,
-	PENDING_EAC3_OUTPUT
+	PENDING_EAC3_OUTPUT,
+	/* A CRC-rejected access unit's cadence, emitted as zeros. Deliberately
+	 * NOT one of the *_OUTPUT states: it owns no decoder, slices no
+	 * decoder-owned block, and must not be reachable by any recovery path
+	 * that assumes a resident decode is in flight. */
+	PENDING_SILENCE
 } PendingKind;
 
 struct AiusPipeline {
@@ -130,6 +135,28 @@ struct AiusPipeline {
 	uint32_t reclassify_count;
 	uint32_t squelched_frames;
 
+	/* CRC substitution geometry: the SHAPE of the last access unit the named
+	 * family decoded successfully on this link. A CRC-rejected unit is
+	 * replaced by that many frames of zeros in that many blocks, so the
+	 * transmit ring keeps receiving audio at the cadence the decode would
+	 * have produced and nothing downstream sees a gap, a rate change or a
+	 * channel-count change.
+	 *
+	 * The shape has to be REMEMBERED rather than read from the rejected
+	 * frame's own header: crc1 covering the header is exactly what a
+	 * corrupt frame may have failed, so its fscod/acmod/numblkscod are the
+	 * one thing that must not be trusted here. `sub_family` 0 means no unit
+	 * has decoded yet, and then a reject is simply dropped -- there is no
+	 * established cadence to hold, and nothing has reached the ring to
+	 * drain. */
+	uint16_t sub_family;       /* 0 none; else canonical Pc, 1 or 21 */
+	uint16_t sub_channels;
+	uint32_t sub_mask;
+	uint32_t sub_rate_hz;
+	uint32_t sub_au_frames;    /* frames one access unit of that family is */
+	uint32_t sub_block_frames; /* frames per substituted block */
+	uint32_t sub_frames_left;  /* frames of the rejected AU still to emit */
+
 	PendingKind pending;
 	AiusPcmBlock retained_block;
 	AiusPcmBlock sink_block;
@@ -166,6 +193,18 @@ _Static_assert(AIUS_PIPELINE_PCM_CONFIRM_WORDS >=
  * PCM run. */
 _Static_assert(AIUS_PIPELINE_PCM_CONFIRM_WORDS % 2u == 0u,
                "confirm boundary must be even so staging resumes L-first");
+
+/* A substituted silence block borrows the PCM pass-through's staging plane
+ * rather than carrying its own (see fill_silence_descriptor): the instance
+ * bound below is the scarce DTCM this pipeline is allowed, and a dedicated
+ * 512-frame zero plane would cost a whole kilobyte of it for a path that runs
+ * only on a corrupt frame. Both cadences the substitution emits -- AC-3's
+ * 256-frame block and the 512-frame output slice E-AC-3 is cut into -- must
+ * therefore fit inside that plane. */
+_Static_assert(AIUS_A52_BLOCK_SAMPLES <= AIUS_PIPELINE_PCM_BLOCK_FRAMES,
+               "AC-3 block outgrew the PCM staging plane the substitution borrows");
+_Static_assert(AIUS_PIPELINE_MAX_OUTPUT_FRAMES <= AIUS_PIPELINE_PCM_BLOCK_FRAMES,
+               "output slice outgrew the PCM staging plane the substitution borrows");
 
 /* The published instance bound is what lets arena owners size instance +
  * carve + slot at compile time (optical_main's ARENA_BYTES assert). The
@@ -452,6 +491,103 @@ static AiusStatus pcm_ingest(AiusPipeline *p, const uint16_t *w, size_t n,
 	return AIUS_OK;
 }
 
+/* ---- AC-3 / E-AC-3 syncframe CRC ------------------------------------------ */
+
+/* The 512-byte CRC-16/ANSI table, pinned to FLASH and never DTCM.
+ *
+ * The Teensy framework's link script copies EVERY .rodata into DTCM .data
+ * (link/aius_teensy41.ld's `.data` line), and DTCM is the scarce region here --
+ * the ldscript asserts a 24,352 B floor under the stack/locals zone, and the
+ * decoder arena is funded out of exactly this pressure. `.progmem` is claimed
+ * to FLASH earlier in the same script, so naming that section keeps the table
+ * in XIP where it belongs: it is read once per access unit, sequentially,
+ * inside the cache, against a 32 ms budget. The attribute is target-only --
+ * a host build has no such section and does not need one.
+ *
+ * Generated at compile time would need a constexpr the C11 build does not
+ * have; 256 entries of a fixed standard polynomial are written out instead,
+ * and test/pipeline/test_ac3_crc.c re-derives every one of them bitwise and
+ * compares, so a typo here is a failing suite rather than a silent
+ * accept-everything CRC. */
+#if defined(__arm__)
+#define AIUS_AC3_CRC_FLASHRO __attribute__((section(".progmem")))
+#else
+#define AIUS_AC3_CRC_FLASHRO
+#endif
+
+static const uint16_t k_ac3_crc16_table[256] AIUS_AC3_CRC_FLASHRO = {
+	0x0000u, 0x8005u, 0x800Fu, 0x000Au, 0x801Bu, 0x001Eu, 0x0014u, 0x8011u,
+	0x8033u, 0x0036u, 0x003Cu, 0x8039u, 0x0028u, 0x802Du, 0x8027u, 0x0022u,
+	0x8063u, 0x0066u, 0x006Cu, 0x8069u, 0x0078u, 0x807Du, 0x8077u, 0x0072u,
+	0x0050u, 0x8055u, 0x805Fu, 0x005Au, 0x804Bu, 0x004Eu, 0x0044u, 0x8041u,
+	0x80C3u, 0x00C6u, 0x00CCu, 0x80C9u, 0x00D8u, 0x80DDu, 0x80D7u, 0x00D2u,
+	0x00F0u, 0x80F5u, 0x80FFu, 0x00FAu, 0x80EBu, 0x00EEu, 0x00E4u, 0x80E1u,
+	0x00A0u, 0x80A5u, 0x80AFu, 0x00AAu, 0x80BBu, 0x00BEu, 0x00B4u, 0x80B1u,
+	0x8093u, 0x0096u, 0x009Cu, 0x8099u, 0x0088u, 0x808Du, 0x8087u, 0x0082u,
+	0x8183u, 0x0186u, 0x018Cu, 0x8189u, 0x0198u, 0x819Du, 0x8197u, 0x0192u,
+	0x01B0u, 0x81B5u, 0x81BFu, 0x01BAu, 0x81ABu, 0x01AEu, 0x01A4u, 0x81A1u,
+	0x01E0u, 0x81E5u, 0x81EFu, 0x01EAu, 0x81FBu, 0x01FEu, 0x01F4u, 0x81F1u,
+	0x81D3u, 0x01D6u, 0x01DCu, 0x81D9u, 0x01C8u, 0x81CDu, 0x81C7u, 0x01C2u,
+	0x0140u, 0x8145u, 0x814Fu, 0x014Au, 0x815Bu, 0x015Eu, 0x0154u, 0x8151u,
+	0x8173u, 0x0176u, 0x017Cu, 0x8179u, 0x0168u, 0x816Du, 0x8167u, 0x0162u,
+	0x8123u, 0x0126u, 0x012Cu, 0x8129u, 0x0138u, 0x813Du, 0x8137u, 0x0132u,
+	0x0110u, 0x8115u, 0x811Fu, 0x011Au, 0x810Bu, 0x010Eu, 0x0104u, 0x8101u,
+	0x8303u, 0x0306u, 0x030Cu, 0x8309u, 0x0318u, 0x831Du, 0x8317u, 0x0312u,
+	0x0330u, 0x8335u, 0x833Fu, 0x033Au, 0x832Bu, 0x032Eu, 0x0324u, 0x8321u,
+	0x0360u, 0x8365u, 0x836Fu, 0x036Au, 0x837Bu, 0x037Eu, 0x0374u, 0x8371u,
+	0x8353u, 0x0356u, 0x035Cu, 0x8359u, 0x0348u, 0x834Du, 0x8347u, 0x0342u,
+	0x03C0u, 0x83C5u, 0x83CFu, 0x03CAu, 0x83DBu, 0x03DEu, 0x03D4u, 0x83D1u,
+	0x83F3u, 0x03F6u, 0x03FCu, 0x83F9u, 0x03E8u, 0x83EDu, 0x83E7u, 0x03E2u,
+	0x83A3u, 0x03A6u, 0x03ACu, 0x83A9u, 0x03B8u, 0x83BDu, 0x83B7u, 0x03B2u,
+	0x0390u, 0x8395u, 0x839Fu, 0x039Au, 0x838Bu, 0x038Eu, 0x0384u, 0x8381u,
+	0x0280u, 0x8285u, 0x828Fu, 0x028Au, 0x829Bu, 0x029Eu, 0x0294u, 0x8291u,
+	0x82B3u, 0x02B6u, 0x02BCu, 0x82B9u, 0x02A8u, 0x82ADu, 0x82A7u, 0x02A2u,
+	0x82E3u, 0x02E6u, 0x02ECu, 0x82E9u, 0x02F8u, 0x82FDu, 0x82F7u, 0x02F2u,
+	0x02D0u, 0x82D5u, 0x82DFu, 0x02DAu, 0x82CBu, 0x02CEu, 0x02C4u, 0x82C1u,
+	0x8243u, 0x0246u, 0x024Cu, 0x8249u, 0x0258u, 0x825Du, 0x8257u, 0x0252u,
+	0x0270u, 0x8275u, 0x827Fu, 0x027Au, 0x826Bu, 0x026Eu, 0x0264u, 0x8261u,
+	0x0220u, 0x8225u, 0x822Fu, 0x022Au, 0x823Bu, 0x023Eu, 0x0234u, 0x8231u,
+	0x8213u, 0x0216u, 0x021Cu, 0x8219u, 0x0208u, 0x820Du, 0x8207u, 0x0202u
+};
+
+/* The 5/8 boundary in bytes, exactly as an AC-3 encoder computes it: quarter
+ * plus sixteenth of the frame's byte count, doubled. That is floor-to-even and
+ * NOT the exact fraction -- see the header's 44.1 kHz worked example. */
+static size_t ac3_crc1_end(size_t size)
+{
+	return ((size >> 2) + (size >> 4)) << 1;
+}
+
+AiusAc3CrcVerdict aius_ac3_crc_check(const uint8_t *frame, size_t size)
+{
+	/* frame[5]'s top five bits are bsid, which selects the arm. A buffer
+	 * too short to hold it is not a syncframe of either family. */
+	if (!frame || size < 7u)
+		return AIUS_AC3_CRC_TOO_SHORT;
+
+	const unsigned bsid = (unsigned)(frame[5] >> 3);
+	/* bsid <= 10 is AC-3 (legacy + the annex-D reduced-rate variants) and
+	 * carries crc1 at bytes 2-3. bsid 11..16 is E-AC-3, whose bytes 2-3 are
+	 * strmtyp/frmsiz and which has no interior CRC at all. */
+	const size_t crc1_end = bsid <= 10u ? ac3_crc1_end(size) : 0u;
+
+	uint16_t crc = 0u;
+	size_t index = 2u; /* the syncword itself is outside both spans */
+	if (crc1_end > index && crc1_end <= size) {
+		for (; index < crc1_end; index++)
+			crc = (uint16_t)((crc << 8) ^
+			                 k_ac3_crc16_table[(crc >> 8) ^ frame[index]]);
+		if (crc != 0u)
+			return AIUS_AC3_CRC_BAD_CRC1;
+	}
+	/* Same register, carried on: crc1's span is a prefix of crc2's, so the
+	 * accepted prefix costs nothing twice. */
+	for (; index < size; index++)
+		crc = (uint16_t)((crc << 8) ^
+		                 k_ac3_crc16_table[(crc >> 8) ^ frame[index]]);
+	return crc == 0u ? AIUS_AC3_CRC_OK : AIUS_AC3_CRC_BAD_CRC2;
+}
+
 /* ---- codec slot ----------------------------------------------------------- */
 
 /* Canonical Pc of the decoder family that handles `pc`: the three DTS
@@ -581,6 +717,104 @@ static AiusStatus ensure_codec_resident(AiusPipeline *p, uint16_t family)
 
 /* ---- DTS de-frame -> decode ---------------------------------------------- */
 
+/* Remember the shape a family's decode produces, so a later CRC reject of that
+ * family can be substituted at the same cadence. Called on every SUCCESSFUL
+ * decode, which is what keeps the shape current across a rate or channel-count
+ * change in the source. `au_frames` is what one whole access unit of the family
+ * is worth (AC-3's fixed 1,536; E-AC-3's decoded block), and the per-block
+ * cadence is derived from the block the sink actually sees -- AC-3 emits one
+ * 256-frame block per call, E-AC-3's single block is cut into output slices, so
+ * the slice cap is the honest per-block figure for it. */
+static void note_substitution_shape(AiusPipeline *p, uint16_t family,
+	                                const AiusPcmBlock *block,
+	                                uint32_t au_frames)
+{
+	p->sub_family = family;
+	/* Clamped so the descriptor can never claim more channels than the
+	 * substitution actually populates planes for. A decoded block is always
+	 * inside the bound; the clamp is what keeps that a fact rather than an
+	 * assumption held two functions away. */
+	p->sub_channels = block->channels < AIUS_MAX_CHANNELS
+	                          ? block->channels
+	                          : (uint16_t)AIUS_MAX_CHANNELS;
+	p->sub_mask = block->channel_mask;
+	p->sub_rate_hz = block->sample_rate_hz;
+	p->sub_au_frames = au_frames;
+	p->sub_block_frames = block->frames < AIUS_PIPELINE_MAX_OUTPUT_FRAMES
+	                              ? block->frames
+	                              : AIUS_PIPELINE_MAX_OUTPUT_FRAMES;
+}
+
+/* Describe the next substituted block directly into sink_block.
+ *
+ * EVERY channel points at the SAME zeroed plane. The sink contract is
+ * read-only (aius_codec.h) and the target's consumer processes out of place
+ * into its own staging, so one plane of zeros is a complete and correct
+ * multi-channel silent block -- and it is what makes the substitution cost no
+ * DTCM beyond the plane the PCM route already owns. That plane is provably
+ * idle here: it is written only by the PCM route, which cannot run while the
+ * class is DTS, and any transition back to PCM goes through a reset that
+ * clears `pending` and so ends the substitution first.
+ *
+ * Re-filled per block rather than zeroed once per unit, so a transmit-blocked
+ * retry re-describes an identical block with no state to keep in step. */
+static void fill_silence_descriptor(AiusPipeline *p)
+{
+	uint32_t frames = p->sub_block_frames;
+	if (frames > p->sub_frames_left)
+		frames = p->sub_frames_left;
+	memset(p->pcm_l, 0, (size_t)frames * sizeof(p->pcm_l[0]));
+	memset(&p->sink_block, 0, sizeof(p->sink_block));
+	for (uint16_t ch = 0u;
+	     ch < p->sub_channels && ch < AIUS_MAX_CHANNELS; ch++)
+		p->sink_block.planes[ch] = p->pcm_l;
+	p->sink_block.channels = p->sub_channels;
+	p->sink_block.frames = frames;
+	p->sink_block.sample_rate_hz = p->sub_rate_hz;
+	p->sink_block.channel_mask = p->sub_mask;
+}
+
+/* A completed burst failed its own CRC. Refuse the decode and, when this
+ * family has an established shape, substitute the unit's cadence with silence.
+ *
+ * NOT the decode-reject path and emphatically not the abandon path: those
+ * either drop the unit outright (the ring drains by one access unit for a
+ * fault the source, not the board, committed) or reset the whole stream state
+ * (a class reset, a re-classification and an audio generation change -- three
+ * epochs of consequence for one 32 ms unit that arrived intact and merely
+ * wrong). The class, the parser lock, the resident decoder and the audio
+ * generation all survive here by construction: nothing below touches them.
+ *
+ * HARD ZERO, no fade, deliberately. A fade-OUT would need the tail of the last
+ * decoded block, which is already committed to the transmit ring and whose
+ * plane the decoder has since reused -- retaining it means a per-block copy on
+ * the healthy path to serve the corrupt one. The fade-IN at the other end of
+ * the unit is not implementable at this seam at all: the next unit's first
+ * sample arrives already decoded and cannot be ramped without delaying the
+ * whole stream by a block. So a ramp removes one of the two steps for real
+ * hot-path cost, and the downstream DSP does not soften either of them (the
+ * true-peak limiter reduces gain on peaks; it has no floor behaviour, so a
+ * step to zero passes through it unchanged). One bounded click that is the
+ * audible signature of a counted, timestamped event is the accepted trade
+ * against 32 ms of full-scale garbage that nothing recorded at all. */
+static void reject_burst_crc(AiusPipeline *p, uint16_t family, size_t length)
+{
+	p->service_diag.crc_rejects++;
+	p->service_diag.crc_reject_last_bytes = (uint32_t)length;
+	p->service_diag.last_failure = AIUS_MALFORMED;
+	p->last_status = AIUS_MALFORMED;
+	p->pending_pc = 0u;
+	if (p->sub_family != family || p->sub_channels == 0u ||
+	    p->sub_block_frames == 0u || p->sub_au_frames == 0u) {
+		/* No decode of this family has succeeded yet, so there is no
+		 * cadence to hold and nothing in the ring to protect. */
+		p->pending = PENDING_NONE;
+		return;
+	}
+	p->sub_frames_left = p->sub_au_frames;
+	p->pending = PENDING_SILENCE;
+}
+
 static AiusStatus dts_ingest(AiusPipeline *p, const uint16_t *w, size_t n,
 	                         size_t *consumed_out)
 {
@@ -624,6 +858,38 @@ static AiusStatus dts_ingest(AiusPipeline *p, const uint16_t *w, size_t n,
 					p->service_diag.last_failure = cs;
 					continue;
 				}
+				/* CRC BEFORE THE UNIT IS EVER STAGED FOR
+				 * DECODE, for the two families that carry one.
+				 *
+				 * A burst can arrive complete and framed and
+				 * still be wrong inside: an S/PDIF DPLL
+				 * micro-flap shorter than three epochs keeps the
+				 * classification, so the parser hands over a
+				 * full-length access unit with bit errors in it.
+				 * Neither liba52 nor the vendored E-AC-3 fork
+				 * validates the frame's own CRC, so that unit
+				 * used to decode and PLAY: 32 ms of full-scale
+				 * crackle that no counter recorded and no
+				 * timestamp placed. One pass over at most 3,840
+				 * bytes here is what turns it into a counted,
+				 * stamped, silent event. DTS carries no
+				 * equivalent whole-frame CRC and is not checked.
+				 *
+				 * Refused here rather than in service_one so a
+				 * corrupt unit never becomes a pending DECODE at
+				 * all -- there is no decoder call to unwind, no
+				 * a52_inflight to abandon, and therefore no path
+				 * by which this reaches the class-resetting
+				 * recovery the register calls too heavy. */
+				if ((family == 1u || family == 21u) &&
+				    aius_ac3_crc_check(b.payload, b.length) !=
+				        AIUS_AC3_CRC_OK) {
+					reject_burst_crc(p, family, b.length);
+					if (p->pending == PENDING_NONE)
+						continue;
+					*consumed_out = pos;
+					return AIUS_OK;
+				}
 				p->pending = (family == 1u)    ? PENDING_A52_AU
 				             : (family == 21u) ? PENDING_EAC3_AU
 				                               : PENDING_DTS_AU;
@@ -664,6 +930,10 @@ static void cleanup_pending(AiusPipeline *p)
 		(void)aius_a52_abandon(p->a52_decoder);
 	p->a52_inflight = 0u;
 	p->a52_blocks_decoded = 0u;
+	/* An interrupted substitution does not resume: whatever cut it short
+	 * (discontinuity, sink failure, operator reset) has already moved the
+	 * stream past the unit the zeros were standing in for. */
+	p->sub_frames_left = 0u;
 	p->pending_pc = 0u;
 	p->pending = PENDING_NONE;
 	p->retained_retry = 0u;
@@ -734,6 +1004,16 @@ static void pipeline_reset_state(AiusPipeline *p)
 	p->rt_await_pc = 0;
 	p->rt_pos = 0;
 	p->dts_starve_words = 0;
+	/* The substitution shape is an observation of THIS source's units. A
+	 * discontinuity may have put a different programme (or a different rate
+	 * or channel count) on the wire, so it is re-learned from the next
+	 * successful decode rather than carried across. */
+	p->sub_family = 0u;
+	p->sub_channels = 0u;
+	p->sub_mask = 0u;
+	p->sub_rate_hz = 0u;
+	p->sub_au_frames = 0u;
+	p->sub_block_frames = 0u;
 }
 
 /* Discontinuity for the service/push failure paths, which have ALREADY counted
@@ -948,8 +1228,17 @@ AiusStatus aius_pipeline_service_one(AiusPipeline *p,
 		} else if (p->pending == PENDING_EAC3_AU) {
 			p->pending = PENDING_EAC3_OUTPUT;
 			p->codec_pc = p->pending_pc;
+			/* One decoded block IS the whole unit here. */
+			note_substitution_shape(p, 21u, &p->retained_block,
+			                        p->retained_block.frames);
 		} else {
 			p->pending = PENDING_A52_OUTPUT;
+			/* AC-3's unit is fixed by the format at six 256-frame
+			 * blocks, so the first block carries the whole shape --
+			 * no need to wait for the sixth to learn it. */
+			note_substitution_shape(p, 1u, &p->retained_block,
+			                        AIUS_A52_BLOCK_SAMPLES *
+			                                AIUS_A52_BLOCKS_PER_ACCESS_UNIT);
 		}
 		p->retained_offset = 0u;
 	}
@@ -983,6 +1272,8 @@ AiusStatus aius_pipeline_service_one(AiusPipeline *p,
 
 	if (p->pending == PENDING_PCM)
 		fill_pcm_descriptor(p);
+	else if (p->pending == PENDING_SILENCE)
+		fill_silence_descriptor(p);
 	else if ((p->pending == PENDING_DTS_OUTPUT ||
 	          p->pending == PENDING_A52_OUTPUT ||
 	          p->pending == PENDING_EAC3_OUTPUT) &&
@@ -1031,6 +1322,15 @@ AiusStatus aius_pipeline_service_one(AiusPipeline *p,
 	if (p->pending == PENDING_PCM) {
 		p->pcm_frames = 0u;
 		p->pending = PENDING_NONE;
+	} else if (p->pending == PENDING_SILENCE) {
+		/* A REFUSED substituted block still advances: the sink declined
+		 * the block on its own terms (an unsupported or mismatched rate
+		 * closes the gate), and re-offering the same zeros forever would
+		 * wedge the pipeline on the one path that exists to keep it
+		 * moving. codec_pc is deliberately NOT set: nothing decoded. */
+		p->sub_frames_left -= p->sink_block.frames;
+		if (p->sub_frames_left == 0u)
+			p->pending = PENDING_NONE;
 	} else if (p->pending == PENDING_DTS_OUTPUT ||
 	           p->pending == PENDING_EAC3_OUTPUT) {
 		p->retained_offset += p->sink_block.frames;
@@ -1191,6 +1491,17 @@ void aius_pipeline_get_service_diag(const AiusPipeline *p,
 	memset(out, 0, sizeof(*out));
 	if (p)
 		*out = p->service_diag;
+}
+
+AiusStatus aius_pipeline_get_crc_rejects(const AiusPipeline *p,
+                                         uint32_t *rejects,
+                                         uint32_t *last_bytes)
+{
+	if (!p || !rejects || !last_bytes)
+		return AIUS_INVALID_ARG;
+	*rejects = p->service_diag.crc_rejects;
+	*last_bytes = p->service_diag.crc_reject_last_bytes;
+	return AIUS_OK;
 }
 
 void aius_pipeline_clear_service_diag(AiusPipeline *p)

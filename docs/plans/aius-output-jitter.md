@@ -685,7 +685,8 @@ firmware regardless of which DAC is downstream.
    RX drop) drains the ring and is underrun-visible; DMA cache coherency is
    clean. A corrupted-but-complete AC-3 burst decoding as garbage (liba52 has
    no CRC check) is the one remaining invisible, and it is a crackle, not a
-   stutter — logged in the register, not built here.
+   stutter — logged in the register, not built here. **Built in Phase I the
+   same day; the register entry is struck.**
 
 **Built (aius, one commit):**
 
@@ -729,6 +730,54 @@ firmware regardless of which DAC is downstream.
   `clk_regs.spdif_scr & 0x20` set, `invalid_windows` static across trims,
   `trim_last_at_ms` advancing, one listening pass (V=0 reaches the DAC for the
   first time), and the next reported glitch read against the new stamps.
+- unit: parent-only
+
+### Phase I — AC-3 / E-AC-3 syncframe CRC before decode BUILT 2026-09-07 (OTA pending)
+
+The one invisible fault Phase H's audit found and deliberately did not build
+(audit item 3): a burst that arrives complete and framed but corrupt inside.
+An S/PDIF DPLL micro-flap shorter than three epochs keeps the pipeline class,
+so the parser hands over a full-length access unit with bit errors in it, and
+neither liba52 nor the vendored E-AC-3 fork checks a frame's own CRC — so it
+decoded and PLAYED: one 32 ms burst of full-scale crackle, counted by nothing
+and placeable by nothing. Not a stutter mechanism; the register carried it as
+its own runtime defect and this phase strikes it.
+
+The reject must NOT reuse the decoder-reject recovery. That path abandons the
+unit and resets the pipeline (class, parser lock, audio generation) — three
+epochs of consequence for one unit the source got wrong. So the refusal
+happens before the unit is ever staged for decode, and the unit's own cadence
+is substituted with zeros.
+
+- outcome: an AC-3 or E-AC-3 access unit that fails its own syncframe CRC is
+  refused before decode and replaced by silence at the cadence the decode
+  would have produced, with the class, the codec residency, the audio
+  generation and the transmit ring's occupancy all unchanged; the event is
+  counted, timestamped, posted to the event ring and freezes a capture.
+- seams: `lib/aius_pipeline` (`aius_ac3_crc_check` + the PENDING_SILENCE
+  substitution and its remembered shape); `lib/aius_recorder`
+  (`AIUS_RECORDER_TRIGGER_CRC_REJECT` + mask bit); `firmware/src/optical_main.cpp`
+  (event 18, the block-tap edge publisher, `pipeline_diag` fields, mask
+  static_assert, trigger name, recorder config JSON);
+  `firmware/src/aius_optical_app.{h,cpp}` (the required `crc_reject` config key);
+  `firmware/tools/rate_gate_capture/recorder_transitions.py`;
+  `docs/reference/firmware-io.md`; upstream repository `swagger.json` + test.
+- targeted-proof: new `test/pipeline/test_ac3_crc.c` (8 cases, in the `pipeline`
+  suite: 25 AC-3 + 22 E-AC-3 corpus frames accepted across 3 rates and 5
+  frame_size_codes, span uniqueness by walking every interior end offset, all
+  6,128 single-bit flips of a whole frame of each family caught in the right
+  arm, both CRC fields' own bytes, the 114 (frame_size_code, rate) 5/8
+  boundaries, NULL/short guards) plus `crc-substitute` in `test_pipeline.c`
+  (crc1 and crc2 arms, the no-shape-yet drop, the operator clear); `pipeline`
+  all green, `audio-service`, `a52`, `eac3`, `downmix-identity`,
+  `latency-runner` 114, `event-ring`, `recorder` + bank, `optical-app` oracle,
+  `registry` 65 arms; upstream repository `swagger.test.js` 11. `build_ab.sh` green with
+  `itcm-placement`, `memory` and `boot-target` run by hand over the slot-A env
+  (the register's standing gap): OCRAM free 131,040 B unchanged, DTCM
+  unchanged (the 512-byte CRC table is `.progmem` = FLASH, so `.data` stays at
+  38,592 B), FLASH `.text.progmem` 3,336 → 3,848 B, ITCM 191,372 → 192,140 B
+  (free 5,236 → 4,468 B). Owed live: OTA at the owner's moment, then
+  `pipeline_diag.crc_rejects` static across a clean session.
 - unit: parent-only
 
 ## Acceptance

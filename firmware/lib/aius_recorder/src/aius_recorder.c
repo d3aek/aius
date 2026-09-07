@@ -483,6 +483,8 @@ static FLASHMEM uint32_t producer_event_mask(uint32_t which)
 		return AIUS_RECORDER_MASK_GOVERNOR_TRIM;
 	case AIUS_RECORDER_TRIGGER_MISSED_FILL:
 		return AIUS_RECORDER_MASK_MISSED_FILL;
+	case AIUS_RECORDER_TRIGGER_CRC_REJECT:
+		return AIUS_RECORDER_MASK_CRC_REJECT;
 	default:
 		return 0u;
 	}

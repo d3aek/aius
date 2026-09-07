@@ -263,8 +263,62 @@ typedef struct {
 	 * count under a stable source means Pc thrash -- every swap costs a
 	 * decoder warmup and abandons nothing (ingest never swaps mid-AU). */
 	uint32_t codec_swaps;
+	/* Access units refused by the AC-3 / E-AC-3 syncframe CRC before any
+	 * decode ran (see aius_ac3_crc_check), and the byte length of the most
+	 * recent one. NOT a decode_reject: no decoder was called, and NOT an
+	 * au_abandon: for AC-3 the unit's own cadence is substituted with
+	 * silence rather than thrown away, so the class, the generation and the
+	 * transmit ring all survive. A climbing count with everything else
+	 * still means a source delivering complete-but-corrupt frames -- the
+	 * DPLL micro-flap shorter than three epochs, which keeps the class and
+	 * used to be audible as one 32 ms crackle with no counter behind it. */
+	uint32_t crc_rejects;
+	uint32_t crc_reject_last_bytes;
 	AiusStatus last_failure;
 } AiusPipelineServiceDiag;
+
+/* Verdict of the ATSC A/52 syncframe error-detection check. */
+typedef enum {
+	AIUS_AC3_CRC_OK = 0,
+	AIUS_AC3_CRC_TOO_SHORT, /* fewer than 7 bytes: not a syncframe header */
+	AIUS_AC3_CRC_BAD_CRC1,  /* the 5/8-prefix residue is non-zero (AC-3 only) */
+	AIUS_AC3_CRC_BAD_CRC2   /* the whole-frame residue is non-zero */
+} AiusAc3CrcVerdict;
+
+/* Verify one contiguous AC-3 (bsid <= 10) or E-AC-3 (bsid 11..16) syncframe.
+ *
+ * THE SPANS, and they are pinned by the committed corpus rather than taken
+ * from prose (test/pipeline/test_ac3_crc.c walks every frame of
+ * tools/ac3_vectors/vectors and tools/eac3_vectors/vectors and asserts the
+ * residue is zero at exactly these two ends and nowhere else):
+ *
+ *   crc2  CRC-16 over frame[2 .. size), init 0 -- residue 0. The trailing two
+ *         bytes ARE that CRC, so including them is what makes the check a
+ *         zero-residue test rather than a compare. This one span catches
+ *         every bit error crc1 can catch and every one it cannot.
+ *   crc1  CRC-16 over frame[2 .. n58), init 0 -- residue 0, where
+ *         n58 = ((size >> 2) + (size >> 4)) << 1, i.e. 5/8 of the frame
+ *         rounded DOWN to an even byte count. AC-3 only: an E-AC-3 syncframe
+ *         has no crc1 (its bytes 2-3 are strmtyp/frmsiz), and the corpus
+ *         confirms no interior zero-residue point exists there.
+ *
+ *         The rounding is load-bearing at 44.1 kHz, whose frame sizes are odd
+ *         word counts: a 138-byte frame's exact 5/8 is 86.25 bytes and the
+ *         encoder's boundary is 84. Deriving the boundary from the exact
+ *         fraction fails on every odd-word frame.
+ *
+ * ONE PASS, both spans: crc1's accumulation is a byte-for-byte PREFIX of
+ * crc2's (same start, same init), so the running register is simply read at
+ * the 5/8 mark and carried on. crc1 therefore costs nothing on an accepted
+ * frame and short-circuits a header-corrupt one after 5/8 of the bytes.
+ *
+ * The polynomial is 0x8005 (x^16 + x^15 + x^2 + 1), MSB-first, init 0, no
+ * final inversion and no reflection -- CRC-16/ANSI, the AC-3 CRC.
+ *
+ * `frame` must hold `size` bytes. A NULL frame or size < 7 is TOO_SHORT: the
+ * bsid byte that selects the AC-3/E-AC-3 arm is frame[5], and a buffer that
+ * short cannot be a syncframe of either. */
+AiusAc3CrcVerdict aius_ac3_crc_check(const uint8_t *frame, size_t size);
 
 /* Create a pipeline whose decoders allocate through libc (host convenience).
  * `cfg` may be NULL for defaults; `sink` (with a non-NULL consume) is required
@@ -349,6 +403,17 @@ int aius_pipeline_has_pending(const AiusPipeline *p);
 int aius_pipeline_has_buffered_input(const AiusPipeline *p);
 void aius_pipeline_get_service_diag(const AiusPipeline *p,
 	                                AiusPipelineServiceDiag *out);
+
+/* The CRC-reject counter and the byte length of the most recent rejected
+ * access unit, without copying the whole service diag.
+ *
+ * The target's per-block tap reads this once per committed output block to
+ * publish the edge (stamp, event, recorder freeze) the way it publishes the
+ * transmit ISR's missed-fill edge, and the whole-struct copy is too much to
+ * do at that cadence. Returns AIUS_OK or AIUS_INVALID_ARG. */
+AiusStatus aius_pipeline_get_crc_rejects(const AiusPipeline *p,
+                                         uint32_t *rejects,
+                                         uint32_t *last_bytes);
 
 /* Operator clear. Zeroes the service counters AND the `last_status` observation
  * latch (see aius_pipeline_get_metrics): the operator invoking a clear is the

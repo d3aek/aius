@@ -271,6 +271,337 @@ static void test_ac3_dispatch_and_identity(const char *dir)
 	free(wire);
 }
 
+/* ---- CRC reject + silence substitution ------------------------------------ */
+
+/* Index of the next IEC 61937 preamble pair at or after `from`, or `n`. */
+static size_t find_preamble(const uint16_t *w, size_t n, size_t from)
+{
+	for (size_t i = from; i + 1u < n; i++)
+		if (w[i] == 0xF872u && w[i + 1u] == 0x4E1Fu)
+			return i;
+	return n;
+}
+
+/* Flip one bit `payload_byte` bytes into the burst that starts at preamble
+ * index `pa`. The burst header is four words (Pa, Pb, Pc, Pd), and the payload
+ * is 16-bit big-endian packed, so byte k lives in the high half of word
+ * pa+4+k/2 when k is even. Returns 0 when the stream has no such burst. */
+static int corrupt_burst_payload(uint16_t *w, size_t n, size_t pa,
+	                             size_t payload_byte)
+{
+	const size_t word = pa + 4u + payload_byte / 2u;
+	if (pa >= n || word >= n)
+		return 0;
+	w[word] ^= (payload_byte % 2u == 0u) ? 0x0100u : 0x0001u;
+	return 1;
+}
+
+struct crc_run {
+	struct capture cap;
+	AiusPipelineServiceDiag diag;
+	AiusPipelineClass klass;
+	uint16_t codec_pc;
+	uint16_t resident;
+	uint32_t retype;
+	uint32_t reclassify;
+	uint32_t crc_rejects;
+	uint32_t crc_reject_bytes;
+};
+
+/* Push a whole wire through a fresh heap pipeline and snapshot everything the
+ * substitution contract is stated in terms of. No finish(): the target never
+ * calls it, and a truncation verdict would say nothing about this seam. */
+static void run_crc_case(const uint16_t *w, size_t n, struct crc_run *out)
+{
+	memset(out, 0, sizeof(*out));
+	AiusPcmSink sink = { .ctx = &out->cap, .consume = capture_consume };
+	AiusPipeline *p = NULL;
+	if (aius_pipeline_create(&p, NULL, &sink) != AIUS_OK) {
+		CHECK(0, "crc: pipeline create");
+		return;
+	}
+	push_chunked(p, w, n, 256u, "crc");
+	aius_pipeline_get_service_diag(p, &out->diag);
+	out->klass = aius_pipeline_classification(p);
+	out->codec_pc = aius_pipeline_codec_pc(p);
+	out->resident = aius_pipeline_resident_codec(p);
+	CHECK(aius_pipeline_get_reclass_counters(p, &out->retype,
+	                                         &out->reclassify) == AIUS_OK,
+	      "crc: reclass counters");
+	CHECK(aius_pipeline_get_crc_rejects(p, &out->crc_rejects,
+	                                    &out->crc_reject_bytes) == AIUS_OK,
+	      "crc: crc-reject accessor");
+	aius_pipeline_destroy(p);
+}
+
+static int block_is_silent(const struct block_copy *b)
+{
+	for (int ch = 0; ch < b->channels; ch++)
+		for (uint32_t f = 0; f < b->frames; f++)
+			if (b->planes[ch][f] != 0)
+				return 0;
+	return 1;
+}
+
+/* A complete AC-3 burst with bit errors inside used to decode and PLAY -- the
+ * register's "corrupted-but-complete AC-3 burst decodes as garbage, uncounted".
+ * It is now refused by the syncframe CRC and SUBSTITUTED: the same twelve
+ * blocks reach the sink, the six belonging to the corrupt unit are zeros, and
+ * the class, the codec residency and the audio state are untouched. Both CRC
+ * arms are driven (a payload bit past the 5/8 mark reaches only crc2; a header
+ * bit inside it is caught by crc1), and the no-shape-yet case -- a corrupt
+ * FIRST unit, with no established cadence to hold -- is driven too. */
+static void test_crc_reject_substitution(const char *dir)
+{
+	size_t n = 0u;
+	uint16_t *clean = load_wire(dir, "ac3_surround51_ident", &n);
+	CHECK(clean != NULL, "crc-sub: corpus load");
+	if (!clean)
+		return;
+	const size_t pa0 = find_preamble(clean, n, 0u);
+	const size_t pa1 = find_preamble(clean, n, pa0 + 4u);
+	CHECK(pa0 < n && pa1 < n, "crc-sub: two bursts expected (%zu, %zu)", pa0,
+	      pa1);
+	if (pa1 >= n) {
+		free(clean);
+		return;
+	}
+	const uint32_t mask = AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_FC |
+	                      AIUS_CH_LFE | AIUS_CH_SL | AIUS_CH_SR;
+
+	struct crc_run good;
+	run_crc_case(clean, n, &good);
+	CHECK(good.cap.n == 12 && good.crc_rejects == 0u,
+	      "crc-sub: the clean corpus is not clean (%d blocks, %u rejects)",
+	      good.cap.n, good.crc_rejects);
+
+	/* The 5/8 boundary of the 2,560-byte 5.1 frame is 1,600 bytes, so byte
+	 * 2,000 is crc2-only territory and byte 100 is inside crc1's span. */
+	static const struct {
+		size_t payload_byte;
+		const char *arm;
+	} k_cases[] = { { 2000u, "crc2" }, { 100u, "crc1" } };
+
+	for (size_t c = 0; c < sizeof(k_cases) / sizeof(k_cases[0]); c++) {
+		uint16_t *dirty = malloc(n * sizeof(uint16_t));
+		memcpy(dirty, clean, n * sizeof(uint16_t));
+		CHECK(corrupt_burst_payload(dirty, n, pa1,
+		                            k_cases[c].payload_byte) == 1,
+		      "crc-sub(%s): corruption did not land", k_cases[c].arm);
+
+		struct crc_run run;
+		run_crc_case(dirty, n, &run);
+
+		/* THE CADENCE IS HELD: the same twelve blocks, the same
+		 * descriptor on every one of them. A drained ring, a rate
+		 * change or a channel-count change here would each be an
+		 * audible fault of its own. */
+		CHECK(run.cap.n == good.cap.n,
+		      "crc-sub(%s): %d blocks != the clean run's %d",
+		      k_cases[c].arm, run.cap.n, good.cap.n);
+		int silent = 0;
+		int descriptor_ok = 1;
+		for (int b = 0; b < run.cap.n; b++) {
+			if (run.cap.blocks[b].channels != 6u ||
+			    run.cap.blocks[b].frames != AIUS_A52_BLOCK_SAMPLES ||
+			    run.cap.blocks[b].sample_rate_hz != 48000u ||
+			    run.cap.blocks[b].channel_mask != mask)
+				descriptor_ok = 0;
+			silent += block_is_silent(&run.cap.blocks[b]) ? 1 : 0;
+		}
+		CHECK(descriptor_ok,
+		      "crc-sub(%s): a substituted block changed the descriptor",
+		      k_cases[c].arm);
+		CHECK(silent == 6,
+		      "crc-sub(%s): %d silent blocks, expected exactly the "
+		      "corrupt unit's six", k_cases[c].arm, silent);
+		for (int b = 6; b < run.cap.n && b < 12; b++)
+			CHECK(block_is_silent(&run.cap.blocks[b]),
+			      "crc-sub(%s): block %d of the corrupt unit is not "
+			      "silent", k_cases[c].arm, b);
+
+		/* COUNTED IN ITS OWN BUCKET, and nothing heavier fired: no
+		 * decoder was called (decode_units stays at the good unit's
+		 * six), nothing was abandoned, and the class never reset. */
+		CHECK(run.diag.crc_rejects == 1u &&
+		              run.diag.crc_reject_last_bytes == 2560u &&
+		              run.crc_rejects == 1u &&
+		              run.crc_reject_bytes == 2560u,
+		      "crc-sub(%s): reject diag (%u rejects, %u bytes; accessor "
+		      "%u/%u)", k_cases[c].arm, run.diag.crc_rejects,
+		      run.diag.crc_reject_last_bytes, run.crc_rejects,
+		      run.crc_reject_bytes);
+		CHECK(run.diag.decode_rejects == 0u && run.diag.au_abandons == 0u &&
+		              run.diag.decode_units == 6u &&
+		              run.diag.parse_rejects == 0u,
+		      "crc-sub(%s): a heavier path fired (%u decode rejects, %u "
+		      "abandons, %u decode units, %u parse rejects)",
+		      k_cases[c].arm, run.diag.decode_rejects,
+		      run.diag.au_abandons, run.diag.decode_units,
+		      run.diag.parse_rejects);
+		CHECK(run.diag.last_failure == AIUS_MALFORMED,
+		      "crc-sub(%s): last_failure %d != MALFORMED",
+		      k_cases[c].arm, (int)run.diag.last_failure);
+		CHECK(run.diag.committed_blocks == good.diag.committed_blocks &&
+		              run.diag.output_drops == 0u,
+		      "crc-sub(%s): committed %u vs the clean run's %u (%u drops)",
+		      k_cases[c].arm, run.diag.committed_blocks,
+		      good.diag.committed_blocks, run.diag.output_drops);
+		CHECK(run.klass == AIUS_PIPELINE_DTS && run.codec_pc == 1u &&
+		              run.resident == 1u && run.reclassify == 0u &&
+		              run.retype == 0u && run.diag.codec_swaps == 0u,
+		      "crc-sub(%s): stream state moved (class %d, pc %u, resident "
+		      "%u, %u reclass, %u retype, %u swaps)", k_cases[c].arm,
+		      (int)run.klass, run.codec_pc, run.resident, run.reclassify,
+		      run.retype, run.diag.codec_swaps);
+
+		capture_free(&run.cap);
+		free(dirty);
+	}
+
+	/* NO SHAPE YET: the FIRST unit is corrupt, so nothing has decoded and
+	 * there is no established cadence to hold -- and nothing has reached
+	 * the ring for a drain to hurt. The unit is dropped, counted, and the
+	 * link carries on to decode the next one. */
+	{
+		uint16_t *dirty = malloc(n * sizeof(uint16_t));
+		memcpy(dirty, clean, n * sizeof(uint16_t));
+		CHECK(corrupt_burst_payload(dirty, n, pa0, 2000u) == 1,
+		      "crc-sub(first): corruption did not land");
+		struct crc_run run;
+		run_crc_case(dirty, n, &run);
+		CHECK(run.cap.n == 6,
+		      "crc-sub(first): %d blocks, expected only the second unit's "
+		      "six", run.cap.n);
+		CHECK(run.diag.crc_rejects == 1u && run.diag.au_abandons == 0u &&
+		              run.diag.decode_rejects == 0u,
+		      "crc-sub(first): diag (%u rejects, %u abandons, %u decode "
+		      "rejects)", run.diag.crc_rejects, run.diag.au_abandons,
+		      run.diag.decode_rejects);
+		CHECK(run.klass == AIUS_PIPELINE_DTS && run.codec_pc == 1u &&
+		              run.reclassify == 0u,
+		      "crc-sub(first): stream state moved (class %d, pc %u, %u "
+		      "reclass)", (int)run.klass, run.codec_pc, run.reclassify);
+		int silent = 0;
+		for (int b = 0; b < run.cap.n; b++)
+			silent += block_is_silent(&run.cap.blocks[b]) ? 1 : 0;
+		CHECK(silent == 0,
+		      "crc-sub(first): %d substituted blocks, expected none",
+		      silent);
+		capture_free(&run.cap);
+		free(dirty);
+	}
+
+	/* The operator clear owns the counter, like every other service tally. */
+	{
+		uint16_t *dirty = malloc(n * sizeof(uint16_t));
+		memcpy(dirty, clean, n * sizeof(uint16_t));
+		(void)corrupt_burst_payload(dirty, n, pa1, 2000u);
+		struct capture cap;
+		memset(&cap, 0, sizeof(cap));
+		AiusPcmSink sink = { .ctx = &cap, .consume = capture_consume };
+		AiusPipeline *p = NULL;
+		CHECK(aius_pipeline_create(&p, NULL, &sink) == AIUS_OK,
+		      "crc-sub(clear): create");
+		if (p) {
+			push_chunked(p, dirty, n, 256u, "crc-clear");
+			AiusPipelineServiceDiag sd;
+			aius_pipeline_get_service_diag(p, &sd);
+			CHECK(sd.crc_rejects == 1u, "crc-sub(clear): no reject to "
+			      "clear (%u)", sd.crc_rejects);
+			aius_pipeline_clear_service_diag(p);
+			aius_pipeline_get_service_diag(p, &sd);
+			CHECK(sd.crc_rejects == 0u &&
+			              sd.crc_reject_last_bytes == 0u,
+			      "crc-sub(clear): survived the operator clear "
+			      "(%u/%u)", sd.crc_rejects, sd.crc_reject_last_bytes);
+			aius_pipeline_destroy(p);
+		}
+		capture_free(&cap);
+		free(dirty);
+	}
+
+	printf("  crc-substitute a corrupt AC-3 unit is refused by crc1/crc2 and "
+	       "replaced by 6 x 256 zeros; class, residency and cadence held\n");
+	capture_free(&good.cap);
+	free(clean);
+}
+
+/* The same contract on the OTHER family that carries a trailing CRC. E-AC-3's
+ * unit is a single decoded block cut into output slices rather than six decoder
+ * calls, so the substitution has to hold a DIFFERENT cadence (3 x 512 here) --
+ * which is exactly why the shape is remembered per family rather than assumed.
+ * Only the crc2 arm exists: an E-AC-3 syncframe has no crc1. */
+static void test_crc_reject_substitution_eac3(const char *dir)
+{
+	size_t n = 0u;
+	uint16_t *clean = load_wire(dir, "eac3_surround51_ident", &n);
+	CHECK(clean != NULL, "crc-sub-eac3: corpus load");
+	if (!clean)
+		return;
+	const size_t pa0 = find_preamble(clean, n, 0u);
+	const size_t pa1 = find_preamble(clean, n, pa0 + 4u);
+	CHECK(pa0 < n && pa1 < n, "crc-sub-eac3: two bursts expected");
+	if (pa1 >= n) {
+		free(clean);
+		return;
+	}
+
+	struct crc_run good;
+	run_crc_case(clean, n, &good);
+	CHECK(good.cap.n == 6 && good.crc_rejects == 0u,
+	      "crc-sub-eac3: the clean corpus is not clean (%d blocks, %u "
+	      "rejects)", good.cap.n, good.crc_rejects);
+
+	uint16_t *dirty = malloc(n * sizeof(uint16_t));
+	memcpy(dirty, clean, n * sizeof(uint16_t));
+	CHECK(corrupt_burst_payload(dirty, n, pa1, 1000u) == 1,
+	      "crc-sub-eac3: corruption did not land");
+	struct crc_run run;
+	run_crc_case(dirty, n, &run);
+
+	CHECK(run.cap.n == good.cap.n,
+	      "crc-sub-eac3: %d blocks != the clean run's %d", run.cap.n,
+	      good.cap.n);
+	int silent = 0;
+	int descriptor_ok = 1;
+	for (int b = 0; b < run.cap.n; b++) {
+		if (b < good.cap.n &&
+		    (run.cap.blocks[b].channels != good.cap.blocks[b].channels ||
+		     run.cap.blocks[b].frames != good.cap.blocks[b].frames ||
+		     run.cap.blocks[b].sample_rate_hz !=
+		             good.cap.blocks[b].sample_rate_hz ||
+		     run.cap.blocks[b].channel_mask !=
+		             good.cap.blocks[b].channel_mask))
+			descriptor_ok = 0;
+		silent += block_is_silent(&run.cap.blocks[b]) ? 1 : 0;
+	}
+	CHECK(descriptor_ok,
+	      "crc-sub-eac3: a substituted block does not match the clean run's "
+	      "descriptor");
+	CHECK(silent == 3,
+	      "crc-sub-eac3: %d silent blocks, expected the corrupt unit's three "
+	      "512-frame slices", silent);
+	CHECK(run.diag.crc_rejects == 1u && run.diag.decode_rejects == 0u &&
+	              run.diag.au_abandons == 0u && run.diag.decode_units == 1u,
+	      "crc-sub-eac3: diag (%u crc, %u decode rejects, %u abandons, %u "
+	      "decode units)", run.diag.crc_rejects, run.diag.decode_rejects,
+	      run.diag.au_abandons, run.diag.decode_units);
+	CHECK(run.klass == AIUS_PIPELINE_DTS && run.codec_pc == 21u &&
+	              run.resident == 21u && run.reclassify == 0u &&
+	              run.diag.codec_swaps == 0u,
+	      "crc-sub-eac3: stream state moved (class %d, pc %u, resident %u, "
+	      "%u reclass, %u swaps)", (int)run.klass, run.codec_pc,
+	      run.resident, run.reclassify, run.diag.codec_swaps);
+
+	printf("  crc-sub-eac3   a corrupt E-AC-3 unit is refused by crc2 and "
+	       "replaced by 3 x 512 zeros at its own cadence\n");
+	capture_free(&run.cap);
+	capture_free(&good.cap);
+	free(dirty);
+	free(clean);
+}
+
 /* ---- test 1: end-to-end DTS equivalence ---------------------------------- */
 
 /* Feed `w`/`n` through a fresh pipeline in `chunk`-sized pushes, capturing
@@ -2961,11 +3292,16 @@ static void test_unsupported_entry_phase_sweep(const char *dir)
 			dark_at_every_phase = 0;
 		}
 		/* The parser frames the carrier's bursts (in scope since phase 3)
-		 * and the DECODER refuses each one -- since the phase-4 slot
-		 * growth the arena creates the E-AC-3 residency, and this
-		 * carrier's valid-header-over-garbage payload then fails frame
-		 * parse deterministically -- which is what holds the class dark
-		 * without starving. */
+		 * and each one is then refused BEFORE decode -- since the
+		 * syncframe CRC landed (2026-09-07) this carrier's
+		 * valid-header-over-garbage payload fails crc2 deterministically,
+		 * where it used to reach the decoder and fail frame parse. Same
+		 * dark-without-starving outcome, one stage earlier and in its own
+		 * counter: `crc_rejects` advances and `decode_rejects` stays at
+		 * zero, which is exactly the attribution the register asked for.
+		 * No shape has ever been learned on this link (nothing decoded),
+		 * so the reject drops the unit rather than substituting -- there
+		 * is no cadence to hold. */
 		CHECK(parser.bursts_ok >= (uint32_t)(PERIODS - 2) &&
 		              parser.rejects_unsupported == 0u,
 		      "eac3-entry phase %zu: parser framed %u ok / %u unsupported "
@@ -2973,12 +3309,16 @@ static void test_unsupported_entry_phase_sweep(const char *dir)
 		{
 			AiusPipelineServiceDiag sd;
 			aius_pipeline_get_service_diag(p, &sd);
-			CHECK(sd.decode_rejects >= (uint32_t)(PERIODS - 2) &&
+			CHECK(sd.crc_rejects >= (uint32_t)(PERIODS - 2) &&
+			              sd.decode_rejects == 0u &&
+			              sd.crc_reject_last_bytes > 0u &&
 			              sd.last_failure == AIUS_MALFORMED &&
 			              sd.codec_swaps == 0u,
-			      "eac3-entry phase %zu: decode refusal diag "
-			      "(%u rejects, last %d, %u swaps)", phi,
-			      sd.decode_rejects, (int)sd.last_failure,
+			      "eac3-entry phase %zu: CRC refusal diag "
+			      "(%u crc / %u decode rejects, last %u bytes, "
+			      "status %d, %u swaps)", phi,
+			      sd.crc_rejects, sd.decode_rejects,
+			      sd.crc_reject_last_bytes, (int)sd.last_failure,
 			      sd.codec_swaps);
 			CHECK(aius_pipeline_resident_codec(p) == 21u,
 			      "eac3-entry phase %zu: the E-AC-3 residency was not "
@@ -3214,6 +3554,8 @@ int main(int argc, char **argv)
 	test_dts_equivalence(dir, "dts_be16");
 	test_dts_equivalence(dir, "dts51_be16");
 	test_ac3_dispatch_and_identity(dir);
+	test_crc_reject_substitution(dir);
+	test_crc_reject_substitution_eac3(dir);
 	test_eac3_dispatch_and_identity(dir);
 	test_pcm_passthrough();
 	test_pcm_runtime_rates();
