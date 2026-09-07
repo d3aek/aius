@@ -641,7 +641,8 @@ declined.
 
 ### Phase H — glitch timestamps, validity polarity, missed-fill witness IN-PROGRESS (deployed 2026-09-07, listening pass owed)
 
-**Deployed 2026-09-07 ~12:35 UTC** over untagged home-signed OTA
+**Deployed 2026-09-07 13:22 UTC** (reboot bracketed 13:21:54–13:22:01 by the
+1 Hz status watcher) over untagged home-signed OTA
 (`abc59a96f2bb+teensy41-optical-slot-a`, slot 2 → 1, `ab.sequence` 8, dark
 window 579,584 B programmed = verified, fault 0, `rollback_observed false`).
 First read on the new image: `clk_regs.spdif_scr 0x00070737` — bit 5 SET, V=0
