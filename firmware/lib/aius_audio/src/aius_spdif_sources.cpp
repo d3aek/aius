@@ -46,6 +46,16 @@ volatile AiusAudioClockSharedState g_aius_audio_clock_state;
  * D-cache, so they are coherent. SPDIF_tx_buffer is the buffer the DMA reads,
  * and that one is flushed below. */
 DMAMEM AiusSpdifTx24Ring g_aius_spdif_tx24;
+
+/* DTCM .bss, NOT DMAMEM, and that is a link constraint rather than a
+ * preference: the OCRAM heap floor assert (link/aius_teensy41.ld,
+ * `_heap_end - _heap_start >= 0x1FFE0`) stands at exactly zero margin, so a
+ * byte added to the ring above is a link error. Zero-initialised is the correct
+ * reset state for all three (a real half address is never 0, and 0 reads as
+ * "never happened" on both stamps). Contracts: aius_spdif_tx24.h. */
+AiusTxFillWitness g_aius_tx_fill_witness;
+volatile uint32_t g_aius_tx_trim_applied_at_ms;
+volatile uint32_t g_aius_tx_missed_fill_flexspi[3];
 #endif
 
 namespace {
@@ -100,12 +110,30 @@ static inline void clock_memory_barrier(void)
 /* The exact TX-period boundary contract. This remains in the mixed source
  * object and deliberately stays hot:
  *
- *  1. acknowledge a period completed by an existing hold;
+ *  1. acknowledge a period completed by an existing hold, and restore validity
+ *     at the last of them;
  *  2. consume a newly queued request;
- *  3. make validity invalid before a queued NUM write; and
- *  4. arm four periods without decrementing at that same boundary.
+ *  3. a HOLD request marks validity invalid and arms four periods without
+ *     decrementing at that same boundary; and
+ *  4. a TRIM request writes the queued numerator and touches neither validity
+ *     nor the hold.
  *
- * There are no checkpoint helpers in this translation unit. */
+ * There are no checkpoint helpers in this translation unit.
+ *
+ * WHY A TRIM NO LONGER HOLDS VALIDITY (2026-09-07). The hold exists to tell a
+ * receiver not to convert samples that span a discontinuous clock change. A
+ * same-nominal NUM step is not one: it is carrier-continuous -- proven at
+ * +438 ppm, far beyond the tracker's ~10 ppm corrections
+ * (docs/plans/aius-sample-rate-following.md) -- and every sample either side of
+ * it is perfectly convertible. Marking them invalid bought nothing and cost at
+ * least AIUS_AUDIO_CLOCK_INVALID_PERIODS periods (10.67 ms) of V=1 per trim,
+ * which a validity-honouring DAC answers with a mute: a sub-second dropout
+ * with no counter behind it, i.e. the exact fault class the instruments added
+ * beside this are chasing. The dark paths KEEP the hold -- there the pad is
+ * closed anyway and the discontinuity is real.
+ *
+ * The bit's polarity is inverted against its own name and this file used to
+ * read it backwards; see AIUS_AUDIO_CLOCK_VALCTRL_VALID_BIT. */
 static inline void aius_audio_clock_tx_boundary(void)
 {
 	if (g_aius_audio_clock_state.invalid_periods_remaining == 0u &&
@@ -121,45 +149,47 @@ static inline void aius_audio_clock_tx_boundary(void)
 		if (g_aius_audio_clock_state.invalid_periods_remaining == 0u) {
 			const uint32_t control = clock_register_read(
 				AIUS_AUDIO_CLOCK_REG_SPDIF_CONTROL);
+			/* SETTING ValCtrl is what puts V=0 on the wire. */
 			clock_register_write(
 				AIUS_AUDIO_CLOCK_REG_SPDIF_CONTROL,
-				control &
-					~AIUS_AUDIO_CLOCK_VALIDITY_INVALID_BIT);
+				control |
+					AIUS_AUDIO_CLOCK_VALCTRL_VALID_BIT);
 			g_aius_audio_clock_state.invalid_active = 0u;
 		}
 	}
 
 	const uint32_t request = g_aius_audio_clock_state.request;
-	if (request != AIUS_AUDIO_CLOCK_BOUNDARY_NONE) {
+	if (request == AIUS_AUDIO_CLOCK_BOUNDARY_TRIM) {
+		/* Carrier-continuous: the numerator, and nothing else. */
+		clock_register_write(
+			AIUS_AUDIO_CLOCK_REG_PLL_NUMERATOR,
+			g_aius_audio_clock_state.queued_plan.pll_numerator);
+
+		g_aius_audio_clock_state.applied_sequence++;
+		clock_memory_barrier();
+		g_aius_audio_clock_state.applied_plan.target_rate_millihz =
+			g_aius_audio_clock_state
+				.queued_plan.target_rate_millihz;
+		g_aius_audio_clock_state.applied_plan.pll_numerator =
+			g_aius_audio_clock_state.queued_plan.pll_numerator;
+		g_aius_audio_clock_state.has_applied_plan = 1u;
+		clock_memory_barrier();
+		g_aius_audio_clock_state.applied_sequence++;
+		g_aius_audio_clock_state.request =
+			AIUS_AUDIO_CLOCK_BOUNDARY_NONE;
+#if !defined(AIUS_AUDIO_CLOCK_FAKE_TARGET)
+		/* The instant the wire rate actually moved, against
+		 * clock.trim_last_at_ms at the request: the pair brackets the
+		 * queueing delay, at most one 128-frame period. */
+		g_aius_tx_trim_applied_at_ms = millis();
+#endif
+	} else if (request != AIUS_AUDIO_CLOCK_BOUNDARY_NONE) {
 		const uint32_t control = clock_register_read(
 			AIUS_AUDIO_CLOCK_REG_SPDIF_CONTROL);
 		clock_register_write(
 			AIUS_AUDIO_CLOCK_REG_SPDIF_CONTROL,
-			control | AIUS_AUDIO_CLOCK_VALIDITY_INVALID_BIT);
+			control & ~AIUS_AUDIO_CLOCK_VALCTRL_VALID_BIT);
 		g_aius_audio_clock_state.invalid_active = 1u;
-
-		if (request == AIUS_AUDIO_CLOCK_BOUNDARY_TRIM) {
-			/* Validity is already invalid. Only then may NUM change. */
-			clock_register_write(
-				AIUS_AUDIO_CLOCK_REG_PLL_NUMERATOR,
-				g_aius_audio_clock_state
-					.queued_plan.pll_numerator);
-
-			g_aius_audio_clock_state.applied_sequence++;
-			clock_memory_barrier();
-			g_aius_audio_clock_state
-				.applied_plan.target_rate_millihz =
-				g_aius_audio_clock_state
-					.queued_plan.target_rate_millihz;
-			g_aius_audio_clock_state
-				.applied_plan.pll_numerator =
-				g_aius_audio_clock_state
-					.queued_plan.pll_numerator;
-			g_aius_audio_clock_state.has_applied_plan = 1u;
-			clock_memory_barrier();
-			g_aius_audio_clock_state.applied_sequence++;
-		}
-
 		g_aius_audio_clock_state.request =
 			AIUS_AUDIO_CLOCK_BOUNDARY_NONE;
 		g_aius_audio_clock_state.invalid_periods_remaining =
@@ -207,6 +237,34 @@ void AiusSpdifTx24Hook::isr(void)
 		(saddr < (uint32_t)SPDIF_tx_buffer + sizeof(SPDIF_tx_buffer) / 2)
 			? SPDIF_tx_buffer + AUDIO_BLOCK_SAMPLES * 2
 			: SPDIF_tx_buffer;
+
+	/* MISSED-FILL WITNESS + CORRECTION (glitch-timestamping 2026-09-07).
+	 * Filling the half we just filled means the DMA has already re-read --
+	 * and re-transmitted -- the other one, i.e. this interrupt is a whole
+	 * period late. The repeat is already on the wire and nothing can undo
+	 * it; what CAN be undone is its permanent cost, the AUDIO_BLOCK_SAMPLES
+	 * of ring occupancy no fill() consumed, which otherwise stands as extra
+	 * latency until the governor cuts it with a second audible skip. The
+	 * whole correction is the consumer moving its own cursor, so no masking
+	 * is needed. Healthy path: one compare (the witness step's), and none of
+	 * the clock, register or ring reads below. */
+	if (aius_tx_fill_witness_step(&g_aius_tx_fill_witness,
+	                              (uint32_t)dest)) {
+		g_aius_tx_fill_witness.missed_fill_at_ms = millis();
+		g_aius_tx_fill_witness.missed_fill_frames =
+			g_aius_tx_fill_witness.missed_fill_frames +
+			aius_spdif_tx24_drop_stale(&g_aius_spdif_tx24,
+			                           AUDIO_BLOCK_SAMPLES);
+		if (g_aius_tx_fill_witness.snapshot_held == 0u) {
+			/* Raw words, decoded by the host: the firmware is a
+			 * camera here, exactly as the stall witness is with
+			 * NVIC_IABR. */
+			g_aius_tx_missed_fill_flexspi[0] = FLEXSPI_INTR;
+			g_aius_tx_missed_fill_flexspi[1] = FLEXSPI2_INTR;
+			g_aius_tx_missed_fill_flexspi[2] = FLEXSPI2_STS1;
+			g_aius_tx_fill_witness.snapshot_held = 1u;
+		}
+	}
 
 	aius_spdif_tx24_fill(&g_aius_spdif_tx24, dest, AUDIO_BLOCK_SAMPLES);
 

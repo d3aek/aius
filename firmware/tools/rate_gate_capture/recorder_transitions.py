@@ -718,6 +718,7 @@ class RecorderClient:
     and slot data reads reassembled to logical (oldest-first) frame order."""
 
     CONFIG_KEYS = ("overrun", "underrun", "carrier_loss", "limiter_gr",
+                   "governor_trim", "missed_fill",
                    "gr_threshold_db", "gr_hold_blocks", "postroll_blocks")
 
     def __init__(self, base: str, auth: str):
@@ -746,7 +747,8 @@ class RecorderClient:
         caller restores the previous config in a finally."""
         self.set_config({
             "overrun": False, "underrun": False, "carrier_loss": False,
-            "limiter_gr": False, "gr_threshold_db": 0.0,
+            "limiter_gr": False, "governor_trim": False,
+            "missed_fill": False, "gr_threshold_db": 0.0,
             "gr_hold_blocks": 1, "postroll_blocks": 0,
         })
 

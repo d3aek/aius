@@ -124,6 +124,7 @@ extern "C" const uint8_t _flashimagelen;
 #include "../lib/aius_audio/src/aius_spdif_tx24.h"
 #include "../lib/aius_audio/src/aius_spdif_rx.h"
 #include "../lib/aius_audio/src/aius_tx_governor.h"
+#include "../lib/aius_audio/src/aius_underrun_episodes.h"
 #include "../lib/aius_audio/src/aius_input_dark.h"
 #include "aius_event_ring.h"
 #include "aius_boot_teensy.h"
@@ -269,6 +270,13 @@ static uint32_t g_clock_unsupported_blocks;
 static uint32_t g_clock_unsupported_episodes;
 static uint32_t g_clock_tracker_noted_target_millihz;
 static uint32_t g_clock_last_apply_attempt_ms;
+/* millis() at the last accepted same-nominal trim REQUEST. The ISR stamps the
+ * matching application instant (g_aius_tx_trim_applied_at_ms), so the pair
+ * brackets the queueing delay. Lifetime, like every other `_at_ms` instrument
+ * on this board: POST /api/clear zeroes the trim COUNT, and a timestamp whose
+ * counter has been cleared is still the honest answer to "when did the last one
+ * happen". 0 = none this boot. */
+static uint32_t g_clock_trim_last_at_ms;
 static bool g_clock_carrier_ready;
 static bool g_clock_desired_plan_valid;
 static bool g_clock_plan_applied;
@@ -885,7 +893,7 @@ static FLASHMEM void fault_record_capture(void)
 	g_fault_record_valid = true;
 }
 /* The dispatcher's mask mirror must equal the recorder's own bits -- the
- * measure probe-cap rule, applied to four constants. */
+ * measure probe-cap rule, applied to six constants. */
 static_assert(AIUS_OPTICAL_APP_RECORDER_MASK_OVERRUN ==
               AIUS_RECORDER_MASK_OVERRUN, "recorder mask mirror drifted");
 static_assert(AIUS_OPTICAL_APP_RECORDER_MASK_UNDERRUN ==
@@ -894,6 +902,10 @@ static_assert(AIUS_OPTICAL_APP_RECORDER_MASK_CARRIER_LOSS ==
               AIUS_RECORDER_MASK_CARRIER_LOSS, "recorder mask mirror drifted");
 static_assert(AIUS_OPTICAL_APP_RECORDER_MASK_LIMITER_GR ==
               AIUS_RECORDER_MASK_LIMITER_GR, "recorder mask mirror drifted");
+static_assert(AIUS_OPTICAL_APP_RECORDER_MASK_GOVERNOR_TRIM ==
+              AIUS_RECORDER_MASK_GOVERNOR_TRIM, "recorder mask mirror drifted");
+static_assert(AIUS_OPTICAL_APP_RECORDER_MASK_MISSED_FILL ==
+              AIUS_RECORDER_MASK_MISSED_FILL, "recorder mask mirror drifted");
 
 /* Reset requests stay in epoch context. AUDIO flushes queued ingress and resets
  * the pipeline before acknowledging the sequence; update() only publishes
@@ -966,7 +978,36 @@ static char g_auth_token[AIUS_AUTH_TOKEN_STORAGE_SIZE];
  *   12  RATE_UNSUPPORTED       one refused-rate episode. detail: measured Hz,
  *                              or zero for an unsupported decoded block.
  *   13  CLOCK_FAULT            one failed apply episode. detail:
- *                              AiusClockApplyResult. */
+ *                              AiusClockApplyResult.
+ *
+ * 14 and 15 are the output-glitch pair (glitch-timestamping 2026-09-07). They
+ * are NOT counter edges: both are posted from the audio producer at the instant
+ * the thing happened, because both name a bounded event with a size, and the
+ * epoch-loop collapser would only be able to say a total moved.
+ *
+ *   14  UNDERRUN               one gate-open underrun EPISODE, posted when it
+ *                              ENDS (aius_underrun_episodes.h). detail: the
+ *                              episode's substituted frames, saturated to
+ *                              65535. The episode's own start_ms and duration
+ *                              are in clock.underrun_episodes; this event is
+ *                              what orders it against everything else.
+ *   15  GOVERNOR_TRIM          one latency-governor trim, posted at the trim.
+ *                              detail: the frames dropped, i.e. the audible
+ *                              skip's size. Bounded by the ring (2,048), so it
+ *                              never reaches the saturation the clamp keeps.
+ *   16  CLOCK_TRIM             one accepted same-nominal PLL trim, posted at
+ *                              the request. detail: |target - nominal| in
+ *                              millihertz, saturated; the sign is on the next
+ *                              status read as clock.trim_ppm. Since 2026-09-07
+ *                              a trim opens NO validity window, so this event
+ *                              says "the wire rate moved", not "the output was
+ *                              muted".
+ *   17  TX_MISSED_FILL         transmit interrupts that arrived a whole period
+ *                              late, so the DMA repeated a half. detail: how
+ *                              many since the previous post. Posted from the
+ *                              producer's block tap; the ISR itself has
+ *                              already corrected the ring and stamped the bus
+ *                              registers (clock.tx_missed_fill_*). */
 enum AiusEventType : uint8_t {
 	AIUS_EVENT_STATE = 1,
 	AIUS_EVENT_TEST_TONE = 2,
@@ -981,6 +1022,10 @@ enum AiusEventType : uint8_t {
 	AIUS_EVENT_RATE_CHANGE = 11,
 	AIUS_EVENT_RATE_UNSUPPORTED = 12,
 	AIUS_EVENT_CLOCK_FAULT = 13,
+	AIUS_EVENT_UNDERRUN = 14,
+	AIUS_EVENT_GOVERNOR_TRIM = 15,
+	AIUS_EVENT_CLOCK_TRIM = 16,
+	AIUS_EVENT_TX_MISSED_FILL = 17,
 };
 
 /* Plain DTCM .bss, deliberately not DMAMEM: OCRAM free sits at the defect-26
@@ -1356,6 +1401,76 @@ static AiusTxGovernor g_tx_governor;         /* .bss; the zero window_min can
                                               * re-based the boot session */
 static uint32_t g_tx_governor_trims;          /* .bss = 0 */
 static uint32_t g_tx_governor_trimmed_frames; /* .bss = 0 */
+/* WHEN the last trim happened and HOW BIG it was. The two lifetime totals above
+ * say a splice occurred somewhere in this boot; they cannot place it against a
+ * heard glitch, which is the whole diagnostic act. millis() at the trim, and
+ * that trim's own frames -- not the mean the two totals divide out to, because
+ * one 2,000-frame cut and ten 200-frame ones read identically there. 0 = no
+ * trim yet this boot (millis() is 0 only in the first millisecond, before any
+ * gate has opened). */
+static uint32_t g_tx_governor_last_trim_at_ms;  /* .bss = 0 */
+static uint32_t g_tx_governor_last_trim_frames; /* .bss = 0 */
+
+/* The gate-open underrun episode record (glitch-timestamping 2026-09-07). The
+ * decision-free state machine is lib/aius_audio/src/aius_underrun_episodes.h;
+ * this file only steps it. Plain DTCM .bss like the event ring and the
+ * dark-interval record beside it: the zeroed state IS the reset state, and the
+ * first step seeds the counter baseline rather than claiming a boot-sized
+ * episode. Eight episodes plus six scalars. */
+static AiusUnderrunEpisodes g_underrun_episodes;
+
+/* One observation of the underrun counter, from a serial context. The counter
+ * itself advances inside the transmit DMA ISR, so the record is driven from the
+ * two places that can read it and the gate coherently and cheaply: every
+ * ACCEPTED producer block (the cadence the record is designed around -- see the
+ * header's grouping argument -- taken beside the governor tap so both read the
+ * same instant), and the gate's closing edge, which ends an open episode
+ * instead of leaving it open across a dark session nobody is listening to. An
+ * episode that ends here posts its event, so the ordered stream carries the
+ * glitch and the clock document carries its shape. */
+static inline void underrun_episode_observe(uint32_t now_ms, bool gate_open)
+{
+	const AiusUnderrunEpisode *ended = aius_underrun_episodes_step(
+		&g_underrun_episodes, now_ms, g_aius_spdif_tx24.underruns,
+		gate_open ? 1 : 0);
+	if (ended != nullptr) {
+		record_event(AIUS_EVENT_UNDERRUN, current_state(),
+		             aius_underrun_episode_detail(ended));
+	}
+}
+
+/* Thread-side baseline for the ISR's missed-fill counter. */
+static uint32_t g_tx_missed_fills_published;
+
+/* The missed-fill counter's edge, observed from the same per-block tap. The ISR
+ * has already corrected the ring's occupancy and stamped the fault
+ * (aius_spdif_tx24.h); what it cannot do from interrupt context is post an
+ * event or freeze a capture, so that happens here, one block (~10.7 ms) later
+ * at worst. Collapsed exactly as service_event_edges() collapses a counter --
+ * one event carrying the delta, and a decrease resyncs rather than reporting
+ * four billion -- because a bus hold long enough to lose several periods loses
+ * them in one burst. */
+static inline void tx_missed_fill_observe(void)
+{
+	const uint32_t missed = g_aius_tx_fill_witness.missed_fills;
+	const uint32_t delta = missed - g_tx_missed_fills_published;
+
+	if (delta == 0u || delta > 0x7FFFFFFFu) {
+		g_tx_missed_fills_published = missed;
+		return;
+	}
+	g_tx_missed_fills_published = missed;
+	/* The capture freezes on the repeat, like a governor splice. */
+	if (g_recorder_present) {
+		aius_recorder_bank_note_producer_event(
+			&g_recorder_bank, AIUS_RECORDER_TRIGGER_MISSED_FILL);
+	}
+	record_event(AIUS_EVENT_TX_MISSED_FILL, current_state(),
+	             delta > 0xFFFFu ? (uint16_t)0xFFFFu : (uint16_t)delta);
+	/* Release the bus snapshot: it has been published with this event, so
+	 * the next burst's FIRST miss may take a fresh one. */
+	g_aius_tx_fill_witness.snapshot_held = 0u;
+}
 
 /* Held 2026-08-16 (pop verdict owed), retired 2026-09-03 (design decision D9:
  * "systematic latency with repeated triggers"), ENABLED 2026-09-06 for the
@@ -1869,9 +1984,50 @@ private:
 			if (dropped != 0u) {
 				g_tx_governor_trims++;
 				g_tx_governor_trimmed_frames += dropped;
+				/* Place the splice in time and state its size:
+				 * the two lifetime totals cannot say WHEN a
+				 * skip the owner heard happened, and the mean
+				 * they divide out to cannot say how big any
+				 * one of them was. */
+				g_tx_governor_last_trim_at_ms = millis();
+				g_tx_governor_last_trim_frames = dropped;
+				/* An audible splice deserves the same freeze an
+				 * underrun gets: the token set here is consumed
+				 * by THIS block's recorder tap below, so the
+				 * capture ends at the spliced block and the
+				 * pre-trim history is exactly what a listener
+				 * would want to hear back. */
+				if (g_recorder_present) {
+					aius_recorder_bank_note_producer_event(
+						&g_recorder_bank,
+						AIUS_RECORDER_TRIGGER_GOVERNOR_TRIM);
+				}
+				/* detail is the skip's size, so the ordered
+				 * stream carries it beside the underruns it
+				 * exists to prevent. Bounded by the ring
+				 * (2,048 frames), so the clamp is a contract
+				 * statement rather than a reachable path. */
+				record_event(AIUS_EVENT_GOVERNOR_TRIM,
+				             current_state(),
+				             dropped > 0xFFFFu
+				                     ? (uint16_t)0xFFFFu
+				                     : (uint16_t)dropped);
 			}
 		}
 #endif /* AIUS_TX_GOVERNOR_ENABLED */
+		/* Underrun-episode tap: the same instant the governor sampled,
+		 * with the gate word it sampled. Group the ring's ISR-advanced
+		 * underrun counter into timestamped episodes (the record and
+		 * its grouping argument: aius_underrun_episodes.h). Cost per
+		 * block when nothing is glitching: one millis(), one volatile
+		 * load and a compare. */
+		underrun_episode_observe(millis(),
+		                         g_aius_spdif_tx24.gate_open != 0u);
+		/* And the fault the underrun counter cannot see: a transmit
+		 * interrupt that arrived a period late and let the DMA repeat a
+		 * half. The ISR corrected the ring; this publishes it. Cost per
+		 * block when nothing is wrong: one load and a compare. */
+		tx_missed_fill_observe();
 		/* Into the transmit ring, at OUTPUT_WIDTH_BITS.
 		 *
 		 * At 24 bits -- the shipped selection -- this is a copy and nothing else:
@@ -2229,6 +2385,12 @@ static AudioConnection g_spdif_right(g_spdif_in, 1, g_audio_processor, 1);
  * instead (rationale at the macro). */
 static uint32_t g_tx_gate_open_trims;          /* .bss = 0 */
 static uint32_t g_tx_gate_open_trimmed_frames; /* .bss = 0 */
+/* millis() at the last gate-open trim, the same "place it in time" the governor
+ * pair carries. No frames field beside it: this edge's drop is inaudible by
+ * construction (the pad was dark), so what a reader wants is only whether a
+ * relock happened near a glitch they heard -- the size is already summed in
+ * gate_open_trimmed_frames. 0 = no trimming edge yet this boot. */
+static uint32_t g_tx_gate_open_last_trim_at_ms; /* .bss = 0 */
 static uint32_t g_tx_gate_open_padded_frames;  /* .bss = 0 */
 static bool g_tx_gate_open_pending;            /* .bss = false */
 
@@ -2247,6 +2409,12 @@ static FLASHMEM void tx_gate_actuate(bool open)
 	 * cancelled. */
 	g_tx_gate_open_pending = false;
 	g_aius_spdif_tx24.gate_open = 0u;
+	/* End any open underrun episode at the closing edge, with the gate
+	 * already down: the producer's per-block tap is the only other observer
+	 * and a session that stops mid-stall would otherwise leave its episode
+	 * open, and therefore unpublished, until the next stream. Recorded with
+	 * gate_open 0, the reader's flag that the close truncated it. */
+	underrun_episode_observe(millis(), false);
 	CORE_PIN14_PORTCLEAR = CORE_PIN14_BITMASK;
 	CORE_PIN14_DDRREG |= CORE_PIN14_BITMASK;
 	CORE_PIN14_CONFIG = 5; /* ALT5 GPIO, now driving low */
@@ -2275,6 +2443,7 @@ static inline void tx_gate_execute_open(bool replay)
 	if (dropped != 0u) {
 		g_tx_gate_open_trims++;
 		g_tx_gate_open_trimmed_frames += dropped;
+		g_tx_gate_open_last_trim_at_ms = millis();
 	}
 	g_tx_gate_open_padded_frames += padded;
 	CORE_PIN14_CONFIG = 3; /* SPDIF_OUT, as begin() routed it */
@@ -3062,13 +3231,13 @@ static FLASHMEM bool http_clock_json(char *output, size_t capacity,
 			? (g_clock_plan_applied ? "tracking" : "refused")
 			: "acquiring";
 
-	memset(&ingress, 0, sizeof(ingress));
-	NVIC_DISABLE_IRQ(IRQ_SOFTWARE);
-	aius_audio_ingress_get_diag(&g_audio_ingress, &ingress);
-	NVIC_ENABLE_IRQ(IRQ_SOFTWARE);
-
-	return http_json_append(
-		output, capacity, length,
+	/* PROGMEM (flash, XIP-read) rather than the default .rodata the
+	 * framework script copies into DTCM .data, for the reason
+	 * http_input_diag_json states: this object's literals are ~900 B and
+	 * DTCM's free-for-locals zone is the scarce bank on this build. The
+	 * swagger extractor (test/swagger.test.js) resolves a
+	 * `static const char <name>[] PROGMEM = "..."` format by name. */
+	static const char format_clock[] PROGMEM =
 		",\"clock\":{"
 		"\"carrier_locked\":%s,"
 		"\"carrier_ready\":%s,"
@@ -3081,6 +3250,8 @@ static FLASHMEM bool http_clock_json(char *output, size_t capacity,
 		"\"state\":\"%s\","
 		"\"rate_changes\":%lu,"
 		"\"trim_updates\":%lu,"
+		"\"trim_last_at_ms\":%lu,"
+		"\"trim_applied_at_ms\":%lu,"
 		"\"structural_replans\":%lu,"
 		"\"invalid_windows\":%lu,"
 		"\"clock_faults\":%lu,"
@@ -3090,15 +3261,37 @@ static FLASHMEM bool http_clock_json(char *output, size_t capacity,
 		"\"unsupported_episodes\":%lu,"
 		"\"tx_level_frames\":%lu,"
 		"\"tx_underrun_frames\":%lu,"
+		"\"tx_missed_fills\":%lu,"
+		"\"tx_missed_fill_frames\":%lu,"
+		"\"tx_missed_fill_at_ms\":%lu,"
+		"\"tx_missed_fill_flexspi_intr\":\"0x%08lX\","
+		"\"tx_missed_fill_flexspi2_intr\":\"0x%08lX\","
+		"\"tx_missed_fill_flexspi2_sts1\":\"0x%08lX\","
 		"\"gate_open_target_frames\":%lu,"
 		"\"gate_open_replay_target_frames\":%lu,"
 		"\"gate_open_trims\":%lu,"
 		"\"gate_open_trimmed_frames\":%lu,"
+		"\"gate_open_last_trim_at_ms\":%lu,"
 		"\"gate_open_padded_frames\":%lu,"
 		"\"governor_trims\":%lu,"
 		"\"governor_trimmed_frames\":%lu,"
+		"\"governor_last_trim_at_ms\":%lu,"
+		"\"governor_last_trim_frames\":%lu,"
 		"\"ingress_level_words\":%lu,"
-		"\"ingress_high_water_words\":%lu}",
+		"\"ingress_high_water_words\":%lu,"
+		"\"underrun_episode_count\":%lu,"
+		"\"underrun_episodes\":[";
+	static const char format_episode[] PROGMEM =
+		"%s{\"start_ms\":%lu,\"ms\":%lu,\"frames\":%lu,"
+		"\"gate_open\":%u}";
+
+	memset(&ingress, 0, sizeof(ingress));
+	NVIC_DISABLE_IRQ(IRQ_SOFTWARE);
+	aius_audio_ingress_get_diag(&g_audio_ingress, &ingress);
+	NVIC_ENABLE_IRQ(IRQ_SOFTWARE);
+
+	if (!http_json_append(
+		output, capacity, length, format_clock,
 		g_tx_gate_carrier ? "true" : "false",
 		g_clock_carrier_ready ? "true" : "false",
 		(unsigned long)g_clock_carrier_rate_millihz,
@@ -3108,6 +3301,8 @@ static FLASHMEM bool http_clock_json(char *output, size_t capacity,
 		(long)trim_ppm, output_master ? "output" : "input", state,
 		(unsigned long)g_clock_rate_changes,
 		(unsigned long)g_clock_trim_updates,
+		(unsigned long)g_clock_trim_last_at_ms,
+		(unsigned long)g_aius_tx_trim_applied_at_ms,
 		(unsigned long)g_clock_structural_replans,
 		(unsigned long)g_clock_invalid_windows,
 		(unsigned long)g_clock_faults,
@@ -3117,15 +3312,50 @@ static FLASHMEM bool http_clock_json(char *output, size_t capacity,
 		(unsigned long)g_clock_unsupported_episodes,
 		(unsigned long)aius_spdif_tx24_level(&g_aius_spdif_tx24),
 		(unsigned long)g_aius_spdif_tx24.underruns,
+		(unsigned long)g_aius_tx_fill_witness.missed_fills,
+		(unsigned long)g_aius_tx_fill_witness.missed_fill_frames,
+		(unsigned long)g_aius_tx_fill_witness.missed_fill_at_ms,
+		(unsigned long)g_aius_tx_missed_fill_flexspi[0],
+		(unsigned long)g_aius_tx_missed_fill_flexspi[1],
+		(unsigned long)g_aius_tx_missed_fill_flexspi[2],
 		(unsigned long)AIUS_TX_GATE_OPEN_TARGET_FRAMES,
 		(unsigned long)AIUS_TX_GATE_OPEN_REPLAY_TARGET_FRAMES,
 		(unsigned long)g_tx_gate_open_trims,
 		(unsigned long)g_tx_gate_open_trimmed_frames,
+		(unsigned long)g_tx_gate_open_last_trim_at_ms,
 		(unsigned long)g_tx_gate_open_padded_frames,
 		(unsigned long)g_tx_governor_trims,
 		(unsigned long)g_tx_governor_trimmed_frames,
+		(unsigned long)g_tx_governor_last_trim_at_ms,
+		(unsigned long)g_tx_governor_last_trim_frames,
 		(unsigned long)ingress.level_words,
-		(unsigned long)ingress.high_water_words);
+		(unsigned long)ingress.high_water_words,
+		(unsigned long)g_underrun_episodes.count))
+		return false;
+	/* The underrun-episode record (glitch-timestamping 2026-09-07), oldest
+	 * first so a reader appending pages reads forward in time -- the same
+	 * order and the same eight-deep ring shape input_diag's dark_intervals
+	 * uses. The lifetime count above says how many the ring has overwritten;
+	 * an episode still OPEN is not here, because its extent is not known
+	 * until it ends (one accepted block later, at worst the gate's close). */
+	const uint32_t held =
+		g_underrun_episodes.count < AIUS_UNDERRUN_EPISODE_DEPTH
+			? g_underrun_episodes.count
+			: AIUS_UNDERRUN_EPISODE_DEPTH;
+	for (uint32_t index = 0u; index < held; index++) {
+		const AiusUnderrunEpisode *episode =
+			aius_underrun_episode(&g_underrun_episodes,
+			                      held - 1u - index);
+		if (!http_json_append(
+			output, capacity, length, format_episode,
+			index == 0u ? "" : ",",
+			(unsigned long)episode->start_ms,
+			(unsigned long)episode->ms,
+			(unsigned long)episode->frames,
+			(unsigned)episode->gate_open))
+			return false;
+	}
+	return http_json_append(output, capacity, length, "]}");
 }
 
 /* Boot-lottery discriminator (aius-open-work-register.md §Open defects --
@@ -6762,6 +6992,8 @@ static FLASHMEM const char *recorder_trigger_name(uint32_t trigger)
 	case AIUS_RECORDER_TRIGGER_CARRIER_LOSS: return "carrier_loss";
 	case AIUS_RECORDER_TRIGGER_LIMITER_GR: return "limiter_gr";
 	case AIUS_RECORDER_TRIGGER_OPERATOR: return "operator";
+	case AIUS_RECORDER_TRIGGER_GOVERNOR_TRIM: return "governor_trim";
+	case AIUS_RECORDER_TRIGGER_MISSED_FILL: return "missed_fill";
 	case AIUS_RECORDER_TRIGGER_NONE:
 	default: return "none";
 	}
@@ -6773,17 +7005,17 @@ static FLASHMEM const char *recorder_trigger_name(uint32_t trigger)
  * this one needs it more: the body scales with AIUS_RECORDER_BANK_SLOTS and,
  * within each slot, with AIUS_RECORDER_RATE_CHANGE_MAX, so raising either
  * constant silently grows the document. Every %lu is allowed a full 10 digits
- * and every enum its longest spelling ("recording", "carrier_loss").
+ * and every enum its longest spelling ("recording", "governor_trim").
  *
  *   per slot: the 14 scalar keys (slot..rate_change_count) plus the
- *             trigger object                                        476
+ *             trigger object                                        477
  *             "rate_change_frames":[ ... ] envelope                   23
  *             each frame position, 10 digits + separator          11 x M
  *                                                                 ------
- *                                                        499 + 11 x M
+ *                                                        500 + 11 x M
  *
- *   envelope: 15 bank scalars + the config object + "slots":[]       574
- *             rounded up for arithmetic drift                        640
+ *   envelope: 15 bank scalars + the config object + "slots":[]       616
+ *             rounded up for arithmetic drift                        680
  *
  * Every append is still capacity-checked, so exceeding the real buffer would
  * be a deterministic 0 (-> 500) rather than an overrun; this assert exists so
@@ -6791,7 +7023,7 @@ static FLASHMEM const char *recorder_trigger_name(uint32_t trigger)
 static constexpr size_t AIUS_RECORDER_SLOT_MAX_JSON_BYTES =
 	499u + 11u * (size_t)AIUS_RECORDER_RATE_CHANGE_MAX;
 static constexpr size_t AIUS_RECORDER_MAX_JSON_BYTES =
-	640u + (size_t)AIUS_RECORDER_BANK_SLOTS *
+	680u + (size_t)AIUS_RECORDER_BANK_SLOTS *
 		AIUS_RECORDER_SLOT_MAX_JSON_BYTES;
 static_assert(AIUS_RECORDER_MAX_JSON_BYTES <= AIUS_RUNTIME_TEENSY_APP_BODY,
 	"the recorder bank body must fit the runtime's application response buffer");
@@ -6984,6 +7216,7 @@ static FLASHMEM size_t app_write_recorder(void *, uint8_t *body,
 	if (!http_json_append(output, capacity, &length,
 		"\"config\":{\"overrun\":%s,\"underrun\":%s,"
 		"\"carrier_loss\":%s,\"limiter_gr\":%s,"
+		"\"governor_trim\":%s,\"missed_fill\":%s,"
 		"\"gr_threshold_db\":%.1f,\"gr_hold_blocks\":%lu,"
 		"\"postroll_blocks\":%lu},",
 		(active.trigger_mask & AIUS_RECORDER_MASK_OVERRUN) ? "true"
@@ -6993,6 +7226,10 @@ static FLASHMEM size_t app_write_recorder(void *, uint8_t *body,
 		(active.trigger_mask & AIUS_RECORDER_MASK_CARRIER_LOSS)
 			? "true" : "false",
 		(active.trigger_mask & AIUS_RECORDER_MASK_LIMITER_GR)
+			? "true" : "false",
+		(active.trigger_mask & AIUS_RECORDER_MASK_GOVERNOR_TRIM)
+			? "true" : "false",
+		(active.trigger_mask & AIUS_RECORDER_MASK_MISSED_FILL)
 			? "true" : "false",
 		(double)active.gr_threshold_db,
 		(unsigned long)active.gr_hold_blocks,
@@ -8319,7 +8556,39 @@ static FLASHMEM void sample_rate_service(uint32_t now_ms)
 				g_clock_desired_plan = plan;
 				g_clock_desired_plan_valid = true;
 				g_clock_trim_updates++;
-				g_clock_invalid_windows++;
+				/* invalid_windows is NOT advanced here any
+				 * more: since 2026-09-07 a same-nominal trim
+				 * opens no validity window at all (the NUM step
+				 * is carrier-continuous), so counting one would
+				 * report a mute that no longer happens. The
+				 * counter keeps its meaning for the dark full-
+				 * apply and structural paths. */
+				g_clock_trim_last_at_ms = now_ms;
+				/* detail: how far the new target sits from
+				 * nominal, in millihertz, magnitude only and
+				 * saturated. Millihertz because that is what
+				 * the tracker already produced -- one 32-bit
+				 * multiply, no 64-bit divide on this path --
+				 * and 65,535 mHz is ~1,365 ppm at 48 kHz, far
+				 * outside any legitimate correction. The
+				 * DIRECTION is not carried: clock.trim_ppm on
+				 * the next status read states it, while the
+				 * SIZE is what says whether this trim was a
+				 * nudge or a jump. */
+				const uint32_t nominal_millihz =
+					g_clock_nominal_rate_hz * UINT32_C(1000);
+				const uint32_t offset_millihz =
+					result.target_rate_millihz >
+							nominal_millihz
+						? result.target_rate_millihz -
+							  nominal_millihz
+						: nominal_millihz -
+							  result.target_rate_millihz;
+				record_event(AIUS_EVENT_CLOCK_TRIM,
+				             current_state(),
+				             offset_millihz > 0xFFFFu
+				                     ? (uint16_t)0xFFFFu
+				                     : (uint16_t)offset_millihz);
 			}
 		} else {
 			clock_select_desired_plan(plan);

@@ -12,7 +12,7 @@
 #         capability, pipeline, dsp, dsp-vectors, downmix-identity, measure, net, net-runner,
 #         rate-runner, rate-gate-capture, latency-runner,
 #         recovery-runner, flash, http,
-#         usb-control, replay, replay-samples, tx-gate, tx-governor, input-liveness, input-dark, event-ring, recorder, boot, boot-target, fault-target, ota,
+#         usb-control, replay, replay-samples, tx-gate, tx-governor, tx-fill-witness, underrun-episodes, input-liveness, input-dark, event-ring, recorder, boot, boot-target, fault-target, ota,
 #         build-metadata, runtime, network-transport, sd, sd-target, optical-app,
 #         optical-cutover, runtime-target, memory, itcm-placement, fake-fidelity,
 #         registry, sd-editor.
@@ -814,6 +814,28 @@ tx-governor)
 		"$fw_root/test/tx-governor/test_tx_governor.c" \
 		-o "$tx_governor_out"
 	"$tx_governor_out"
+	;;
+tx-fill-witness)
+	# The transmit ISR's missed-fill detector and the ring rebase that keeps
+	# a late interrupt from becoming permanent latency. Header-only: the
+	# production ring structure and its own producer/consumer entry points,
+	# no implementation linked.
+	tx_fill_witness_out="$build_dir/tx-fill-witness"
+	"$cc" "${cflags[@]}" "-I$fw_root/lib/aius_audio/src" \
+		"$fw_root/test/tx-fill-witness/test_tx_fill_witness.c" \
+		-o "$tx_fill_witness_out"
+	"$tx_fill_witness_out"
+	;;
+underrun-episodes)
+	# Header-only observe-only instrument: the gate-open underrun episode
+	# record served in `clock.underrun_episodes` -- episode boundaries at the
+	# accepted-block cadence, the eight-deep ring, the closed-gate truncation
+	# and both wraps. Pure stdint header, no implementation linked.
+	underrun_episodes_out="$build_dir/underrun-episodes"
+	"$cc" "${cflags[@]}" "-I$fw_root/lib/aius_audio/src" \
+		"$fw_root/test/underrun-episodes/test_underrun_episodes.c" \
+		-o "$underrun_episodes_out"
+	"$underrun_episodes_out"
 	;;
 input-liveness)
 	# Header-only decision rule: why nothing is reaching the transmit sink and

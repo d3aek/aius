@@ -317,6 +317,40 @@ the ISR acknowledges the 512 frames. On a **same-nominal trim**, only
 `VALCTRL` changes: pin 14 stays muxed to S/PDIF, the ring continues draining
 and carrier continuity is preserved.
 
+### Correction 2026-09-07 — validity polarity, and no hold on a trim
+
+**The paragraphs above describe the design as it was built; two of their claims were
+wrong on the wire, and the firmware now behaves differently.** They are left standing
+because they record what was decided and shipped.
+
+**`SPDIF_SCR[VALCTRL]` was read inverted.** The i.MX RT1060 field means `0` =
+"outgoing validity always *set*" (`V = 1`, IEC 60958 "not suitable for conversion") and
+`1` = "outgoing validity always *clear*" (`V = 0`, reliable). PJRC's boot configuration
+sets the bit and labels it correctly
+(`evidence/source-snapshots/PJRC-SPDIF-TX-SOURCE/output_spdif3.cpp:265`), but their
+`mute_PCM(true)` sets the same bit to *mute* (`:211`), and this firmware inherited that
+second reading: the constant was named `AIUS_AUDIO_CLOCK_VALIDITY_INVALID_BIT`, a
+transition **set** it and the hold's last period **cleared** it. The wire state that
+produced: from the first full apply onward the board transmitted `V = 1` **permanently**,
+with a 10.67 ms `V = 0` window per trim — the exact inverse of the intent, and a
+plausible cause of dropouts on any DAC that honours validity. The constant is now
+`AIUS_AUDIO_CLOCK_VALCTRL_VALID_BIT`, "invalid" clears it, "valid" sets it, and the
+`clock-target` suite starts its fake register at the real boot value and asserts the
+steady-state register rather than only the writes.
+
+**A same-nominal trim no longer opens a validity window at all.** The hold exists to
+warn a receiver about a discontinuous clock change, and a numerator step is not one: the
++438 ppm experiment recorded above proves the step is carrier-continuous, the tracker's
+corrections are ~10 ppm, and every sample either side is perfectly convertible. The hold
+therefore bought nothing and cost at least four TX periods (10.67 ms) of possible DAC
+mute per trim. `aius_audio_clock_tx_boundary()` now writes the queued numerator for a
+`TRIM` request and touches neither `VALCTRL` nor `invalid_periods_remaining`; the dark
+full-apply and structural-replan paths keep the hold unchanged, because there the pad is
+closed and the discontinuity is real. Consequences: `clock.invalid_windows` counts dark
+applies only, a trim is no longer refused for four periods after its predecessor, and
+the trim's own timing is served as `clock.trim_last_at_ms` (the request) and
+`clock.trim_applied_at_ms` (the boundary that wrote the numerator).
+
 The transition flush is a new `aius_spdif_tx24_flush_preserve_diag()` operation,
 not `aius_spdif_tx24_reset()`. It makes the ring empty by setting
 `consumed = written` and leaves `underruns` unchanged. The checkpoint-7 caller

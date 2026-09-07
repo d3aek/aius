@@ -821,6 +821,106 @@ static void test_carrier_falling_edge(void)
 	assert(f.r.trigger == AIUS_RECORDER_TRIGGER_CARRIER_LOSS);
 }
 
+/* The governor-trim trigger (glitch-timestamping 2026-09-07): an audible splice
+ * freezes a capture exactly as an underrun does, and the block that carries the
+ * splice is the one the capture ends on. */
+static void test_governor_trim_trigger(void)
+{
+	Fixture f;
+	fixture_init(&f);
+	/* Enabled by default: a board nobody has configured still catches the
+	 * splice, which is the whole point of a diagnostic default. */
+	assert((AIUS_RECORDER_MASK_DEFAULT &
+	        AIUS_RECORDER_MASK_GOVERNOR_TRIM) != 0u);
+	assert(f.r.trigger_mask == AIUS_RECORDER_MASK_DEFAULT);
+	/* No settle window and no gate qualification: unlike an underrun, the
+	 * caller has already decided this happened -- the governor's own
+	 * multi-second window IS the settling -- so the very first block after
+	 * a trim carries it. */
+	aius_recorder_note_producer_event(&f.r,
+	                                  AIUS_RECORDER_TRIGGER_GOVERNOR_TRIM);
+	assert(f.r.freeze_token == AIUS_RECORDER_TRIGGER_GOVERNOR_TRIM);
+	assert(f.r.state == AIUS_RECORDER_RECORDING);
+	feed_block(&f, 8u, 0, 0u, 0u);
+	assert(f.r.state == AIUS_RECORDER_POSTROLL);
+	assert(f.r.trigger == AIUS_RECORDER_TRIGGER_GOVERNOR_TRIM);
+	assert(f.r.freeze_token == 0u);
+	/* Named on the wire; the values are appended, so no other trigger
+	 * moved. */
+	assert(AIUS_RECORDER_TRIGGER_OPERATOR == 5u);
+	assert(AIUS_RECORDER_TRIGGER_GOVERNOR_TRIM == 6u);
+	assert(AIUS_RECORDER_TRIGGER_MISSED_FILL == 7u);
+}
+
+/* The missed-fill trigger rides the same producer-posted plumbing, and the one
+ * entry point refuses to arm anything whose evaluation lives elsewhere. */
+static void test_missed_fill_trigger(void)
+{
+	Fixture f;
+	fixture_init(&f);
+	assert((AIUS_RECORDER_MASK_DEFAULT &
+	        AIUS_RECORDER_MASK_MISSED_FILL) != 0u);
+	aius_recorder_note_producer_event(&f.r,
+	                                  AIUS_RECORDER_TRIGGER_MISSED_FILL);
+	assert(f.r.freeze_token == AIUS_RECORDER_TRIGGER_MISSED_FILL);
+	feed_block(&f, 8u, 0, 0u, 0u);
+	assert(f.r.state == AIUS_RECORDER_POSTROLL);
+	assert(f.r.trigger == AIUS_RECORDER_TRIGGER_MISSED_FILL);
+
+	/* A trigger this entry point does not post is a no-op: the underrun and
+	 * carrier edges have their own qualification and must not be armable by
+	 * a caller that has evaluated nothing. */
+	Fixture g;
+	fixture_init(&g);
+	aius_recorder_note_producer_event(&g.r,
+	                                  AIUS_RECORDER_TRIGGER_UNDERRUN);
+	aius_recorder_note_producer_event(&g.r,
+	                                  AIUS_RECORDER_TRIGGER_CARRIER_LOSS);
+	aius_recorder_note_producer_event(&g.r, AIUS_RECORDER_TRIGGER_OPERATOR);
+	aius_recorder_note_producer_event(&g.r, AIUS_RECORDER_TRIGGER_NONE);
+	assert(g.r.freeze_token == 0u);
+	feed_block(&g, 8u, 0, 0u, 0u);
+	assert(g.r.state == AIUS_RECORDER_RECORDING);
+	/* A null recorder is a no-op like every other entry point. */
+	aius_recorder_note_producer_event(NULL,
+	                                  AIUS_RECORDER_TRIGGER_MISSED_FILL);
+}
+
+/* Masked off, the note is inert -- and a second trim during a post-roll never
+ * displaces the capture already in flight. */
+static void test_governor_trim_masked_and_first_wins(void)
+{
+	Fixture f;
+	fixture_init(&f);
+	assert(aius_recorder_set_config(&f.r,
+	                                AIUS_RECORDER_MASK_DEFAULT &
+	                                        ~AIUS_RECORDER_MASK_GOVERNOR_TRIM,
+	                                0.0f, 1u, 2u) == AIUS_OK);
+	aius_recorder_note_producer_event(&f.r,
+	                                  AIUS_RECORDER_TRIGGER_GOVERNOR_TRIM);
+	assert(f.r.freeze_token == 0u);
+	feed_block(&f, 8u, 0, 0u, 0u);
+	assert(f.r.state == AIUS_RECORDER_RECORDING);
+
+	/* Re-enabled: the first trim takes the capture, the second is counted
+	 * against it rather than restarting it. */
+	Fixture g;
+	fixture_init(&g);
+	assert(aius_recorder_set_config(&g.r, AIUS_RECORDER_MASK_DEFAULT, 0.0f,
+	                                1u, 4u) == AIUS_OK);
+	aius_recorder_note_producer_event(&g.r,
+	                                  AIUS_RECORDER_TRIGGER_GOVERNOR_TRIM);
+	feed_block(&g, 8u, 0, 0u, 0u);
+	assert(g.r.state == AIUS_RECORDER_POSTROLL);
+	/* POSTROLL: no token */
+	aius_recorder_note_producer_event(&g.r,
+	                                  AIUS_RECORDER_TRIGGER_GOVERNOR_TRIM);
+	assert(g.r.freeze_token == 0u);
+	feed_block(&g, 8u, 0, 0u, 0u);
+	assert(g.r.trigger == AIUS_RECORDER_TRIGGER_GOVERNOR_TRIM);
+	assert(g.r.state == AIUS_RECORDER_POSTROLL);
+}
+
 static void test_gr_hold(void)
 {
 	Fixture f;
@@ -1181,6 +1281,9 @@ int main(void)
 	test_reclaim_window_starts_fresh_after_thaw();
 	test_replay_stop_transient_suppressed();
 	test_carrier_falling_edge();
+	test_governor_trim_trigger();
+	test_missed_fill_trigger();
+	test_governor_trim_masked_and_first_wins();
 	test_gr_hold();
 	test_second_trigger_first_wins();
 	test_thaw_and_generation();

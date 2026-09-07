@@ -48,6 +48,8 @@ extern "C" {
 #define AIUS_OPTICAL_APP_RECORDER_MASK_UNDERRUN (1u << 1)
 #define AIUS_OPTICAL_APP_RECORDER_MASK_CARRIER_LOSS (1u << 2)
 #define AIUS_OPTICAL_APP_RECORDER_MASK_LIMITER_GR (1u << 3)
+#define AIUS_OPTICAL_APP_RECORDER_MASK_GOVERNOR_TRIM (1u << 4)
+#define AIUS_OPTICAL_APP_RECORDER_MASK_MISSED_FILL (1u << 5)
 
 /* Three-way result for the recorder data read: the dispatcher must be able to
  * tell "your request is malformed" (400: misaligned or out-of-extent offset,

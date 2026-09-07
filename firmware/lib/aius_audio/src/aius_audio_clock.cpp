@@ -36,7 +36,7 @@ static_assert(
 	CCM_ANALOG_PLL_AUDIO_LOCK == AIUS_AUDIO_CLOCK_PLL_LOCK_BIT,
 	"fake-target PLL lock bit drifted from the Teensy core");
 static_assert(
-	SPDIF_SCR_VALCTRL == AIUS_AUDIO_CLOCK_VALIDITY_INVALID_BIT,
+	SPDIF_SCR_VALCTRL == AIUS_AUDIO_CLOCK_VALCTRL_VALID_BIT,
 	"fake-target validity bit drifted from the Teensy core");
 static_assert(
 	CCM_ANALOG_PLL_AUDIO_BYPASS == PLL_BYPASS &&
@@ -264,10 +264,13 @@ static FLASHMEM void begin_dark_transition_with_backend(
 	latch_dark_transition();
 	const uint32_t control = backend_read(
 		backend, AIUS_AUDIO_CLOCK_REG_SPDIF_CONTROL);
+	/* CLEARING ValCtrl is what marks the outgoing stream invalid (V=1); the
+	 * bit's polarity and the inherited inversion this line used to carry are
+	 * at AIUS_AUDIO_CLOCK_VALCTRL_VALID_BIT. */
 	backend_write(
 		backend,
 		AIUS_AUDIO_CLOCK_REG_SPDIF_CONTROL,
-		control | AIUS_AUDIO_CLOCK_VALIDITY_INVALID_BIT);
+		control & ~AIUS_AUDIO_CLOCK_VALCTRL_VALID_BIT);
 }
 
 #if defined(__IMXRT1052__) || defined(__IMXRT1062__)

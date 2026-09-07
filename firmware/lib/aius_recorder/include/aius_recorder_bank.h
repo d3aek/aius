@@ -199,6 +199,13 @@ uint32_t aius_recorder_bank_drain(AiusRecorderBank *bank, uint32_t max_bytes);
  * aius_recorder_freeze. */
 AiusStatus aius_recorder_bank_freeze(AiusRecorderBank *bank);
 
+/* Producer: a governor trim or a missed transmit fill. Forwarded to the active
+ * slot only, exactly as the producer block and the epoch are -- the slot the
+ * damaged audio is landing in is the one being recorded. Same semantics as
+ * aius_recorder_note_producer_event. */
+void aius_recorder_bank_note_producer_event(AiusRecorderBank *bank,
+                                            AiusRecorderTrigger which);
+
 /* Epoch (operator): thaw the active slot IN PLACE (no round-robin advance)
  * -- the same slot re-arms rather than the next one taking over. Preserves
  * the pre-bank `POST /api/recorder/thaw` contract for the case auto-advance

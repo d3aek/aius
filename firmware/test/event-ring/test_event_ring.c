@@ -209,6 +209,33 @@ int main(void)
 		assert(seen[31] == 64u);
 	}
 
+	/* The output-glitch pair (glitch-timestamping 2026-09-07). Types 14 and
+	 * 15 are posted from the AUDIO producer rather than the epoch collapser,
+	 * so a single service pass can land both: the trim the governor made and
+	 * the underrun episode that ended in the same block. Both must retain
+	 * their own type and detail -- an episode's frames saturated at the
+	 * u16 ceiling, a trim's dropped frames verbatim -- and neither may
+	 * disturb the state byte the pollers read. */
+	{
+		aius_event_ring_reset(&ring);
+		aius_event_ring_record(&ring, 61000u, 15u, 3u, 1920u);
+		aius_event_ring_record(&ring, 61000u, 14u, 3u, 65535u);
+		assert(ring.sequence == 2u);
+		assert(ring.overflows == 0u);
+		assert(aius_event_ring_at(&ring, 1u)->type == 15u);
+		assert(aius_event_ring_at(&ring, 1u)->detail == 1920u);
+		assert(aius_event_ring_at(&ring, 1u)->state == 3u);
+		assert(aius_event_ring_at(&ring, 2u)->type == 14u);
+		assert(aius_event_ring_at(&ring, 2u)->detail == 65535u);
+		/* Same millisecond, distinct sequences: the ordering a reader
+		 * needs when a trim and an episode share one block. */
+		assert(aius_event_ring_at(&ring, 1u)->uptime_ms ==
+		       aius_event_ring_at(&ring, 2u)->uptime_ms);
+		assert(page_all(&ring, 0u, AIUS_EVENT_RING_HTTP_PAGE, seen,
+		                sizeof(seen) / sizeof(seen[0])) == 2u);
+		assert(seen[0] == 1u && seen[1] == 2u);
+	}
+
 	/* A reset returns the ring to the empty state, every slot included. */
 	{
 		aius_event_ring_reset(&ring);

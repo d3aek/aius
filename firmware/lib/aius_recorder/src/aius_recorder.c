@@ -473,6 +473,34 @@ FLASHMEM AiusStatus aius_recorder_freeze(AiusRecorder *r)
 	return AIUS_INVALID_ARG;
 }
 
+/* The mask bit a producer-posted trigger answers to; 0 for anything this entry
+ * point does not post, which is how a caller cannot arm a trigger whose
+ * evaluation lives somewhere else. */
+static FLASHMEM uint32_t producer_event_mask(uint32_t which)
+{
+	switch (which) {
+	case AIUS_RECORDER_TRIGGER_GOVERNOR_TRIM:
+		return AIUS_RECORDER_MASK_GOVERNOR_TRIM;
+	case AIUS_RECORDER_TRIGGER_MISSED_FILL:
+		return AIUS_RECORDER_MASK_MISSED_FILL;
+	default:
+		return 0u;
+	}
+}
+
+FLASHMEM void aius_recorder_note_producer_event(AiusRecorder *r,
+                                                AiusRecorderTrigger which)
+{
+	const uint32_t mask = producer_event_mask((uint32_t)which);
+
+	if (r == NULL || mask == 0u ||
+	    r->state != AIUS_RECORDER_RECORDING || r->freeze_token != 0u)
+		return;
+	if ((r->trigger_mask & mask) == 0u)
+		return;
+	r->freeze_token = (uint32_t)which;
+}
+
 FLASHMEM AiusStatus aius_recorder_thaw(AiusRecorder *r)
 {
 	if (r == NULL || r->state != AIUS_RECORDER_FROZEN)

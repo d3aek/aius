@@ -208,6 +208,14 @@ FLASHMEM uint32_t aius_recorder_bank_drain(AiusRecorderBank *bank,
 	return drained;
 }
 
+FLASHMEM void aius_recorder_bank_note_producer_event(AiusRecorderBank *bank,
+                                                     AiusRecorderTrigger which)
+{
+	if (bank == NULL)
+		return;
+	aius_recorder_note_producer_event(&bank->slots[bank->active], which);
+}
+
 FLASHMEM AiusStatus aius_recorder_bank_freeze(AiusRecorderBank *bank)
 {
 	if (bank == NULL)

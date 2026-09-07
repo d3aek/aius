@@ -644,8 +644,9 @@ static FLASHMEM bool body_take_db(AiusJsonCursor *cursor, float *value)
 /* PUT /api/recorder/config body, with the measure parser's strictness turned
  * all the way up: every key REQUIRED exactly once, any order, nothing else --
  * {"overrun":bool,"underrun":bool,"carrier_loss":bool,"limiter_gr":bool,
- *  "gr_threshold_db":<0|-n[.n]>,"gr_hold_blocks":<uint>,
- *  "postroll_blocks":<uint>}. Requiring the full set is the same
+ *  "governor_trim":bool,"missed_fill":bool,"gr_threshold_db":<0|-n[.n]>,
+ *  "gr_hold_blocks":<uint>,"postroll_blocks":<uint>}. Requiring the full set is
+ * the same
  * anti-drift stance as the DSP PUT's all-eight-keys rule: a partial config
  * that silently keeps unstated fields is how two clients disagree about what
  * is armed. */
@@ -664,8 +665,17 @@ static FLASHMEM bool recorder_config_body(const AiusHttpRequest *request,
 		{ "underrun", AIUS_OPTICAL_APP_RECORDER_MASK_UNDERRUN },
 		{ "carrier_loss", AIUS_OPTICAL_APP_RECORDER_MASK_CARRIER_LOSS },
 		{ "limiter_gr", AIUS_OPTICAL_APP_RECORDER_MASK_LIMITER_GR },
+		{ "governor_trim",
+		  AIUS_OPTICAL_APP_RECORDER_MASK_GOVERNOR_TRIM },
+		{ "missed_fill", AIUS_OPTICAL_APP_RECORDER_MASK_MISSED_FILL },
 	};
-	bool seen[7] = { false, false, false, false, false, false, false };
+	/* One `seen` slot per flag, then one per scalar. Derived from the table
+	 * rather than written as a digit: the flag count used to be four
+	 * separate literals here, and adding a flag had to change every one of
+	 * them or the new key silently read as a scalar's slot. */
+	const size_t flag_count = sizeof(flags) / sizeof(flags[0]);
+	bool seen[9] = { false, false, false, false, false,
+	                 false, false, false, false };
 
 	*mask = 0u;
 	*gr_threshold_db = 0.0f;
@@ -680,7 +690,7 @@ static FLASHMEM bool recorder_config_body(const AiusHttpRequest *request,
 		if (!body_take_string(&cursor, &key, &key_length) ||
 		    !body_consume(&cursor, ':'))
 			return false;
-		for (size_t flag = 0; flag < 4u; flag++) {
+		for (size_t flag = 0; flag < flag_count; flag++) {
 			if (!body_key_is(key, key_length, flags[flag].key))
 				continue;
 			matched = flag;
@@ -690,18 +700,19 @@ static FLASHMEM bool recorder_config_body(const AiusHttpRequest *request,
 				return false;
 			break;
 		}
-		if (matched > 4u && body_key_is(key, key_length, "gr_threshold_db")) {
-			matched = 4;
+		if (matched >= flag_count &&
+		    body_key_is(key, key_length, "gr_threshold_db")) {
+			matched = flag_count;
 			if (!body_take_db(&cursor, gr_threshold_db))
 				return false;
-		} else if (matched > 4u &&
+		} else if (matched >= flag_count &&
 		           body_key_is(key, key_length, "gr_hold_blocks")) {
-			matched = 5;
+			matched = flag_count + 1u;
 			if (!body_take_uint(&cursor, gr_hold_blocks))
 				return false;
-		} else if (matched > 4u &&
+		} else if (matched >= flag_count &&
 		           body_key_is(key, key_length, "postroll_blocks")) {
-			matched = 6;
+			matched = flag_count + 2u;
 			/* body_take_uint refuses 0, but a zero post-roll is a
 			 * legal "freeze at the trigger boundary": take the
 			 * literal 0 explicitly first. */

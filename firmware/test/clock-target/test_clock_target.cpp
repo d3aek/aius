@@ -64,8 +64,14 @@ static void fake_reset(FakeTarget *target)
 		AIUS_AUDIO_CLOCK_REG_CLOCK_GATE_5)] = UINT32_C(0x5a5aa5a5);
 	target->registers[register_index(
 		AIUS_AUDIO_CLOCK_REG_SPDIF_ROOT)] = UINT32_C(0xffffffff);
+	/* The steady state the board actually boots into: PJRC's config_spdif3()
+	 * SETS ValCtrl, which is what puts V=0 (reliable) on the wire. Starting
+	 * the fake with the bit clear would have let an inverted writer look
+	 * correct, which is exactly how the 2026-09-07 polarity defect survived
+	 * this suite. */
 	target->registers[register_index(
-		AIUS_AUDIO_CLOCK_REG_SPDIF_CONTROL)] = UINT32_C(0x00000400);
+		AIUS_AUDIO_CLOCK_REG_SPDIF_CONTROL)] =
+		UINT32_C(0x00000400) | AIUS_AUDIO_CLOCK_VALCTRL_VALID_BIT;
 	target->registers[register_index(
 		AIUS_AUDIO_CLOCK_REG_SPDIF_TX_CLOCK)] = UINT32_C(0x00000080);
 	target->registers[register_index(
@@ -270,12 +276,13 @@ static void test_immediate_lock_and_register_order(void)
 		aius_audio_clock_apply_with_backend(&plan, &backend) ==
 		AIUS_CLOCK_APPLY_OK);
 	assert(target.trace_count == 10u);
+	/* The dark transition marks the outgoing stream INVALID, which is
+	 * CLEARING ValCtrl (V=1 on the wire). */
 	assert_write(
 		target,
 		0u,
 		AIUS_AUDIO_CLOCK_REG_SPDIF_CONTROL,
-		UINT32_C(0x00000400) |
-			AIUS_AUDIO_CLOCK_VALIDITY_INVALID_BIT);
+		UINT32_C(0x00000400));
 	assert_write(
 		target, 1u, AIUS_AUDIO_CLOCK_REG_PLL_CONTROL, pll_dark);
 	assert_write(
@@ -391,7 +398,7 @@ static void test_never_lock_latches_failure(void)
 	assert(target.trace_count == 5u);
 	assert(
 		(target.trace[0].value &
-		 AIUS_AUDIO_CLOCK_VALIDITY_INVALID_BIT) != 0u);
+		 AIUS_AUDIO_CLOCK_VALCTRL_VALID_BIT) == 0u);
 	assert(
 		target.trace[1].reg ==
 		AIUS_AUDIO_CLOCK_REG_PLL_CONTROL);
@@ -450,21 +457,27 @@ static void test_all_nominal_mappings_and_four_period_hold(void)
 
 		clear_trace(&target);
 		acknowledge_hold();
-		/* Hold-only arm writes validity, never NUM. The fourth
-		 * acknowledgement is the one clear-valid write. */
+		/* Hold-only arm writes validity, never NUM: the arming boundary
+		 * CLEARS ValCtrl (invalid, V=1) and the fourth acknowledgement
+		 * SETS it again (valid, V=0). */
 		assert(target.trace_count == 2u);
 		assert(
 			target.trace[0].reg ==
 			AIUS_AUDIO_CLOCK_REG_SPDIF_CONTROL);
 		assert(
 			(target.trace[0].value &
-			 AIUS_AUDIO_CLOCK_VALIDITY_INVALID_BIT) != 0u);
+			 AIUS_AUDIO_CLOCK_VALCTRL_VALID_BIT) == 0u);
 		assert(
 			target.trace[1].reg ==
 			AIUS_AUDIO_CLOCK_REG_SPDIF_CONTROL);
 		assert(
 			(target.trace[1].value &
-			 AIUS_AUDIO_CLOCK_VALIDITY_INVALID_BIT) == 0u);
+			 AIUS_AUDIO_CLOCK_VALCTRL_VALID_BIT) != 0u);
+		/* And the register the board is left running on says valid. */
+		assert(
+			(target.registers[register_index(
+				 AIUS_AUDIO_CLOCK_REG_SPDIF_CONTROL)] &
+			 AIUS_AUDIO_CLOCK_VALCTRL_VALID_BIT) != 0u);
 	}
 }
 
@@ -496,46 +509,90 @@ static void test_trim_order_and_applied_acknowledgement(void)
 	assert(!status.transition_complete);
 	assert(status.periods_remaining == 0u);
 
+	/* THE TRIM CONTRACT SINCE 2026-09-07: the boundary writes the numerator
+	 * and NOTHING else. No validity edge and no hold -- a same-nominal NUM
+	 * step is carrier-continuous, and the 10.67 ms of V=1 the old hold put on
+	 * the wire was a DAC mute bought for nothing (aius_spdif_sources.cpp's
+	 * boundary contract; the correction note in
+	 * docs/plans/aius-sample-rate-following.md). */
+	const uint32_t control_before =
+		target.registers[register_index(
+			AIUS_AUDIO_CLOCK_REG_SPDIF_CONTROL)];
 	aius_audio_clock_test_tx_boundary();
-	assert(target.trace_count == 2u);
+	assert(target.trace_count == 1u);
 	assert_write(
 		target,
 		0u,
-		AIUS_AUDIO_CLOCK_REG_SPDIF_CONTROL,
-		UINT32_C(0x00000400) |
-			AIUS_AUDIO_CLOCK_VALIDITY_INVALID_BIT);
-	assert_write(
-		target,
-		1u,
 		AIUS_AUDIO_CLOCK_REG_PLL_NUMERATOR,
 		trim.pll_numerator);
+	assert(
+		target.registers[register_index(
+			AIUS_AUDIO_CLOCK_REG_SPDIF_CONTROL)] == control_before);
+	assert(
+		(control_before & AIUS_AUDIO_CLOCK_VALCTRL_VALID_BIT) != 0u);
 	assert(aius_audio_clock_get_applied_plan(&applied));
 	assert_plan_equal(applied, trim);
 
 	status = boundary_status();
 	assert(!status.request_pending);
-	assert(status.invalid_active);
-	assert(status.periods_remaining == 4u);
-	assert(!aius_audio_clock_request_trim(&original));
-
-	for (uint32_t expected = 3u; expected != 0u; expected--) {
-		aius_audio_clock_test_tx_boundary();
-		status = boundary_status();
-		assert(status.periods_remaining == expected);
-		assert(status.invalid_active);
-	}
-	aius_audio_clock_test_tx_boundary();
-	status = boundary_status();
-	assert(status.transition_complete);
 	assert(!status.invalid_active);
 	assert(status.periods_remaining == 0u);
-	assert(target.trace_count == 3u);
-	assert(
-		target.trace[2].reg ==
+	assert(status.transition_complete);
+
+	/* No hold means the very next tracker correction is accepted, rather
+	 * than being refused for four periods. */
+	assert(aius_audio_clock_request_trim(&original));
+	aius_audio_clock_test_tx_boundary();
+	assert(target.trace_count == 2u);
+	assert_write(
+		target,
+		1u,
+		AIUS_AUDIO_CLOCK_REG_PLL_NUMERATOR,
+		original.pll_numerator);
+	assert(aius_audio_clock_get_applied_plan(&applied));
+	assert_plan_equal(applied, original);
+	status = boundary_status();
+	assert(status.transition_complete);
+
+	/* An idle boundary after that writes nothing at all. */
+	aius_audio_clock_test_tx_boundary();
+	assert(target.trace_count == 2u);
+}
+
+/* The steady state, end to end: the register the board runs on carries ValCtrl
+ * SET (V=0, reliable) once a full apply's hold has expired, and a dark
+ * transition is the one thing that clears it. This is the row that would have
+ * caught the inverted reading the firmware shipped with until 2026-09-07. */
+static void test_steady_state_transmits_valid(void)
+{
+	FakeTarget target;
+	fake_reset(&target);
+	AiusAudioClockBackend backend = fake_backend(&target);
+	const AiusSpdifClockPlan plan = exact_plan(48000u);
+	const size_t control = register_index(
 		AIUS_AUDIO_CLOCK_REG_SPDIF_CONTROL);
+
 	assert(
-		(target.trace[2].value &
-		 AIUS_AUDIO_CLOCK_VALIDITY_INVALID_BIT) == 0u);
+		(target.registers[control] &
+		 AIUS_AUDIO_CLOCK_VALCTRL_VALID_BIT) != 0u);
+	assert(
+		aius_audio_clock_apply_with_backend(&plan, &backend) ==
+		AIUS_CLOCK_APPLY_OK);
+	/* Mid-transition: invalid. */
+	assert(
+		(target.registers[control] &
+		 AIUS_AUDIO_CLOCK_VALCTRL_VALID_BIT) == 0u);
+	acknowledge_hold();
+	/* Steady state: valid, and this is the value on the wire from here on. */
+	assert(
+		(target.registers[control] &
+		 AIUS_AUDIO_CLOCK_VALCTRL_VALID_BIT) != 0u);
+
+	g_isr_target = &target;
+	aius_audio_clock_begin_dark_transition();
+	assert(
+		(target.registers[control] &
+		 AIUS_AUDIO_CLOCK_VALCTRL_VALID_BIT) == 0u);
 }
 
 static void test_trim_refuses_structural_or_nominal_change(void)
@@ -570,7 +627,7 @@ static void test_dark_transition_is_immediate_and_cancels_old_hold(void)
 		AIUS_AUDIO_CLOCK_REG_SPDIF_CONTROL);
 	assert(
 		(target.trace[0].value &
-		 AIUS_AUDIO_CLOCK_VALIDITY_INVALID_BIT) != 0u);
+		 AIUS_AUDIO_CLOCK_VALCTRL_VALID_BIT) == 0u);
 	const AiusAudioClockBoundaryStatus status = boundary_status();
 	assert(!status.request_pending);
 	assert(status.invalid_active);
@@ -823,6 +880,7 @@ int main(void)
 	test_never_lock_latches_failure();
 	test_all_nominal_mappings_and_four_period_hold();
 	test_trim_order_and_applied_acknowledgement();
+	test_steady_state_transmits_valid();
 	test_trim_refuses_structural_or_nominal_change();
 	test_dark_transition_is_immediate_and_cancels_old_hold();
 	test_invalid_plan_writes_nothing();

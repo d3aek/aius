@@ -312,6 +312,25 @@ ends left open:
 
 ## Open defects — runtime
 
+- **OPEN — corrupted-but-complete AC-3 burst decodes as garbage, uncounted
+  (found 2026-09-07, audit for output-jitter Phase H).** liba52 performs no
+  CRC check, so a burst hit by a DPLL micro-flap shorter than three epochs
+  (class kept, `optical_main.cpp` ~8061) with bit errors inside a complete
+  IEC 61937 frame decodes and plays as a crackle; the only hint is a
+  same-window SIS `BITERR`/`SYMERR` latch. Not a stutter mechanism. Fix shape:
+  validate the AC-3 CRC1/CRC2 in the parser or the decoder wrapper, count
+  `crc_rejects` with a stamp, and substitute the AU (silence or repeat) so the
+  fault is an underrun-class event with a record rather than audible garbage.
+
+- **OBSERVATION — one brief stutter on stable AC-3 playback, 2026-09-07
+  ~11:14 UTC, `861252098a01`, no timed record.** Every timed record placed only
+  the intentional pause/sleep/jingle edges (11:10:54–11:11:49 UTC); the
+  candidate counters (`governor_trims 2 / 768`, `tx_underrun_frames 1792`,
+  `trim_updates 62`) carried no timestamps. Dispositioned by output-jitter
+  Phase H (stamps for all of them, validity polarity corrected, trim hold
+  removed, missed-fill witness + correction); the next occurrence is read
+  against the new stamps.
+
 - ~~**RX pool corruption under replay: the retained S/PDIF receive ISR writes
   past the AudioStream block pair whenever two DMA halves land between two
   `update()` calls, and replay is exactly when they do (found 2026-09-03).**~~

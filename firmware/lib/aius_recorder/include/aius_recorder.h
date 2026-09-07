@@ -134,19 +134,33 @@ typedef enum {
 	AIUS_RECORDER_TRIGGER_UNDERRUN,
 	AIUS_RECORDER_TRIGGER_CARRIER_LOSS,
 	AIUS_RECORDER_TRIGGER_LIMITER_GR,
-	AIUS_RECORDER_TRIGGER_OPERATOR
+	AIUS_RECORDER_TRIGGER_OPERATOR,
+	/* The two producer-posted triggers, appended rather than inserted: the
+	 * value is a wire fact (GET /api/recorder serves its name) and every
+	 * other one keeps its number.
+	 *
+	 * GOVERNOR_TRIM: the output-latency governor cut the transmit ring back
+	 * to its target in one deliberate skip.
+	 * MISSED_FILL: a transmit interrupt arrived a whole period late, so the
+	 * DMA re-transmitted a stale half -- an audible repeat that advances no
+	 * underrun counter. */
+	AIUS_RECORDER_TRIGGER_GOVERNOR_TRIM,
+	AIUS_RECORDER_TRIGGER_MISSED_FILL
 } AiusRecorderTrigger;
 
 /* Automatic-trigger enable bits (the operator is never masked). Defaults at
- * boot: overrun, underrun and carrier enabled; GR disabled until configured
- * (a threshold has no universal default). */
+ * boot: overrun, underrun, carrier, governor-trim and missed-fill enabled; GR
+ * disabled until configured (a threshold has no universal default). */
 #define AIUS_RECORDER_MASK_OVERRUN (1u << 0)
 #define AIUS_RECORDER_MASK_UNDERRUN (1u << 1)
 #define AIUS_RECORDER_MASK_CARRIER_LOSS (1u << 2)
 #define AIUS_RECORDER_MASK_LIMITER_GR (1u << 3)
+#define AIUS_RECORDER_MASK_GOVERNOR_TRIM (1u << 4)
+#define AIUS_RECORDER_MASK_MISSED_FILL (1u << 5)
 #define AIUS_RECORDER_MASK_DEFAULT \
 	(AIUS_RECORDER_MASK_OVERRUN | AIUS_RECORDER_MASK_UNDERRUN | \
-	 AIUS_RECORDER_MASK_CARRIER_LOSS)
+	 AIUS_RECORDER_MASK_CARRIER_LOSS | AIUS_RECORDER_MASK_GOVERNOR_TRIM | \
+	 AIUS_RECORDER_MASK_MISSED_FILL)
 #define AIUS_RECORDER_MASK_ALL \
 	(AIUS_RECORDER_MASK_DEFAULT | AIUS_RECORDER_MASK_LIMITER_GR)
 
@@ -362,6 +376,26 @@ uint32_t aius_recorder_drain(AiusRecorder *r, uint32_t max_bytes);
  * token; from POSTROLL counts a suppressed trigger (first wins); otherwise
  * refuses. */
 AiusStatus aius_recorder_freeze(AiusRecorder *r);
+
+/* Producer: something the CALLER detected on the output path just happened --
+ * a governor trim, or a missed transmit fill. Sets that trigger's token when it
+ * is enabled and a capture is running with nothing already pending: the same
+ * masked, first-token-wins, RECORDING-only rule the epoch's carrier-loss edge
+ * uses, and deliberately not an evaluation of its own, because the caller owns
+ * the decision -- it is the one that made the splice or lost the period.
+ *
+ * `which` must be one of the producer-posted triggers (GOVERNOR_TRIM,
+ * MISSED_FILL); anything else is a no-op, so a trigger with an epoch-side or
+ * block-side evaluation can never be armed from here by mistake.
+ *
+ * Called from the producer immediately BEFORE the block that follows the event,
+ * so that block's aius_recorder_producer_block() acknowledges the token and the
+ * capture ends at the damaged block with the history before it intact --
+ * exactly the shape an underrun freeze has. No status: a masked trigger, a
+ * frozen slot and a second event inside one post-roll are all ordinary
+ * outcomes, none of which the audio producer could act on. */
+void aius_recorder_note_producer_event(AiusRecorder *r,
+                                       AiusRecorderTrigger which);
 
 /* Epoch: FROZEN -> RECORDING. Increments freeze_generation, resets the
  * capture (extent, gaps, trigger, post-roll) and re-arms. Config persists, and

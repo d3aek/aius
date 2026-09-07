@@ -320,10 +320,116 @@ static inline void aius_spdif_tx24_fill(AiusSpdifTx24Ring *ring,
     }
 }
 
+/* THE MISSED-FILL WITNESS: the one transmit fault this ring's own counters
+ * cannot see.
+ *
+ * The transmit DMA is CIRCULAR (INTHALF | INTMAJOR): it never stops, and the
+ * ISR's job is to refill the half the DMA is not currently reading. If the ISR
+ * is serviced more than one AUDIO_BLOCK_SAMPLES period late -- a FlexSPI/PSRAM
+ * bus hold, a long masked section -- the DMA has already re-read the half it
+ * read last time and TRANSMITTED IT AGAIN. That is an audible repeat of 2.67 ms
+ * of audio, and it advances NOTHING: fill() was never late for its own math, so
+ * `underruns` does not move, and `fills` counts the interrupt that did arrive.
+ * The only trace it leaves is the ring level ratcheting up 128 frames per
+ * missed period, which reads as latency, not as a fault.
+ *
+ * The witness is the half address itself: under healthy service the ISR
+ * alternates halves, so filling the SAME half twice in a row means an odd
+ * number of periods went unserviced. An EVEN number is invisible here (parity
+ * is restored) and stays the level instruments' business -- this detects the
+ * odd case, which is the common one, rather than pretending to detect all of
+ * them.
+ *
+ * Deliberately NOT a field of the ring: the ring lives in DMAMEM and the OCRAM
+ * heap floor (link/aius_teensy41.ld, ASSERT _heap_end - _heap_start >= 0x1FFE0)
+ * has zero margin, so a byte added there is a link error. These live in DTCM
+ * .bss beside the ISR instead. */
+typedef struct {
+	/* Consumer-private: the half filled by the previous interrupt. Zero at
+	 * reset can never false-positive -- a real half address is never 0. */
+	uint32_t last_half;
+	/* Consumer-owned, thread-read: interrupts that refilled the half they
+	 * had just filled, millis() at the newest of them, and the frames the
+	 * corrective rebase below dropped in total. */
+	volatile uint32_t missed_fills;
+	volatile uint32_t missed_fill_at_ms;
+	volatile uint32_t missed_fill_frames;
+	/* Consumer-written, thread-cleared: nonzero while a bus-state snapshot
+	 * is held unpublished. A miss takes the snapshot only when this is zero,
+	 * so a BURST keeps the FIRST one -- taken while the hold that caused it
+	 * may still be visible -- and the thread releases it after publishing.
+	 * Zero at reset is therefore "the next miss snapshots", which is what a
+	 * boot wants without a cold-path initialiser. */
+	volatile uint32_t snapshot_held;
+} AiusTxFillWitness;
+
+/* CONSUMER, once per transmit interrupt, with the address of the half about to
+ * be filled. Returns nonzero when this is the same half as last time -- the
+ * caller then stamps the time and takes the correction, which keeps every
+ * clock and register read off the healthy path. One load, one compare and one
+ * store when nothing is wrong. */
+static inline int aius_tx_fill_witness_step(AiusTxFillWitness *witness,
+                                            uint32_t half)
+{
+	const int repeated = witness->last_half == half;
+
+	witness->last_half = half;
+	if (repeated)
+		witness->missed_fills = witness->missed_fills + 1u;
+	return repeated;
+}
+
+/* CONSUMER, on a detected missed fill: drop `frames` of the OLDEST queued audio
+ * by advancing the consumer cursor, bounded by the current level. Returns the
+ * frames actually dropped.
+ *
+ * WHY THE RING MUST BE REBASED. A missed period is one fill() that never ran,
+ * so the ring kept frames the transmitter would have taken: the standing level
+ * -- which IS the output latency -- ratchets up one AUDIO_BLOCK_SAMPLES per
+ * miss and never comes back down. Left alone, the latency governor eventually
+ * notices the elevated floor and cuts it with a SECOND audible skip seconds
+ * later (aius_tx_governor.h). Correcting here spends the same frames at the
+ * instant the damage was done, when a splice is masked by the stale repeat the
+ * DMA has just transmitted anyway, and leaves the governor's floor untouched.
+ *
+ * No masked section, unlike trim_to's callers: this is the CONSUMER advancing
+ * its own cursor, which is the one cursor it owns outright (see the SPSC
+ * contract at the top of this file). It is also why the correction lives in the
+ * ISR rather than being reported to the epoch: only the consumer may move it. */
+static inline uint32_t aius_spdif_tx24_drop_stale(AiusSpdifTx24Ring *ring,
+                                                  uint32_t frames)
+{
+	const uint32_t level = ring->written - ring->consumed;
+	const uint32_t drop = level < frames ? level : frames;
+
+	ring->consumed = ring->consumed + drop;
+	return drop;
+}
+
 /* The one ring. Defined in DMAMEM by aius_spdif_sources.cpp, beside the
  * transmit ISR that drains it; the producer is AiusAudioProcessor::enqueue()
  * in optical_main.cpp. */
 extern AiusSpdifTx24Ring g_aius_spdif_tx24;
+
+/* ISR-owned transmit diagnostics that are not ring state, defined in DTCM .bss
+ * by aius_spdif_sources.cpp (see the witness's placement note above).
+ *
+ * g_aius_tx_trim_applied_at_ms is millis() at the TX period boundary that
+ * consumed a same-nominal trim request, i.e. the instant CCM_ANALOG_PLL_AUDIO_NUM
+ * actually changed. Paired with clock.trim_last_at_ms (stamped at the request,
+ * thread context) it brackets the queueing delay -- up to one 128-frame period
+ * -- between asking for a trim and the wire rate moving. 0 = no trim has been
+ * applied this boot.
+ *
+ * g_aius_tx_missed_fill_flexspi holds FLEXSPI_INTR, FLEXSPI2_INTR and
+ * FLEXSPI2_STS1 sampled at the first miss of a burst. A missed transmit
+ * interrupt is a latency fault, not an audio fault, and the prime suspect on
+ * this board is a FlexSPI bus hold (program flash is XIP on FlexSPI1, the
+ * recorder's PSRAM on FlexSPI2) -- the same reasoning, and the same raw-word
+ * discipline, as the stall witness's NVIC_IABR snapshot in optical_main.cpp. */
+extern AiusTxFillWitness g_aius_tx_fill_witness;
+extern volatile uint32_t g_aius_tx_trim_applied_at_ms;
+extern volatile uint32_t g_aius_tx_missed_fill_flexspi[3];
 
 /* Point the S/PDIF transmit DMA interrupt at the 24-bit filler. Call once,
  * after AudioOutputSPDIF3 has been constructed (its begin() allocates the DMA

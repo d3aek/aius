@@ -410,6 +410,40 @@ two-deep block queue behind it to be unaccounted for — which is what
 asked for. Neither counter has a wire field yet; that is observability work for the
 sample-rate item, not for this one.
 
+**Every output glitch now carries a timestamp (2026-09-07).** A boot-lifetime total
+says a glitch happened somewhere between two polls; it cannot place one the owner
+heard. Four instruments close that, all served on the `clock` object of
+`GET /api/status` and all posted to the event ring as they happen, so a poller can
+order them against everything else:
+
+- **`underrun_episodes[≤8]` + `underrun_episode_count`** — the gate-open underrun
+  counter's advances, grouped into episodes with `start_ms`, `ms`, `frames` and
+  `gate_open` (`lib/aius_audio/src/aius_underrun_episodes.h`, host-proven by the
+  `underrun-episodes` suite). The decision-free state machine is stepped once per
+  ACCEPTED producer block, beside the governor tap, and once more at the gate's
+  closing edge; the block cadence (~10.7 ms) is deliberately coarser than the
+  transmit ISR's 2.67 ms fill period, so one stall coalesces into one episode
+  instead of fragmenting per fill. Event type 14 at each episode's end.
+- **`governor_last_trim_at_ms` / `governor_last_trim_frames`, `gate_open_last_trim_at_ms`**
+  — when the last audible skip happened and how big it was, beside the lifetime
+  totals that could only say it happened at all. Event type 15 at the trim, which
+  also freezes the flight recorder (§PSRAM flight recorder).
+- **`tx_missed_fills` / `tx_missed_fill_frames` / `tx_missed_fill_at_ms` + three raw
+  FlexSPI words** — the fault none of the ring's counters could see. The transmit DMA
+  is circular, so an ISR serviced a whole period late finds the DMA has already
+  re-transmitted the half it filled last time: an audible repeat that advances no
+  underrun counter, and one `AUDIO_BLOCK_SAMPLES` of standing latency the governor
+  would later cut with a second skip. The ISR detects it by filling the same half
+  twice (an odd number of missed periods; an even number restores parity and stays
+  invisible), rebases the ring's consumer cursor to undo the latency immediately, and
+  snapshots `FLEXSPI_INTR` / `FLEXSPI2_INTR` / `FLEXSPI2_STS1` on the first miss of a
+  burst so a bus hold is attributable. Hot-path cost is five instructions: one
+  address load, one load, one store, one compare and a not-taken branch
+  (`lib/aius_audio/src/aius_spdif_tx24.h`, host-proven by `tx-fill-witness`). Event
+  type 17, posted from the producer's block tap.
+- **`trim_last_at_ms` / `trim_applied_at_ms`** — the same-nominal PLL trim, at its
+  request and at the TX boundary that actually wrote the numerator. Event type 16.
+
 **Cost.** The path is *cheaper* than the 16-bit one it replaces, which is the expected
 direction: it removed work rather than adding it. Inside the DWT bracket, the 512-frame
 block's output stage went from 1,024 `aius_out16_sample()` calls — a PRNG draw, a
@@ -437,6 +471,32 @@ ways (operator stop, EOF, decoder error, a cancelled job displaced by a new
 selection, and a carrier arriving), all of which reach the same `source` field. One
 derived reconciler covers every one; five call sites would each be a chance to leave
 the clock behind (`src/optical_main.cpp:2899`).
+
+**The transmitted validity flag is `SPDIF_SCR[VALCTRL]`, and its polarity is inverted
+against its own name.** `ValCtrl = 1` means "outgoing validity always *clear*", i.e.
+`V = 0` on the wire, which IEC 60958 defines as data suitable for conversion; `0`
+transmits `V = 1`, the "do not convert" state a receiver may answer with a mute. PJRC's
+boot configuration sets the bit and says so
+(`evidence/source-snapshots/PJRC-SPDIF-TX-SOURCE/output_spdif3.cpp:265`), while their
+`mute_PCM(true)` sets the same bit to mute (`:211`) — the two contradict each other, and
+this firmware inherited the second reading until 2026-09-07: it named the bit "validity
+invalid", set it to open a transition and cleared it to close one, so from the first
+full apply onward the board transmitted `V = 1` permanently. The constant is now
+`AIUS_AUDIO_CLOCK_VALCTRL_VALID_BIT` (`lib/aius_audio/include/aius_audio_clock.h`), a
+dark transition clears it and the hold's last period sets it, and the `clock-target`
+suite pins the steady-state register value rather than only the writes. Correction
+record: [`aius-sample-rate-following.md`](../plans/aius-sample-rate-following.md)
+§Correction 2026-09-07.
+
+**A same-nominal trim no longer holds validity at all (2026-09-07).** The hold exists to
+warn a receiver about a discontinuous clock change; a numerator step is
+carrier-continuous (proven at +438 ppm, far beyond the tracker's ~10 ppm corrections),
+so the four-period `V = 1` window it used to raise bought nothing and cost ≥ 10.67 ms of
+possible DAC mute per trim. The TX boundary now writes `CCM_ANALOG_PLL_AUDIO_NUM` and
+touches neither `VALCTRL` nor `invalid_periods_remaining`
+(`lib/aius_audio/src/aius_spdif_sources.cpp`); `clock.invalid_windows` therefore counts
+dark applies only. The dark full-apply and structural-replan paths keep the hold, where
+the pad is closed anyway and the discontinuity is real.
 
 **Boot and replay are 48 kHz; live output follows the source at 32, 44.1 or
 48 kHz.** `AUDIO_SAMPLE_RATE_EXACT=48000.0f` remains the bootstrap value used
@@ -682,12 +742,22 @@ never touches the ring. The drain rides the REPLAY checkpoint's budget row, afte
 gate and carrier: at most 32 KiB per epoch, ~2× the 384 KiB/s fill rate, so a
 post-stall backlog clears (`src/optical_main.cpp:7029`). Both producer and drain are
 serial epoch work — nothing DMAs the PSRAM, so there is deliberately no cache
-maintenance. Event triggers (overrun, underrun, carrier loss, limiter gain reduction)
-are a configurable mask mirrored against the recorder's own bits by `static_assert`
-(`src/optical_main.cpp:773`).
+maintenance. Event triggers (overrun, underrun, carrier loss, limiter gain reduction,
+governor trim, missed fill) are a configurable mask mirrored against the recorder's own
+bits by `static_assert` (`src/optical_main.cpp:773`).
+
+**The two producer-posted triggers (2026-09-07) freeze on an output fault the audio
+itself carries.** `governor_trim` and `missed_fill` are set through one entry point,
+`aius_recorder_note_producer_event()`, by the caller that detected the fault — the
+governor at its trim, the block tap at the ISR's missed fill — rather than being
+re-evaluated inside the recorder: the caller is the one that made the splice or lost
+the period. The token is consumed by the very next producer block, so the capture ends
+at the damaged block with the history before it intact, exactly as an underrun freeze
+does. Both default to enabled and are wire-configurable as `governor_trim` /
+`missed_fill` in `PUT /api/recorder/config`.
 
 **HTTP surface.** `GET /api/recorder` (state), `POST /api/recorder/freeze` / `thaw`,
-`POST /api/recorder/config` (mask + GR threshold), and
+`PUT /api/recorder/config` (mask + GR threshold), and
 `GET /api/recorder/data?offset=&length=&generation=` — a bounded three-parameter
 reader, the events cursor's rigidity rather than a query engine
 (`lib/aius_http/src/aius_http.c:171`). All run at checkpoint 5 in thread context.

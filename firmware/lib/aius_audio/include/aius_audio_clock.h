@@ -17,7 +17,28 @@ extern "C" {
 /* Values shared with the fake target. The target build statically verifies
  * them against the Teensy core's register definitions. */
 #define AIUS_AUDIO_CLOCK_PLL_LOCK_BIT UINT32_C(0x80000000)
-#define AIUS_AUDIO_CLOCK_VALIDITY_INVALID_BIT UINT32_C(0x00000020)
+/* SPDIF_SCR[5], ValCtrl, and the name says what SETTING it does because the
+ * field's polarity is inverted against every reading of its own name:
+ *
+ *   ValCtrl = 0  "Outgoing Validity always set"    -> V = 1 on the wire, which
+ *                                                     IEC 60958 defines as NOT
+ *                                                     suitable for conversion
+ *                                                     to analogue;
+ *   ValCtrl = 1  "Outgoing Validity always clear"  -> V = 0, the reliable-data
+ *                                                     state a receiver expects.
+ *
+ * So SETTING this bit is what makes the transmitted stream VALID. PJRC's boot
+ * configuration agrees and says so
+ * (evidence/source-snapshots/PJRC-SPDIF-TX-SOURCE/output_spdif3.cpp:265,
+ * `SPDIF_SCR_VALCTRL | // Outgoing Validity always clear`) -- but their
+ * `mute_PCM(true)` SETS the same bit to mute (:211-217), which is backwards,
+ * and this firmware inherited that reading until 2026-09-07: it named the bit
+ * "validity invalid", set it to mark a transition invalid and CLEARED it to
+ * mark the stream good, so from the first full apply onward the board
+ * transmitted V=1 permanently with a 10.67 ms V=0 window per trim -- exactly
+ * inverted, and a plausible cause of the dropouts a V-honouring DAC produces.
+ * The correction is recorded in docs/plans/aius-sample-rate-following.md. */
+#define AIUS_AUDIO_CLOCK_VALCTRL_VALID_BIT UINT32_C(0x00000020)
 
 typedef enum {
 	AIUS_AUDIO_CLOCK_REG_PLL_CONTROL = 0,

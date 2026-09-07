@@ -5,7 +5,7 @@ scope: component
 component: aius
 status: in-progress
 tags: [aius, firmware, audio, latency, jitter, monitoring]
-updated: 2026-09-06
+updated: 2026-09-07
 ---
 
 # Aius output jitter elimination
@@ -637,6 +637,87 @@ declined.
   OTA activation + healthy-boot self-commit; then the live guard — a clean
   session (`tx_underrun_frames` delta 0) must show `governor_trims` 0, and
   the AC-3 DSP-page number must sit at ~16 ms, not below.
+- unit: parent-only
+
+### Phase H — glitch timestamps, validity polarity, missed-fill witness IN-PROGRESS (built 2026-09-07, OTA pending)
+
+**Trigger (2026-09-07, 11:14 UTC):** the owner heard one brief stutter (not a
+buzz) during stable AC-3 playback on `861252098a01`. Every timed board record
+(recorder freezes, dark intervals, `sis_last_error_ms`, `production_gap_last_at_ms`)
+placed only the intentional pause/sleep/jingle edges at 11:11 UTC; from content
+start at 11:11:49 the board logged zero underruns, zero carrier events and zero
+input drops. The counters that could explain a sub-second splice
+(`tx_underrun_frames 1792`, `governor_trims 2 / 768 frames`, `trim_updates 62`)
+were boot-lifetime totals with no timestamp. The owner's ruling: dark intervals
+are intentional and never the fault; glitches are sub-second on stable
+playback; records need timestamps and durations; known gaps get fixed in
+firmware regardless of which DAC is downstream.
+
+**Audit (read-only, same day) — what the loop could not see:**
+
+1. **Validity bit inverted, and toggled on every trim.** `SPDIF_SCR[VALCTRL]`
+   is `1` = validity *clear* (V=0, reliable) per the RM and the Linux
+   `fsl_spdif` "Clear the validity bit for TX" patch; PJRC's boot config sets
+   it correctly but PJRC's `mute_PCM()` sets it to mute, and the firmware
+   inherited that reading. Wire state since the first full apply: V=1
+   permanently, with a 10.67 ms V=0 window per same-nominal trim (~one per
+   20 min). The listening-room DAC (Topping D50 III, ES9039Q2M) plays through V=1,
+   so it ignores V for muting; a V-honouring DAC would be muted permanently.
+2. **Missed TX fill is fully invisible.** The TX DMA is circular; an ISR more
+   than one period (2.67 ms) late lets the DMA re-transmit the stale half
+   while `fill()` never runs, so `tx_underrun_frames` does not move. The ring
+   level ratchets +128 per miss and the governor later cuts it with a second
+   audible skip. No steady-state critical section is long enough; the
+   remaining trigger is a bus-level CPU hold (FlexSPI/PSRAM), and the stall
+   witness fires only above 100 ms.
+3. Every gap-shaped path (decode reject, squelch, ingress flush, SD/OTA stall,
+   RX drop) drains the ring and is underrun-visible; DMA cache coherency is
+   clean. A corrupted-but-complete AC-3 burst decoding as garbage (liba52 has
+   no CRC check) is the one remaining invisible, and it is a crackle, not a
+   stutter — logged in the register, not built here.
+
+**Built (aius, one commit):**
+
+- Stamps and shapes: `clock.governor_last_trim_at_ms` / `_frames`,
+  `clock.gate_open_last_trim_at_ms`, `clock.trim_last_at_ms` (request) and
+  `clock.trim_applied_at_ms` (ISR, at the NUM write), `clock.underrun_episodes[≤8]`
+  `{start_ms, ms, frames, gate_open}` + `underrun_episode_count` from a pure
+  episode state machine (`lib/aius_audio/src/aius_underrun_episodes.h`) stepped
+  at the accepted-block tap and the gate's closing edge.
+- Events 14 `UNDERRUN` (episode end), 15 `GOVERNOR_TRIM`, 16 `CLOCK_TRIM`,
+  17 `TX_MISSED_FILL`; recorder triggers `governor_trim` and `missed_fill`
+  (config flags, default on, both now required keys of `PUT /api/recorder/config`).
+- Validity polarity corrected (`AIUS_AUDIO_CLOCK_VALCTRL_VALID_BIT`: set = V=0);
+  steady-state SCR leaves bit 5 set, dark transitions clear it. Same-nominal
+  trims write the numerator only — no `VALCTRL` touch, no four-period hold;
+  `invalid_windows` now counts dark applies only. Correction appended to
+  `aius-sample-rate-following.md`.
+- Missed-fill witness in the TX ISR (`aius_tx_fill_witness_step`, same half
+  filled twice): count, `millis()` stamp, immediate ring rebase by the missed
+  frames (`aius_spdif_tx24_drop_stale`, no ratchet, no second governor skip),
+  and a first-miss snapshot of `FLEXSPI_INTR` / `FLEXSPI2_INTR` / `FLEXSPI2_STS1`
+  served under `clock.tx_missed_fill_*`. Healthy-path ISR cost: five
+  instructions. Even-numbered miss runs restore half parity and stay invisible
+  (stated contract).
+
+- outcome: the next heard stutter lands against a timestamped record (trim,
+  governor splice, underrun episode or missed fill) in `/api/status` and
+  `/api/events`, and the two wire-level faults the audit found are gone from
+  the trim path.
+- seams: `firmware/src/optical_main.cpp` (taps, serializers, events);
+  `lib/aius_audio` (`aius_spdif_sources.cpp` boundary + ISR, `aius_spdif_tx24.h`,
+  `aius_audio_clock.{h,cpp}`, new `aius_underrun_episodes.h`); `lib/aius_recorder`
+  (producer-posted triggers); `firmware/src/aius_optical_app.{h,cpp}` (config keys);
+  `docs/reference/firmware-io.md`; upstream repository `swagger.json` + test.
+- targeted-proof: new host suites `tx-fill-witness` (7) and `underrun-episodes`
+  (11); `event-ring` 9, `recorder` 35 + bank 23, `clock-target` 15 (steady-state
+  register asserted, not only the writes), `optical-app` oracle 38, `registry`
+  65 arms; upstream repository `swagger.test.js` 11; `build_ab.sh` green with every
+  post-link guard, DTCM free 24,768 → 25,600 B (clock format literal moved to
+  PROGMEM), OCRAM +0. Owed live: OTA at the owner's moment, then
+  `clk_regs.spdif_scr & 0x20` set, `invalid_windows` static across trims,
+  `trim_last_at_ms` advancing, one listening pass (V=0 reaches the DAC for the
+  first time), and the next reported glitch read against the new stamps.
 - unit: parent-only
 
 ## Acceptance

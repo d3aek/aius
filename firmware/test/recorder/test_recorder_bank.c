@@ -163,6 +163,33 @@ static void test_bank_forwards_full_lifecycle(void)
 	assert(out_length == 24u * AIUS_RECORDER_FRAME_BYTES);
 }
 
+/* A producer-posted note reaches the ACTIVE slot only, exactly as the producer
+ * block and the epoch do: the slot being recorded is the one the splice belongs
+ * to, and an idle slot must not latch a trigger it never saw a block for. */
+static void test_bank_forwards_governor_trim_to_active_only(void)
+{
+	BankFixture f;
+	bank_fixture_init(&f);
+	assert(aius_recorder_bank_set_config(&f.bank, AIUS_RECORDER_MASK_ALL,
+	                                     0.0f, 1u, 2u) == AIUS_OK);
+	aius_recorder_bank_note_producer_event(
+		&f.bank, AIUS_RECORDER_TRIGGER_GOVERNOR_TRIM);
+	assert(f.bank.slots[f.bank.active].freeze_token ==
+	       AIUS_RECORDER_TRIGGER_GOVERNOR_TRIM);
+	for (uint32_t slot = 0; slot < AIUS_RECORDER_BANK_SLOTS; slot++) {
+		if (slot == f.bank.active)
+			continue;
+		assert(f.bank.slots[slot].freeze_token == 0u);
+	}
+	bank_feed_block(&f, 8u, 0, 0u, 0u);
+	assert(f.bank.slots[f.bank.active].state == AIUS_RECORDER_POSTROLL);
+	assert(f.bank.slots[f.bank.active].trigger ==
+	       AIUS_RECORDER_TRIGGER_GOVERNOR_TRIM);
+	/* A null bank is a no-op, like every other bank entry point. */
+	aius_recorder_bank_note_producer_event(
+		NULL, AIUS_RECORDER_TRIGGER_MISSED_FILL);
+}
+
 static void test_bank_auto_advance_on_freeze(void)
 {
 	BankFixture f;
@@ -654,6 +681,7 @@ int main(void)
 	test_bank_absent_is_first_class();
 	test_bank_init_geometry_every_fitment();
 	test_bank_forwards_full_lifecycle();
+	test_bank_forwards_governor_trim_to_active_only();
 	test_bank_auto_advance_on_freeze();
 	test_bank_full_wrap_recycles_and_counts();
 	test_bank_thaw_in_place_does_not_advance();
