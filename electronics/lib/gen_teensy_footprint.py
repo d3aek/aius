@@ -9,13 +9,10 @@ footprint whose pads carry the Teensy pin identifiers so the (partial) Teensy41
 schematic symbol nets map by name; unused socket holes are present for the module
 to seat but carry no net.
 
-MAIN-ROW ORDER is transcribed from the PJRC pinout card
-(https://www.pjrc.com/teensy/card11a_rev4_web.pdf) and is exact.
-UNDERSIDE CLUSTER XY (USB host, Ethernet, service column, VUSB) is NOT
-dimensioned on the PJRC cards — the positions below are best-estimates from
-card11b relative placement and are flagged for pad-by-pad verification against a
-physical Teensy 4.1 at the pre-order footprint gate. Cluster PAD NAMES and
-pitches are authoritative; only their board XY is provisional.
+Component-side coordinates follow PJRC's dimensions_teensy41.png, with VIN
+at (0,0), USB to the left and microSD to the right. The top row is y=0;
+the GND/pin-0 row is y=15.24. Pin names come from PJRC card11a/card11b.
+See docs/reference/carrier-footprint-review.md for the coordinate derivation.
 
 Run: ./gen_teensy_footprint.py   (writes the .kicad_mod beside this script)
 """
@@ -33,34 +30,33 @@ BOTTOM_ROW = ["GND", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10",
 TOP_ROW = ["VIN", "GND", "3V3", "23", "22", "21", "20", "19", "18", "17", "16",
            "15", "14", "13", "GND", "41", "40", "39", "38", "37", "36", "35", "34", "33"]
 
-# Underside clusters: (name, x, y). Names authoritative; XY provisional (see header).
-# Placed inboard between the main rows (0 < y < 15.24), non-colliding.
-USB_HOST = [  # SSW-105 5-pin single row near the USB end; card11b: +5V D+ D- GND GND
-    ("UH5V", 7.62, 11.0), ("UHDP", 10.16, 11.0), ("UHDM", 12.70, 11.0),
-    ("UHGND", 15.24, 11.0), ("GND", 17.78, 11.0),
+# Through-hole auxiliary clusters projected onto the component-side view.
+USB_HOST = [  # Names from the component-side USB-host photograph on card11b.
+    ("UH5V", 6.35, 12.19), ("UHDM", 8.89, 12.19), ("UHDP", 11.43, 12.19),
+    ("UHGND", 13.97, 12.19), ("GND", 16.51, 12.19),
 ]
-ETHERNET = [  # MMS-103 2x3 @ 2.00 mm; card11b rows: RX+/LED/TX- and RX-/GND/TX+
-    ("ERXP", 28.48, 8.62), ("ELED", 30.48, 8.62), ("ETXN", 32.48, 8.62),
-    ("ERXN", 28.48, 6.62), ("EGND", 30.48, 6.62), ("ETXP", 32.48, 6.62),
+ETHERNET = [  # center x=13.97, middle row y=4.45; 2.00 mm pitch.
+    ("ERXP", 12.97, 2.45), ("ERXN", 14.97, 2.45),
+    ("ELED", 12.97, 4.45), ("EGND", 14.97, 4.45),
+    ("ETXN", 12.97, 6.45), ("ETXP", 14.97, 6.45),
 ]
-SERVICE = [  # underside column near the SD end; card11b: On/Off Program GND 3.3V VBAT
-    ("ONOFF", 53.34, 12.0), ("PGM", 53.34, 9.46), ("GND", 53.34, 6.92),
-    ("3V3", 53.34, 4.38), ("VBAT", 53.34, 1.84),
+SERVICE = [
+    ("ONOFF", 45.72, 2.54), ("PGM", 45.72, 5.08), ("GND", 45.72, 7.62),
+    ("3V3", 45.72, 10.16), ("VBAT", 45.72, 12.70),
 ]
-VUSB = [("VUSB", 5.08, 4.0)]  # USB-device group pad, card11b
+VUSB = [("VUSB", 2.54, 2.54)]
 
 FP_NAME = "Teensy41_Sockets_SSW-124_MMS-103_SSW-105"
-DRILL = 1.0
 PAD = 1.7
 
 
-def pad(name: str, x: float, y: float, shape: str, index: int) -> str:
+def pad(name: str, x: float, y: float, shape: str, index: int, drill: float = 1.04) -> str:
     uuid = f"c7ee0001-0000-4000-8000-{index:012d}"
     named = f'"{name}"' if name else '""'
     return (f'\t(pad {named} thru_hole {shape}\n'
             f'\t\t(at {x:.2f} {y:.2f})\n'
             f'\t\t(size {PAD} {PAD})\n'
-            f'\t\t(drill {DRILL})\n'
+            f'\t\t(drill {drill})\n'
             f'\t\t(layers "*.Cu" "*.Mask")\n'
             f'\t\t(uuid "{uuid}")\n'
             f'\t)\n')
@@ -72,21 +68,21 @@ def main() -> int:
     # Main rows.
     for col, name in enumerate(BOTTOM_ROW):
         shape = "rect" if (col == 1) else "circle"  # pin 0 corner marker
-        pads.append(pad(name, col * PITCH, 0.0, shape, index)); index += 1
+        pads.append(pad(name, col * PITCH, ROW_GAP, shape, index)); index += 1
     for col, name in enumerate(TOP_ROW):
-        pads.append(pad(name, col * PITCH, ROW_GAP, "circle", index)); index += 1
+        pads.append(pad(name, col * PITCH, 0.0, "circle", index)); index += 1
     # Underside clusters.
-    for group in (USB_HOST, ETHERNET, SERVICE, VUSB):
+    for group, drill in ((USB_HOST, 1.04), (ETHERNET, 0.79), (SERVICE, 1.04), (VUSB, 1.04)):
         for name, x, y in group:
-            pads.append(pad(name, x, y, "circle", index)); index += 1
+            pads.append(pad(name, x, y, "circle", index, drill)); index += 1
 
-    x_min, x_max = -2.0, 23 * PITCH + 2.0
-    y_min, y_max = -2.0, ROW_GAP + 2.0
+    x_min, x_max = -1.27, 59.69
+    y_min, y_max = -1.27, 16.51
     body = (
         f'\t(fp_rect\n\t\t(start {x_min:.2f} {y_min:.2f})\n\t\t(end {x_max:.2f} {y_max:.2f})\n'
         f'\t\t(stroke (width 0.12) (type solid))\n\t\t(fill no)\n\t\t(layer "F.Fab")\n'
         f'\t\t(uuid "c7ee0001-0000-4000-8000-000000000901")\n\t)\n'
-        f'\t(fp_rect\n\t\t(start {x_min - 0.5:.2f} {y_min - 0.5:.2f})\n\t\t(end {x_max + 0.5:.2f} {y_max + 0.5:.2f})\n'
+        f'\t(fp_rect\n\t\t(start -3.10 {y_min - 0.5:.2f})\n\t\t(end {x_max + 0.5:.2f} {y_max + 0.5:.2f})\n'
         f'\t\t(stroke (width 0.05) (type solid))\n\t\t(fill no)\n\t\t(layer "F.CrtYd")\n'
         f'\t\t(uuid "c7ee0001-0000-4000-8000-000000000902")\n\t)\n'
     )
@@ -97,7 +93,7 @@ def main() -> int:
         f'\t(generator "aius-gen-teensy-footprint")\n'
         f'\t(generator_version "10.0")\n'
         f'\t(layer "F.Cu")\n'
-        f'\t(descr "Teensy 4.1 socketed carrier footprint: 2x SSW-124 (24-pin, 2.54mm, rows 15.24mm apart), SSW-105 (5-pin USB host), MMS-103 (2x3 native-Ethernet, 2.00mm). Main-row pin order exact from PJRC card11a; underside cluster (USB host / Ethernet / service / VUSB) XY estimated from card11b relative placement and to be pad-by-pad verified at the pre-order gate. Pads carry Teensy pin ids so the partial Teensy41 symbol maps by name; unused holes carry no net.")\n'
+        f'\t(descr "Teensy 4.1 carrier sockets; component-side VIN origin, USB left. Geometry from PJRC dimensions_teensy41.png; names from card11a/card11b. Main rows 2.54mm pitch, 15.24mm apart; Ethernet 2mm pitch. Physical socket seating remains a pre-order check.")\n'
         f'\t(tags "teensy 4.1 socket module ssw-124 mms-103 ssw-105")\n'
         f'\t(property "Reference" "REF**"\n\t\t(at {23 * PITCH / 2:.2f} -3.5 0)\n\t\t(layer "F.SilkS")\n'
         f'\t\t(uuid "c7ee0001-0000-4000-8000-000000000001")\n'

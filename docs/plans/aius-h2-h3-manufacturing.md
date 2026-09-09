@@ -204,8 +204,9 @@ escalation rule this is a recorded electrical reason, not a mechanical one.
 
 **Stackup lock.** Route against the JLC04161H-7628 / PCBWay 4-layer 1.6 mm class:
 L1 signal / L2 solid GND / L3 GND+power / L4 signal, L1→L2 ≈ 0.20–0.21 mm prepreg.
-Design-target impedance geometry (from H2a, JLCPCB 0.2104 mm): **USB 90 Ω** at
-w ≈ 0.20 mm / s ≈ 0.15 mm; **Ethernet 100 Ω** at w ≈ 0.20 mm / s ≈ 0.15 mm. The
+Design-target impedance geometry (from H2a, JLCPCB 0.2104 mm; corrected against
+the calculator on 2026-09-09): **USB 90 Ω** at w ≈ 0.25 mm / s ≈ 0.15 mm;
+**Ethernet 100 Ω** at w ≈ 0.20 mm / s ≈ 0.15 mm. The
 two fabs' prepreg differs by ~0.01 mm, well inside tolerance, so one routed
 geometry quotes on both and is re-confirmed against each fab's controlled-impedance
 service at H3c. Cost model refreshed to the 4-layer pre-layout estimate on both
@@ -428,12 +429,19 @@ structural blockers above. Several earlier review assurances require correction:
   lost during submodule extraction are restored. Project library tables now
   declare their stock dependencies explicitly after a fresh profile exposed
   105 library-resolution warnings.
-- **Footprints still require correction:** the selected TPD2EUSB30ADRTR is a
+- **Library/schematic corrections delivered:** the selected TPD2EUSB30ADRTR is a
   TI DRT package, not the assigned SOT-23-3. PJRC's component-side dimensioned
   drawing contradicts the Teensy main-row handedness and guessed auxiliary
   pad coordinates. The optical rear peg pair should be 2.10 mm from the signal
   row: 6.00 mm is the separation between peg rows, not the signal-to-peg distance.
-  These invalidate the earlier "verified correct" claims and must precede routing.
+  These invalidate the earlier "verified correct" claims. The library now fixes
+  these coordinates, optical pin1/3 handedness, the Pulse stagger/LED/post/shield
+  coordinates, USB metal courtyard, and per-socket drill sizes. U1 uses Texas_DRT-3;
+  magjack pin8 returns to PCB GND per Pulse J403.L, and its unused right LED pin
+  names are corrected. The schematic is regenerated and full ERC remains zero.
+  The library checker covers 112 coordinate/drill assertions; its board mode
+  rejects the unchanged old PCB as intended. Coordinate provenance and limitations:
+  [`carrier-footprint-review.md`](../reference/carrier-footprint-review.md).
 - **Two suspected electrical defects were cleared:** KiCad's exported netlist
   correctly expands the USB-C symbol's stacked power/ground pins; all PCB pads
   carry their intended nets. PJRC already puts 150 ohms in series with the
@@ -441,7 +449,26 @@ structural blockers above. Several earlier review assurances require correction:
   resistors is incorrect, but another carrier resistor is not required on that
   evidence alone.
 
-Recovery remains within H3: correct and verify the footprints, establish actual
+**Assembly blocker discovered in delivery review:** the selected SSW and MMS
+socket bodies overlap nominally by 0.035 mm and differ in height (8.51 vs 4.45 mm).
+Neither moving the Teensy holes nor routing around them resolves the mismatch.
+Socket selection, mating pin lengths and physical seating require resolution;
+the owner is being asked whether fitted header pins must be retained. The library
+coordinate correction does not claim to clear this assembly gate.
+
+The existing impedance calculator also contradicts H2d's former claim that
+0.20/0.15 mm geometry supplies both targets: at the recorded JLCPCB stackup,
+90 ohms requires width 0.251 mm and 100 ohms 0.201 mm at 0.15 mm edge spacing.
+H2d's routing targets above are corrected. These remain feasibility estimates,
+not fabricator-controlled-impedance approval.
+
+Documentation validation remains diagnostic: `the repo tooling tool doc-index --
+--repo-root git_modules/aius --validate-only --quiet` rejects the extracted
+submodule's `docs/` placement against its former upstream repository component-path rule.
+This is not an ERC/footprint failure; adapting the shared validator is outside
+this hardware repair.
+
+Recovery remains within H3: resolve the socket assembly, establish actual
 connector/panel datums, rebuild placement and constrained routing, then apply
 ERC/DRC, pair/plane, mechanical and independent review gates. No manufacturing
 release or order is authorised by this recovery note.

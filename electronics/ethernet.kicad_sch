@@ -264,7 +264,7 @@
 					(pin passive line
 						(at 12.7 7.62 180)
 						(length 2.54)
-						(name "LEDR_A"
+						(name "LEDR_K"
 							(effects
 								(font
 									(size 1.27 1.27)
@@ -282,7 +282,7 @@
 					(pin passive line
 						(at 12.7 5.08 180)
 						(length 2.54)
-						(name "LEDR_K"
+						(name "LEDR_A"
 							(effects
 								(font
 									(size 1.27 1.27)
@@ -693,6 +693,21 @@
 		)
 	)
 	(wire
+		(pts (xy 162.56 137.16) (xy 167.64 137.16))
+		(stroke (width 0) (type default))
+		(uuid "08ae6057-d095-5793-a561-3b451479ec71")
+	)
+	(global_label "GND"
+		(shape bidirectional)
+		(at 167.64 137.16 0)
+		(effects (font (size 1.27 1.27)) (justify left))
+		(uuid "f1f127a2-8b81-5675-8949-b2253bd03de8")
+		(property "Intersheetrefs" "${INTERSHEET_REFS}"
+			(at 167.64 137.16 0)
+			(effects (font (size 1.27 1.27)) (hide yes))
+		)
+	)
+	(wire
 		(pts (xy 162.56 116.84) (xy 167.64 116.84))
 		(stroke (width 0) (type default))
 		(uuid "cb700ad8-cc41-5dfa-b13e-e45fe3e8e880")
@@ -719,21 +734,6 @@
 		(uuid "a39be61f-a8cb-5e75-b1c0-a308744590a4")
 		(property "Intersheetrefs" "${INTERSHEET_REFS}"
 			(at 209.55 128.27 270)
-			(effects (font (size 1.27 1.27)) (hide yes))
-		)
-	)
-	(wire
-		(pts (xy 162.56 137.16) (xy 167.64 137.16))
-		(stroke (width 0) (type default))
-		(uuid "3d423f91-3b90-599c-ab61-e66760be9647")
-	)
-	(global_label "CHASSIS"
-		(shape bidirectional)
-		(at 167.64 137.16 0)
-		(effects (font (size 1.27 1.27)) (justify left))
-		(uuid "25e18d15-e08d-58e9-94e8-c0fc225fb514")
-		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 167.64 137.16 0)
 			(effects (font (size 1.27 1.27)) (hide yes))
 		)
 	)

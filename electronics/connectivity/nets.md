@@ -78,8 +78,11 @@ DP83825I to the carrier and replicate the "PJRC Ethernet Kit reference circuit")
 The BOM already matches this reality (magjack + centre-tap cap, no PHY line item).
 **Resolved on the ethernet sheet:** no on-carrier DP83825 and no RMII; the Pulse
 `J0011D21BNL` magjack MDI pairs wire straight to the `ETH_*` globals, its two
-PHY-side centre taps join through the 100 nF `C30` to `GND`, and its shield +
-CHS-ground tie to `CHASSIS`.
+PHY-side centre taps join through the 100 nF `C30` to `GND`. Pin8, the internal
+termination-capacitor return, connects to PCB `GND` per Pulse J403.L p5; the
+physical shield tabs alone join `CHASSIS`. CHASSIS is deliberately isolated from
+digital GND, with no implicit layout-only tie. See
+[`carrier-footprint-review.md`](../../docs/reference/carrier-footprint-review.md).
 
 ### One expansion power switch → USB-host VBUS
 

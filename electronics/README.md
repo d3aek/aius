@@ -100,6 +100,16 @@ the textual summary and exit code are the result.
 
 ## ERC status
 
+The 2026-09-09 recovery corrects the Teensy, optical and magjack library geometry
+and the U1 package, and connects magjack pin8 to PCB ground per its datasheet.
+The regenerated schematic passes full ERC. Reviewed coordinates and the remaining
+socket assembly blocker are in
+[`carrier-footprint-review.md`](../docs/reference/carrier-footprint-review.md).
+Run `scripts/kicad.sh --python electronics/scripts/check_footprints.py` from the
+Aius root to check the library interfaces. Add `--board electronics/aius-carrier.kicad_pcb`
+to check the embedded board copies; the pre-recovery board fails this check and
+must be rebuilt before its routing can be accepted.
+
 The whole project is **ERC-error-clean** (`scripts/erc.sh`, `--severity-error`
 exits 0 — `Found 0 violations`). The error-clean gate also proves the global
 rails merge across sheets: teensy-expansion's `GND` / `VBUS_5V` power-input pins
@@ -131,15 +141,12 @@ The purchased optical modules (2026-07-27) are the RS PRO ORJ-5 / OTJ-5
 validating the Gerber against the RS PRO layout drawings is a recorded H2 gate
 ([H1 plan §Milestones](../docs/plans/aius-h1-schematic.md#milestones)).
 
-## Board (H3b scaffold)
+## Board (H3 recovery pending)
 
-`aius-carrier.kicad_pcb` is the 4-layer board, bootstrapped from the schematic
-netlist by [`scripts/scaffold_pcb.py`](scripts/scaffold_pcb.py) (run in the
-pinned container through the `pcbnew` Python API — see the script header for the
-two-step `kicad-cli sch export netlist` then `scaffold_pcb.py` invocation). It
-carries the L1/L2/L3/L4 stackup, the 96 × 95 mm outline, every component placed by
-functional zone, all nets, and the inner GND planes. This is an **initial
-placement + connectivity scaffold**, not a routed board: it is regenerable from
-the netlist up to H3b, after which H3c hand-routes it and it is no longer
-regenerated. Layer stackup, impedance geometry, and the 2-vs-4 verdict are in
-[`../docs/plans/aius-h2-h3-manufacturing.md`](../docs/plans/aius-h2-h3-manufacturing.md).
+`aius-carrier.kicad_pcb` still contains the rejected 2026-08-16 autoroute: a
+96 × 95 mm board with incorrect embedded footprints, signals through its ground
+planes, uncoupled differential pairs and 15 DRC violations plus 3 unconnected
+items. The corrected library does not automatically update those embedded copies.
+The rebuild must establish enclosure datums, use the corrected interfaces, reserve
+the reference planes and explicitly route the critical pairs. The owning plan is
+[`aius-h2-h3-manufacturing.md`](../docs/plans/aius-h2-h3-manufacturing.md).
