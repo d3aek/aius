@@ -6,7 +6,7 @@ component: aius
 subtype: design
 status: in-progress
 tags: [aius, hardware, kicad, pcb, layout, impedance, dfm, manufacturing]
-updated: 2026-08-15
+updated: 2026-09-09
 toc: true
 ---
 
@@ -412,6 +412,39 @@ out (reroll → 17+3 with a newly unrouted net, worse than 15+3), confirming the
 residual is not a scripted-placement problem — consistent with B1/B3 being the
 real issues. Rework sequence: B4/M3 schematic → B3/M1 placement+footprint →
 B1/B2 planes+stackup → re-route → M2 power widen → DRC/DFM → re-review.
+
+## Recovery audit (2026-09-09)
+
+The owner resumed layout completion. The first fresh KiCad 10.0.4 baseline
+reproduces **15 violations and 3 unconnected items**. This does not clear the
+structural blockers above. Several earlier review assurances require correction:
+
+- **Tooling repaired:** both container services now bind the Aius checkout at
+  `/workspace/aius`, independent of its upstream repository location. The CLI/Python wrapper
+  preserves the invoking UID/GID with host user-namespace mapping, so reports
+  actually persist on this Docker host. KiCad had printed "Saved DRC Report"
+  even when the old UID could not write it. Wrapper tests and a readable JSON
+  DRC artifact establish the repaired feedback loop. Evidence LFS attributes
+  lost during submodule extraction are restored. Project library tables now
+  declare their stock dependencies explicitly after a fresh profile exposed
+  105 library-resolution warnings.
+- **Footprints still require correction:** the selected TPD2EUSB30ADRTR is a
+  TI DRT package, not the assigned SOT-23-3. PJRC's component-side dimensioned
+  drawing contradicts the Teensy main-row handedness and guessed auxiliary
+  pad coordinates. The optical rear peg pair should be 2.10 mm from the signal
+  row: 6.00 mm is the separation between peg rows, not the signal-to-peg distance.
+  These invalidate the earlier "verified correct" claims and must precede routing.
+- **Two suspected electrical defects were cleared:** KiCad's exported netlist
+  correctly expands the USB-C symbol's stacked power/ground pins; all PCB pads
+  carry their intended nets. PJRC already puts 150 ohms in series with the
+  exposed Ethernet LED signal. The claim that the magjack has internal LED
+  resistors is incorrect, but another carrier resistor is not required on that
+  evidence alone.
+
+Recovery remains within H3: correct and verify the footprints, establish actual
+connector/panel datums, rebuild placement and constrained routing, then apply
+ERC/DRC, pair/plane, mechanical and independent review gates. No manufacturing
+release or order is authorised by this recovery note.
 
 ## Not in this plan
 

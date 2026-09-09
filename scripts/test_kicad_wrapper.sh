@@ -8,10 +8,9 @@ set -euo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 aius_dir="$(cd -- "$script_dir/.." && pwd)"
-repo_root="$(cd -- "$aius_dir/../../.." && pwd)"
 wrapper="$script_dir/kicad.sh"
 compose_path="$aius_dir/compose.yaml"
-scratch_root="${CLAUDE_SESSION_SCRATCH:-$repo_root/.scratch/scripts}"
+scratch_root="${CLAUDE_SESSION_SCRATCH:-$aius_dir/.scratch/scripts}"
 test_dir=""
 
 fail() {
@@ -38,14 +37,15 @@ set -euo pipefail
 : "${AIUS_DOCKER_REPO_ROOT_FILE:?AIUS_DOCKER_REPO_ROOT_FILE is required}"
 [[ "${COMPOSE_PROJECT_NAME:-}" == "hostile-project" ]] || exit 64
 printf '%s\0' "$@" > "$AIUS_DOCKER_ARGV_FILE"
-printf '%s' "${AIUS_REPO_ROOT:-}" > "$AIUS_DOCKER_REPO_ROOT_FILE"
+printf '%s' "${AIUS_PROJECT_ROOT:-}" > "$AIUS_DOCKER_REPO_ROOT_FILE"
 FAKE_DOCKER
 chmod +x "$fake_docker"
 
 run_wrapper_case() {
   local case_name="$1"
   local cwd="$2"
-  shift 2
+  local executable="$3"
+  shift 3
   local argv_file="$test_dir/$case_name.argv"
   local expected_file="$test_dir/$case_name.expected"
   local repo_root_file="$test_dir/$case_name.repo-root"
@@ -64,11 +64,14 @@ run_wrapper_case() {
     --project-name aius-kicad \
     -f "$compose_path" \
     run --rm \
-    kicad kicad-cli \
-    "$@" > "$expected_file"
+    kicad "$executable" > "$expected_file"
+  if [[ "$executable" == python3 ]]; then
+    shift
+  fi
+  printf '%s\0' "$@" >> "$expected_file"
 
   cmp -s -- "$expected_file" "$argv_file" || fail "$case_name produced unexpected Docker argv"
-  [[ "$(<"$repo_root_file")" == "$repo_root" ]] || fail "$case_name exported an unexpected repository bind path"
+  [[ "$(<"$repo_root_file")" == "$aius_dir" ]] || fail "$case_name exported an unexpected project bind path"
 }
 
 forwarded_args=(
@@ -79,24 +82,33 @@ forwarded_args=(
   ""
   '*literal*'
 )
-run_wrapper_case repo-root "$repo_root" "${forwarded_args[@]}"
-run_wrapper_case unrelated-cwd / "${forwarded_args[@]}"
+run_wrapper_case repo-root "$aius_dir" kicad-cli "${forwarded_args[@]}"
+run_wrapper_case unrelated-cwd / kicad-cli "${forwarded_args[@]}"
+run_wrapper_case python-mode / python3 --python "electronics/script with spaces.py"
 
 config_json="$test_dir/compose-config.json"
 expected_image="kicad/kicad:10.0.4@sha256:770e2fa006695077b5ba218742d5c3137896af91257b2ca971243fa56b01bb86"
-AIUS_REPO_ROOT="$repo_root" docker compose \
+AIUS_PROJECT_ROOT="$aius_dir" AIUS_UID=1234 AIUS_GID=2345 docker compose \
   --project-name aius-kicad \
   -f "$compose_path" \
   config --format json > "$config_json"
 
-if ! jq -e --arg image "$expected_image" --arg repo_root "$repo_root" '
+if ! jq -e --arg image "$expected_image" --arg aius_dir "$aius_dir" '
   .name == "aius-kicad"
   and .services.kicad.image == $image
   and .services.kicad.network_mode == "none"
-  and .services.kicad.user == "1000:1000"
-  and .services.kicad.working_dir == "/workspace/src/hardware/aius"
+  and .services.kicad.user == "1234:2345"
+  and .services.kicad.userns_mode == "host"
+  and .services.kicad.environment.KICAD_CONFIG_HOME == "/workspace/aius/.scratch/kicad-config"
+  and .services.kicad.working_dir == "/workspace/aius"
   and ([.services.kicad.volumes[]
-    | select(.type == "bind" and .source == $repo_root and .target == "/workspace")]
+    | select(.type == "bind" and .source == $aius_dir and .target == "/workspace/aius")]
+    | length == 1)
+  and .services.freerouting.working_dir == "/workspace/aius"
+  and .services.freerouting.user == "1234:2345"
+  and .services.freerouting.userns_mode == "host"
+  and ([.services.freerouting.volumes[]
+    | select(.type == "bind" and .source == $aius_dir and .target == "/workspace/aius")]
     | length == 1)
   and ([.services.kicad.volumes[]
     | select(.type == "volume" and .source == "aius-kicad-cache" and .target == "/home/kicad")]

@@ -12,6 +12,17 @@ ERC-clean: `power-usb` (H1a), `teensy-expansion` (Teensy 4.1, expansion / servic
 H1b) and `ethernet` (Pulse magjack for the Teensy native-Ethernet header, H1b).
 Cross-sheet connectivity is by the global-label net convention below.
 
+The container bind is the Aius checkout itself at `/workspace/aius`, whether
+checked out standalone or under `git_modules/aius`. `scripts/kicad.sh` resolves
+that directory from its own location; paths passed to KiCad are Aius-relative.
+The wrapper runs as the caller's UID/GID so exported files are writable, and
+`--python <script> ...` runs the container's `pcbnew` Python environment.
+Host user-namespace mapping preserves those IDs on Docker hosts configured with
+`userns-remap`; KiCad settings live in the ignored `.scratch/` directory.
+`scripts/test_kicad_wrapper.sh` checks both the KiCad and router mounts.
+Project library tables name the stock KiCad libraries used by this design;
+ERC does not depend on an existing GUI user's global library tables.
+
 ## Pipeline
 
 ```
@@ -82,10 +93,10 @@ electronics/scripts/erc.sh
 electronics/scripts/render.sh
 ```
 
-The KiCad container runs as uid 1000 and writes outputs into this directory, so
-it must be writable by that uid (a normal checkout is; otherwise grant the dir
-others-write — git does not track that bit). ERC reports are written inside the
-container home volume; the textual summary and exit code are the result.
+The KiCad wrapper runs as the invoking user and writes outputs into this
+checkout. Direct Compose invocations should set `AIUS_UID` and `AIUS_GID` to the
+caller's IDs (defaults are 1000). ERC reports are written to `.scratch/`;
+the textual summary and exit code are the result.
 
 ## ERC status
 

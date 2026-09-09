@@ -10,11 +10,9 @@ electronics_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 kicad="$electronics_dir/../scripts/kicad.sh"
 sch="electronics/aius-carrier.kicad_sch"
 
-# The KiCad container runs as uid 1000 and cannot write the repo mount unless the
-# output dir is world-writable; the ERC report is written to the container home
-# volume instead, and the textual summary + exit code are the human-facing result.
+# The wrapper preserves caller ownership; keep the report in checkout scratch.
 severity=(--severity-error)
-report="/home/kicad/aius-carrier-erc.rpt"
+report=".scratch/aius-carrier-erc-$$.rpt"
 if [[ "${1:-}" == "--all" ]]; then
 	severity=(--severity-all)
 fi
