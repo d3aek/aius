@@ -4,7 +4,7 @@ type: reference
 scope: component
 component: aius
 status: current
-updated: 2026-09-09
+updated: 2026-09-10
 tags: [aius, pcb, footprints, mechanical]
 ---
 
@@ -58,6 +58,45 @@ moving electrically fixed Teensy holes cannot solve this. Sources:
 [SSW catalog](https://suddendocs.samtec.com/catalog_english/ssw_th.pdf),
 [MMS catalog](https://suddendocs.samtec.com/catalog_english/mms.pdf).
 The coordinate checker does not clear this assembly blocker.
+
+### Matched replacement candidate (2026-09-10, not yet adopted)
+
+The owner permits a fresh bare Teensy and new mating hardware. A housing-free
+candidate avoids the main, Ethernet and service-row plastic collisions:
+
+| Board | Quantity | Mill-Max part |
+|---|---:|---|
+| Carrier | 64 | `0461-3-15-15-21-27-04-0` receptacle |
+| Teensy | 64 | `4964-0-00-15-00-00-33-0` round nail-head pin |
+
+VUSB stays unpopulated. Pin heads sit on the Teensy's top PCB surface.
+The current manufacturer drawings are archived in
+`evidence/source-snapshots/MILLMAX-TEENSY-SOCKETS/`:
+[0461 drawing](https://www.mill-max.com/sites/default/files/external/products/fullsize/2023-03/0461.svg),
+[4964 drawing](https://www.mill-max.com/sites/default/files/external/products/fullsize/2024-05/4964.svg).
+Downloaded and visually reviewed 2026-09-10. Unlike the old catalog, the current
+male drawing directly dimensions the **under-head length** as 0.345 inch; do not
+subtract the head thickness from that dimension again.
+
+Socket above-board height is 4.445 ±0.127 mm; male under-head length is
+8.763 ±0.127 mm. Holding Teensy **top PCB surface** at 10.30 ±0.10 mm above
+carrier top gives insertion `4.445 + 8.763 - 10.30 = 2.908 mm`, worst-case
+2.554–3.262 mm. This leaves 0.243 mm beyond the deepest contact finger after
+allowing a hemispherical tip of maximum pin radius, and 0.421 mm before the
+shallowest cavity bottom. These are geometric margins, not mating qualification.
+
+Proposed carrier finished holes are Ø0.70 ±0.05 mm, pads Ø1.40 mm. Minimum
+hole-to-maximum-tail diameter clearance is 0.142 mm. Maximum socket diameter
+1.0414 mm and pin-head diameter 1.3208 mm clear the 2 mm minimum pitch.
+The current footprint still has the old socket drills and is **not** this candidate.
+
+**Unresolved assembly condition:** discrete contacts do not establish board
+separation. A permanent insulating spacing stop and soldering alignment fixture
+are required. The owner is being asked whether a custom printed/machined spacer
+is acceptable. Its support locations must clear Teensy underside parts and the
+USB plug, and survive card insertion without loading the contacts. Also verify
+actual Teensy hole/head fit, top-side solder access, configured-part availability
+and sample mating. Do not release this candidate solely from the insertion sum.
 
 ## Optical ORJ-5 / OTJ-5
 

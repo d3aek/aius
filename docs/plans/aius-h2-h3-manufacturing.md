@@ -458,6 +458,10 @@ a bare shop-new Teensy. Existing headers need not be retained. The library
 coordinate correction does not claim to clear this assembly gate. Delivery
 review also identifies the full SSW-105 service-row body's overlap with both
 main-row sockets; the replacement selection must cover the service row too.
+A matched Mill-Max discrete-pin/receptacle candidate now clears the housing and
+mating-depth geometry against current drawings; it requires a permanent spacing
+stop. The owner is being asked whether that custom spacer is acceptable.
+Dimensions and remaining physical gates are in the footprint review reference.
 
 **Placement recovery contract (prebuild review):** preserve the 100 × 95 mm
 board envelope and place the Teensy with microSD facing the rear panel, between
@@ -485,6 +489,10 @@ in [`connectivity/nets.md`](../../electronics/connectivity/nets.md).
 to Teensy 3.3 V despite the interface's reverse-isolation requirement. Signal
 series resistors do not isolate that rail. Correct rail and signal powered-off
 paths before freezing routing; no isolation waiver is implied by clean ERC.
+The owner is being asked whether expansion must support independently powered
+peripherals or only carrier-powered peripherals. This affects signal isolation
+and the I2S connector, which presently has no power/sense pin. Do not silently
+weaken the backfeed contract or change the I2S connector while that choice is open.
 
 The existing impedance calculator also contradicts H2d's former claim that
 0.20/0.15 mm geometry supplies both targets: at the recorded JLCPCB stackup,
