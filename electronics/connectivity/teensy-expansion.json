@@ -5,7 +5,6 @@
   "global_nets": [
     "GND",
     "+3V3",
-    "VBUS_5V",
     "SPDIF_RX",
     "SPDIF_TX",
     "PATH_SELECT",
@@ -28,9 +27,9 @@
     "ethernet_phy": "The DP83825 PHY is ON the Teensy 4.1 (order the 'with Ethernet chip' variant). The 6-pin native-Ethernet header carries MDI differential pairs (ETH_RX+/-, ETH_TX+/-) + LED to the magjack on the ethernet sheet - NOT RMII to an external PHY. The PJRC Ethernet Kit is only a magjack + centre-tap cap + ribbon, no PHY. No DP83825 on the carrier.",
     "power_entry": "VIN and VUSB are no-connect: the Teensy is powered through its own micro-B jack from the internal USB-A cable (power-usb sheet), the sole 5V feed. No second VIN/VUSB feed.",
     "safe_defaults": "R17 pulls PATH_SELECT low (processed path) and R18 pulls TX_ENABLE low (optical TX disabled) - the hardware-safe optical defaults from interfaces-and-states, held before firmware runs.",
-    "expansion_3v3": "expansion-3v3 == teensy-3v3 (+3V3). Per-signal protection is the design's backfeed guard: TCA9517A isolator on I2C, 1k series clamps on SPI/UART/I2S/GPIO-ADC exported CMOS signals. The one expansion reverse-blocking power switch (TPS2553 U12) guards the USB-host VBUS domain (protected-5V source). See nets.md for the one-switch resolution of the interface's two protected expansion domains.",
+    "expansion_3v3": "OPEN RELEASE BLOCKER: expansion-3v3 currently equals teensy-3v3 (+3V3) directly. Series signal resistors do not provide the specified rail reverse-power isolation. Resolve before electrical release; see nets.md.",
     "i2c_isolator": "TCA9517A: A-side (pins 2/3) to Teensy SCL0/SDA0 (pin 19/18) with 4.7k pull-ups to +3V3; B-side (pins 6/5) to J10 with 4.7k pull-ups to +3V3. EN (pin1) tied high.",
-    "usb_host_switch": "TPS2553 U12: IN=VBUS_5V, OUT=EXP_USBH_VBUS (feeds Teensy USBH_5V pad and J14 VBUS). EN pulled to +3V3 (enabled while core powered, off when core unpowered = safe). ILIM ~0.5A. Note: the BOM lists one expansion TPS2553; it is assigned here to the USB-host VBUS domain.",
+    "usb_host_switch": "Teensy UH5V is an OUTPUT from its onboard TPD3S014, not a supply input. It alone feeds EXP_USBH_VBUS/J14 with C10/C11 local decoupling. The native MCU-controlled enable and onboard 100k pulldown preserve firmware-off/reset-off behavior. Service budget is 500mA; 650/850/1050mA min/typ/max are fault-limit thresholds, not load ratings. Reverse blocking is specified when disabled or under UVLO, not unconditionally while enabled. The shared upstream ~1A limiter means a host short can disturb the whole unit. Carrier U12/R14/R15/R16/C12 were removed after finding paralleled switch outputs.",
     "led_pin13": "Pin 13 is the Teensy on-board LED (shared with SCK0); it is reserved, not routed on the carrier (no-connect). SPI uses SPI1 (SCK1=27/MOSI1=26/MISO1=1/CS1=38) so pin 13 serves the LED only - no pad serves two functions.",
     "tag_connect": "TC2030-IDC bring-up point taps +3V3, GND, PROGRAM, ON_OFF and the debug UART (shared net with J12) - same function at two access points, not a second function on one pad."
   },
@@ -52,15 +51,6 @@
       "footprint": "Package_SO:VSSOP-8_3x3mm_P0.65mm",
       "at": [265.43, 95.25],
       "desc": "expansion I2C level-translating buffer (powered-off high-Z isolation)"
-    },
-    {
-      "ref": "U12",
-      "lib_id": "aius:TPS2553",
-      "value": "TPS2553",
-      "mpn": "TI TPS2553DBVR",
-      "footprint": "Package_TO_SOT_SMD:SOT-23-6",
-      "at": [265.43, 299.72],
-      "desc": "expansion USB-host VBUS reverse-blocking current-limit switch"
     },
     {
       "ref": "J10",
@@ -171,33 +161,6 @@
       "desc": "I2C SDA pull-up, expansion B-side"
     },
     {
-      "ref": "R14",
-      "lib_id": "Device:R",
-      "value": "10k",
-      "mpn": "10k 0402 1%",
-      "footprint": "Resistor_SMD:R_0402_1005Metric",
-      "at": [209.55, 265.43],
-      "desc": "USB-host switch EN pull-up to +3V3 (enabled while core powered)"
-    },
-    {
-      "ref": "R15",
-      "lib_id": "Device:R",
-      "value": "100k",
-      "mpn": "100k 0402 1%",
-      "footprint": "Resistor_SMD:R_0402_1005Metric",
-      "at": [209.55, 299.72],
-      "desc": "USB-host switch FAULT open-drain pull-up to +3V3"
-    },
-    {
-      "ref": "R16",
-      "lib_id": "Device:R",
-      "value": "49.9k",
-      "mpn": "49.9k 0402 1%",
-      "footprint": "Resistor_SMD:R_0402_1005Metric",
-      "at": [320.04, 299.72],
-      "desc": "USB-host switch ILIM set (~0.5A host budget)"
-    },
-    {
       "ref": "C10",
       "lib_id": "Device:C",
       "value": "100nF",
@@ -214,15 +177,6 @@
       "footprint": "Capacitor_SMD:C_0805_2012Metric",
       "at": [350.52, 335.28],
       "desc": "expansion USB-host VBUS bulk"
-    },
-    {
-      "ref": "C12",
-      "lib_id": "Device:C",
-      "value": "100nF",
-      "mpn": "100nF 0402 10%",
-      "footprint": "Capacitor_SMD:C_0402_1005Metric",
-      "at": [209.55, 335.28],
-      "desc": "USB-host switch VBUS_5V input decoupling"
     },
     {
       "ref": "C13",
@@ -384,7 +338,6 @@
       ["U10", "UHGND"],
       ["U10", "EGND"],
       ["U11", "4"],
-      ["U12", "2"],
       ["J10", "4"],
       ["J11", "6"],
       ["J12", "4"],
@@ -393,12 +346,10 @@
       ["J15", "4"],
       ["J16", "3"],
       ["J17", "3"],
-      ["R16", "2"],
       ["R17", "2"],
       ["R18", "2"],
       ["C10", "2"],
       ["C11", "2"],
-      ["C12", "2"],
       ["C13", "2"],
       ["C14", "2"]
     ],
@@ -411,8 +362,6 @@
       ["R11", "1"],
       ["R12", "1"],
       ["R13", "1"],
-      ["R14", "1"],
-      ["R15", "1"],
       ["J10", "1"],
       ["J11", "1"],
       ["J12", "1"],
@@ -420,10 +369,6 @@
       ["J17", "1"],
       ["C13", "1"],
       ["C14", "1"]
-    ],
-    "VBUS_5V": [
-      ["U12", "1"],
-      ["C12", "1"]
     ],
     "SPDIF_RX": [["U10", "15"]],
     "SPDIF_TX": [["U10", "14"]],
@@ -441,23 +386,10 @@
     "ETH_TXN": [["U10", "ETXN"]],
     "ETH_TXP": [["U10", "ETXP"]],
     "EXP_USBH_VBUS": [
-      ["U12", "6"],
       ["U10", "UH5V"],
       ["J14", "1"],
       ["C10", "1"],
       ["C11", "1"]
-    ],
-    "EXP_USBH_EN": [
-      ["U12", "3"],
-      ["R14", "2"]
-    ],
-    "EXP_USBH_FAULT": [
-      ["U12", "4"],
-      ["R15", "2"]
-    ],
-    "EXP_USBH_ILIM": [
-      ["U12", "5"],
-      ["R16", "1"]
     ],
     "USBH_DP": [
       ["U10", "UHDP"],

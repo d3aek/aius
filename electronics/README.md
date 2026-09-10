@@ -110,12 +110,16 @@ Aius root to check the library interfaces. Add `--board electronics/aius-carrier
 to check the embedded board copies; the pre-recovery board fails this check and
 must be rebuilt before its routing can be accepted.
 
-The whole project is **ERC-error-clean** (`scripts/erc.sh`, `--severity-error`
-exits 0 — `Found 0 violations`). The error-clean gate also proves the global
-rails merge across sheets: teensy-expansion's `GND` / `VBUS_5V` power-input pins
-are driven by the power-usb `PWR_FLAG` / `TPS2553` output through the global
-labels, `+3V3` is driven by the Teensy 3.3 V `power_out`, and the optical logic
-`VCC` pins ride that same `+3V3`.
+The USB-host recovery removes the parallel carrier supply: native Teensy UH5V
+is J14's sole power source and is correctly typed `power_out`. Regression:
+`python3 electronics/scripts/check_host_power.py --netlist <kicadxml>` after
+`scripts/kicad.sh sch export netlist --format kicadxml -o <kicadxml>
+electronics/aius-carrier.kicad_sch`. See [connectivity/nets.md](connectivity/nets.md)
+for source evidence and the separate expansion-3v3 isolation release blocker.
+
+ERC checks the global `GND` and `+3V3` connections; optical logic uses the
+Teensy's `+3V3` output. `VBUS_5V` now feeds only the internal USB-A/cable path.
+ERC alone cannot prove powered-off isolation or correct external-module models.
 
 Full-severity ERC (`scripts/erc.sh --all`) is now **0 violations** — the whole
 project is footprint-clean, down from 13 across H3a

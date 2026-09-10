@@ -548,7 +548,7 @@
 							)
 						)
 					)
-					(pin power_in line
+					(pin power_out line
 						(at 27.94 1.27 180)
 						(length 2.54)
 						(name "USBH_5V"
@@ -943,192 +943,6 @@
 							)
 						)
 						(number "5"
-							(effects
-								(font
-									(size 1.27 1.27)
-								)
-							)
-						)
-					)
-				)
-				(embedded_fonts no)
-			)
-		(symbol "aius:TPS2553"
-				(pin_names
-					(offset 1.016)
-				)
-				(exclude_from_sim no)
-				(in_bom yes)
-				(on_board yes)
-				(property "Reference" "U"
-					(at -10.16 9.525 0)
-					(effects
-						(font
-							(size 1.27 1.27)
-						)
-						(justify left)
-					)
-				)
-				(property "Value" "TPS2553"
-					(at -10.16 -10.16 0)
-					(effects
-						(font
-							(size 1.27 1.27)
-						)
-						(justify left)
-					)
-				)
-				(property "Footprint" ""
-					(at 0 0 0)
-					(hide yes)
-					(effects
-						(font
-							(size 1.27 1.27)
-						)
-					)
-				)
-				(property "Datasheet" "https://www.ti.com/lit/ds/symlink/tps2553.pdf"
-					(at 0 0 0)
-					(hide yes)
-					(effects
-						(font
-							(size 1.27 1.27)
-						)
-					)
-				)
-				(property "Description" "Precision adjustable current-limited power-distribution switch, EN active-high (TPS2553), open-drain FAULT"
-					(at 0 0 0)
-					(hide yes)
-					(effects
-						(font
-							(size 1.27 1.27)
-						)
-					)
-				)
-				(property "ki_keywords" "power switch current limit USB load switch"
-					(at 0 0 0)
-					(hide yes)
-					(effects
-						(font
-							(size 1.27 1.27)
-						)
-					)
-				)
-				(symbol "TPS2553_0_1"
-					(rectangle
-						(start -7.62 7.62)
-						(end 7.62 -7.62)
-						(stroke
-							(width 0.254)
-							(type default)
-						)
-						(fill
-							(type background)
-						)
-					)
-				)
-				(symbol "TPS2553_1_1"
-					(pin power_in line
-						(at -10.16 5.08 0)
-						(length 2.54)
-						(name "IN"
-							(effects
-								(font
-									(size 1.27 1.27)
-								)
-							)
-						)
-						(number "1"
-							(effects
-								(font
-									(size 1.27 1.27)
-								)
-							)
-						)
-					)
-					(pin power_in line
-						(at -10.16 -5.08 0)
-						(length 2.54)
-						(name "GND"
-							(effects
-								(font
-									(size 1.27 1.27)
-								)
-							)
-						)
-						(number "2"
-							(effects
-								(font
-									(size 1.27 1.27)
-								)
-							)
-						)
-					)
-					(pin input line
-						(at -10.16 0 0)
-						(length 2.54)
-						(name "EN"
-							(effects
-								(font
-									(size 1.27 1.27)
-								)
-							)
-						)
-						(number "3"
-							(effects
-								(font
-									(size 1.27 1.27)
-								)
-							)
-						)
-					)
-					(pin open_collector line
-						(at 10.16 0 180)
-						(length 2.54)
-						(name "~{FAULT}"
-							(effects
-								(font
-									(size 1.27 1.27)
-								)
-							)
-						)
-						(number "4"
-							(effects
-								(font
-									(size 1.27 1.27)
-								)
-							)
-						)
-					)
-					(pin passive line
-						(at 10.16 -5.08 180)
-						(length 2.54)
-						(name "ILIM"
-							(effects
-								(font
-									(size 1.27 1.27)
-								)
-							)
-						)
-						(number "5"
-							(effects
-								(font
-									(size 1.27 1.27)
-								)
-							)
-						)
-					)
-					(pin power_out line
-						(at 10.16 5.08 180)
-						(length 2.54)
-						(name "OUT"
-							(effects
-								(font
-									(size 1.27 1.27)
-								)
-							)
-						)
-						(number "6"
 							(effects
 								(font
 									(size 1.27 1.27)
@@ -2351,58 +2165,6 @@
 		)
 	)
 	(symbol
-		(lib_id "aius:TPS2553")
-		(at 265.43 299.72 0)
-		(unit 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(dnp no)
-		(uuid "9409d5e4-c323-5443-8ca1-120269c15edc")
-		(property "Reference" "U12"
-			(at 255.27 287.02 0)
-			(effects (font (size 1.27 1.27)) (justify left))
-		)
-		(property "Value" "TPS2553"
-			(at 255.27 312.42 0)
-			(effects (font (size 1.27 1.27)) (justify left))
-		)
-		(property "Footprint" "Package_TO_SOT_SMD:SOT-23-6"
-			(at 265.43 299.72 0)
-			(effects (font (size 1.27 1.27)) (hide yes))
-		)
-		(property "MPN" "TI TPS2553DBVR"
-			(at 265.43 299.72 0)
-			(effects (font (size 1.27 1.27)) (hide yes))
-		)
-		(pin "1"
-			(uuid "496ae69e-d76c-5f21-bc91-62af2f9ae7b8")
-		)
-		(pin "2"
-			(uuid "734ba1c1-6242-5e63-b274-a0727ee8142b")
-		)
-		(pin "3"
-			(uuid "bac52695-69c8-51dd-b79a-ba29359ec264")
-		)
-		(pin "4"
-			(uuid "18050c20-7dc9-5200-882a-b24d591e80a3")
-		)
-		(pin "5"
-			(uuid "86159516-b421-57d6-b647-a48ed4438cbc")
-		)
-		(pin "6"
-			(uuid "cab6cb13-26b8-5ff8-953b-0fa6c02183c8")
-		)
-		(instances
-			(project "aius-carrier"
-				(path "/68a9aac5-3712-532f-bce8-e090c97e9611/9a8dd7e0-f296-5044-86a8-6a5914dae9ce"
-					(reference "U12")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
 		(lib_id "aius:Conn_1x04")
 		(at 389.89 54.61 0)
 		(unit 1)
@@ -2943,126 +2705,6 @@
 		)
 	)
 	(symbol
-		(lib_id "Device:R")
-		(at 209.55 265.43 0)
-		(unit 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(dnp no)
-		(uuid "7204a493-d0a9-5c90-abae-8001ddf8bd4c")
-		(property "Reference" "R14"
-			(at 199.39 252.73 0)
-			(effects (font (size 1.27 1.27)) (justify left))
-		)
-		(property "Value" "10k"
-			(at 199.39 278.13 0)
-			(effects (font (size 1.27 1.27)) (justify left))
-		)
-		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
-			(at 209.55 265.43 0)
-			(effects (font (size 1.27 1.27)) (hide yes))
-		)
-		(property "MPN" "10k 0402 1%"
-			(at 209.55 265.43 0)
-			(effects (font (size 1.27 1.27)) (hide yes))
-		)
-		(pin "1"
-			(uuid "69eae3e9-07b1-5b7d-9dd8-3b546b0941ae")
-		)
-		(pin "2"
-			(uuid "4ec2f61c-3c35-5dec-ba55-4cc8011c593d")
-		)
-		(instances
-			(project "aius-carrier"
-				(path "/68a9aac5-3712-532f-bce8-e090c97e9611/9a8dd7e0-f296-5044-86a8-6a5914dae9ce"
-					(reference "R14")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "Device:R")
-		(at 209.55 299.72 0)
-		(unit 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(dnp no)
-		(uuid "b89571b9-d715-5407-9adb-686fd4e11feb")
-		(property "Reference" "R15"
-			(at 199.39 287.02 0)
-			(effects (font (size 1.27 1.27)) (justify left))
-		)
-		(property "Value" "100k"
-			(at 199.39 312.42 0)
-			(effects (font (size 1.27 1.27)) (justify left))
-		)
-		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
-			(at 209.55 299.72 0)
-			(effects (font (size 1.27 1.27)) (hide yes))
-		)
-		(property "MPN" "100k 0402 1%"
-			(at 209.55 299.72 0)
-			(effects (font (size 1.27 1.27)) (hide yes))
-		)
-		(pin "1"
-			(uuid "0a178b35-d42d-58d8-9777-9535402cd80e")
-		)
-		(pin "2"
-			(uuid "da7980fa-5eb1-5bce-aaa2-064bd609d95a")
-		)
-		(instances
-			(project "aius-carrier"
-				(path "/68a9aac5-3712-532f-bce8-e090c97e9611/9a8dd7e0-f296-5044-86a8-6a5914dae9ce"
-					(reference "R15")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "Device:R")
-		(at 320.04 299.72 0)
-		(unit 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(dnp no)
-		(uuid "b775ea96-baf8-52fe-8de1-57344f5cfbdd")
-		(property "Reference" "R16"
-			(at 309.88 287.02 0)
-			(effects (font (size 1.27 1.27)) (justify left))
-		)
-		(property "Value" "49.9k"
-			(at 309.88 312.42 0)
-			(effects (font (size 1.27 1.27)) (justify left))
-		)
-		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
-			(at 320.04 299.72 0)
-			(effects (font (size 1.27 1.27)) (hide yes))
-		)
-		(property "MPN" "49.9k 0402 1%"
-			(at 320.04 299.72 0)
-			(effects (font (size 1.27 1.27)) (hide yes))
-		)
-		(pin "1"
-			(uuid "42712f0f-84a2-52b5-a308-6e4ee4c15b02")
-		)
-		(pin "2"
-			(uuid "f0186a03-3e66-557f-b4e1-fdaa2187e5bd")
-		)
-		(instances
-			(project "aius-carrier"
-				(path "/68a9aac5-3712-532f-bce8-e090c97e9611/9a8dd7e0-f296-5044-86a8-6a5914dae9ce"
-					(reference "R16")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
 		(lib_id "Device:C")
 		(at 330.2 335.28 0)
 		(unit 1)
@@ -3137,46 +2779,6 @@
 			(project "aius-carrier"
 				(path "/68a9aac5-3712-532f-bce8-e090c97e9611/9a8dd7e0-f296-5044-86a8-6a5914dae9ce"
 					(reference "C11")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "Device:C")
-		(at 209.55 335.28 0)
-		(unit 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(dnp no)
-		(uuid "f1978faa-b556-5db2-8846-4d43550d7e0f")
-		(property "Reference" "C12"
-			(at 199.39 322.58 0)
-			(effects (font (size 1.27 1.27)) (justify left))
-		)
-		(property "Value" "100nF"
-			(at 199.39 347.98 0)
-			(effects (font (size 1.27 1.27)) (justify left))
-		)
-		(property "Footprint" "Capacitor_SMD:C_0402_1005Metric"
-			(at 209.55 335.28 0)
-			(effects (font (size 1.27 1.27)) (hide yes))
-		)
-		(property "MPN" "100nF 0402 10%"
-			(at 209.55 335.28 0)
-			(effects (font (size 1.27 1.27)) (hide yes))
-		)
-		(pin "1"
-			(uuid "40d44afa-2fb4-58ab-b799-33a2a4d80206")
-		)
-		(pin "2"
-			(uuid "ba29afac-9597-5b13-abcd-8cfef8726bcc")
-		)
-		(instances
-			(project "aius-carrier"
-				(path "/68a9aac5-3712-532f-bce8-e090c97e9611/9a8dd7e0-f296-5044-86a8-6a5914dae9ce"
-					(reference "C12")
 					(unit 1)
 				)
 			)
@@ -3916,21 +3518,6 @@
 		)
 	)
 	(wire
-		(pts (xy 255.27 304.8) (xy 250.19 304.8))
-		(stroke (width 0) (type default))
-		(uuid "923b376a-7d88-51cf-83e9-ffcea60553b6")
-	)
-	(global_label "GND"
-		(shape bidirectional)
-		(at 250.19 304.8 180)
-		(effects (font (size 1.27 1.27)) (justify right))
-		(uuid "a252c6f8-1996-51ce-a67a-93c079d09359")
-		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 250.19 304.8 180)
-			(effects (font (size 1.27 1.27)) (hide yes))
-		)
-	)
-	(wire
 		(pts (xy 383.54 58.42) (xy 378.46 58.42))
 		(stroke (width 0) (type default))
 		(uuid "a0b265e1-fb24-5160-a4dd-7ad75128e390")
@@ -4051,21 +3638,6 @@
 		)
 	)
 	(wire
-		(pts (xy 320.04 303.53) (xy 320.04 308.61))
-		(stroke (width 0) (type default))
-		(uuid "21411456-0c91-5bdf-8549-6b40559b85c1")
-	)
-	(global_label "GND"
-		(shape bidirectional)
-		(at 320.04 308.61 270)
-		(effects (font (size 1.27 1.27)) (justify left))
-		(uuid "3c9b358c-5ecf-501f-9439-2099c5fe9b2b")
-		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 320.04 308.61 270)
-			(effects (font (size 1.27 1.27)) (hide yes))
-		)
-	)
-	(wire
 		(pts (xy 95.25 283.21) (xy 95.25 288.29))
 		(stroke (width 0) (type default))
 		(uuid "aebf1f36-936a-51a2-8b65-f653cface599")
@@ -4122,21 +3694,6 @@
 		(uuid "c0547278-6ea5-5fd2-b555-d56305ad3d38")
 		(property "Intersheetrefs" "${INTERSHEET_REFS}"
 			(at 350.52 344.17 270)
-			(effects (font (size 1.27 1.27)) (hide yes))
-		)
-	)
-	(wire
-		(pts (xy 209.55 339.09) (xy 209.55 344.17))
-		(stroke (width 0) (type default))
-		(uuid "af48fbd4-5520-5ad8-839a-ad6e75d57300")
-	)
-	(global_label "GND"
-		(shape bidirectional)
-		(at 209.55 344.17 270)
-		(effects (font (size 1.27 1.27)) (justify left))
-		(uuid "f5615f9c-afdb-56b9-97df-c82e7270c247")
-		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 209.55 344.17 270)
 			(effects (font (size 1.27 1.27)) (hide yes))
 		)
 	)
@@ -4291,36 +3848,6 @@
 		)
 	)
 	(wire
-		(pts (xy 209.55 261.62) (xy 209.55 256.54))
-		(stroke (width 0) (type default))
-		(uuid "67a0fdfe-42f1-5133-8709-bdd9bfc3932b")
-	)
-	(global_label "+3V3"
-		(shape bidirectional)
-		(at 209.55 256.54 90)
-		(effects (font (size 1.27 1.27)) (justify left))
-		(uuid "412ed012-75c5-5a3e-bcbe-1a0dd2014be1")
-		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 209.55 256.54 90)
-			(effects (font (size 1.27 1.27)) (hide yes))
-		)
-	)
-	(wire
-		(pts (xy 209.55 295.91) (xy 209.55 290.83))
-		(stroke (width 0) (type default))
-		(uuid "00d325f2-7007-50c7-a017-1211d0eb4a69")
-	)
-	(global_label "+3V3"
-		(shape bidirectional)
-		(at 209.55 290.83 90)
-		(effects (font (size 1.27 1.27)) (justify left))
-		(uuid "05c506c8-5c34-5657-ae49-dea1f94f29db")
-		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 209.55 290.83 90)
-			(effects (font (size 1.27 1.27)) (hide yes))
-		)
-	)
-	(wire
 		(pts (xy 383.54 50.8) (xy 378.46 50.8))
 		(stroke (width 0) (type default))
 		(uuid "9e664f41-7301-54db-a24e-81c557ab155b")
@@ -4422,36 +3949,6 @@
 		(uuid "6193486a-0e40-5766-9885-bcab839edcc9")
 		(property "Intersheetrefs" "${INTERSHEET_REFS}"
 			(at 129.54 290.83 90)
-			(effects (font (size 1.27 1.27)) (hide yes))
-		)
-	)
-	(wire
-		(pts (xy 255.27 294.64) (xy 250.19 294.64))
-		(stroke (width 0) (type default))
-		(uuid "c0eb17ee-18d8-5314-b857-db98206d0cb0")
-	)
-	(global_label "VBUS_5V"
-		(shape bidirectional)
-		(at 250.19 294.64 180)
-		(effects (font (size 1.27 1.27)) (justify right))
-		(uuid "883c1e71-1f01-5de2-9504-24949fcedd82")
-		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 250.19 294.64 180)
-			(effects (font (size 1.27 1.27)) (hide yes))
-		)
-	)
-	(wire
-		(pts (xy 209.55 331.47) (xy 209.55 326.39))
-		(stroke (width 0) (type default))
-		(uuid "79c851b8-e1b7-5a61-8f64-bbf1b92c9452")
-	)
-	(global_label "VBUS_5V"
-		(shape bidirectional)
-		(at 209.55 326.39 90)
-		(effects (font (size 1.27 1.27)) (justify left))
-		(uuid "7d7d507d-1399-57bc-b25e-d9a98f1f7d80")
-		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 209.55 326.39 90)
 			(effects (font (size 1.27 1.27)) (hide yes))
 		)
 	)
@@ -4621,16 +4118,6 @@
 		)
 	)
 	(wire
-		(pts (xy 275.59 294.64) (xy 280.67 294.64))
-		(stroke (width 0) (type default))
-		(uuid "a3778341-8185-5aad-a477-007a697072e2")
-	)
-	(label "EXP_USBH_VBUS"
-		(at 280.67 294.64 0)
-		(effects (font (size 1.27 1.27)) (justify left bottom))
-		(uuid "3a263df7-8304-5bd7-89fa-d2de580982e0")
-	)
-	(wire
 		(pts (xy 203.2 203.2) (xy 208.28 203.2))
 		(stroke (width 0) (type default))
 		(uuid "179a610c-2cda-57c7-abbe-b4e71633153c")
@@ -4669,66 +4156,6 @@
 		(at 350.52 326.39 90)
 		(effects (font (size 1.27 1.27)) (justify left bottom))
 		(uuid "fb08e5a6-b86c-5293-aa60-0e75c869fa55")
-	)
-	(wire
-		(pts (xy 255.27 299.72) (xy 250.19 299.72))
-		(stroke (width 0) (type default))
-		(uuid "f2851b7c-41ec-50c6-8b4a-5fed13c73296")
-	)
-	(label "EXP_USBH_EN"
-		(at 250.19 299.72 180)
-		(effects (font (size 1.27 1.27)) (justify right bottom))
-		(uuid "429e1b09-06f1-50b3-aa65-a3a1adb911e1")
-	)
-	(wire
-		(pts (xy 209.55 269.24) (xy 209.55 274.32))
-		(stroke (width 0) (type default))
-		(uuid "b4a3c1ef-eb21-598f-8397-1dde05fcede2")
-	)
-	(label "EXP_USBH_EN"
-		(at 209.55 274.32 270)
-		(effects (font (size 1.27 1.27)) (justify left bottom))
-		(uuid "13524339-8392-532c-bd23-7a3fae713f90")
-	)
-	(wire
-		(pts (xy 275.59 299.72) (xy 280.67 299.72))
-		(stroke (width 0) (type default))
-		(uuid "98a02df0-0dcc-5e12-a2f8-326e5aa29b9f")
-	)
-	(label "EXP_USBH_FAULT"
-		(at 280.67 299.72 0)
-		(effects (font (size 1.27 1.27)) (justify left bottom))
-		(uuid "2cb3e095-7fa7-592e-b0ce-66345812a7a7")
-	)
-	(wire
-		(pts (xy 209.55 303.53) (xy 209.55 308.61))
-		(stroke (width 0) (type default))
-		(uuid "48e81992-6e04-562a-acc5-0f15f507f9b7")
-	)
-	(label "EXP_USBH_FAULT"
-		(at 209.55 308.61 270)
-		(effects (font (size 1.27 1.27)) (justify left bottom))
-		(uuid "c685fcf3-2da0-5fb9-8949-b99272fbde1f")
-	)
-	(wire
-		(pts (xy 275.59 304.8) (xy 280.67 304.8))
-		(stroke (width 0) (type default))
-		(uuid "a337ac5b-6d79-5a92-8d7f-c69e3bfb6a5d")
-	)
-	(label "EXP_USBH_ILIM"
-		(at 280.67 304.8 0)
-		(effects (font (size 1.27 1.27)) (justify left bottom))
-		(uuid "6f1129d3-3336-56c2-82e5-11c2b9c147e5")
-	)
-	(wire
-		(pts (xy 320.04 295.91) (xy 320.04 290.83))
-		(stroke (width 0) (type default))
-		(uuid "c3db7c73-152a-5a74-96ca-be55404df080")
-	)
-	(label "EXP_USBH_ILIM"
-		(at 320.04 290.83 90)
-		(effects (font (size 1.27 1.27)) (justify left bottom))
-		(uuid "bd2cfea1-9de0-561a-b43a-26e99068dab0")
 	)
 	(wire
 		(pts (xy 203.2 205.74) (xy 208.28 205.74))

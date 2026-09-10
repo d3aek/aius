@@ -6,7 +6,7 @@ component: aius
 subtype: design
 status: in-progress
 tags: [aius, hardware, teensy, spdif, pcb, kicad]
-updated: 2026-08-04
+updated: 2026-09-10
 toc: true
 ---
 
@@ -105,6 +105,11 @@ the selected parts are in the BOM. Summary:
   power protection TI `TPS2553DBVR`, 90 Ω D+/D- to an internal USB-A receptacle
   (candidate TE `292303-1`), StarTech `UUSBHAUB6IN` internal cable to the Teensy.
 - Native Ethernet magjack Pulse `J0011D21BNL`, 100 nF centre-tap cap.
+- USB-host VBUS comes only from the Teensy's onboard `TPD3S014` output, with a
+  500 mA service budget and native firmware power control. The parallel carrier
+  TPS2553 host supply was removed during recovery. Reverse blocking is specified
+  when disabled/under UVLO, not unconditionally while enabled; a host short can
+  disturb the shared upstream supply. See [power correction](../../electronics/connectivity/nets.md#native-teensy-switch--usb-host-vbus-corrected-2026-09-10).
 - Expansion (keyed JST GH `BM0xB-GHS-TBT`): I2C control (+ TI `TCA9517A` isolator),
   SPI (6-circuit), UART/debug, I2S/TDM, USB host, GPIO/ADC. A trigger/relay output
   is an allocation of the GPIO/ADC header, not a separate connector.
@@ -155,8 +160,13 @@ quote.
 
 ## Open hardware questions
 
-All three were resolved as planned (re-confirmed 2026-09-03: nothing here is
-open, so no phase of
+**Recovery release blocker (2026-09-10):** the captured expansion 3.3 V headers
+connect directly to the core rail, contrary to the protected-output requirement
+above. Signal series resistors do not provide rail reverse isolation. This must
+be corrected before routing/release; it is not waived by the USB-host repair.
+
+The three historical questions below were resolved as planned (re-confirmed
+2026-09-03, so no phase of
 [`aius-outstanding-work-2026-09.md`](aius-outstanding-work-2026-09.md) carries
 them):
 

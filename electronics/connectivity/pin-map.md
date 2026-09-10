@@ -32,7 +32,7 @@ Ethernet / service pads). Realised in `connectivity/teensy-expansion.json`
 | `EXP_ADC` | 24 | A10 / ADC | expansion analog input, 1k series → J15 |
 | `USBH_DP` | USB Host D+ | USBHS2 D+ | USB-host socket (Samtec SSW-105) → J14 |
 | `USBH_DM` | USB Host D- | USBHS2 D- | USB-host socket → J14 |
-| `EXP_USBH_VBUS` | USB Host 5V | host VBUS sense/supply | from TPS2553 (protected-5V), not Teensy VUSB |
+| `EXP_USBH_VBUS` | USB Host 5V | protected host VBUS output | native onboard TPD3S014 → J14; no parallel carrier supply; 500 mA service budget |
 | `ETH_RXP` | Ethernet RX+ | MDI receive + | 6-pin native-Ethernet header → magjack |
 | `ETH_RXN` | Ethernet RX- | MDI receive - | (ethernet sheet) |
 | `ETH_LED` | Ethernet LED | link/activity LED | |

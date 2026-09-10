@@ -14,7 +14,7 @@ the Teensy and the power tree by matching text.
 | Net | Source | Consumers | Notes |
 |---|---|---|---|
 | `GND` | power-usb (`PWR_FLAG` on the USB-C ground) | every sheet | single digital ground; declared external at power entry |
-| `VBUS_5V` | power-usb (`TPS2553` protected 5 V out) | teensy-expansion USB-host switch | protected-5V domain; the only 5 V rail leaving power-usb |
+| `VBUS_5V` | power-usb (`TPS2553` protected 5 V out) | internal USB-A, then Teensy through its cable | protected-5V domain; no second carrier feed to the Teensy or host output |
 | `+3V3` | teensy-expansion (Teensy 3.3V pin, `power_out`) | optical, ethernet, expansion | `teensy-3v3`; the Teensy sources it, so no `PWR_FLAG` is needed |
 | `CHASSIS` | enclosure (USB-C/USB-A shells) | power-usb shells, ethernet magjack shield | chassis-shield domain, isolated from `GND`; passive-only (no `PWR_FLAG`) |
 
@@ -84,28 +84,41 @@ physical shield tabs alone join `CHASSIS`. CHASSIS is deliberately isolated from
 digital GND, with no implicit layout-only tie. See
 [`carrier-footprint-review.md`](../../docs/reference/carrier-footprint-review.md).
 
-### One expansion power switch → USB-host VBUS
+### Native Teensy switch → USB-host VBUS (corrected 2026-09-10)
 
-The interface doc names two protected expansion domains (`expansion-3v3` and
-`expansion-usb-host-vbus`) but the BOM lists a single expansion `TPS2553`. It is
-assigned here to the **USB-host VBUS** domain (`EXP_USBH_VBUS`, sourced from
-`VBUS_5V`): a reverse-blocking current-limited switch, EN pulled to `+3V3` so the
-port is enabled while the core is powered and off (safe) when the core is
-unpowered.
+`U10.UH5V` is a **power output**, supplied by the Teensy's onboard TPD3S014.
+The old carrier U12 output was tied to this output, bypassing the intended
+current limit and firmware-off control. U12, R14/R15/R16 and C12 are removed.
+UH5V alone supplies `EXP_USBH_VBUS` at J14; C10/C11 remain local decoupling.
+Source: [PJRC schematic](https://www.pjrc.com/teensy/schematic41.png), archived
+under `docs/reference/datasheets.mdPJRC-TEENSY41-SCHEMATIC/` (U5, R8, C33, VHST).
 
-`expansion-3v3` is realised as `+3V3` directly (the interface's "protected output
-derived from teensy-3v3"), with per-signal backfeed protection instead of a rail
-switch — matching each interface's own `protection_method`: the `TCA9517A`
-isolator on I2C, and 1k series clamps on the SPI / UART / I2S / GPIO-ADC exported
-CMOS signals. This keeps the "no expansion rail back-powers the core" guarantee
-via bounded clamp current + isolation rather than a second switch.
+The native switch has an MCU-controlled enable with a 100k pulldown. Its
+continuous service budget is **500 mA**, not its 850 mA typical fault threshold
+(650/1050 mA min/max). Reverse blocking is specified when disabled or under
+UVLO; do not claim enabled reverse blocking. Shared upstream limiting means a
+host short can reset the whole unit; selective fault isolation is not promised.
+Source: [TI SLVSCP4B §§7.6, 8.3.3](https://www.ti.com/lit/ds/symlink/tpd3s014.pdf),
+archived under `docs/reference/datasheets.mdTI-TPD3S014/`, downloaded 2026-09-10.
+
+Regression: `python3 electronics/scripts/check_host_power.py`; pass
+`--netlist <kicadxml>` to verify the exported schematic's connections and sole
+`power_out`, not just the authored JSON.
+
+### Open expansion-3v3 release blocker
+
+The interface requires reverse-power isolation, but expansion headers currently
+connect directly to Teensy `+3V3`. Signal resistors cannot protect this direct
+power connection. The earlier claim that bounded clamp current implements rail
+isolation was false. Rail and signal powered-off paths must be reviewed and
+corrected before electrical release; the USB-host correction does not clear this.
 
 ## Sheet-local nets
 
 Everything not listed above is sheet-local: the power-usb internals
 (`VBUS_RAW`, `CC1/2`, `EN`, `FAULT`, `ILIM`, `USB_DP/DM`), the teensy-expansion
-internals (the isolator A/B buses, series-clamp `*_T`/header pairs, `EXP_USBH_*`
-control, `USBH_D±`, `PROGRAM`, `ON_OFF`, `VBAT`), the optical-spdif internals
-(`MUX_OUT` mux→gate, `TX_OE_N` inverter→gate `~OE`, `TX_GATED` gate→OTJ5), and the
+internals (the isolator A/B buses, series-clamp `*_T`/header pairs, `EXP_USBH_VBUS`,
+`USBH_D±`, `PROGRAM`, `ON_OFF`, `VBAT`), the optical-spdif internals
+(`MUX_OUT` mux→gate, `TX_GATED` gate→OTJ5), and the
 ethernet internal `ETH_CT` (joined magjack centre taps → `C30`). Promote a local
 net to global only when a second sheet must reference it, and add it here.

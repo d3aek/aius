@@ -6,7 +6,7 @@ component: aius
 subtype: design
 status: in-progress
 tags: [aius, hardware, kicad, pcb, layout, impedance, dfm, manufacturing]
-updated: 2026-09-09
+updated: 2026-09-10
 toc: true
 ---
 
@@ -453,8 +453,38 @@ structural blockers above. Several earlier review assurances require correction:
 socket bodies overlap nominally by 0.035 mm and differ in height (8.51 vs 4.45 mm).
 Neither moving the Teensy holes nor routing around them resolves the mismatch.
 Socket selection, mating pin lengths and physical seating require resolution;
-the owner is being asked whether fitted header pins must be retained. The library
-coordinate correction does not claim to clear this assembly gate.
+the owner approved a fresh matched pin-and-socket set on 2026-09-09, assuming
+a bare shop-new Teensy. Existing headers need not be retained. The library
+coordinate correction does not claim to clear this assembly gate. Delivery
+review also identifies the full SSW-105 service-row body's overlap with both
+main-row sockets; the replacement selection must cover the service row too.
+
+**Placement recovery contract (prebuild review):** preserve the 100 × 95 mm
+board envelope and place the Teensy with microSD facing the rear panel, between
+USB-C and Ethernet, rather than claiming inaccessible central placement meets
+the card-access requirement. Rear optical/USB-C/magjack bodies must meet a common
+panel datum; the internal USB cable gets an explicit insertion/bend envelope.
+Reserve and hand-route all four differential pairs (device USB, host USB, TX
+MDI, RX MDI) before autorouting other signals on F.Cu/B.Cu only. L2/L3 remain
+ground reference planes. Acceptance requires corrected embedded footprints,
+zero placement/hole collisions, panel/slot/cable clearance, and reviewed power
+connectivity before routing. Matched socket selection and expansion isolation
+are still in prebuild review; this is not placement acceptance.
+
+**USB-host power correction (2026-09-10):** prebuild review found carrier U12 OUT
+paralleled with the native Teensy TPD3S014 OUT. The incorrect `power_in` type on
+UH5V hid this from ERC. UH5V is now `power_out` and the sole J14 VBUS source;
+U12, R14/R15/R16, C12 and orphan control nets are removed. Native firmware power
+control and the 500 mA service budget are retained. The regression reproduced
+the old parallel source, then passed against corrected JSON and KiCad's exported
+XML netlist; four CLI regressions cover valid, parallel, mistyped and missing
+sources. Regenerated full-severity ERC is zero. Sources and fault limitations are
+in [`connectivity/nets.md`](../../electronics/connectivity/nets.md).
+
+**Separate electrical release blocker:** expansion 3.3 V is connected directly
+to Teensy 3.3 V despite the interface's reverse-isolation requirement. Signal
+series resistors do not isolate that rail. Correct rail and signal powered-off
+paths before freezing routing; no isolation waiver is implied by clean ERC.
 
 The existing impedance calculator also contradicts H2d's former claim that
 0.20/0.15 mm geometry supplies both targets: at the recorded JLCPCB stackup,
