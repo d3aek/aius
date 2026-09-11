@@ -290,6 +290,31 @@ regenerable from the netlist; from H3c on it is hand-routed and no longer
 regenerated. **Remaining in H3b:** collision-free placement refinement (the 46
 items) is done together with routing in H3c.
 
+**Progress 2026-09-11: canonical board regenerated from the rebuilt scaffold.**
+`scaffold_pcb.py` (rewritten per the Recovery audit's placement contract) was
+run against a freshly exported KiCad XML netlist into
+`electronics/aius-carrier.kicad_pcb`, replacing the rejected 2026-08-16
+autoroute entirely: placement follows the panel-datum contract (U20/U24/J1/J20
+at the Y = 0 rear-panel face, U10 between J1 and J20 with the microSD slot
+toward the panel), `In1.Cu`/`In2.Cu` are declared `pcbnew.LT_POWER` reference
+planes with a `.kicad_dru` blanket ban on tracks there, the JLC04161H-7628
+four-layer stackup is embedded, and the four net classes
+(`Power`/`USB90`/`Eth100`/`Default`) are assigned by `netclass_patterns`. The
+companion `aius-carrier.kicad_pro` was updated by merging the scaffold's
+`net_settings` and `board.design_settings.rules` into the existing project
+file (preserving `sheets`, `schematic` settings, and every other key) rather
+than overwriting it; a subsequent pcbnew save through the H3c pipeline
+round-trips the file to KiCad 10.0.4's full project schema (adds default keys,
+drops none). DRC against the fab rule set on the bare (unrouted) canonical
+board: **0 violations, 157 unconnected items**, matching the scaffold's own
+`test_scaffold.py` regression. A direct pcbnew reload confirms each net
+resolves to its declared class at the correct effective track width (e.g.
+`/ethernet/ETH_TXP` → `Eth100` at 0.201 mm, `VBUS_5V` → `Power` at 0.5 mm).
+Placement, planes, stackup and net classes are established on the canonical
+board per the recovery contract; the U10 courtyard overshoot and enclosure
+cutout alignment remain pre-order mechanical-review items (unchanged from the
+Recovery audit). H3c below covers the actual routing.
+
 ### Phase H3c — impedance-controlled routing
 
 ```yaml
@@ -333,6 +358,32 @@ verify item). Diff-pair coupling/length-matching is an H3e review refinement (th
 autorouter routes pairs single-ended at class width over the solid L2 plane).
 **Remaining in H3c:** clear the 22+3 punch-list (placement/GND polish) — the
 interactive cleanup, done with the H3e review.
+
+**Progress 2026-09-11: canonical board re-routed from the regenerated
+scaffold.** `route_export_dsn.py` exported the Specctra DSN from the canonical
+board (`In1.Cu`/`In2.Cu` `(type power)` with `(plane GND ...)`, confirmed by
+direct grep); each net's assigned class flows through undisturbed — the DSN
+carries distinct `Power`/`USB90`/`Eth100` classes at their correct widths
+(500/251/201 µm) alongside the 200 µm `kicad_default` class, not one collapsed
+0.20 mm class, so no script fix was needed here. Freerouting v2.4.1
+(`-mp 20`, headless via the `freerouting` compose service) ran fanout (91/160
+pins escaped) then auto-routing: started with 147 unrouted nets, plateaued
+after 18 passes at score 890.79 with **17 unrouted connections (all net GND)**
+and 4 in-router violations, elapsed 1 minute 31 seconds. `route_import_ses.py`
+imported 623 tracks and filled both GND zones; `route_cleanup.py` found no
+sub-0.15 mm tracks to widen and set both GND zones to solid pad connection.
+Post-cleanup `kicad-cli pcb drc --severity-all` on the routed canonical board:
+**0 violations, 17 unconnected items**, all net `GND` (SMD/PTH pads on
+C11/C30/U23/J10/J12/J14/J2/U11/J13/J11/J20/U10 plus 13 short GND stub tracks
+under 7 mm that never reached a stitching via to the L2/L3 planes) — the
+in-router's 4 violations do not survive into KiCad's own DRC. A direct
+layer-membership check confirms zero tracks landed on `In1.Cu`/`In2.Cu`; the
+B1 structural defect (signals through the ground planes) stays closed.
+`export_fab.sh` exports the full manufacturing package cleanly against the
+routed board. **Remaining in H3c:** stitch the 17 GND pads/stubs to the
+reference planes (interactive via placement, not a scripted reroute) — the
+honest residual for the next pass, still short of DRC 0 across every category
+and short of the H3e independent review.
 
 ### Phase H3d — DRC/DFM clean + manufacturing package
 

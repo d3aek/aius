@@ -297,12 +297,36 @@ An unrouted candidate (e.g. straight out of `scaffold_pcb.py`, before
 count without failing the script (`|| true` on the DRC step), and every other
 export stage runs unconditionally against the board as given.
 
-## Board (H3 recovery pending)
+## Board (H3 recovery — regenerated and routed, 2026-09-11)
 
-`aius-carrier.kicad_pcb` still contains the rejected 2026-08-16 autoroute: a
-96 × 95 mm board with incorrect embedded footprints, signals through its ground
-planes, uncoupled differential pairs and 15 DRC violations plus 3 unconnected
-items. The corrected library does not automatically update those embedded copies.
-The rebuild must establish enclosure datums, use the corrected interfaces, reserve
-the reference planes and explicitly route the critical pairs. The owning plan is
+`aius-carrier.kicad_pcb` is regenerated from the netlist scaffold
+(`scaffold_pcb.py` → `route_export_dsn.py` → Freerouting → `route_import_ses.py`
+→ `route_cleanup.py`) and no longer carries the rejected 2026-08-16 autoroute.
+The companion `aius-carrier.kicad_pro` keeps its schematic-side settings
+(`sheets`, `schematic.top_level_sheets`, etc.) and gains the scaffold's four net
+classes (`Power`/`USB90`/`Eth100`/`Default`) merged in rather than replaced
+wholesale; a subsequent pcbnew save through the routing pipeline round-trips the
+file to KiCad 10.0.4's full project schema (adds default keys such as
+`rule_severities`, `teardrop_options`; drops nothing).
+
+DRC against the fab rule set (`--severity-all`) is **0 violations, 17
+unconnected items** — all on net `GND` (SMD/PTH pads and short GND stub tracks
+that never reached a stitching via to the L2/L3 planes), matching Freerouting's
+own report of 17 unrouted `GND` connections after 18 auto-route passes (started
+147 unrouted, plateaued at score 890.79 with 4 in-router violations that do not
+appear in the post-cleanup KiCad DRC). No track lands on `In1.Cu`/`In2.Cu` —
+confirmed both by the `.kicad_dru` blanket ban (0 violations) and a direct
+layer-membership check. `route_export_dsn.py`'s Specctra DSN correctly carries
+each net's assigned class (`Power`/`USB90`/`Eth100`, not one collapsed
+0.20 mm class): `grep '(class'`/`(rule (width` on the exported DSN shows
+`Power,Default` at 500/150, `USB90,Default` at 251/150 and `Eth100,Default` at
+201/150 (thousandths of a mm), plus `kicad_default` at 200/150 for everything
+else — no fix was needed to the script.
+
+The residual GND punch-list is the honest H3c stopping point (owner guidance:
+scripted grind stops at diminishing returns, `route_cleanup.py` does not
+reroute) — stitching-via placement for the listed pads is interactive-judgment
+work for the next pass. The manufacturing package (`export_fab.sh`) exports
+cleanly against the routed board (Gerbers, drill, CPL, STEP, BOM); this is a
+review/quote snapshot, not order-ready. The owning plan is
 [`aius-h2-h3-manufacturing.md`](../docs/plans/aius-h2-h3-manufacturing.md).
