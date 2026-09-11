@@ -10,6 +10,7 @@ deliberately fails on the old routed board until that board is rebuilt.
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 import pcbnew
@@ -19,6 +20,29 @@ ELEC = Path(__file__).resolve().parent.parent
 
 def mm(point):
     return tuple(round(pcbnew.ToMM(v), 3) for v in (point.x, point.y))
+
+
+def bare_net_name(name):
+    """Strip a KiCad hierarchical sheet prefix ("/ethernet/ETH_TXP" ->
+    "ETH_TXP"), matching scaffold_pcb.py's own net-class assignment rule:
+    sheet-local nets are exported prefixed, global-labelled nets stay bare."""
+    return name.rsplit("/", 1)[-1]
+
+
+def connectivity_pin_map(json_path, ref):
+    """Pull the pad-number -> expected-net map for `ref` straight out of a
+    connectivity spec's own "nets" / "no_connects" tables, so the expected
+    mapping is never a second hand-authored copy. Returns (net_by_pin,
+    no_connect_pins); a footprint pad number in neither is uncovered by the
+    spec and must be reported, not assumed."""
+    spec = json.loads(json_path.read_text())
+    net_by_pin = {}
+    for net_name, endpoints in spec.get("nets", {}).items():
+        for endpoint_ref, pin in endpoints:
+            if endpoint_ref == ref:
+                net_by_pin[pin] = net_name
+    no_connect_pins = {pin for endpoint_ref, pin in spec.get("no_connects", []) if endpoint_ref == ref}
+    return net_by_pin, no_connect_pins
 
 
 def main():
@@ -116,9 +140,45 @@ def main():
             original = {fp.GetReference(): fp for fp in board.GetFootprints()}
             u1 = original["U1"]
             expect(u1.GetFPID().GetLibItemName() == "Texas_DRT-3", "U1 package is not TI DRT")
-            j20pads = {p.GetNumber(): p.GetNetname() for p in original["J20"].Pads()}
-            expect(j20pads["8"] == "GND", "J20.8 termination return must be PCB GND")
-            expect(j20pads["SH"] == "CHASSIS", "J20 shield must remain on CHASSIS")
+
+            # H3e / B4 closure: assert pad-number -> net-name identity for every
+            # J20 and J1 pin the connectivity JSON defines a net (or an explicit
+            # no_connect) for, sourced from the spec files themselves.
+            #   - J20 (Pulse J0011D21BNL): pin roles are the manufacturer
+            #     schematic, docs/reference/datasheets.mdAIUS-ETHERNET-MAGJACK-MFR/
+            #     DATASHEET_J403.pdf page 5 (pins 1/2 TX+/TX-, 3/6 RX+/RX-,
+            #     4/5 center taps, 8 GND return; page 6 for the LED pins).
+            #   - J1 (GCT USB4105-GF-A): the stock KiCad
+            #     USB_C_Receptacle_USB2.0_16P pin layout is cross-checked
+            #     against the GCT mechanical drawing (docs/reference/datasheets.md
+            #     GCT-USB4105/usb4105.pdf); no separate schematic page is filed
+            #     for this connector (docs/plans/aius-h2-h3-manufacturing.md B4).
+            # Net names on the board may carry a "/<sheet>/" prefix for
+            # sheet-local nets; compare on the bare trailing name, same as
+            # scripts/scaffold_pcb.py's own net-class matching.
+            for ref, json_path in (
+                ("J20", ELEC / "connectivity/ethernet.json"),
+                ("J1", ELEC / "connectivity/power-usb.json"),
+            ):
+                net_by_pin, no_connect_pins = connectivity_pin_map(json_path, ref)
+                # Unnumbered pads are mechanical mounting posts/pegs, not
+                # signal pins the connectivity JSON ever assigns a net to.
+                pads = {p.GetNumber(): p.GetNetname() for p in original[ref].Pads() if p.GetNumber() != ""}
+                for pin, expected_net in sorted(net_by_pin.items()):
+                    actual = bare_net_name(pads.get(pin, ""))
+                    expect(actual == expected_net,
+                           f"{ref}.{pin}: expected net {expected_net!r} per "
+                           f"{json_path.name}, got {actual!r}")
+                for pin in sorted(no_connect_pins):
+                    actual = pads.get(pin, "")
+                    expect(actual == "" or actual.startswith("unconnected-"),
+                           f"{ref}.{pin}: expected no_connect per {json_path.name}, "
+                           f"got net {actual!r}")
+                uncovered = sorted(set(pads) - set(net_by_pin) - no_connect_pins)
+                if uncovered:
+                    print(f"UNCOVERED: {ref} pin(s) {', '.join(uncovered)} have no "
+                          f"pin->net mapping in {json_path.name} - not asserted, "
+                          "not invented")
 
     for failure in failures:
         print(f"FAIL: {failure}")

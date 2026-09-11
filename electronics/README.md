@@ -109,7 +109,15 @@ stock header/cable assembly and physical fit gates are in
 Run `scripts/kicad.sh --python electronics/scripts/check_footprints.py` from the
 Aius root to check the library interfaces. Add `--board electronics/aius-carrier.kicad_pcb`
 to check the embedded board copies; the pre-recovery board fails this check and
-must be rebuilt before its routing can be accepted.
+must be rebuilt before its routing can be accepted. Board mode also asserts
+pad-number -> net-name identity for every J20 (Pulse magjack) and J1 (USB-C)
+pin the connectivity JSON defines a net or `no_connects` entry for, parsing
+`connectivity/ethernet.json` / `connectivity/power-usb.json` directly rather
+than hardcoding a second copy of the mapping (bare, sheet-prefix-stripped net
+names, matching `scripts/scaffold_pcb.py`'s own net-class matching); a pin
+present on the footprint but absent from both tables (e.g. the magjack's
+floating pin 7, or the USB-C receptacle's stacked VBUS/GND mirror pins) is
+printed as `UNCOVERED` rather than asserted against an invented expectation.
 
 The USB-host recovery removes the parallel carrier supply: native Teensy UH5V
 is J14's sole power source and is correctly typed `power_out`. Regression:
@@ -242,7 +250,7 @@ scripts/kicad.sh --python electronics/scripts/test_scaffold.py
 
 ## Routing (H3c)
 
-The routing pipeline runs as three pcbnew scripts against a board file, all
+The routing pipeline runs as four pcbnew scripts against a board file, all
 sharing a `--board <path>` argument that **defaults to the canonical
 `electronics/aius-carrier.kicad_pcb`** and, when given a scaffolded
 candidate instead, derives every sibling path (the DSN/SES export, and the
@@ -268,6 +276,12 @@ scripts/kicad.sh --python electronics/scripts/route_import_ses.py \
 # (saves the board in place)
 scripts/kicad.sh --python electronics/scripts/route_cleanup.py \
   [--board <candidate.kicad_pcb>]
+
+# stitch every remaining isolated GND island (SMD pads/stub tracks Freerouting
+# never tied to a via) to the filled In1/In2 planes; refills zones and saves
+# the board in place
+scripts/kicad.sh --python electronics/scripts/route_gnd_stitch.py \
+  [--board <candidate.kicad_pcb>]
 ```
 
 `route_export_dsn.py`'s Specctra export already marks the `In1.Cu`/`In2.Cu`
@@ -276,6 +290,24 @@ distinct from the `(type signal)` `F.Cu`/`B.Cu` layers. `ExportSpecctraDSN`
 reads the plane-layer type (`pcbnew.LT_POWER`, set by
 [`scripts/scaffold_pcb.py`](scripts/scaffold_pcb.py)) straight off the board,
 so no post-export DSN rewrite is needed to keep Freerouting off the planes.
+
+[`scripts/route_gnd_stitch.py`](scripts/route_gnd_stitch.py) closes the gap
+`route_cleanup.py` cannot: a GND pad's automatic zone bond only fires for a
+PTH pad that itself spans the `In1.Cu`/`In2.Cu` planes, so an SMD GND pad (or
+a short GND stub track Freerouting routes between neighbouring SMD pads
+without ever reaching a via) stays its own electrically isolated island. The
+script groups every GND pad/track/zone into connectivity islands, and for
+each island not already touching the filled planes either drops a via at a
+non-pad kink point on that island's existing stub-track chain (reusing the
+routed copper, no new track) or, for a bare pad with no routed copper at all,
+adds a via beside it plus a short Default-class connecting track — searching
+a widening ring of candidate offsets around the anchor and validating the
+whole prospective via-plus-track path's exact geometry (not axis-aligned
+bounding boxes, which false-positive against a long diagonal track) against
+every other net's copper and every drilled hole's clearance before committing
+it. A via never lands inside a pad. Any GND island still left as bare track
+with no pad at all after stitching (a stub with nothing left to reach) is
+deleted rather than left dangling.
 
 ## Fabrication export (H3d)
 

@@ -385,6 +385,32 @@ reference planes (interactive via placement, not a scripted reroute) — the
 honest residual for the next pass, still short of DRC 0 across every category
 and short of the H3e independent review.
 
+**Progress 2026-09-11 (continued): the 17 GND stitches, scripted after all.**
+A new `electronics/scripts/route_gnd_stitch.py` groups every GND pad/track/
+zone into connectivity islands, then for each island not already touching the
+filled planes drops a via at a non-pad kink point on its existing stub-track
+chain (reusing the routed copper) or, for a bare pad with no routed copper,
+adds a via beside it plus a short connecting track — validating the full
+candidate via-plus-track path's exact geometry against every other net's
+copper and every drilled hole's clearance (not axis-aligned bounding boxes,
+which false-positive against a long diagonal track spanning the search area)
+before committing. Net result on the canonical board: 17 new vias (one per
+isolated island) plus 11 connecting tracks (the other 6 islands' vias land
+directly on an existing stub track's own kink point, no new track needed; 2
+of the 17 islands needed a second stitching pass each after an initial
+geometry bug — axis-aligned bounding-box collision checks false-positiving
+against long diagonal tracks, and a missed NPTH hole clearance — was found
+and fixed against real `kicad-cli pcb drc` output, and the two bad
+via+track pairs it had placed were removed and redone), 0 islands left
+unresolved, 0 dangling stubs to delete. `kicad-cli pcb drc
+--severity-all` on the re-stitched canonical board: **0 violations, 0
+unconnected items** — the first fully clean DRC pass this board has had. Zero
+tracks still land on `In1.Cu`/`In2.Cu` (73 vias, 578 non-via tracks total,
+confirmed by direct layer-membership check). `export_fab.sh` and
+`test_scaffold.py` (8/8) both stay green against the stitched board. This
+closes the H3c GND punch-list; it is still a review/quote snapshot, not an
+order-ready package, pending the H3e independent design review.
+
 ### Phase H3d — DRC/DFM clean + manufacturing package
 
 ```yaml
@@ -448,6 +474,17 @@ risk. Consolidated punch-list (supersedes the earlier 15+3 DRC list):
   pin 7 floats (`unconnected-(J20-NC-Pad7)`); the GCT USB4105 USB-C has no filed
   datasheet. Obtain the Pulse J0011D21BNL + GCT schematics and confirm before
   order (needs external evidence — operator or datasheet fetch).
+  2026-09-11: `check_footprints.py --board` now asserts pad-number -> net-name
+  identity for every J20 and J1 pin the connectivity JSON defines (parsed from
+  `ethernet.json` / `power-usb.json`, never a second hardcoded copy) against
+  the manufactured board copy — 158/158 passed, no mismatch, confirming the
+  Pulse J0011D21BNL MDI mapping (`J403.pdf` p5) and the GCT USB4105 D+/D-/VBUS/
+  GND/CC pins land on their expected nets. Pin 7 still floats (reported
+  `UNCOVERED`, unchanged) and J1's stacked VBUS/GND mirror pins (A9/A12/B1/B4/
+  B9/B12) remain `UNCOVERED` since the JSON only names the canonical pin per
+  stacked group. Geometry-only closure via datasheet archival still stands;
+  this closes the pad-identity half of the blocker, not the still-missing
+  filed GCT schematic page.
 - **M1** Teensy footprint self-clearance (VBAT vs main-row pad 30, 0.14 mm) — fix
   the service-cluster spacing in the footprint. **M2** power traces undersized
   (0.2 mm for ~1 A VBUS) — widen VBUS_RAW/VBUS_5V/EXP_USBH_VBUS to ≥0.5 mm.
