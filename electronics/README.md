@@ -158,6 +158,70 @@ The purchased optical modules (2026-07-27) are the RS PRO ORJ-5 / OTJ-5
 validating the Gerber against the RS PRO layout drawings is a recorded H2 gate
 ([H1 plan §Milestones](../docs/plans/aius-h1-schematic.md#milestones)).
 
+J1 (the USB-C receptacle) uses `aius:USB_C_GCT_USB4105_NPTH_Clearance`, not the
+stock `Connector_USB:USB_C_Receptacle_GCT_USB4105-xx-A_16P_TopMnt_Horizontal`
+land pattern: the stock pattern's four GND pads violate PCBWay's published
+NPTH-to-copper minimum against the connector's own locating holes.
+[`lib/gen_usb_footprint.py`](lib/gen_usb_footprint.py) derives the adapted
+footprint from the pinned stock geometry, retreating only the hole-facing edge
+of those four pads by 0.02 mm (0.2138 mm nominal clearance, within GCT's
+±0.05 mm layout tolerance); regenerate with
+`scripts/kicad.sh --python electronics/lib/gen_usb_footprint.py`. `pcbnew`
+reassigns a fresh UUID to every graphic and pad element on each save, so a
+regenerated copy is never byte-identical to the checked-in one — compare
+geometry (pad positions, sizes, description text), not raw bytes, when
+confirming a regeneration matches.
+
+## Scaffold (H3b)
+
+[`scripts/scaffold_pcb.py`](scripts/scaffold_pcb.py) builds
+`aius-carrier.kicad_pcb` from a KiCad XML netlist: the initial four-layer
+placement + connectivity scaffold that H3c routes, not a routed board. Run
+from the Aius root, inside the container:
+
+```bash
+scripts/kicad.sh sch export netlist --format kicadxml \
+  -o <netlist.xml> electronics/aius-carrier.kicad_sch
+scripts/kicad.sh --python electronics/scripts/scaffold_pcb.py \
+  --netlist <netlist.xml> --output <candidate.kicad_pcb>
+```
+
+Both `--netlist` and `--output` are mandatory — exploration never overwrites
+the routed board implicitly. Every footprint needs an explicit
+`(x, y, rotation)` entry in the script's `PLACEMENT` table (or a slot in the
+`FRONT_ROW` expansion-connector row); a component in neither is a hard error
+(`missing placement: [...]`), never a silent grid fallback. A netlist
+component with no footprint, or a footprint missing a pad the netlist
+references, is rejected the same way before any board is written.
+
+Alongside `<candidate.kicad_pcb>` the script also writes `<candidate>.kicad_pro`
+(carrying the project's net-class track width/clearance defaults),
+`<candidate>.kicad_dru` (a copy of
+[`aius-carrier.kicad_dru`](aius-carrier.kicad_dru)), and a `fp-lib-table` with
+the `aius` library URI rewritten relative to the output directory — so the
+candidate board opens standalone, with its footprints and design rules
+resolved, wherever it lands.
+
+`aius-carrier.kicad_dru` carries two custom rules that `kicad-cli pcb drc`
+enforces on both the canonical and every scaffolded board: the J1 GCT USB4105
+land pattern's NPTH-to-copper clearance (0.20 mm minimum, scoped to J1's own
+pads), and a blanket ban on signal tracks over the `In1.Cu` / `In2.Cu`
+reference planes (`disallow track`) — both inner layers are `pcbnew.LT_POWER`
+ground references, not routing layers, on every board this script emits.
+
+[`scripts/test_scaffold.py`](scripts/test_scaffold.py) regresses the builder
+end to end against a live netlist export: valid geometry/nets/DNP plus a
+zero-violation `kicad-cli pcb drc` pass on the unrouted candidate (with a
+non-zero unconnected-item count, since nothing is routed yet), rejection of a
+missing footprint, a missing pad, an unplaced part, and a missing
+`--netlist`/`--output`, and confirms the two reference-plane design rules
+actually fire when a track is added to `In1.Cu`/`In2.Cu`. Run it the same way
+as any other `pcbnew` script:
+
+```bash
+scripts/kicad.sh --python electronics/scripts/test_scaffold.py
+```
+
 ## Board (H3 recovery pending)
 
 `aius-carrier.kicad_pcb` still contains the rejected 2026-08-16 autoroute: a

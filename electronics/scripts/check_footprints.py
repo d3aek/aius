@@ -26,6 +26,7 @@ def main():
     parser.add_argument("--board", type=Path)
     args = parser.parse_args()
     names = {
+        "J1": "USB_C_GCT_USB4105_NPTH_Clearance",
         "U10": "Teensy41_Sockets_SSW-124_Host_SSW-105",
         "J19": "Samtec_HTSW-105-07-G-S",
         "U20": "Cliff_ORJ5_TOSLINK",
@@ -64,6 +65,11 @@ def main():
         fps[ref].SetPosition(pcbnew.VECTOR2I(0, 0))
 
     if not failures:
+        points("J1", "", [(-2.89, -2.605), (2.89, -2.605)])
+        for number, x in (("A1", -3.2), ("B12", -3.2), ("A12", 3.2), ("B1", 3.2)):
+            points("J1", number, [(x, -3.69)])
+            pad = next(p for p in fps["J1"].Pads() if p.GetNumber() == number)
+            expect(mm(pad.GetSize()) == (0.6, 1.13), f"J1.{number}: adapted GND land size")
         # Four asymmetric corners detect reflected or transposed main rows.
         points("U10", "VIN", [(0, 0)])
         points("U10", "0", [(2.54, 15.24)])

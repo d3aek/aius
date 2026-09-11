@@ -1,0 +1,10 @@
+(version 1)
+# PCBWay published NP-hole/copper minimum. Applies only within J1, whose
+# adapted GCT lands provide 0.2138mm nominal clearance; no global waiver.
+(rule "J1 manufacturer land pattern NPTH clearance"
+  (condition "A.memberOfFootprint('J1') && B.memberOfFootprint('J1')")
+  (constraint hole_clearance (min 0.20mm)))
+# Both inner layers are ground references, not routing layers.
+(rule "No signal tracks on reference planes"
+  (condition "A.Type == 'Track' && (A.Layer == 'In1.Cu' || A.Layer == 'In2.Cu')")
+  (constraint disallow track))

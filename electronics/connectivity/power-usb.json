@@ -25,7 +25,7 @@
       "lib_id": "Connector:USB_C_Receptacle_USB2.0_16P",
       "value": "USB4105-GF-A",
       "mpn": "GCT USB4105-GF-A",
-      "footprint": "Connector_USB:USB_C_Receptacle_GCT_USB4105-xx-A_16P_TopMnt_Horizontal",
+      "footprint": "aius:USB_C_GCT_USB4105_NPTH_Clearance",
       "at": [66.04, 118.11],
       "desc": "rear USB-C receptacle (sole power+data entry)"
     },
