@@ -5,7 +5,7 @@ PJRC pinout card (`https://www.pjrc.com/teensy/pinout.html`, rev 4). This is a
 primary H1 review artifact: **no pad serves two functions.** Pads are given as
 the Teensy pad number (edge pins) or the PJRC pad label (power / USB-host /
 Ethernet / service pads). Realised in `connectivity/teensy-expansion.json`
-(symbol `aius:Teensy41`); cross-sheet net names are defined in
+(partial symbol `aius:Teensy41`, carrier cable endpoints J18/J19); net names are defined in
 [`nets.md`](nets.md).
 
 ## Allocated pads
@@ -46,8 +46,15 @@ Ethernet / service pads). Realised in `connectivity/teensy-expansion.json`
 
 ## Reserved / not-fitted pads
 
+First build: **J10–J15 DNP**, no independently powered expansion attachment.
+The direct rail and signal connections are not power-off isolation. Review
+protection and population before using these reserved ports. J17 stays active.
+Ethernet and service use top-side Teensy headers, not underside sockets; the
+exact stock cable map and J19.4 omitted wire are in
+[`carrier-footprint-review.md`](../../docs/reference/carrier-footprint-review.md#stock-headercable-revision-2026-09-11).
+
 - **`VIN` — no-connect.** No second VIN feed is fitted (single power entry).
-- **`VUSB` — no-connect.** The Teensy draws 5 V through its own micro-B jack from
+- **`VUSB` — no carrier pad.** The Teensy draws 5 V through its own micro-B jack from
   the internal USB-A cable (power-usb sheet), the sole VUSB feed; the carrier
   socket does not re-feed VUSB.
 - **Pad 13 (on-board LED, shared with `SCK0`) — reserved, no-connect.** The status

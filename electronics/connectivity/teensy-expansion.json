@@ -8,24 +8,21 @@
     "SPDIF_RX",
     "SPDIF_TX",
     "PATH_SELECT",
-    "TX_ENABLE",
-    "ETH_RXP",
-    "ETH_RXN",
-    "ETH_LED",
-    "ETH_TXN",
-    "ETH_TXP"
+    "TX_ENABLE"
   ],
   "description": [
     "Socketed Teensy 4.1 (on-board DP83825 Ethernet PHY) and its expansion,",
-    "service and test interfaces. Teensy VUSB/VIN are not fitted on the carrier",
+    "service and test interfaces. Teensy VIN is NC and VUSB has no carrier pad",
     "(power enters via the internal USB-A -> micro-B cable per power-usb).",
-    "Cross-sheet nets (rails, SPDIF, ETH_*, PATH_SELECT, TX_ENABLE) are global",
-    "labels consumed by the optical-spdif and ethernet sheets; see nets.md and",
+    "Cross-sheet rails, SPDIF, PATH_SELECT and TX_ENABLE use global labels.",
+    "Ethernet cables to J18 on its own sheet; see nets.md and",
     "pin-map.md."
   ],
   "design_notes": {
     "ethernet_phy": "The DP83825 PHY is ON the Teensy 4.1 (order the 'with Ethernet chip' variant). The 6-pin native-Ethernet header carries MDI differential pairs (ETH_RX+/-, ETH_TX+/-) + LED to the magjack on the ethernet sheet - NOT RMII to an external PHY. The PJRC Ethernet Kit is only a magjack + centre-tap cap + ribbon, no PHY. No DP83825 on the carrier.",
-    "power_entry": "VIN and VUSB are no-connect: the Teensy is powered through its own micro-B jack from the internal USB-A cable (power-usb sheet), the sole 5V feed. No second VIN/VUSB feed.",
+    "power_entry": "VIN is no-connect and VUSB has no carrier pad: the Teensy is powered through its own micro-B jack from the internal USB-A cable (power-usb sheet), the sole 5V feed. No second VIN/VUSB feed.",
+    "assembly": "Main48 and optional host5 underside contacts use matched SSW-xxx-02 sockets and HTSW-xxx-07 headers. Top Ethernet cables to J18; top service cables to J19. J19.4 is unused and its wire must be omitted. No custom spacer. See carrier-footprint-review.md for the stock assembly map and mandatory unkeyed-cable continuity checks.",
+    "first_build": "J10-J15 are DNP. Owner permits empty expansion pads now and wants independent power as a future option. DNP is not isolation: do not populate or externally power these ports before a reviewed rail/signal protection design. Core Tag-Connect UART/service paths remain active.",
     "safe_defaults": "R17 pulls PATH_SELECT low (processed path) and R18 pulls TX_ENABLE low (optical TX disabled) - the hardware-safe optical defaults from interfaces-and-states, held before firmware runs.",
     "expansion_3v3": "OPEN RELEASE BLOCKER: expansion-3v3 currently equals teensy-3v3 (+3V3) directly. Series signal resistors do not provide the specified rail reverse-power isolation. Resolve before electrical release; see nets.md.",
     "i2c_isolator": "TCA9517A: A-side (pins 2/3) to Teensy SCL0/SDA0 (pin 19/18) with 4.7k pull-ups to +3V3; B-side (pins 6/5) to J10 with 4.7k pull-ups to +3V3. EN (pin1) tied high.",
@@ -39,9 +36,18 @@
       "lib_id": "aius:Teensy41",
       "value": "Teensy 4.1",
       "mpn": "PJRC Teensy 4.1 (with Ethernet chip)",
-      "footprint": "aius:Teensy41_Sockets_SSW-124_MMS-103_SSW-105",
+      "footprint": "aius:Teensy41_Sockets_SSW-124_Host_SSW-105",
       "at": [175.26, 204.47],
-      "desc": "socketed Teensy 4.1; on-board DP83825 Ethernet PHY"
+      "desc": "main and optional USB-host underside contacts; Ethernet/service cable to J18/J19 from Teensy top"
+    },
+    {
+      "ref": "J19",
+      "lib_id": "aius:Conn_1x05",
+      "value": "Teensy_TOP_SERVICE",
+      "mpn": "Samtec HTSW-105-07-G-S",
+      "footprint": "aius:Samtec_HTSW-105-07-G-S",
+      "at": [49.53, 54.61],
+      "desc": "stock jumper leads to Teensy top: 1 ON_OFF, 2 PROGRAM, 3 GND, 4 unused (omit wire), 5 VBAT"
     },
     {
       "ref": "U11",
@@ -54,6 +60,7 @@
     },
     {
       "ref": "J10",
+      "dnp": true,
       "lib_id": "aius:Conn_1x04",
       "value": "BM04B-GHS-TBT",
       "mpn": "JST BM04B-GHS-TBT",
@@ -63,6 +70,7 @@
     },
     {
       "ref": "J11",
+      "dnp": true,
       "lib_id": "aius:Conn_1x06",
       "value": "BM06B-GHS-TBT",
       "mpn": "JST BM06B-GHS-TBT",
@@ -72,6 +80,7 @@
     },
     {
       "ref": "J12",
+      "dnp": true,
       "lib_id": "aius:Conn_1x04",
       "value": "BM04B-GHS-TBT",
       "mpn": "JST BM04B-GHS-TBT",
@@ -81,6 +90,7 @@
     },
     {
       "ref": "J13",
+      "dnp": true,
       "lib_id": "aius:Conn_1x05",
       "value": "BM05B-GHS-TBT",
       "mpn": "JST BM05B-GHS-TBT",
@@ -90,6 +100,7 @@
     },
     {
       "ref": "J14",
+      "dnp": true,
       "lib_id": "aius:Conn_1x04",
       "value": "BM04B-GHS-TBT",
       "mpn": "JST BM04B-GHS-TBT",
@@ -99,6 +110,7 @@
     },
     {
       "ref": "J15",
+      "dnp": true,
       "lib_id": "aius:Conn_1x04",
       "value": "BM04B-GHS-TBT",
       "mpn": "JST BM04B-GHS-TBT",
@@ -336,7 +348,7 @@
     "GND": [
       ["U10", "GND"],
       ["U10", "UHGND"],
-      ["U10", "EGND"],
+      ["J19", "3"],
       ["U11", "4"],
       ["J10", "4"],
       ["J11", "6"],
@@ -380,11 +392,6 @@
       ["U10", "39"],
       ["R18", "1"]
     ],
-    "ETH_RXP": [["U10", "ERXP"]],
-    "ETH_RXN": [["U10", "ERXN"]],
-    "ETH_LED": [["U10", "ELED"]],
-    "ETH_TXN": [["U10", "ETXN"]],
-    "ETH_TXP": [["U10", "ETXP"]],
     "EXP_USBH_VBUS": [
       ["U10", "UH5V"],
       ["J14", "1"],
@@ -400,17 +407,17 @@
       ["J14", "3"]
     ],
     "VBAT": [
-      ["U10", "VBAT"],
+      ["J19", "5"],
       ["J16", "2"],
       ["#FLG20", "1"]
     ],
     "PROGRAM": [
-      ["U10", "PGM"],
+      ["J19", "2"],
       ["J16", "1"],
       ["J17", "2"]
     ],
     "ON_OFF": [
-      ["U10", "ONOFF"],
+      ["J19", "1"],
       ["J17", "4"]
     ],
     "I2C_SCL_T": [
@@ -534,7 +541,7 @@
   },
   "no_connects": [
     ["U10", "VIN"],
-    ["U10", "VUSB"],
+    ["J19", "4"],
     ["U10", "13"]
   ]
 }

@@ -48,7 +48,7 @@
 						)
 					)
 				)
-				(property "Description" "PJRC Teensy 4.1 module (i.MX RT1062) on Samtec sockets; on-board DP83825 Ethernet PHY. Only the carrier-used pads are drawn."
+				(property "Description" "Teensy 4.1 main and optional USB-host underside socket contacts only. Top-side Ethernet and service contacts cable to carrier J18/J19; see assembly map."
 					(at 0 0 0)
 					(hide yes)
 					(effects
@@ -127,78 +127,6 @@
 							)
 						)
 						(number "VIN"
-							(effects
-								(font
-									(size 1.27 1.27)
-								)
-							)
-						)
-					)
-					(pin passive line
-						(at -27.94 13.97 0)
-						(length 2.54)
-						(name "VUSB/NF"
-							(effects
-								(font
-									(size 1.27 1.27)
-								)
-							)
-						)
-						(number "VUSB"
-							(effects
-								(font
-									(size 1.27 1.27)
-								)
-							)
-						)
-					)
-					(pin power_in line
-						(at -27.94 11.43 0)
-						(length 2.54)
-						(name "VBAT"
-							(effects
-								(font
-									(size 1.27 1.27)
-								)
-							)
-						)
-						(number "VBAT"
-							(effects
-								(font
-									(size 1.27 1.27)
-								)
-							)
-						)
-					)
-					(pin passive line
-						(at -27.94 8.89 0)
-						(length 2.54)
-						(name "PROGRAM"
-							(effects
-								(font
-									(size 1.27 1.27)
-								)
-							)
-						)
-						(number "PGM"
-							(effects
-								(font
-									(size 1.27 1.27)
-								)
-							)
-						)
-					)
-					(pin passive line
-						(at -27.94 6.35 0)
-						(length 2.54)
-						(name "ON/OFF"
-							(effects
-								(font
-									(size 1.27 1.27)
-								)
-							)
-						)
-						(number "ONOFF"
 							(effects
 								(font
 									(size 1.27 1.27)
@@ -620,17 +548,86 @@
 							)
 						)
 					)
+				)
+				(embedded_fonts no)
+			)
+		(symbol "aius:Conn_1x05"
+				(pin_names
+					(offset 1.016)
+				)
+				(exclude_from_sim no)
+				(in_bom yes)
+				(on_board yes)
+				(property "Reference" "J"
+					(at -3.81 8.89 0)
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+						(justify left)
+					)
+				)
+				(property "Value" "Conn_1x05"
+					(at -3.81 -8.89 0)
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+						(justify left)
+					)
+				)
+				(property "Footprint" ""
+					(at 0 0 0)
+					(hide yes)
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+				(property "Description" "Generic 5-circuit connector (JST GH / pin header / test point)."
+					(at 0 0 0)
+					(hide yes)
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+				(property "ki_keywords" "connector"
+					(at 0 0 0)
+					(hide yes)
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+				(symbol "Conn_1x05_0_1"
+					(rectangle
+						(start -3.81 7.62)
+						(end 3.81 -7.62)
+						(stroke
+							(width 0.254)
+							(type default)
+						)
+						(fill
+							(type background)
+						)
+					)
+				)
+				(symbol "Conn_1x05_1_1"
 					(pin passive line
-						(at 27.94 -8.89 180)
+						(at -6.35 5.08 0)
 						(length 2.54)
-						(name "ETH_RX+"
+						(name "P1"
 							(effects
 								(font
 									(size 1.27 1.27)
 								)
 							)
 						)
-						(number "ERXP"
+						(number "1"
 							(effects
 								(font
 									(size 1.27 1.27)
@@ -639,16 +636,16 @@
 						)
 					)
 					(pin passive line
-						(at 27.94 -11.43 180)
+						(at -6.35 2.54 0)
 						(length 2.54)
-						(name "ETH_RX-"
+						(name "P2"
 							(effects
 								(font
 									(size 1.27 1.27)
 								)
 							)
 						)
-						(number "ERXN"
+						(number "2"
 							(effects
 								(font
 									(size 1.27 1.27)
@@ -657,16 +654,16 @@
 						)
 					)
 					(pin passive line
-						(at 27.94 -13.97 180)
+						(at -6.35 0 0)
 						(length 2.54)
-						(name "ETH_LED"
+						(name "P3"
 							(effects
 								(font
 									(size 1.27 1.27)
 								)
 							)
 						)
-						(number "ELED"
+						(number "3"
 							(effects
 								(font
 									(size 1.27 1.27)
@@ -675,16 +672,16 @@
 						)
 					)
 					(pin passive line
-						(at 27.94 -16.51 180)
+						(at -6.35 -2.54 0)
 						(length 2.54)
-						(name "ETH_TX-"
+						(name "P4"
 							(effects
 								(font
 									(size 1.27 1.27)
 								)
 							)
 						)
-						(number "ETXN"
+						(number "4"
 							(effects
 								(font
 									(size 1.27 1.27)
@@ -693,34 +690,16 @@
 						)
 					)
 					(pin passive line
-						(at 27.94 -19.05 180)
+						(at -6.35 -5.08 0)
 						(length 2.54)
-						(name "ETH_TX+"
+						(name "P5"
 							(effects
 								(font
 									(size 1.27 1.27)
 								)
 							)
 						)
-						(number "ETXP"
-							(effects
-								(font
-									(size 1.27 1.27)
-								)
-							)
-						)
-					)
-					(pin power_in line
-						(at 27.94 -21.59 180)
-						(length 2.54)
-						(name "ETH_GND"
-							(effects
-								(font
-									(size 1.27 1.27)
-								)
-							)
-						)
-						(number "EGND"
+						(number "5"
 							(effects
 								(font
 									(size 1.27 1.27)
@@ -1261,165 +1240,6 @@
 							)
 						)
 						(number "6"
-							(effects
-								(font
-									(size 1.27 1.27)
-								)
-							)
-						)
-					)
-				)
-				(embedded_fonts no)
-			)
-		(symbol "aius:Conn_1x05"
-				(pin_names
-					(offset 1.016)
-				)
-				(exclude_from_sim no)
-				(in_bom yes)
-				(on_board yes)
-				(property "Reference" "J"
-					(at -3.81 8.89 0)
-					(effects
-						(font
-							(size 1.27 1.27)
-						)
-						(justify left)
-					)
-				)
-				(property "Value" "Conn_1x05"
-					(at -3.81 -8.89 0)
-					(effects
-						(font
-							(size 1.27 1.27)
-						)
-						(justify left)
-					)
-				)
-				(property "Footprint" ""
-					(at 0 0 0)
-					(hide yes)
-					(effects
-						(font
-							(size 1.27 1.27)
-						)
-					)
-				)
-				(property "Description" "Generic 5-circuit connector (JST GH / pin header / test point)."
-					(at 0 0 0)
-					(hide yes)
-					(effects
-						(font
-							(size 1.27 1.27)
-						)
-					)
-				)
-				(property "ki_keywords" "connector"
-					(at 0 0 0)
-					(hide yes)
-					(effects
-						(font
-							(size 1.27 1.27)
-						)
-					)
-				)
-				(symbol "Conn_1x05_0_1"
-					(rectangle
-						(start -3.81 7.62)
-						(end 3.81 -7.62)
-						(stroke
-							(width 0.254)
-							(type default)
-						)
-						(fill
-							(type background)
-						)
-					)
-				)
-				(symbol "Conn_1x05_1_1"
-					(pin passive line
-						(at -6.35 5.08 0)
-						(length 2.54)
-						(name "P1"
-							(effects
-								(font
-									(size 1.27 1.27)
-								)
-							)
-						)
-						(number "1"
-							(effects
-								(font
-									(size 1.27 1.27)
-								)
-							)
-						)
-					)
-					(pin passive line
-						(at -6.35 2.54 0)
-						(length 2.54)
-						(name "P2"
-							(effects
-								(font
-									(size 1.27 1.27)
-								)
-							)
-						)
-						(number "2"
-							(effects
-								(font
-									(size 1.27 1.27)
-								)
-							)
-						)
-					)
-					(pin passive line
-						(at -6.35 0 0)
-						(length 2.54)
-						(name "P3"
-							(effects
-								(font
-									(size 1.27 1.27)
-								)
-							)
-						)
-						(number "3"
-							(effects
-								(font
-									(size 1.27 1.27)
-								)
-							)
-						)
-					)
-					(pin passive line
-						(at -6.35 -2.54 0)
-						(length 2.54)
-						(name "P4"
-							(effects
-								(font
-									(size 1.27 1.27)
-								)
-							)
-						)
-						(number "4"
-							(effects
-								(font
-									(size 1.27 1.27)
-								)
-							)
-						)
-					)
-					(pin passive line
-						(at -6.35 -5.08 0)
-						(length 2.54)
-						(name "P5"
-							(effects
-								(font
-									(size 1.27 1.27)
-								)
-							)
-						)
-						(number "5"
 							(effects
 								(font
 									(size 1.27 1.27)
@@ -1981,7 +1801,7 @@
 			(at 165.1 217.17 0)
 			(effects (font (size 1.27 1.27)) (justify left))
 		)
-		(property "Footprint" "aius:Teensy41_Sockets_SSW-124_MMS-103_SSW-105"
+		(property "Footprint" "aius:Teensy41_Sockets_SSW-124_Host_SSW-105"
 			(at 175.26 204.47 0)
 			(effects (font (size 1.27 1.27)) (hide yes))
 		)
@@ -1997,18 +1817,6 @@
 		)
 		(pin "VIN"
 			(uuid "32d35770-4728-5e54-a671-ed4e0cdd6ae4")
-		)
-		(pin "VUSB"
-			(uuid "52cc9001-9802-529c-8e83-16e5f2656edb")
-		)
-		(pin "VBAT"
-			(uuid "edb6dd01-ae70-5044-967b-1e198ace4253")
-		)
-		(pin "PGM"
-			(uuid "fceaeaa0-92c9-5a02-876e-fc378b02867e")
-		)
-		(pin "ONOFF"
-			(uuid "7e0b2623-a812-57c0-b9af-6abd322ad5ac")
 		)
 		(pin "15"
 			(uuid "9c784f79-fda1-581a-90aa-b39a6ad6c8bc")
@@ -2079,28 +1887,59 @@
 		(pin "UHGND"
 			(uuid "cfd1bc2b-b20d-5984-8cb8-f91ad1979749")
 		)
-		(pin "ERXP"
-			(uuid "acbf499c-4b54-55ae-8d86-46ea6cf32c32")
-		)
-		(pin "ERXN"
-			(uuid "bb6299c0-2a65-5372-8c83-c186874fb23f")
-		)
-		(pin "ELED"
-			(uuid "54c8c938-5d00-5c2f-8289-2c289aa16b20")
-		)
-		(pin "ETXN"
-			(uuid "3f28aaa7-224b-5ab2-9ac1-9b7db16295dd")
-		)
-		(pin "ETXP"
-			(uuid "0d7fda20-15a5-5f86-b663-eda0796fa776")
-		)
-		(pin "EGND"
-			(uuid "71ca2bec-c6cd-5887-8a9c-2c32f07b5056")
-		)
 		(instances
 			(project "aius-carrier"
 				(path "/68a9aac5-3712-532f-bce8-e090c97e9611/9a8dd7e0-f296-5044-86a8-6a5914dae9ce"
 					(reference "U10")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "aius:Conn_1x05")
+		(at 49.53 54.61 0)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(uuid "ecfcaa3d-d1a3-51da-a765-028349955f0a")
+		(property "Reference" "J19"
+			(at 39.37 41.91 0)
+			(effects (font (size 1.27 1.27)) (justify left))
+		)
+		(property "Value" "Teensy_TOP_SERVICE"
+			(at 39.37 67.31 0)
+			(effects (font (size 1.27 1.27)) (justify left))
+		)
+		(property "Footprint" "aius:Samtec_HTSW-105-07-G-S"
+			(at 49.53 54.61 0)
+			(effects (font (size 1.27 1.27)) (hide yes))
+		)
+		(property "MPN" "Samtec HTSW-105-07-G-S"
+			(at 49.53 54.61 0)
+			(effects (font (size 1.27 1.27)) (hide yes))
+		)
+		(pin "1"
+			(uuid "164c52cc-8a41-5817-bbb9-c37f2b87b603")
+		)
+		(pin "2"
+			(uuid "a700822c-fd84-5ea5-97bb-6418d82e8c1d")
+		)
+		(pin "3"
+			(uuid "b02fa0dd-2456-51d9-be5f-2e7c9de4fe79")
+		)
+		(pin "4"
+			(uuid "5ccc634f-bd3f-5b90-917e-6efd67c5bdc3")
+		)
+		(pin "5"
+			(uuid "0265fd40-43ea-5eb3-9673-e5ceb427a7d0")
+		)
+		(instances
+			(project "aius-carrier"
+				(path "/68a9aac5-3712-532f-bce8-e090c97e9611/9a8dd7e0-f296-5044-86a8-6a5914dae9ce"
+					(reference "J19")
 					(unit 1)
 				)
 			)
@@ -2171,7 +2010,7 @@
 		(exclude_from_sim no)
 		(in_bom yes)
 		(on_board yes)
-		(dnp no)
+		(dnp yes)
 		(uuid "60dcd903-7576-5ce1-883e-539561546faf")
 		(property "Reference" "J10"
 			(at 379.73 41.91 0)
@@ -2217,7 +2056,7 @@
 		(exclude_from_sim no)
 		(in_bom yes)
 		(on_board yes)
-		(dnp no)
+		(dnp yes)
 		(uuid "0b2d7f41-1182-56ea-8d06-60ca79864f21")
 		(property "Reference" "J11"
 			(at 379.73 97.79 0)
@@ -2269,7 +2108,7 @@
 		(exclude_from_sim no)
 		(in_bom yes)
 		(on_board yes)
-		(dnp no)
+		(dnp yes)
 		(uuid "44bff4d8-943c-5615-ba49-89bf56c3d663")
 		(property "Reference" "J12"
 			(at 379.73 152.4 0)
@@ -2315,7 +2154,7 @@
 		(exclude_from_sim no)
 		(in_bom yes)
 		(on_board yes)
-		(dnp no)
+		(dnp yes)
 		(uuid "6c685e87-2aae-5cfb-9a04-3b7f83bf23f1")
 		(property "Reference" "J13"
 			(at 379.73 201.93 0)
@@ -2364,7 +2203,7 @@
 		(exclude_from_sim no)
 		(in_bom yes)
 		(on_board yes)
-		(dnp no)
+		(dnp yes)
 		(uuid "d669a795-5323-575d-8540-e3cf75d378ca")
 		(property "Reference" "J14"
 			(at 379.73 252.73 0)
@@ -2410,7 +2249,7 @@
 		(exclude_from_sim no)
 		(in_bom yes)
 		(on_board yes)
-		(dnp no)
+		(dnp yes)
 		(uuid "9b0a16e5-1e29-5450-a56e-c4348880ad9f")
 		(property "Reference" "J15"
 			(at 379.73 302.26 0)
@@ -3488,17 +3327,17 @@
 		)
 	)
 	(wire
-		(pts (xy 203.2 226.06) (xy 208.28 226.06))
+		(pts (xy 43.18 54.61) (xy 38.1 54.61))
 		(stroke (width 0) (type default))
-		(uuid "da9c9429-81c2-551d-ac6d-214f1ae8d33d")
+		(uuid "18209d98-f7bf-5724-b467-9a3f2eaa507f")
 	)
 	(global_label "GND"
 		(shape bidirectional)
-		(at 208.28 226.06 0)
-		(effects (font (size 1.27 1.27)) (justify left))
-		(uuid "779591eb-5f16-504a-9110-841330061dac")
+		(at 38.1 54.61 180)
+		(effects (font (size 1.27 1.27)) (justify right))
+		(uuid "c98243ce-ebb7-5860-a38f-8df291447559")
 		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 208.28 226.06 0)
+			(at 38.1 54.61 180)
 			(effects (font (size 1.27 1.27)) (hide yes))
 		)
 	)
@@ -4043,81 +3882,6 @@
 		)
 	)
 	(wire
-		(pts (xy 203.2 213.36) (xy 208.28 213.36))
-		(stroke (width 0) (type default))
-		(uuid "13457695-fa1d-51bd-a87d-9a00d6f5ad62")
-	)
-	(global_label "ETH_RXP"
-		(shape bidirectional)
-		(at 208.28 213.36 0)
-		(effects (font (size 1.27 1.27)) (justify left))
-		(uuid "45195bd4-0acd-50b2-aacf-3128eea51532")
-		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 208.28 213.36 0)
-			(effects (font (size 1.27 1.27)) (hide yes))
-		)
-	)
-	(wire
-		(pts (xy 203.2 215.9) (xy 208.28 215.9))
-		(stroke (width 0) (type default))
-		(uuid "0cd00704-6d2c-592e-8568-5aeab63e01e9")
-	)
-	(global_label "ETH_RXN"
-		(shape bidirectional)
-		(at 208.28 215.9 0)
-		(effects (font (size 1.27 1.27)) (justify left))
-		(uuid "e50e076a-3ad3-5df7-88e5-9a596b9a6c95")
-		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 208.28 215.9 0)
-			(effects (font (size 1.27 1.27)) (hide yes))
-		)
-	)
-	(wire
-		(pts (xy 203.2 218.44) (xy 208.28 218.44))
-		(stroke (width 0) (type default))
-		(uuid "6021c91f-fcd3-5b63-923c-c382a8e69ca5")
-	)
-	(global_label "ETH_LED"
-		(shape bidirectional)
-		(at 208.28 218.44 0)
-		(effects (font (size 1.27 1.27)) (justify left))
-		(uuid "a0ed06e9-1505-5ca7-bb80-5be1c2abe0f5")
-		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 208.28 218.44 0)
-			(effects (font (size 1.27 1.27)) (hide yes))
-		)
-	)
-	(wire
-		(pts (xy 203.2 220.98) (xy 208.28 220.98))
-		(stroke (width 0) (type default))
-		(uuid "a29af8d5-5be9-5c82-92d1-4cc0759be365")
-	)
-	(global_label "ETH_TXN"
-		(shape bidirectional)
-		(at 208.28 220.98 0)
-		(effects (font (size 1.27 1.27)) (justify left))
-		(uuid "0f1535d3-b30f-5a45-bb95-49fe090fed98")
-		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 208.28 220.98 0)
-			(effects (font (size 1.27 1.27)) (hide yes))
-		)
-	)
-	(wire
-		(pts (xy 203.2 223.52) (xy 208.28 223.52))
-		(stroke (width 0) (type default))
-		(uuid "034da05a-2991-553a-80f7-3e4aad38fd7e")
-	)
-	(global_label "ETH_TXP"
-		(shape bidirectional)
-		(at 208.28 223.52 0)
-		(effects (font (size 1.27 1.27)) (justify left))
-		(uuid "d598a825-9884-514f-8455-e5bda5428514")
-		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 208.28 223.52 0)
-			(effects (font (size 1.27 1.27)) (hide yes))
-		)
-	)
-	(wire
 		(pts (xy 203.2 203.2) (xy 208.28 203.2))
 		(stroke (width 0) (type default))
 		(uuid "179a610c-2cda-57c7-abbe-b4e71633153c")
@@ -4198,14 +3962,14 @@
 		(uuid "59637081-5026-57ca-aeaf-86f167672d27")
 	)
 	(wire
-		(pts (xy 147.32 193.04) (xy 142.24 193.04))
+		(pts (xy 43.18 59.69) (xy 38.1 59.69))
 		(stroke (width 0) (type default))
-		(uuid "efead776-bbb5-5eda-9925-86cda494b8f7")
+		(uuid "3aeff9df-7c03-59f4-835d-508ce2e91dd2")
 	)
 	(label "VBAT"
-		(at 142.24 193.04 180)
+		(at 38.1 59.69 180)
 		(effects (font (size 1.27 1.27)) (justify right bottom))
-		(uuid "16dcc916-315d-5ce3-bc98-37604109af81")
+		(uuid "4b3ef2bf-551b-53ff-a91b-dbd26fbd62c9")
 	)
 	(wire
 		(pts (xy 43.18 110.49) (xy 38.1 110.49))
@@ -4228,14 +3992,14 @@
 		(uuid "7c6b0e38-32aa-5dc6-b92a-f46111a9a909")
 	)
 	(wire
-		(pts (xy 147.32 195.58) (xy 142.24 195.58))
+		(pts (xy 43.18 52.07) (xy 38.1 52.07))
 		(stroke (width 0) (type default))
-		(uuid "6e74a99c-8a8d-52d2-91e3-f543ade3e974")
+		(uuid "76cdd786-687c-5efe-aea3-62d41831dba2")
 	)
 	(label "PROGRAM"
-		(at 142.24 195.58 180)
+		(at 38.1 52.07 180)
 		(effects (font (size 1.27 1.27)) (justify right bottom))
-		(uuid "cef63afd-a6e7-57c5-8a44-ec9596d76f75")
+		(uuid "c729a8b3-7e6c-51b8-ada3-c02fdf88fb8b")
 	)
 	(wire
 		(pts (xy 43.18 107.95) (xy 38.1 107.95))
@@ -4258,14 +4022,14 @@
 		(uuid "da483109-01ae-58e7-bf9a-7e8ab9a84884")
 	)
 	(wire
-		(pts (xy 147.32 198.12) (xy 142.24 198.12))
+		(pts (xy 43.18 49.53) (xy 38.1 49.53))
 		(stroke (width 0) (type default))
-		(uuid "95958ca2-7289-5e48-8ba5-ce2f2b79a906")
+		(uuid "9f13c26c-0fc8-5f09-9cb9-63e252fdc732")
 	)
 	(label "ON_OFF"
-		(at 142.24 198.12 180)
+		(at 38.1 49.53 180)
 		(effects (font (size 1.27 1.27)) (justify right bottom))
-		(uuid "e51e6cc1-17c2-588a-b7fa-55aaf533cb65")
+		(uuid "c02728f2-0d63-5ad4-aabe-ea62f4b3a786")
 	)
 	(wire
 		(pts (xy 43.18 210.82) (xy 38.1 210.82))
@@ -4902,8 +4666,8 @@
 		(uuid "8642b695-0938-5cd4-890f-c3947437b704")
 	)
 	(no_connect
-		(at 147.32 190.5)
-		(uuid "9f637358-2fe2-558a-8dd5-31eb8441c1a6")
+		(at 43.18 57.15)
+		(uuid "784a9981-0fc9-5341-8148-fa1c5cf145b2")
 	)
 	(no_connect
 		(at 147.32 220.98)

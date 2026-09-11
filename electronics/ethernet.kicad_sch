@@ -5,6 +5,183 @@
 	(uuid "96c88029-195e-5a2e-8c13-f1c8b5b04700")
 	(paper "A3")
 	(lib_symbols
+		(symbol "aius:Conn_1x06"
+				(pin_names
+					(offset 1.016)
+				)
+				(exclude_from_sim no)
+				(in_bom yes)
+				(on_board yes)
+				(property "Reference" "J"
+					(at -3.81 10.16 0)
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+						(justify left)
+					)
+				)
+				(property "Value" "Conn_1x06"
+					(at -3.81 -10.16 0)
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+						(justify left)
+					)
+				)
+				(property "Footprint" ""
+					(at 0 0 0)
+					(hide yes)
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+				(property "Description" "Generic 6-circuit connector (JST GH / pin header / test point)."
+					(at 0 0 0)
+					(hide yes)
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+				(property "ki_keywords" "connector"
+					(at 0 0 0)
+					(hide yes)
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+				(symbol "Conn_1x06_0_1"
+					(rectangle
+						(start -3.81 8.89)
+						(end 3.81 -8.89)
+						(stroke
+							(width 0.254)
+							(type default)
+						)
+						(fill
+							(type background)
+						)
+					)
+				)
+				(symbol "Conn_1x06_1_1"
+					(pin passive line
+						(at -6.35 6.35 0)
+						(length 2.54)
+						(name "P1"
+							(effects
+								(font
+									(size 1.27 1.27)
+								)
+							)
+						)
+						(number "1"
+							(effects
+								(font
+									(size 1.27 1.27)
+								)
+							)
+						)
+					)
+					(pin passive line
+						(at -6.35 3.81 0)
+						(length 2.54)
+						(name "P2"
+							(effects
+								(font
+									(size 1.27 1.27)
+								)
+							)
+						)
+						(number "2"
+							(effects
+								(font
+									(size 1.27 1.27)
+								)
+							)
+						)
+					)
+					(pin passive line
+						(at -6.35 1.27 0)
+						(length 2.54)
+						(name "P3"
+							(effects
+								(font
+									(size 1.27 1.27)
+								)
+							)
+						)
+						(number "3"
+							(effects
+								(font
+									(size 1.27 1.27)
+								)
+							)
+						)
+					)
+					(pin passive line
+						(at -6.35 -1.27 0)
+						(length 2.54)
+						(name "P4"
+							(effects
+								(font
+									(size 1.27 1.27)
+								)
+							)
+						)
+						(number "4"
+							(effects
+								(font
+									(size 1.27 1.27)
+								)
+							)
+						)
+					)
+					(pin passive line
+						(at -6.35 -3.81 0)
+						(length 2.54)
+						(name "P5"
+							(effects
+								(font
+									(size 1.27 1.27)
+								)
+							)
+						)
+						(number "5"
+							(effects
+								(font
+									(size 1.27 1.27)
+								)
+							)
+						)
+					)
+					(pin passive line
+						(at -6.35 -6.35 0)
+						(length 2.54)
+						(name "P6"
+							(effects
+								(font
+									(size 1.27 1.27)
+								)
+							)
+						)
+						(number "6"
+							(effects
+								(font
+									(size 1.27 1.27)
+								)
+							)
+						)
+					)
+				)
+				(embedded_fonts no)
+			)
 		(symbol "aius:Pulse_J0011D21BNL"
 				(pin_names
 					(offset 1.016)
@@ -475,6 +652,58 @@
 			)
 	)
 	(symbol
+		(lib_id "aius:Conn_1x06")
+		(at 90.17 116.84 0)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(uuid "7cfd5950-03c6-55c2-ae13-9d2249e5c12a")
+		(property "Reference" "J18"
+			(at 80.01 104.14 0)
+			(effects (font (size 1.27 1.27)) (justify left))
+		)
+		(property "Value" "Teensy_TOP_ETHERNET"
+			(at 80.01 129.54 0)
+			(effects (font (size 1.27 1.27)) (justify left))
+		)
+		(property "Footprint" "Connector_PinHeader_2.00mm:PinHeader_2x03_P2.00mm_Vertical"
+			(at 90.17 116.84 0)
+			(effects (font (size 1.27 1.27)) (hide yes))
+		)
+		(property "MPN" "SparkFun PRT-29292"
+			(at 90.17 116.84 0)
+			(effects (font (size 1.27 1.27)) (hide yes))
+		)
+		(pin "1"
+			(uuid "7532f4d0-885b-565b-bc9a-e3e2740425d9")
+		)
+		(pin "2"
+			(uuid "23e0ebd6-3f15-5cc0-9b02-e86074574738")
+		)
+		(pin "3"
+			(uuid "b0d84c9c-3a6e-5256-9487-3cea87f664a1")
+		)
+		(pin "4"
+			(uuid "282b70f3-b299-5fad-8663-6a3cac4b58c6")
+		)
+		(pin "5"
+			(uuid "55951fa1-3de9-5b8f-9126-1950a5703999")
+		)
+		(pin "6"
+			(uuid "738b3fc4-97e2-5f86-8fdc-70cb6b2ce986")
+		)
+		(instances
+			(project "aius-carrier"
+				(path "/68a9aac5-3712-532f-bce8-e090c97e9611/76d052f7-db86-5e91-a827-da32bb2755a2"
+					(reference "J18")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
 		(lib_id "aius:Pulse_J0011D21BNL")
 		(at 149.86 129.54 0)
 		(unit 1)
@@ -588,64 +817,84 @@
 		)
 	)
 	(wire
+		(pts (xy 83.82 123.19) (xy 78.74 123.19))
+		(stroke (width 0) (type default))
+		(uuid "07938d38-f911-5278-b25f-d6a37bfad293")
+	)
+	(label "ETH_TXP"
+		(at 78.74 123.19 180)
+		(effects (font (size 1.27 1.27)) (justify right bottom))
+		(uuid "f490ea08-357b-50d8-9624-b6685228d87c")
+	)
+	(wire
 		(pts (xy 137.16 114.3) (xy 132.08 114.3))
 		(stroke (width 0) (type default))
 		(uuid "7555f21d-e31c-5132-b59d-d4eefef0b968")
 	)
-	(global_label "ETH_TXP"
-		(shape bidirectional)
+	(label "ETH_TXP"
 		(at 132.08 114.3 180)
-		(effects (font (size 1.27 1.27)) (justify right))
-		(uuid "e2d67af8-e7fc-50b2-b94f-e79d44fa6fee")
-		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 132.08 114.3 180)
-			(effects (font (size 1.27 1.27)) (hide yes))
-		)
+		(effects (font (size 1.27 1.27)) (justify right bottom))
+		(uuid "8785319c-31f2-506c-9bc2-b55140914d87")
+	)
+	(wire
+		(pts (xy 83.82 120.65) (xy 78.74 120.65))
+		(stroke (width 0) (type default))
+		(uuid "163f7779-29bc-5d15-9e5e-d5794d759274")
+	)
+	(label "ETH_TXN"
+		(at 78.74 120.65 180)
+		(effects (font (size 1.27 1.27)) (justify right bottom))
+		(uuid "42dff939-9787-54bf-a8a4-e8f2d5f0c26e")
 	)
 	(wire
 		(pts (xy 137.16 116.84) (xy 132.08 116.84))
 		(stroke (width 0) (type default))
 		(uuid "4e9c3166-b4a1-5cfe-8d0a-fb72a5b969d5")
 	)
-	(global_label "ETH_TXN"
-		(shape bidirectional)
+	(label "ETH_TXN"
 		(at 132.08 116.84 180)
-		(effects (font (size 1.27 1.27)) (justify right))
-		(uuid "b4c60151-a272-5ac1-b9fc-91ac617bfcb6")
-		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 132.08 116.84 180)
-			(effects (font (size 1.27 1.27)) (hide yes))
-		)
+		(effects (font (size 1.27 1.27)) (justify right bottom))
+		(uuid "23f5e702-d54a-5cf2-889b-9903369f04fa")
+	)
+	(wire
+		(pts (xy 83.82 110.49) (xy 78.74 110.49))
+		(stroke (width 0) (type default))
+		(uuid "6338ecb1-f5e5-5da1-bc8e-c949ded39627")
+	)
+	(label "ETH_RXP"
+		(at 78.74 110.49 180)
+		(effects (font (size 1.27 1.27)) (justify right bottom))
+		(uuid "632bf78b-72ea-54d4-ae5f-dac9e1ece9a9")
 	)
 	(wire
 		(pts (xy 137.16 121.92) (xy 132.08 121.92))
 		(stroke (width 0) (type default))
 		(uuid "f084f06b-080a-5f00-a5b4-13817e562258")
 	)
-	(global_label "ETH_RXP"
-		(shape bidirectional)
+	(label "ETH_RXP"
 		(at 132.08 121.92 180)
-		(effects (font (size 1.27 1.27)) (justify right))
-		(uuid "75571731-83e6-555d-be16-093e0083e8f4")
-		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 132.08 121.92 180)
-			(effects (font (size 1.27 1.27)) (hide yes))
-		)
+		(effects (font (size 1.27 1.27)) (justify right bottom))
+		(uuid "ad3bf885-7fb1-585a-8457-e8dd5ef6827d")
+	)
+	(wire
+		(pts (xy 83.82 113.03) (xy 78.74 113.03))
+		(stroke (width 0) (type default))
+		(uuid "6591d2b0-3509-5ad3-9cf0-63adf095f6eb")
+	)
+	(label "ETH_RXN"
+		(at 78.74 113.03 180)
+		(effects (font (size 1.27 1.27)) (justify right bottom))
+		(uuid "d5031810-a725-56d5-9b37-69f20ae34980")
 	)
 	(wire
 		(pts (xy 137.16 124.46) (xy 132.08 124.46))
 		(stroke (width 0) (type default))
 		(uuid "7432a825-e68c-50fc-a35a-8a8f99662be3")
 	)
-	(global_label "ETH_RXN"
-		(shape bidirectional)
+	(label "ETH_RXN"
 		(at 132.08 124.46 180)
-		(effects (font (size 1.27 1.27)) (justify right))
-		(uuid "b0d6f77d-b2c5-5f8c-921c-82b0c0737e95")
-		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 132.08 124.46 180)
-			(effects (font (size 1.27 1.27)) (hide yes))
-		)
+		(effects (font (size 1.27 1.27)) (justify right bottom))
+		(uuid "ee742891-2c5f-5798-b1c3-9f5eb5f6a230")
 	)
 	(wire
 		(pts (xy 137.16 132.08) (xy 132.08 132.08))
@@ -678,17 +927,37 @@
 		(uuid "383de238-efed-508c-9da8-d91909f65d38")
 	)
 	(wire
+		(pts (xy 83.82 115.57) (xy 78.74 115.57))
+		(stroke (width 0) (type default))
+		(uuid "9efcc15b-fbf4-5a66-ad37-dc6e52372c5f")
+	)
+	(label "ETH_LED"
+		(at 78.74 115.57 180)
+		(effects (font (size 1.27 1.27)) (justify right bottom))
+		(uuid "9f36eb81-ec92-5b17-bda6-fe11a2fa5866")
+	)
+	(wire
 		(pts (xy 162.56 114.3) (xy 167.64 114.3))
 		(stroke (width 0) (type default))
 		(uuid "d0c0fe07-d3ad-5d9b-8131-bc217269285b")
 	)
-	(global_label "ETH_LED"
-		(shape bidirectional)
+	(label "ETH_LED"
 		(at 167.64 114.3 0)
-		(effects (font (size 1.27 1.27)) (justify left))
-		(uuid "2aa21fdd-b8de-51ac-8ed1-1c0f744632e8")
+		(effects (font (size 1.27 1.27)) (justify left bottom))
+		(uuid "121b09d6-3671-51ed-b223-838a483561fd")
+	)
+	(wire
+		(pts (xy 83.82 118.11) (xy 78.74 118.11))
+		(stroke (width 0) (type default))
+		(uuid "c2c5f2bc-45cc-5904-9dc7-d5d998ce9dad")
+	)
+	(global_label "GND"
+		(shape bidirectional)
+		(at 78.74 118.11 180)
+		(effects (font (size 1.27 1.27)) (justify right))
+		(uuid "169c7d99-ebcb-5d8c-a8c1-65dac28ff3cf")
 		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 167.64 114.3 0)
+			(at 78.74 118.11 180)
 			(effects (font (size 1.27 1.27)) (hide yes))
 		)
 	)

@@ -6,7 +6,7 @@ component: aius
 subtype: design
 status: in-progress
 tags: [aius, hardware, teensy, spdif, pcb, kicad]
-updated: 2026-09-10
+updated: 2026-09-11
 toc: true
 ---
 
@@ -89,8 +89,11 @@ to an `EP-*` policy or `REQT-*` requirement in `selection-policy.json`.
 Full net-level detail is in [interfaces and states](../reference/interfaces-and-states.md);
 the selected parts are in the BOM. Summary:
 
-- Socketed Teensy 4.1 (Samtec `SSW-124-02-G-S` side sockets, `MMS-103-01-L-DV`
-  Ethernet header socket, `SSW-105-02-G-S` USB-host socket).
+- Socketed Teensy 4.1: `SSW-124-02-G-S` main sockets with matched
+  `HTSW-124-07-G-S` headers. Ethernet/service use stock top-side headers and
+  cables to carrier J18/J19; the colliding MMS underside socket is rejected.
+  Optional USB-host `SSW-105-02-G-S` / `HTSW-105-07-G-S` is initially DNP.
+  No custom spacer. Assembly map: [footprint review](../reference/carrier-footprint-review.md).
 - Optical: RS PRO ORJ-5 receiver (RS `805-1671`) and OTJ-5 transmitter (RS
   `805-1680`) — Cliff `FCR684205R`/`FCR684205T` class, sourced from RS PRO for
   availability (2026-07-27); pin-compatible with the schematic symbols, same
@@ -163,7 +166,11 @@ quote.
 **Recovery release blocker (2026-09-10):** the captured expansion 3.3 V headers
 connect directly to the core rail, contrary to the protected-output requirement
 above. Signal series resistors do not provide rail reverse isolation. This must
-be corrected before routing/release; it is not waived by the USB-host repair.
+be corrected before releasing a populated expansion option; it is not waived
+by the USB-host repair. The owner permits empty pads for the initial build and
+retains independent power as a future option. J10–J15 are therefore DNP in
+the first-build schematic/assembly contract. This does not approve externally
+powered attachments or a future population of the present direct connections.
 
 The three historical questions below were resolved as planned (re-confirmed
 2026-09-03, so no phase of

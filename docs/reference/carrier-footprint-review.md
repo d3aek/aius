@@ -4,7 +4,7 @@ type: reference
 scope: component
 component: aius
 status: current
-updated: 2026-09-10
+updated: 2026-09-11
 tags: [aius, pcb, footprints, mechanical]
 ---
 
@@ -43,13 +43,13 @@ all auxiliary coordinates. Its apparent VBAT clearance issue was a wrong hole
 location, not permission to nudge a socket hole. The courtyard extends left to
 X=-3.10 to include the USB metal, not just the module PCB.
 
-Drills follow the selected connector recommendations: SSW single-row 1.04 mm
-([Samtec print](https://suddendocs.samtec.com/prints/ssw-s.pdf)), MMS-DV 0.79 mm
-([Samtec footprint](https://suddendocs.samtec.com/prints/mms-1xx-01-xxx-dv-xxx-footprint.pdf)).
-The service row uses the same 2.54 mm socket hole pattern; VUSB remains an
-unpopulated optional hole. Mating hardware is not yet a released assembly BOM.
+The current carrier footprint has **53 holes: 48 main and 5 optional USB-host**,
+all Ø1.04 mm per the [SSW print](https://suddendocs.samtec.com/prints/ssw-s.pdf).
+Ethernet and service use top-side module headers and cables to J18/J19; there
+are no carrier holes below those clusters or VUSB. U10's partial schematic
+symbol represents only its underside carrier contacts, not the cable endpoints.
 
-**Open assembly blocker:** the specified SSW body width is 2.41 mm and the
+**Rejected original assembly:** the specified SSW body width is 2.41 mm and the
 MMS-103 body length 6.56 mm, leaving a nominal 0.035 mm overlap between the
 VIN-row socket and Ethernet socket (inner edges Y=1.205 and Y=1.170).
 SSW and MMS bodies also have unequal heights, 8.51 and 4.45 mm respectively.
@@ -57,9 +57,12 @@ Socket bodies, mating pin lengths and tolerances must be resolved together;
 moving electrically fixed Teensy holes cannot solve this. Sources:
 [SSW catalog](https://suddendocs.samtec.com/catalog_english/ssw_th.pdf),
 [MMS catalog](https://suddendocs.samtec.com/catalog_english/mms.pdf).
-The coordinate checker does not clear this assembly blocker.
+The stock-cable revision below removes these conflicting socket bodies.
 
-### Matched replacement candidate (2026-09-10, not yet adopted)
+### Rejected discrete-contact candidate (2026-09-10)
+
+The owner rejected custom spacers on 2026-09-10. This candidate is retained as
+rejected research, not an assembly option or a footprint to adopt.
 
 The owner permits a fresh bare Teensy and new mating hardware. A housing-free
 candidate avoids the main, Ethernet and service-row plastic collisions:
@@ -88,15 +91,71 @@ shallowest cavity bottom. These are geometric margins, not mating qualification.
 Proposed carrier finished holes are Ø0.70 ±0.05 mm, pads Ø1.40 mm. Minimum
 hole-to-maximum-tail diameter clearance is 0.142 mm. Maximum socket diameter
 1.0414 mm and pin-head diameter 1.3208 mm clear the 2 mm minimum pitch.
-The current footprint still has the old socket drills and is **not** this candidate.
+The current footprint is **not** this candidate.
 
 **Unresolved assembly condition:** discrete contacts do not establish board
 separation. A permanent insulating spacing stop and soldering alignment fixture
-are required. The owner is being asked whether a custom printed/machined spacer
-is acceptable. Its support locations must clear Teensy underside parts and the
+are required, which conflicts with the owner's stock-components-only decision.
+Its support locations would have to clear Teensy underside parts and the
 USB plug, and survive card insertion without loading the contacts. Also verify
 actual Teensy hole/head fit, top-side solder access, configured-part availability
 and sample mating. Do not release this candidate solely from the insertion sum.
+
+### Stock header/cable revision (2026-09-11)
+
+| Location | Qty | Stock part |
+|---|---:|---|
+| Carrier main sockets | 2 | Samtec SSW-124-02-G-S |
+| Teensy underside main headers | 2 | Samtec HTSW-124-07-G-S |
+| Optional carrier USB-host socket | 1, DNP initially | Samtec SSW-105-02-G-S |
+| Optional Teensy underside host header | 1, DNP initially | Samtec HTSW-105-07-G-S |
+| Teensy top Ethernet and carrier J18 | 2 | SparkFun PRT-29292 |
+| Ethernet interconnect | 1 | SparkFun CAB-29458, 120 mm |
+| Teensy top service and carrier J19 | 2 | Samtec HTSW-105-07-G-S |
+| Service interconnect | 4 leads | Adafruit 266 female/female jumper strip |
+
+The [HTSW series print](https://suddendocs.samtec.com/prints/htsw-xxx-xx-xxx-x-xx-xx-xx-mkt.pdf)
+gives the -07 mating post as 5.84 ±0.20 mm, inside the SSW insertion range
+3.68–6.35 mm. SSW height 8.51 plus HTSW insulator 2.54 establishes an
+**11.05 mm nominal carrier-top to Teensy-underside hard stop**. Headers seat
+on socket housings, not cavity bottoms. Use HTSW for lead-free soldering.
+The optional host socket clears its neighboring main socket by 0.64 mm nominal.
+The service header is now on the opposite PCB side; its body clears main-row
+solder tails by 0.95 mm nominal. Sample seating and enclosure-height checks remain.
+
+[PRT-29292's drawing](https://cdn.sparkfun.com/assets/9/0/b/6/d/2ph2-xx-ua-data-sheet_COM-29292.pdf)
+specifies a 6×4×2 mm body and Ø0.80 mm carrier holes. It clears the main-row
+tails by 1.13 mm nominal on the Teensy top. J18 uses KiCad's matching 2×3,
+2 mm vertical header footprint. J19 uses a local HTSW land pattern with Ø1.02 mm
+holes from [Samtec's recommended layout, Rev B](https://suddendocs.samtec.com/prints/htsw-xxx-xx-xxx-x-xx-xx-xx-footprint.pdf).
+Those PDFs and the [cable drawing](https://cdn.sparkfun.com/assets/c/6/d/8/1/IDC2.0-2x3Px120mm-CAB-29458.pdf)
+are archived under `docs/reference/datasheets.mdTEENSY-STOCK-INTERCONNECT/`.
+
+The [PJRC kit assembly](https://www.pjrc.com/store/ethernet_kit.html) demonstrates
+top-header/ribbon use. CAB-29458 is 120 ±1 mm between connector bodies, but its
+drawing does not specify socket-body XYZ or numbered end mapping. These are
+**unkeyed** headers. Mark pin 1 at both boards, orient the stripe consistently,
+then meter all six connections before applying power. Do not infer pin mapping
+from cable appearance. Check fitted cable clearance and bend envelopes in H3b.
+
+| Carrier contact | Teensy top contact |
+|---|---|
+| J18.1 / .2 | Ethernet RX+ / RX− |
+| J18.3 / .4 | Ethernet LED / GND |
+| J18.5 / .6 | Ethernet TX− / TX+ |
+| J19.1 / .2 / .3 | On/Off / Program / GND |
+| J19.4 | Unconnected, **omit wire** to Teensy service 3V3 |
+| J19.5 | VBAT |
+
+[Adafruit 266](https://www.adafruit.com/product/266) provides separable premade
+2.54 mm female/female leads, approximately 150 mm (up to 50 mm longer).
+Use four, with latch projections facing out of the row; verify retention and
+stow slack clear of the SD card, USB plug and optical circuitry. These leads
+carry only service/RTC signals, not USB or Ethernet. This is stock hardware,
+not a custom spacer; physical connector fit remains a pre-order check.
+
+`check_assembly.py --netlist <kicadxml>` verifies the carrier endpoint mapping
+and the first-build J10–J15 DNP set. It cannot verify physical cable assembly.
 
 ## Optical ORJ-5 / OTJ-5
 

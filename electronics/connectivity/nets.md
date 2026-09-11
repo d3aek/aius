@@ -35,7 +35,7 @@ Consumed by the optical-spdif sheet:
 | `PATH_SELECT` | 40 | raw-bypass mux select (10k pull-down = processed default) |
 | `TX_ENABLE` | 39 | optical TX-gate enable (10k pull-down = disabled default) |
 
-Consumed by the ethernet sheet (6-pin native-Ethernet header → magjack):
+Sheet-local to Ethernet since the stock-cable revision (Teensy top → J18 → magjack):
 
 | Net | Teensy pad | Role |
 |---|---|---|
@@ -45,12 +45,9 @@ Consumed by the ethernet sheet (6-pin native-Ethernet header → magjack):
 | `ETH_TXN` | Ethernet TX- | MDI transmit pair - |
 | `ETH_TXP` | Ethernet TX+ | MDI transmit pair + |
 
-Both sheets have landed: the optical-spdif sheet drives/consumes `SPDIF_RX`,
-`SPDIF_TX`, `PATH_SELECT`, `TX_ENABLE`, and the ethernet sheet terminates the
-five `ETH_*` MDI/LED globals at the magjack. Every one of these seven signal
-globals now spans at least two pins, so the earlier `isolated_pin_label`
-warnings are cleared; full-severity ERC leaves only provisional
-`footprint_link_issues`.
+Only the four optical signals remain cross-sheet globals. J18 connects all
+five `ETH_*` MDI/LED nets locally to the magjack; no U10 underside Ethernet
+contact or isolated global label remains.
 
 ## Design decisions recorded during capture
 
@@ -59,7 +56,7 @@ warnings are cleared; full-severity ERC leaves only provisional
 **The DP83825 Ethernet PHY is on the Teensy 4.1 itself** (order the "with Ethernet
 chip" variant), so the Teensy's 6-pin native-Ethernet header carries **MDI
 differential pairs** (`ETH_RX±`, `ETH_TX±`) plus `LED` and `GND` straight to the
-magjack. The `ETH_*` globals are therefore MDI signals, and the ethernet sheet
+magjack. The `ETH_*` nets are therefore MDI signals, and the ethernet sheet
 needs only the Pulse magjack + its 100 nF centre-tap capacitor — **no DP83825 and
 no RMII on the carrier.**
 
@@ -77,7 +74,7 @@ DP83825I to the carrier and replicate the "PJRC Ethernet Kit reference circuit")
 
 The BOM already matches this reality (magjack + centre-tap cap, no PHY line item).
 **Resolved on the ethernet sheet:** no on-carrier DP83825 and no RMII; the Pulse
-`J0011D21BNL` magjack MDI pairs wire straight to the `ETH_*` globals, its two
+`J0011D21BNL` magjack MDI pairs wire to J18 through the local `ETH_*` nets, its two
 PHY-side centre taps join through the 100 nF `C30` to `GND`. Pin8, the internal
 termination-capacitor return, connects to PCB `GND` per Pulse J403.L p5; the
 physical shield tabs alone join `CHASSIS`. CHASSIS is deliberately isolated from
@@ -113,6 +110,14 @@ power connection. The earlier claim that bounded clamp current implements rail
 isolation was false. Rail and signal powered-off paths must be reviewed and
 corrected before electrical release; the USB-host correction does not clear this.
 
+Owner decision (2026-09-10): independent-powered expansion is a future option;
+no expansion is needed now. The first-build variant marks **J10–J15 DNP** in
+JSON and the native KiCad schematic attributes. Do not populate these headers
+or attach external power until isolation and population are reviewed. Empty
+footprints are not protected ports. Keep J17 core service/debug operational.
+`check_assembly.py --netlist <kicadxml>` enforces the DNP set, cable mapping and
+core service/UART continuity; physical unkeyed cable checks remain mandatory.
+
 ## Sheet-local nets
 
 Everything not listed above is sheet-local: the power-usb internals
@@ -120,5 +125,5 @@ Everything not listed above is sheet-local: the power-usb internals
 internals (the isolator A/B buses, series-clamp `*_T`/header pairs, `EXP_USBH_VBUS`,
 `USBH_D±`, `PROGRAM`, `ON_OFF`, `VBAT`), the optical-spdif internals
 (`MUX_OUT` mux→gate, `TX_GATED` gate→OTJ5), and the
-ethernet internal `ETH_CT` (joined magjack centre taps → `C30`). Promote a local
+Ethernet `ETH_*` including `ETH_CT` (joined magjack centre taps → `C30`). Promote a local
 net to global only when a second sheet must reference it, and add it here.

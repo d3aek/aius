@@ -2,7 +2,7 @@
   "sheet": "ethernet",
   "title": "Aius carrier - ethernet sheet",
   "paper": "A3",
-  "global_nets": ["GND", "CHASSIS", "ETH_RXP", "ETH_RXN", "ETH_TXP", "ETH_TXN", "ETH_LED"],
+  "global_nets": ["GND", "CHASSIS"],
   "description": [
     "Native-Ethernet magjack. The DP83825 PHY is on the Teensy 4.1, so its 6-pin",
     "native-Ethernet header carries post-PHY MDI differential pairs straight to the",
@@ -18,6 +18,15 @@
     "no_phy": "No DP83825 and no RMII on the carrier - the PHY is on the Teensy. This is the evidence-backed correction to the original H1b plan; see connectivity/nets.md."
   },
   "components": [
+    {
+      "ref": "J18",
+      "lib_id": "aius:Conn_1x06",
+      "value": "Teensy_TOP_ETHERNET",
+      "mpn": "SparkFun PRT-29292",
+      "footprint": "Connector_PinHeader_2.00mm:PinHeader_2x03_P2.00mm_Vertical",
+      "at": [90.17, 116.84],
+      "desc": "CAB-29458 ribbon to Teensy top: 1 RX+, 2 RX-, 3 LED, 4 GND, 5 TX-, 6 TX+; unkeyed, continuity-test all six wires"
+    },
     {
       "ref": "J20",
       "lib_id": "aius:Pulse_J0011D21BNL",
@@ -38,17 +47,18 @@
     }
   ],
   "nets": {
-    "ETH_TXP": [["J20", "1"]],
-    "ETH_TXN": [["J20", "2"]],
-    "ETH_RXP": [["J20", "3"]],
-    "ETH_RXN": [["J20", "6"]],
+    "ETH_TXP": [["J18", "6"], ["J20", "1"]],
+    "ETH_TXN": [["J18", "5"], ["J20", "2"]],
+    "ETH_RXP": [["J18", "1"], ["J20", "3"]],
+    "ETH_RXN": [["J18", "2"], ["J20", "6"]],
     "ETH_CT": [
       ["J20", "4"],
       ["J20", "5"],
       ["C30", "1"]
     ],
-    "ETH_LED": [["J20", "9"]],
+    "ETH_LED": [["J18", "3"], ["J20", "9"]],
     "GND": [
+      ["J18", "4"],
       ["J20", "8"],
       ["J20", "10"],
       ["C30", "2"]

@@ -40,7 +40,8 @@ connectivity/aius-carrier.json  (project manifest: sheet list)
   hierarchical root, and generates each sub-sheet.
 - **`connectivity/<sheet>.json`** — one per sheet, the review surface. Every
   component (ref, `lib_id`, value/MPN, footprint) and every net (name → list of
-  `[ref, pin]` endpoints), plus `no_connects`, `design_notes`, and a
+  `[ref, pin]` endpoints), optional component `dnp` (JSON boolean), plus
+  `no_connects`, `design_notes`, and a
   `global_nets` list naming the cross-sheet nets (see
   [`connectivity/nets.md`](connectivity/nets.md)).
 - **`connectivity/pin-map.md`** — the conflict-checked Teensy 4.1 pad allocation
@@ -103,7 +104,7 @@ the textual summary and exit code are the result.
 The 2026-09-09 recovery corrects the Teensy, optical and magjack library geometry
 and the U1 package, and connects magjack pin8 to PCB ground per its datasheet.
 The regenerated schematic passes full ERC. Reviewed coordinates and the remaining
-socket assembly blocker are in
+stock header/cable assembly and physical fit gates are in
 [`carrier-footprint-review.md`](../docs/reference/carrier-footprint-review.md).
 Run `scripts/kicad.sh --python electronics/scripts/check_footprints.py` from the
 Aius root to check the library interfaces. Add `--board electronics/aius-carrier.kicad_pcb`
@@ -116,6 +117,18 @@ is J14's sole power source and is correctly typed `power_out`. Regression:
 `scripts/kicad.sh sch export netlist --format kicadxml -o <kicadxml>
 electronics/aius-carrier.kicad_sch`. See [connectivity/nets.md](connectivity/nets.md)
 for source evidence and the separate expansion-3v3 isolation release blocker.
+
+The stock-cable revision uses 53 U10 main/optional-host underside pads. Ethernet
+and service mount on the Teensy top and cable to J18/J19. No custom spacer is
+needed. The six expansion headers J10–J15 are DNP for the first build; this
+does not approve independently powered expansion. Do not fit or externally
+power them until isolation and population are reviewed.
+
+`python3 electronics/scripts/check_assembly.py --netlist <kicadxml>` checks the
+actual exported cable pin map, core service/UART paths and DNP set.
+`python3 electronics/scripts/test_assembly.py` runs positive and failure-case
+regressions, including native DNP generation. See the footprint review for the
+stock assembly BOM, J19.4 omitted wire and unkeyed-cable continuity procedure.
 
 ERC checks the global `GND` and `+3V3` connections; optical logic uses the
 Teensy's `+3V3` output. `VBUS_5V` now feeds only the internal USB-A/cable path.

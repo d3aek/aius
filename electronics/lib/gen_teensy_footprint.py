@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 """Generate the Teensy 4.1 socket footprint from a reviewable pad table.
 
-The Teensy 4.1 mounts on the carrier through socket strips: two 24-pin
-SSW-124-02-G-S (main rows, 2.54 mm pitch, rows 15.24 mm apart), one 5-pin
-SSW-105-02-G-S (USB host, underside), and one 2x3 MMS-103-01-L-DV (native
-Ethernet header, 2.00 mm pitch, underside). This emits an aius: library
-footprint whose pads carry the Teensy pin identifiers so the (partial) Teensy41
-schematic symbol nets map by name; unused socket holes are present for the module
-to seat but carry no net.
+Two SSW-124-02-G-S main sockets mate with HTSW-124-07-G-S headers.
+The optional underside USB-host row uses SSW-105-02-G-S / HTSW-105-07-G-S.
+All share an 11.05 mm nominal hard-stop stack. Ethernet and service headers
+mount on TOP of the Teensy and cable to separate carrier J18/J19 footprints;
+there are deliberately no carrier holes beneath those headers or VUSB.
+Pad names map to the partial Teensy41 symbol; unused main-row holes are unnetted.
 
 Component-side coordinates follow PJRC's dimensions_teensy41.png, with VIN
 at (0,0), USB to the left and microSD to the right. The top row is y=0;
@@ -46,7 +45,7 @@ SERVICE = [
 ]
 VUSB = [("VUSB", 2.54, 2.54)]
 
-FP_NAME = "Teensy41_Sockets_SSW-124_MMS-103_SSW-105"
+FP_NAME = "Teensy41_Sockets_SSW-124_Host_SSW-105"
 PAD = 1.7
 
 
@@ -71,8 +70,9 @@ def main() -> int:
         pads.append(pad(name, col * PITCH, ROW_GAP, shape, index)); index += 1
     for col, name in enumerate(TOP_ROW):
         pads.append(pad(name, col * PITCH, 0.0, "circle", index)); index += 1
-    # Underside clusters.
-    for group, drill in ((USB_HOST, 1.04), (ETHERNET, 0.79), (SERVICE, 1.04), (VUSB, 1.04)):
+    # Only USB host remains an underside contact. Other tables document the
+    # module's top-side cable locations, not carrier drill coordinates.
+    for group, drill in ((USB_HOST, 1.04),):
         for name, x, y in group:
             pads.append(pad(name, x, y, "circle", index, drill)); index += 1
 
@@ -93,8 +93,8 @@ def main() -> int:
         f'\t(generator "aius-gen-teensy-footprint")\n'
         f'\t(generator_version "10.0")\n'
         f'\t(layer "F.Cu")\n'
-        f'\t(descr "Teensy 4.1 carrier sockets; component-side VIN origin, USB left. Geometry from PJRC dimensions_teensy41.png; names from card11a/card11b. Main rows 2.54mm pitch, 15.24mm apart; Ethernet 2mm pitch. Physical socket seating remains a pre-order check.")\n'
-        f'\t(tags "teensy 4.1 socket module ssw-124 mms-103 ssw-105")\n'
+        f'\t(descr "Teensy 4.1 main and optional USB-host carrier sockets; VIN origin, USB left. Matched HTSW-xxx-07 / SSW-xxx-02, 11.05mm nominal stack. Ethernet/service cable to J18/J19 from module top. PJRC dimensions/card11a/card11b.")\n'
+        f'\t(tags "teensy 4.1 socket module ssw-124 ssw-105 htsw")\n'
         f'\t(property "Reference" "REF**"\n\t\t(at {23 * PITCH / 2:.2f} -3.5 0)\n\t\t(layer "F.SilkS")\n'
         f'\t\t(uuid "c7ee0001-0000-4000-8000-000000000001")\n'
         f'\t\t(effects (font (size 1 1) (thickness 0.15)))\n\t)\n'

@@ -252,7 +252,9 @@ def emit(spec, syms, project="aius-carrier", instance_path=None,
         w("\t\t(exclude_from_sim no)")
         w("\t\t(in_bom yes)")
         w("\t\t(on_board yes)")
-        w("\t\t(dnp no)")
+        if not isinstance(comp.get("dnp", False), bool):
+            raise ValueError("%s: dnp must be a JSON boolean" % ref)
+        w("\t\t(dnp %s)" % ("yes" if comp.get("dnp", False) else "no"))
         w('\t\t(uuid "%s")' % uid("sym:" + ref))
         # Reference + Value placed just outside the body.
         w('\t\t(property "Reference" "%s"' % ref)

@@ -6,7 +6,7 @@ component: aius
 subtype: design
 status: in-progress
 tags: [aius, hardware, kicad, pcb, layout, impedance, dfm, manufacturing]
-updated: 2026-09-10
+updated: 2026-09-11
 toc: true
 ---
 
@@ -458,10 +458,14 @@ a bare shop-new Teensy. Existing headers need not be retained. The library
 coordinate correction does not claim to clear this assembly gate. Delivery
 review also identifies the full SSW-105 service-row body's overlap with both
 main-row sockets; the replacement selection must cover the service row too.
-A matched Mill-Max discrete-pin/receptacle candidate now clears the housing and
-mating-depth geometry against current drawings; it requires a permanent spacing
-stop. The owner is being asked whether that custom spacer is acceptable.
-Dimensions and remaining physical gates are in the footprint review reference.
+The owner rejected custom spacers and requires off-the-shelf components.
+The discrete Mill-Max candidate is therefore rejected. The 2026-09-11 revision
+retains main/optional-host SSW sockets with matched HTSW-xxx-07 headers and
+moves Ethernet/service to Teensy top headers cabled to carrier J18/J19.
+This removes the colliding housings and establishes an 11.05 mm nominal hard
+stop without a custom spacer. U10 now has 53 underside pads; its symbol and
+the exported netlist use J18/J19 for the moved interfaces. Stock parts,
+unkeyed-cable mapping and remaining physical checks are in the footprint review.
 
 **Placement recovery contract (prebuild review):** preserve the 100 × 95 mm
 board envelope and place the Teensy with microSD facing the rear panel, between
@@ -489,10 +493,22 @@ in [`connectivity/nets.md`](../../electronics/connectivity/nets.md).
 to Teensy 3.3 V despite the interface's reverse-isolation requirement. Signal
 series resistors do not isolate that rail. Correct rail and signal powered-off
 paths before freezing routing; no isolation waiver is implied by clean ERC.
-The owner is being asked whether expansion must support independently powered
-peripherals or only carrier-powered peripherals. This affects signal isolation
-and the I2S connector, which presently has no power/sense pin. Do not silently
-weaken the backfeed contract or change the I2S connector while that choice is open.
+The owner selected an independent-power option, with no concrete expansion plans
+and permission to leave pads empty. **First-build J10–J15 are DNP**, enforced in
+JSON, generated schematic and exported-netlist checks. This is an unpopulated
+variant, not an isolation fix: do not populate these headers or attach external
+power until the rail/signal isolation circuit and population are reviewed.
+The core and Tag-Connect remain wired. I2S still has no power/sense pin; any
+future independent-power assembly must resolve that interface explicitly.
+
+**Stock-interface delivery proof:** 124/124 library coordinate/drill checks;
+cable/DNP and native-host-power checks pass against the actual KiCad XML export;
+seven assembly/generator regressions pass. Full ERC is zero. The obsolete
+65-hole footprint is removed, recoverable from Git. The PCB is unchanged and
+still rejected; this delivery is schematic/assembly preparation, not H3b closure.
+Focused independent delivery review and clean-room confirmation pass for the
+changed mapping/DNP contract. Physical cable continuity, seating, retention and
+enclosure checks remain open; neither review approves the old PCB.
 
 The existing impedance calculator also contradicts H2d's former claim that
 0.20/0.15 mm geometry supplies both targets: at the recorded JLCPCB stackup,

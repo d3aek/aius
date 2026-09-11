@@ -26,7 +26,8 @@ def main():
     parser.add_argument("--board", type=Path)
     args = parser.parse_args()
     names = {
-        "U10": "Teensy41_Sockets_SSW-124_MMS-103_SSW-105",
+        "U10": "Teensy41_Sockets_SSW-124_Host_SSW-105",
+        "J19": "Samtec_HTSW-105-07-G-S",
         "U20": "Cliff_ORJ5_TOSLINK",
         "U24": "Cliff_OTJ5_TOSLINK",
         "J20": "Pulse_J0011D21BNL_TabDown",
@@ -36,6 +37,10 @@ def main():
         ref: pcbnew.FootprintLoad(str(ELEC / "lib/aius.pretty"), name)
         for ref, name in names.items()
     }
+    names["J18"] = "PinHeader_2x03_P2.00mm_Vertical"
+    if not board:
+        fps["J18"] = pcbnew.FootprintLoad(
+            "/usr/share/kicad/footprints/Connector_PinHeader_2.00mm.pretty", names["J18"])
     failures = []
     checks = 0
 
@@ -67,17 +72,19 @@ def main():
         auxiliary = {
             "UH5V": (6.35, 12.19), "UHDM": (8.89, 12.19),
             "UHDP": (11.43, 12.19), "UHGND": (13.97, 12.19),
-            "ERXP": (12.97, 2.45), "ERXN": (14.97, 2.45),
-            "ELED": (12.97, 4.45), "EGND": (14.97, 4.45),
-            "ETXN": (12.97, 6.45), "ETXP": (14.97, 6.45),
-            "ONOFF": (45.72, 2.54), "PGM": (45.72, 5.08),
-            "VBAT": (45.72, 12.7), "VUSB": (2.54, 2.54),
         }
         for pin, pos in auxiliary.items():
             points("U10", pin, [pos])
         points("U10", "GND", [(0, 15.24), (2.54, 0), (35.56, 0),
-                                (16.51, 12.19), (45.72, 7.62)])
-        points("U10", "3V3", [(5.08, 0), (35.56, 15.24), (45.72, 10.16)])
+                                (16.51, 12.19)])
+        points("U10", "3V3", [(5.08, 0), (35.56, 15.24)])
+        for pin in ("ERXP", "ERXN", "ELED", "EGND", "ETXN", "ETXP",
+                    "ONOFF", "PGM", "VBAT", "VUSB"):
+            points("U10", pin, [])
+        for number in range(1, 7):
+            points("J18", str(number), [((number - 1) % 2 * 2, (number - 1) // 2 * 2)])
+        for number in range(1, 6):
+            points("J19", str(number), [(0, round((number - 1) * 2.54, 3))])
         for ref in ("U20", "U24"):
             points(ref, "1", [(-2.54, 0)])
             points(ref, "2", [(0, 0)])
@@ -94,11 +101,11 @@ def main():
             points("J20", pin, [pos])
         points("J20", "SH", [(-3.43, -5.84), (12.32, -5.84)])
         points("J20", "", [(-1.27, -8.89), (10.16, -8.89)])
-        expect(len(list(fps["U10"].Pads())) == 65, "Teensy must have 65 socket pads")
-        for p in fps["U10"].Pads():
-            expected = 0.79 if p.GetNumber() in {"ERXP", "ERXN", "ETXP", "ETXN", "ELED", "EGND"} else 1.04
-            expect(round(pcbnew.ToMM(p.GetDrillSize().x), 3) == expected,
-                   f"U10.{p.GetNumber()}: drill must be {expected} mm")
+        expect(len(list(fps["U10"].Pads())) == 53, "Teensy must have 53 main/host socket pads")
+        for ref, expected in (("U10", 1.04), ("J18", 0.8), ("J19", 1.02)):
+            for p in fps[ref].Pads():
+                expect(round(pcbnew.ToMM(p.GetDrillSize().x), 3) == expected,
+                       f"{ref}.{p.GetNumber()}: drill must be {expected} mm")
         if board:
             original = {fp.GetReference(): fp for fp in board.GetFootprints()}
             u1 = original["U1"]
