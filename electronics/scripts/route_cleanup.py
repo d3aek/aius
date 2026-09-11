@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """H3c cleanup: post-route fixes on the routed board (no reroute).
 
-Operates in place on the routed aius-carrier.kicad_pcb:
+Operates in place on the routed board (canonical aius-carrier.kicad_pcb by
+default; pass --board for a scaffolded candidate):
   1. Widen any track Freerouting necked below 0.15 mm up to 0.20 mm (fixes the
      track_width punch-list items at SMD pad entries).
   2. Set the GND copper zones to a solid pad connection so GND through-hole pads
@@ -11,23 +12,32 @@ Operates in place on the routed aius-carrier.kicad_pcb:
   3. Refill the zones and save.
 
 Run: python3 electronics/scripts/route_cleanup.py
+Run against a scaffolded candidate: python3 electronics/scripts/route_cleanup.py \
+  --board <candidate.kicad_pcb>
 """
 
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 
 import pcbnew
 
 ELEC = Path(__file__).resolve().parent.parent
-BOARD = str(ELEC / "aius-carrier.kicad_pcb")
+DEFAULT_BOARD = ELEC / "aius-carrier.kicad_pcb"
 
 MIN_KEEP_MM = 0.15
 WIDEN_TO_MM = 0.20
 
 
 def main() -> int:
-    board = pcbnew.LoadBoard(BOARD)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--board", type=Path, default=DEFAULT_BOARD,
+                         help="board .kicad_pcb path (default: canonical aius-carrier.kicad_pcb)")
+    args = parser.parse_args()
+    board_path = str(args.board)
+
+    board = pcbnew.LoadBoard(board_path)
 
     widened = 0
     for track in board.GetTracks():
@@ -47,8 +57,8 @@ def main() -> int:
 
     pcbnew.ZONE_FILLER(board).Fill(board.Zones())
     board.BuildConnectivity()
-    pcbnew.SaveBoard(BOARD, board)
-    print(f"saved {BOARD}", flush=True)
+    pcbnew.SaveBoard(board_path, board)
+    print(f"saved {board_path}", flush=True)
     return 0
 
 

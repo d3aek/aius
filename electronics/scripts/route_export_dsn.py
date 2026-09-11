@@ -12,17 +12,19 @@ board's short runs that is acceptable; pair coupling/length-matching is an H3e
 review refinement.
 
 Run: python3 electronics/scripts/route_export_dsn.py
+Run against a scaffolded candidate: python3 electronics/scripts/route_export_dsn.py \
+  --board <candidate.kicad_pcb>
 """
 
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 
 import pcbnew
 
 ELEC = Path(__file__).resolve().parent.parent
-BOARD = str(ELEC / "aius-carrier.kicad_pcb")
-DSN = str(ELEC / "aius-carrier.dsn")
+DEFAULT_BOARD = ELEC / "aius-carrier.kicad_pcb"
 
 TRACK_MM = 0.20
 CLEAR_MM = 0.15
@@ -31,7 +33,14 @@ VIA_DRILL_MM = 0.30
 
 
 def main() -> int:
-    board = pcbnew.LoadBoard(BOARD)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--board", type=Path, default=DEFAULT_BOARD,
+                         help="board .kicad_pcb path (default: canonical aius-carrier.kicad_pcb)")
+    args = parser.parse_args()
+    board_path = args.board
+    dsn_path = board_path.with_suffix(".dsn")
+
+    board = pcbnew.LoadBoard(str(board_path))
     ncs = board.GetAllNetClasses()
     default = ncs["Default"]
     default.SetTrackWidth(pcbnew.FromMM(TRACK_MM))
@@ -41,8 +50,8 @@ def main() -> int:
     print(f"default net class: track {TRACK_MM} mm, clearance {CLEAR_MM} mm, "
           f"via {VIA_DIA_MM}/{VIA_DRILL_MM} mm", flush=True)
 
-    ok = pcbnew.ExportSpecctraDSN(board, DSN)
-    print(f"ExportSpecctraDSN -> {DSN}: {ok}", flush=True)
+    ok = pcbnew.ExportSpecctraDSN(board, str(dsn_path))
+    print(f"ExportSpecctraDSN -> {dsn_path}: {ok}", flush=True)
     return 0 if ok else 1
 
 

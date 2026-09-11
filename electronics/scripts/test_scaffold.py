@@ -5,6 +5,7 @@ scripts/kicad.sh --python electronics/scripts/test_scaffold.py
 The candidate is intentionally unrouted. DRC violations must be zero, while
 unconnected items remain open for routing; neither is silently ignored.
 """
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -17,6 +18,13 @@ import pcbnew
 
 ROOT = Path(__file__).resolve().parents[2]
 BUILDER = ROOT / "electronics/scripts/scaffold_pcb.py"
+
+# Import the builder as a module (its CLI guard keeps this side-effect-free) so
+# the stackup/net-class assertions below share the same constants the builder
+# writes from, rather than duplicating the magic numbers.
+_spec = importlib.util.spec_from_file_location("scaffold_pcb", BUILDER)
+scaffold_pcb = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(scaffold_pcb)
 
 
 class Scaffold(unittest.TestCase):
@@ -76,6 +84,42 @@ class Scaffold(unittest.TestCase):
         drc = json.loads(report.read_text())
         self.assertEqual(drc["violations"], [], json.dumps(drc["violations"], indent=2))
         self.assertGreater(len(drc["unconnected_items"]), 0, "unrouted candidate must not claim connectivity")
+
+    def test_stackup_declared(self):
+        result, path = self.build()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        text = path.read_text()
+        self.assertIn("(stackup", text)
+        copper_layers = 0
+        for name, kind, thickness_mm, *_ in scaffold_pcb.STACKUP_LAYERS:
+            self.assertIn(f'(layer "{name}"', text, f"missing stackup layer {name}")
+            self.assertIn(f"(thickness {thickness_mm})", text, f"wrong thickness for {name}")
+            if kind == "copper":
+                copper_layers += 1
+        self.assertEqual(copper_layers, 4)
+        self.assertIn(f"(thickness {scaffold_pcb.BOARD_THICKNESS_MM})", text,
+                      "general.thickness must match the summed stackup")
+
+    def test_net_classes_assigned(self):
+        result, path = self.build()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        project = json.loads(path.with_suffix(".kicad_pro").read_text())
+        classes = {entry["name"]: entry for entry in project["net_settings"]["classes"]}
+        for name, (track_mm, clearance_mm, diff_width_mm, diff_gap_mm) in scaffold_pcb.NETCLASS_SPECS.items():
+            self.assertIn(name, classes)
+            self.assertEqual(classes[name]["track_width"], track_mm, name)
+            self.assertEqual(classes[name]["clearance"], clearance_mm, name)
+            self.assertEqual(classes[name]["diff_pair_width"], diff_width_mm, name)
+            self.assertEqual(classes[name]["diff_pair_gap"], diff_gap_mm, name)
+        by_class = {}
+        for entry in project["net_settings"]["netclass_patterns"]:
+            by_class.setdefault(entry["netclass"], set()).add(entry["pattern"])
+        representative = {"Power": "VBUS_RAW", "USB90": "USB_DP", "Eth100": "ETH_TXP"}
+        for net_class, bare_name in representative.items():
+            members = by_class.get(net_class, set())
+            self.assertGreater(len(members), 0, net_class)
+            self.assertTrue(any(scaffold_pcb._bare_net_name(pattern) == bare_name for pattern in members),
+                            f"{net_class} missing {bare_name}: {members}")
 
     def assert_rejected(self, fault, message):
         result, output = self.build(fault)

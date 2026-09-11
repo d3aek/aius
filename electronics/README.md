@@ -195,12 +195,26 @@ component with no footprint, or a footprint missing a pad the netlist
 references, is rejected the same way before any board is written.
 
 Alongside `<candidate.kicad_pcb>` the script also writes `<candidate>.kicad_pro`
-(carrying the project's net-class track width/clearance defaults),
-`<candidate>.kicad_dru` (a copy of
+(carrying the project's net classes, below), `<candidate>.kicad_dru` (a copy of
 [`aius-carrier.kicad_dru`](aius-carrier.kicad_dru)), and a `fp-lib-table` with
 the `aius` library URI rewritten relative to the output directory — so the
 candidate board opens standalone, with its footprints and design rules
 resolved, wherever it lands.
+
+The emitted board declares the H2a JLCPCB JLC04161H-7628 four-layer stackup
+(`docs/plans/aius-h2-h3-manufacturing.md` Phase H2a;
+[`feasibility/stackups.json`](feasibility/stackups.json)) as a `(stackup ...)`
+block in the saved `.kicad_pcb` — 0.035 mm outer / 0.0152 mm inner copper over
+0.2104 mm prepreg and a 1.065 mm core, 1.5862 mm overall — inserted textually
+after `pcbnew.SaveBoard()` because KiCad 10.0.4's Python bindings do not expose
+`BOARD_STACKUP` for writing. The companion `.kicad_pro` carries four net
+classes instead of one default: `Power` (≥0.5 mm track, closing M2's undersized
+VBUS traces) for `VBUS_RAW`/`VBUS_5V`/`EXP_USBH_VBUS`, `USB90` (0.251 mm /
+0.15 mm) for the device and host USB D+/D- pairs, and `Eth100` (0.201 mm /
+0.15 mm) for the Ethernet MDI pairs — the corrected controlled-impedance
+geometry from the plan's Recovery audit — with every other net staying on
+`Default`; membership is assigned by `netclass_patterns` keyed off each net's
+bare (sheet-prefix-stripped) name.
 
 `aius-carrier.kicad_dru` carries two custom rules that `kicad-cli pcb drc`
 enforces on both the canonical and every scaffolded board: the J1 GCT USB4105
@@ -214,13 +228,74 @@ end to end against a live netlist export: valid geometry/nets/DNP plus a
 zero-violation `kicad-cli pcb drc` pass on the unrouted candidate (with a
 non-zero unconnected-item count, since nothing is routed yet), rejection of a
 missing footprint, a missing pad, an unplaced part, and a missing
-`--netlist`/`--output`, and confirms the two reference-plane design rules
-actually fire when a track is added to `In1.Cu`/`In2.Cu`. Run it the same way
-as any other `pcbnew` script:
+`--netlist`/`--output`, confirms the two reference-plane design rules actually
+fire when a track is added to `In1.Cu`/`In2.Cu`, and (importing the builder
+module directly for its constants) that the saved board's `(stackup ...)`
+block carries the expected four copper layers and per-layer thicknesses and
+that the saved `.kicad_pro` declares all four net classes with the expected
+width/clearance and at least one representative net assigned to each of
+`Power`/`USB90`/`Eth100`. Run it the same way as any other `pcbnew` script:
 
 ```bash
 scripts/kicad.sh --python electronics/scripts/test_scaffold.py
 ```
+
+## Routing (H3c)
+
+The routing pipeline runs as three pcbnew scripts against a board file, all
+sharing a `--board <path>` argument that **defaults to the canonical
+`electronics/aius-carrier.kicad_pcb`** and, when given a scaffolded
+candidate instead, derives every sibling path (the DSN/SES export, and the
+saved board itself) from that candidate's own directory and filename stem —
+never from the canonical location. `--board` is optional; every command below
+also runs with no arguments against the canonical board, unchanged from
+before this flag existed.
+
+```bash
+# export the Specctra DSN for Freerouting (writes <board-stem>.dsn beside the board)
+scripts/kicad.sh --python electronics/scripts/route_export_dsn.py \
+  [--board <candidate.kicad_pcb>]
+
+# Freerouting (headless, via the freerouting compose service) reads <board-stem>.dsn
+# and writes <board-stem>.ses beside it — see compose.yaml for the invocation shape.
+
+# import the routed session, apply fab-capable DRC minimums, fill GND planes
+# (reads <board-stem>.ses beside the board; saves the board in place)
+scripts/kicad.sh --python electronics/scripts/route_import_ses.py \
+  [--board <candidate.kicad_pcb>]
+
+# bounded post-route cleanup: widen necked tracks, solidify GND pad connections
+# (saves the board in place)
+scripts/kicad.sh --python electronics/scripts/route_cleanup.py \
+  [--board <candidate.kicad_pcb>]
+```
+
+`route_export_dsn.py`'s Specctra export already marks the `In1.Cu`/`In2.Cu`
+reference planes as DSN `(type power)` layers with `(plane GND ...)` entries,
+distinct from the `(type signal)` `F.Cu`/`B.Cu` layers. `ExportSpecctraDSN`
+reads the plane-layer type (`pcbnew.LT_POWER`, set by
+[`scripts/scaffold_pcb.py`](scripts/scaffold_pcb.py)) straight off the board,
+so no post-export DSN rewrite is needed to keep Freerouting off the planes.
+
+## Fabrication export (H3d)
+
+[`scripts/export_fab.sh`](scripts/export_fab.sh) runs a DRC report (non-fatal
+here — the DRC gate is enforced separately before order) then exports the full
+manufacturing package — Gerbers, drill, CPL, STEP, BOM — via `kicad-cli`.
+Takes the same `--board <path>` argument as the routing scripts, defaulting to
+the canonical board; the output directory (`<board-dir>/manufacturing/`) and
+every exported filename's stem are derived from the given board's own
+directory and filename, so a scaffolded candidate's package lands beside the
+candidate rather than in `electronics/manufacturing/`.
+
+```bash
+electronics/scripts/export_fab.sh [--board <candidate.kicad_pcb>]
+```
+
+An unrouted candidate (e.g. straight out of `scaffold_pcb.py`, before
+`route_import_ses.py`) still exports cleanly: DRC reports its unconnected-item
+count without failing the script (`|| true` on the DRC step), and every other
+export stage runs unconditionally against the board as given.
 
 ## Board (H3 recovery pending)
 

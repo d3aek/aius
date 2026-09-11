@@ -6,17 +6,19 @@ board, imports the routed session (tracks + vias from Freerouting), fills the
 copper zones (L2/L3 GND planes), and saves the routed board.
 
 Run: python3 electronics/scripts/route_import_ses.py
+Run against a scaffolded candidate: python3 electronics/scripts/route_import_ses.py \
+  --board <candidate.kicad_pcb>
 """
 
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 
 import pcbnew
 
 ELEC = Path(__file__).resolve().parent.parent
-BOARD = str(ELEC / "aius-carrier.kicad_pcb")
-SES = str(ELEC / "aius-carrier.ses")
+DEFAULT_BOARD = ELEC / "aius-carrier.kicad_pcb"
 
 
 def set_fab_rules(board) -> None:
@@ -48,10 +50,17 @@ def set_fab_rules(board) -> None:
 
 
 def main() -> int:
-    board = pcbnew.LoadBoard(BOARD)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--board", type=Path, default=DEFAULT_BOARD,
+                         help="board .kicad_pcb path (default: canonical aius-carrier.kicad_pcb)")
+    args = parser.parse_args()
+    board_path = str(args.board)
+    ses_path = str(args.board.with_suffix(".ses"))
+
+    board = pcbnew.LoadBoard(board_path)
     set_fab_rules(board)
     before = len(list(board.GetTracks()))
-    ok = pcbnew.ImportSpecctraSES(board, SES)
+    ok = pcbnew.ImportSpecctraSES(board, ses_path)
     after = len(list(board.GetTracks()))
     print(f"ImportSpecctraSES: {ok}; tracks {before} -> {after}", flush=True)
 
@@ -62,8 +71,8 @@ def main() -> int:
     except Exception as exc:  # noqa: BLE001 - fill is best-effort; KiCad refills on open
         print(f"zone fill skipped ({exc}); KiCad fills on open", flush=True)
 
-    pcbnew.SaveBoard(BOARD, board)
-    print(f"saved {BOARD}", flush=True)
+    pcbnew.SaveBoard(board_path, board)
+    print(f"saved {board_path}", flush=True)
     return 0 if ok else 1
 
 

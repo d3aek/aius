@@ -3,10 +3,13 @@
 
 Runs inside the pinned KiCad 10.0.4 container (needs the `pcbnew` Python module).
 Creates the board that H3c routes: four layers (F.Cu signal / L2 GND / L3
-GND / B.Cu signal), a slot-fit outline, every component imported
-from its footprint library and placed by functional zone (connectors on the rear
-edge, Teensy central, expansion on the front edge), all pad nets assigned from the
-netlist, and a solid L2 ground plane (the H2b return plane) plus outer GND pours.
+GND / B.Cu signal) on the JLCPCB JLC04161H-7628 stackup declared in the saved
+`(stackup ...)` block, a slot-fit outline, every component imported from its
+footprint library and placed by functional zone (connectors on the rear edge,
+Teensy central, expansion on the front edge), all pad nets assigned from the
+netlist and classified into the Power/USB90/Eth100/Default net classes emitted
+in the companion `.kicad_pro`, and a solid L2 ground plane (the H2b return
+plane) plus outer GND pours.
 
 This is an INITIAL placement + connectivity scaffold, not a routed board: no
 signal tracks are laid, and positions are refined during H3c routing. It is fully
@@ -81,10 +84,165 @@ PLACEMENT = {
 FRONT_ROW = ["J10", "J11", "J12", "J13", "J14", "J15", "J16", "J17"]
 FRONT_Y = 88.0
 
-# Net-name -> (track width mm, clearance mm) intent from H2a, applied as the board
-# default here; per-class assignment is set during H3c.
+# Default net class (everything not named in NETCLASS_SPECS below).
 DEFAULT_TRACK_MM = 0.2
 DEFAULT_CLEAR_MM = 0.15
+
+# H2a stackup (docs/plans/aius-h2-h3-manufacturing.md Phase H2a;
+# electronics/feasibility/stackups.json "jlcpcb-4L-1.6" / JLC04161H-7628): L1 0.035
+# / prepreg 7628 0.2104 / L2 0.0152 / core 1.065 / L3 0.0152 / prepreg 0.2104 / L4
+# 0.035 mm. Outer copper is 1 oz (0.035 mm); inner is JLC's quoted 0.0152 mm.
+# (layer name, type, thickness mm, material, epsilon_r, loss_tangent); material/
+# epsilon_r/loss_tangent are None for copper layers.
+STACKUP_LAYERS = [
+    ("F.Cu", "copper", 0.035, None, None, None),
+    ("dielectric 1", "prepreg", 0.2104, "FR4", 4.6, 0.02),
+    ("In1.Cu", "copper", 0.0152, None, None, None),
+    ("dielectric 2", "core", 1.065, "FR4", 4.6, 0.02),
+    ("In2.Cu", "copper", 0.0152, None, None, None),
+    ("dielectric 3", "prepreg", 0.2104, "FR4", 4.6, 0.02),
+    ("B.Cu", "copper", 0.035, None, None, None),
+]
+# Sum of the recorded per-layer thicknesses above (not the fab's rounded nominal
+# 1.6 mm) so the stackup block and the board's overall thickness stay consistent.
+BOARD_THICKNESS_MM = round(sum(layer[2] for layer in STACKUP_LAYERS), 4)
+
+# M2 / H2a net classes (docs/plans/aius-h2-h3-manufacturing.md M2 + "Recovery audit
+# (2026-09-09)" corrected geometry). name -> (track_width mm, clearance mm,
+# diff_pair_width mm, diff_pair_gap mm); via_diameter/via_drill are shared across
+# every class (0.6/0.3 mm, unchanged from the prior single Default class).
+NETCLASS_SPECS = {
+    "Default": (DEFAULT_TRACK_MM, DEFAULT_CLEAR_MM, 0.2, 0.15),
+    # M2: undersized power traces (0.2 mm for ~1 A VBUS) widened to >=0.5 mm.
+    "Power": (0.5, DEFAULT_CLEAR_MM, 0.2, 0.15),
+    # Recovery audit corrected geometry: 90 ohm differential needs 0.251 mm width
+    # at 0.15 mm edge spacing on the JLCPCB 4-layer stackup above.
+    "USB90": (0.251, 0.15, 0.251, 0.15),
+    # 100 ohm differential needs 0.201 mm width at 0.15 mm edge spacing.
+    "Eth100": (0.201, 0.15, 0.201, 0.15),
+}
+NETCLASS_VIA_DIAMETER_MM = 0.6
+NETCLASS_VIA_DRILL_MM = 0.3
+
+# Net assignment is keyed by the *bare* net name (trailing path component after
+# the last "/"): KiCad's hierarchical netlist exporter prefixes sheet-local nets
+# with "/<sheet>/" (e.g. "/power-usb/VBUS_RAW") while global-labelled nets stay
+# bare (e.g. "VBUS_5V"); matching on the bare name survives either form.
+NET_CLASS_BY_BARE_NAME = {
+    "VBUS_RAW": "Power", "VBUS_5V": "Power", "EXP_USBH_VBUS": "Power",
+    "USB_DP": "USB90", "USB_DM": "USB90", "USBH_DP": "USB90", "USBH_DM": "USB90",
+    "ETH_TXP": "Eth100", "ETH_TXN": "Eth100", "ETH_RXP": "Eth100", "ETH_RXN": "Eth100",
+}
+
+
+def _stackup_block() -> str:
+    """The (stackup ...) S-expression body, tab-indented to nest as the first
+    child of a (setup ...) block at one tab of indentation (see _insert_stackup).
+
+    pcbnew's Python bindings do not expose BOARD_STACKUP in KiCad 10.0.4:
+    board.GetDesignSettings().GetStackupDescriptor() returns a bare, unusable
+    SwigPyObject (no GetList/BuildDefaultStackupList), and "BOARD_STACKUP" is
+    absent from the pcbnew module's own symbol table -- confirmed by probing the
+    live container's pcbnew before writing this. This mirrors the exact
+    key/nesting KiCad's own writer emits (cross-checked against a real
+    KiCad-generated 4-copper-layer board, e.g. /usr/share/kicad/demos/video in
+    the pinned image), including the cosmetic non-copper mask/paste/silk entries
+    KiCad always emits alongside a stackup so the block parses the same way a
+    GUI-authored one would.
+    """
+    lines = [
+        "\t\t(stackup",
+        '\t\t\t(layer "F.SilkS"',
+        '\t\t\t\t(type "Top Silk Screen")',
+        '\t\t\t\t(color "White")',
+        "\t\t\t)",
+        '\t\t\t(layer "F.Paste"',
+        '\t\t\t\t(type "Top Solder Paste")',
+        "\t\t\t)",
+        '\t\t\t(layer "F.Mask"',
+        '\t\t\t\t(type "Top Solder Mask")',
+        '\t\t\t\t(color "Green")',
+        "\t\t\t\t(thickness 0.01)",
+        "\t\t\t)",
+    ]
+    for name, kind, thickness_mm, material, epsilon_r, loss_tangent in STACKUP_LAYERS:
+        lines.append(f'\t\t\t(layer "{name}"')
+        lines.append(f'\t\t\t\t(type "{kind}")')
+        lines.append(f"\t\t\t\t(thickness {thickness_mm})")
+        if material is not None:
+            lines.append(f'\t\t\t\t(material "{material}")')
+            lines.append(f"\t\t\t\t(epsilon_r {epsilon_r})")
+            lines.append(f"\t\t\t\t(loss_tangent {loss_tangent})")
+        lines.append("\t\t\t)")
+    lines += [
+        '\t\t\t(layer "B.Mask"',
+        '\t\t\t\t(type "Bottom Solder Mask")',
+        '\t\t\t\t(color "Green")',
+        "\t\t\t\t(thickness 0.01)",
+        "\t\t\t)",
+        '\t\t\t(layer "B.Paste"',
+        '\t\t\t\t(type "Bottom Solder Paste")',
+        "\t\t\t)",
+        '\t\t\t(layer "B.SilkS"',
+        '\t\t\t\t(type "Bottom Silk Screen")',
+        '\t\t\t\t(color "White")',
+        "\t\t\t)",
+        # No surface finish has been selected/quoted yet (electronics/feasibility
+        # records dielectric/copper data only); "None" is KiCad's own
+        # unspecified-finish enum value, not a fabricated finish.
+        '\t\t\t(copper_finish "None")',
+        "\t\t\t(dielectric_constraints no)",
+        "\t\t)",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def _insert_stackup(path: Path) -> None:
+    """Insert the (stackup ...) block as the first child of (setup ...) in the
+    saved .kicad_pcb. Post-save textual insertion: see _stackup_block for why
+    the pcbnew Python API cannot write BOARD_STACKUP directly in this container.
+    """
+    text = path.read_text()
+    marker = "\t(setup\n"
+    index = text.index(marker) + len(marker)
+    path.write_text(text[:index] + _stackup_block() + text[index:])
+
+
+def _bare_net_name(name: str) -> str:
+    return name.rsplit("/", 1)[-1]
+
+
+def _write_net_classes(project: dict, net_by_name: dict) -> None:
+    """M2 / H2a: replace the single Default class with the full class set and
+    assign the Power/USB90/Eth100 member nets by pattern. This is the mechanism
+    kicad-cli pcb drc actually honours for netclass clearance/width -- pcbnew's
+    NET_SETTINGS has no Python Serialize() path and pcbnew.LoadBoard() does not
+    reload a sidecar .kicad_pro's net_settings, so the board-level NETCLASS/
+    NET_SETTINGS API objects cannot be persisted through SaveBoard(); confirmed
+    empirically (a hand-written .kicad_pro net_settings.classes/netclass_patterns
+    pair does drive a real kicad-cli pcb drc clearance violation) before
+    settling on this JSON-only approach.
+    """
+    classes = []
+    for name, (track_mm, clearance_mm, diff_width_mm, diff_gap_mm) in NETCLASS_SPECS.items():
+        classes.append({
+            "name": name,
+            "clearance": clearance_mm,
+            "track_width": track_mm,
+            "via_diameter": NETCLASS_VIA_DIAMETER_MM,
+            "via_drill": NETCLASS_VIA_DRILL_MM,
+            "diff_pair_gap": diff_gap_mm,
+            "diff_pair_width": diff_width_mm,
+        })
+    project["net_settings"]["classes"] = classes
+
+    patterns = []
+    for net_name in net_by_name:
+        net_class = NET_CLASS_BY_BARE_NAME.get(_bare_net_name(net_name))
+        if net_class is not None:
+            patterns.append({"netclass": net_class, "pattern": net_name})
+    project["net_settings"]["netclass_patterns"] = patterns
+    print(f"assigned {len(patterns)} nets to non-default net classes", flush=True)
 
 
 def main():
@@ -118,6 +276,10 @@ def main():
     board.SetCopperLayerCount(4)
     for layer in (pcbnew.In1_Cu, pcbnew.In2_Cu):
         board.SetLayerType(layer, pcbnew.LT_POWER)
+    # B2: declare the overall board thickness from the H2a stackup (see
+    # BOARD_THICKNESS_MM / STACKUP_LAYERS above); the (stackup ...) block itself
+    # is inserted textually into the saved file by _insert_stackup.
+    board.GetDesignSettings().SetBoardThickness(pcbnew.FromMM(BOARD_THICKNESS_MM))
 
     # Edge.Cuts outline.
     corners = [(0, 0), (BOARD_W, 0), (BOARD_W, BOARD_H), (0, BOARD_H)]
@@ -229,11 +391,11 @@ def main():
     print("saving board...", flush=True)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     pcbnew.SaveBoard(str(args.output), board)
+    _insert_stackup(args.output)
     # A scratch board needs the same explicit library/project context as the
     # canonical design. Use relative paths so it also opens outside the container.
     project = json.loads((ELEC / "aius-carrier.kicad_pro").read_text())
-    project["net_settings"]["classes"][0]["track_width"] = DEFAULT_TRACK_MM
-    project["net_settings"]["classes"][0]["clearance"] = DEFAULT_CLEAR_MM
+    _write_net_classes(project, net_by_name)
     args.output.with_suffix(".kicad_pro").write_text(json.dumps(project, indent=2) + "\n")
     args.output.with_suffix(".kicad_dru").write_text((ELEC / "aius-carrier.kicad_dru").read_text())
     libraries = (ELEC / "fp-lib-table").read_text()
@@ -242,7 +404,8 @@ def main():
     (args.output.parent / "fp-lib-table").write_text(libraries)
     print(f"wrote {args.output}")
     print(f"  placed {len(fp_by_ref)} footprints, {len(net_by_name)} nets, "
-          f"{board.GetCopperLayerCount()} copper layers, {len(board.Zones())} zones")
+          f"{board.GetCopperLayerCount()} copper layers, {len(board.Zones())} zones, "
+          f"{BOARD_THICKNESS_MM} mm stackup, {len(NETCLASS_SPECS)} net classes")
 
 
 if __name__ == "__main__":
