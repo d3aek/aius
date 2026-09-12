@@ -267,7 +267,8 @@ scripts/kicad.sh --python electronics/scripts/route_export_dsn.py \
 # Freerouting (headless, via the freerouting compose service) reads <board-stem>.dsn
 # and writes <board-stem>.ses beside it — see compose.yaml for the invocation shape.
 
-# import the routed session, apply fab-capable DRC minimums, fill GND planes
+# import the routed session, apply fab-capable DRC minimums, tighten GND
+# zone clearance/thermal-relief gap, fill GND planes
 # (reads <board-stem>.ses beside the board; saves the board in place)
 scripts/kicad.sh --python electronics/scripts/route_import_ses.py \
   [--board <candidate.kicad_pcb>]
@@ -291,6 +292,22 @@ reads the plane-layer type (`pcbnew.LT_POWER`, set by
 [`scripts/scaffold_pcb.py`](scripts/scaffold_pcb.py)) straight off the board,
 so no post-export DSN rewrite is needed to keep Freerouting off the planes.
 
+[`scripts/route_import_ses.py`](scripts/route_import_ses.py) sets every GND
+zone's local clearance and thermal-relief gap to 0.25 mm (spoke width stays
+0.5 mm, a fabricable solder joint) before filling — KiCad's 0.5/0.5 mm zone
+defaults merge the anti-pads on the Teensy 2.54 mm pin rows (a 1.7 mm pad's
+keepout ring grows by the clearance on every side, and two neighbouring
+pads' keepouts overlap well before DRC's 0.127 mm minimum would require),
+slotting the In1.Cu/In2.Cu return planes under those rows. Measured on a
+scratch re-route: `In1.Cu` copper along the two Teensy pin-row columns
+(x = 59.0 mm, x = 74.24 mm) was 91.5 % / 99.6 % void at the 0.5 mm defaults
+and 78.5 % / 86.0 % void at 0.25 mm — the residual void is the pin pads'
+own footprint area, not adjustable via zone settings.
+[`scripts/scaffold_pcb.py`](scripts/scaffold_pcb.py)'s own zone creation sets
+no clearance/thermal-relief parameters (`SetLayer`/`SetNetCode`/
+`SetIsFilled(False)` only), so those values come entirely from `pcbnew`'s
+`ZONE` class defaults, not from the scaffold — nothing to change there.
+
 [`scripts/route_gnd_stitch.py`](scripts/route_gnd_stitch.py) closes the gap
 `route_cleanup.py` cannot: a GND pad's automatic zone bond only fires for a
 PTH pad that itself spans the `In1.Cu`/`In2.Cu` planes, so an SMD GND pad (or
@@ -309,10 +326,58 @@ it. A via never lands inside a pad. Any GND island still left as bare track
 with no pad at all after stitching (a stub with nothing left to reach) is
 deleted rather than left dangling.
 
+Four further passes close gaps invisible to the island walk above, because
+the affected pad's island is already bonded to the plane through *someone
+else's* via: every SMD GND pad still more than 1.0 mm from any via gets one
+(joined by a short connecting track); the J1 GND pad group specifically gets
+a second via (its four GND pads collapse to two physical solder-pad
+locations, and one location was observed reaching the plane only through
+the other's via, 6+ mm away); each USB/Ethernet differential pair at
+J1/J2/J18/J20 gets a flanking GND via within 1.5 mm of its connector
+break-in (the H2b return-path argument — stitching vias flanking each
+pair's connector break-in), searched beside the pair rather than between
+its two pads; and any Power-class (≥0.5 mm track) net riding a single
+0.3 mm-drill via gets a parallel same-net via, bridged on both copper
+layers (not just the layer the search anchored on), so no supply path
+depends on one plated hole. On a scratch re-route of the canonical board's
+known punch-list (37 SMD GND pads with no nearby via, J1's four GND pads on
+one via, VBUS_RAW's two single-via hops, zero stitching vias flanking any
+differential pair): the script added 20 of 27 SMD-pad vias (7 residual,
+blocked by genuine congestion — dense connector pin fields at J1/J2, or the
+isolated CHASSIS domain routing within clearance of the GND pad), 3 of 6
+differential-pair flanking vias (J1 and one J20 pair residual, again
+connector-pin-field congestion), and a parallel via for one of VBUS_RAW's
+two single-via hops (the other found no collision-free site and stays a
+residual); `kicad-cli pcb drc --severity-all` on the result is 0
+violations, 0 unconnected items.
+
+[`scripts/route_diff_pairs.py`](scripts/route_diff_pairs.py) is the H3e
+diff-pair fix: it rips all eight USB/Ethernet pair nets' existing copper and
+re-routes each pair as two genuinely coupled 45-degree polylines at the
+netclass width and a 0.15 mm edge gap (not the independent single-ended
+traces Freerouting produces), length-matched to <=0.5 mm skew and locked
+(`SetLocked(True)`) so a later Freerouting pass treats them as fixed —
+confirmed by inspecting the DSN `route_export_dsn.py` exports afterward,
+where a locked track or via prints `(type fix)` instead of `(type route)`.
+It reads every pad position from the board itself (never hardcoded mm
+coordinates) and rips any foreign F.Cu copper its planned corridor would
+otherwise violate clearance against. Two of the four pairs' fixed connector
+pinout forces an actual planar crossing no 45-degree bend choice on one
+copper layer can avoid (J1's USB-C mirror pins and the USB_DP/USB_DM
+J1-to-U1-to-J2 hookup); those get a disclosed, narrowly-scoped via pair each
+rather than silently producing overlapping copper, printed as a
+`DISCLOSED EXCEPTION` line per pair. USB host and Ethernet TX route at the
+specified 0 vias. Residual `kicad-cli pcb drc` findings concentrated in the
+dense J1 USB-C fan-out (four 0.3 x 1.15 mm pads within ~1.5 mm) and the
+shared ETH_RXN/ETH_TXN corridor near J18/J20 are reported rather than
+chased through further constant-tuning, the same "bounded iterations, stop
+at diminishing returns" stopping point as the GND punch-list above.
+
 ## Fabrication export (H3d)
 
-[`scripts/export_fab.sh`](scripts/export_fab.sh) runs a DRC report (non-fatal
-here — the DRC gate is enforced separately before order) then exports the full
+[`scripts/export_fab.sh`](scripts/export_fab.sh) runs a DRC report, then a DFM
+report against the JLCPCB 4-layer capability rule set (both non-fatal here —
+both gates are enforced separately before order), then exports the full
 manufacturing package — Gerbers, drill, CPL, STEP, BOM — via `kicad-cli`.
 Takes the same `--board <path>` argument as the routing scripts, defaulting to
 the canonical board; the output directory (`<board-dir>/manufacturing/`) and
@@ -325,9 +390,61 @@ electronics/scripts/export_fab.sh [--board <candidate.kicad_pcb>]
 ```
 
 An unrouted candidate (e.g. straight out of `scaffold_pcb.py`, before
-`route_import_ses.py`) still exports cleanly: DRC reports its unconnected-item
-count without failing the script (`|| true` on the DRC step), and every other
-export stage runs unconditionally against the board as given.
+`route_import_ses.py`) still exports cleanly: DRC and DFM report their
+violation/unconnected-item counts without failing the script (`|| true` on
+both steps), and every other export stage runs unconditionally against the
+board as given.
+
+### DFM gate (JLCPCB 4-layer)
+
+[`scripts/check_dfm.sh`](scripts/check_dfm.sh) runs `kicad-cli pcb drc
+--severity-all --all-track-errors` against a fab's DFM capability rule set
+(`electronics/dfm/<fab>.kicad_dru`, default `jlcpcb-4l`), on a disposable
+scratch copy of the given board — never the canonical project files by
+default. It concatenates the fab overlay with the board's own
+`.kicad_dru` (KiCad loads one `.kicad_dru` per project; the fab overlay goes
+first so the canonical board's own narrower, documented per-footprint
+exceptions, e.g. J1's adapted-land-pattern NPTH clearance, still win), and
+elevates the DFM-relevant rule severities (`silk_over_copper`,
+`solder_mask_bridge`, `copper_edge_clearance`, `annular_width`,
+`drill_out_of_range`, `hole_clearance`, `hole_to_hole`, `courtyards_overlap`,
+footprint/library-mismatch checks) to `error` in the scratch project's own
+copy, since the canonical project may keep some of them at `warning` for
+day-to-day routing review. It also sets the fab's minimum solder-mask bridge
+(sliver) width on the scratch board's own setup block — KiCad has no
+`.kicad_dru` constraint for mask-web geometry.
+
+```bash
+electronics/scripts/check_dfm.sh [--board <path>] [--fab jlcpcb-4l] [--fix]
+electronics/scripts/check_dfm.sh --apply-fix [--board <path>]
+```
+
+`--fix` applies the one safe, non-judgment fix (silkscreen reference/value
+text stroke width raised to the fab's minimum line width — a text-property
+edit only, no zone refill, no copper geometry change) to the scratch copy
+before running DRC. `--apply-fix` applies the same fix directly, in place,
+to the board named by `--board`, with no DRC run.
+
+**2026-09-11 JLCPCB 4L run against the routed board: 90 violations before the
+silk fix, 31 after** (59 `text_thickness`, 26 `hole_clearance`, 5
+`solder_mask_bridge`; the silk fix clears all 59 `text_thickness`). The
+remaining 31 need an owner decision, not a mechanical fix:
+
+- **26 `hole_clearance`** — the NPTH mounting holes of J1, U20, U24, J17, J20
+  sit 0.2505 mm from the In1.Cu/In2.Cu GND plane fill, 0.0035 mm short of
+  JLCPCB's 0.254 mm minimum. Raising the board's global hole-clearance design
+  floor and re-filling zones does not move this specific gap (verified by
+  hand: identical 0.2505 mm actual before and after a floor bump to 0.26 mm)
+  and a full-board zone refill was found to alter unrelated GND-net copper
+  connectivity elsewhere — an out-of-scope side effect, not a safe mechanical
+  fix. A real fix needs a targeted, reviewed keepout/placement change at the
+  four connector mounting holes (`route_gnd_stitch.py`-style scoped
+  intervention), not a global rule change.
+- **5 `solder_mask_bridge`** — U11's fine-pitch adjacent pads (0.65 mm pitch)
+  leave less than JLCPCB's 0.2 mm minimum solder-mask web at
+  `pad_to_mask_clearance = 0`. Clearing it needs either a global negative
+  mask-expansion trade-off (affects every pad on the board) or a different
+  U11 footprint/package — an owner call, not a script fix.
 
 ## Board (H3 recovery — regenerated and routed, 2026-09-11)
 
@@ -341,24 +458,26 @@ wholesale; a subsequent pcbnew save through the routing pipeline round-trips the
 file to KiCad 10.0.4's full project schema (adds default keys such as
 `rule_severities`, `teardrop_options`; drops nothing).
 
-DRC against the fab rule set (`--severity-all`) is **0 violations, 17
-unconnected items** — all on net `GND` (SMD/PTH pads and short GND stub tracks
-that never reached a stitching via to the L2/L3 planes), matching Freerouting's
-own report of 17 unrouted `GND` connections after 18 auto-route passes (started
-147 unrouted, plateaued at score 890.79 with 4 in-router violations that do not
-appear in the post-cleanup KiCad DRC). No track lands on `In1.Cu`/`In2.Cu` —
-confirmed both by the `.kicad_dru` blanket ban (0 violations) and a direct
-layer-membership check. `route_export_dsn.py`'s Specctra DSN correctly carries
-each net's assigned class (`Power`/`USB90`/`Eth100`, not one collapsed
-0.20 mm class): `grep '(class'`/`(rule (width` on the exported DSN shows
-`Power,Default` at 500/150, `USB90,Default` at 251/150 and `Eth100,Default` at
-201/150 (thousandths of a mm), plus `kicad_default` at 200/150 for everything
-else — no fix was needed to the script.
+DRC against the fab rule set (`--severity-all`) is now **0 violations, 0
+unconnected items** at `7aed113`, after `route_gnd_stitch.py` closed the
+17-item GND punch-list this section previously reported (17 new stitching
+vias, 11 connecting tracks). The board carries 578 tracks and 73 vias, and
+0 tracks land on `In1.Cu`/`In2.Cu` — confirmed both by the `.kicad_dru`
+blanket ban (0 violations) and a direct layer-membership check.
+`route_export_dsn.py`'s Specctra DSN correctly carries each net's assigned
+class (`Power`/`USB90`/`Eth100`, not one collapsed 0.20 mm class):
+`grep '(class'`/`(rule (width` on the exported DSN shows `Power,Default` at
+500/150, `USB90,Default` at 251/150 and `Eth100,Default` at 201/150
+(thousandths of a mm), plus `kicad_default` at 200/150 for everything else —
+no fix was needed to the script.
 
-The residual GND punch-list is the honest H3c stopping point (owner guidance:
-scripted grind stops at diminishing returns, `route_cleanup.py` does not
-reroute) — stitching-via placement for the listed pads is interactive-judgment
-work for the next pass. The manufacturing package (`export_fab.sh`) exports
-cleanly against the routed board (Gerbers, drill, CPL, STEP, BOM); this is a
-review/quote snapshot, not order-ready. The owning plan is
+DRC-clean does not mean order-ready: the H3e second review pass (2026-09-11)
+measured the routed geometry directly and found every differential pair
+single-ended rather than coupled, and both GND planes heavily slotted by the
+0.5 mm zone clearance — neither shows up in a connectivity-only DRC pass. The
+fixes in progress for both are tracked in the owning plan's H3e section.
+
+The manufacturing package (`export_fab.sh`) exports cleanly against the routed
+board (Gerbers, drill, CPL, STEP, BOM); this is a review/quote snapshot, not
+order-ready. The owning plan is
 [`aius-h2-h3-manufacturing.md`](../docs/plans/aius-h2-h3-manufacturing.md).

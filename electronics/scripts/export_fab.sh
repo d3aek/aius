@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 # H3d: export the Aius carrier manufacturing package from the routed board.
-# Runs DRC (report only) then writes Gerbers, drill, placement (CPL), STEP, and a
+# Runs DRC (report only), then the JLCPCB 4L DFM rule set (report only, via
+# check_dfm.sh), then writes Gerbers, drill, placement (CPL), STEP, and a
 # BOM into electronics/manufacturing/ via the pinned KiCad 10.0.4 container. The
 # Gerber/drill set is fabricator-neutral (accepted by both PCBWay and JLCPCB); the
 # 2-vs-4-layer stackup + impedance geometry live in the H2/H3 plan.
 #
 # Usage: electronics/scripts/export_fab.sh [--board <path>]
 # Env:   AIUS_DOCKER_BIN (passed through to ../../scripts/kicad.sh)
-# Exit:  0 on successful export (DRC violations are reported, not fatal here -
-#        the DRC gate is enforced separately before order); 4 on a bad argument.
+# Exit:  0 on successful export (DRC and DFM violations are reported, not
+#        fatal here - both gates are enforced separately before order); 4 on
+#        a bad argument.
 #
 # --board defaults to the canonical electronics/aius-carrier.kicad_pcb. Pass a
 # scaffolded candidate's .kicad_pcb to export its own DRC report + manufacturing
@@ -40,6 +42,9 @@ board_stem="$(basename -- "$board" .kicad_pcb)"
 
 echo "==> DRC report"
 "$kicad" pcb drc --format json -o "$out/drc-report.json" "$board" || true
+
+echo "==> DFM report (JLCPCB 4L rule set, non-fatal here)"
+"$electronics_dir/scripts/check_dfm.sh" --board "$board" || true
 
 echo "==> Gerbers"
 "$kicad" pcb export gerbers -o "$out/gerbers/" "$board"

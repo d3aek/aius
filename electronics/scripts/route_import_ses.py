@@ -20,6 +20,32 @@ import pcbnew
 ELEC = Path(__file__).resolve().parent.parent
 DEFAULT_BOARD = ELEC / "aius-carrier.kicad_pcb"
 
+# H3e review: KiCad's zone defaults (0.5 mm local clearance, 0.5 mm
+# thermal-relief gap) merge anti-pads on the Teensy 2.54 mm pin rows -- a
+# 1.7 mm pad's keepout grows by clearance on every side, and two neighbouring
+# pads' keepouts overlap well before the DRC minimum clearance (0.127 mm)
+# would require. 0.25 mm reopens a real copper web between pads while
+# staying comfortably inside DRC; the thermal-relief spoke width stays at a
+# fabricable 0.5 mm so a thermally-relieved pad still gets a solid-enough
+# solder joint, not a starved spoke.
+ZONE_CLEARANCE_MM = 0.25
+ZONE_THERMAL_GAP_MM = 0.25
+ZONE_THERMAL_SPOKE_WIDTH_MM = 0.5
+
+
+def set_zone_rules(board) -> None:
+    """Tighten every copper zone's clearance and thermal-relief gap.
+
+    Applies to every non-rule-area zone on the board (both GND planes on this
+    design). Must run before `ZONE_FILLER.Fill` -- these are fill-time
+    parameters, not retroactively applied to already-filled polygons."""
+    for zone in board.Zones():
+        if zone.GetIsRuleArea():
+            continue
+        zone.SetLocalClearance(pcbnew.FromMM(ZONE_CLEARANCE_MM))
+        zone.SetThermalReliefGap(pcbnew.FromMM(ZONE_THERMAL_GAP_MM))
+        zone.SetThermalReliefSpokeWidth(pcbnew.FromMM(ZONE_THERMAL_SPOKE_WIDTH_MM))
+
 
 def set_fab_rules(board) -> None:
     """DRC minimums to both fabs' standard 4-layer capability (PCBWay / JLCPCB).
@@ -65,9 +91,12 @@ def main() -> int:
     print(f"ImportSpecctraSES: {ok}; tracks {before} -> {after}", flush=True)
 
     try:
+        set_zone_rules(board)
         filler = pcbnew.ZONE_FILLER(board)
         filler.Fill(board.Zones())
-        print(f"filled {len(board.Zones())} zones", flush=True)
+        print(f"filled {len(board.Zones())} zones "
+              f"(clearance {ZONE_CLEARANCE_MM} mm, thermal gap {ZONE_THERMAL_GAP_MM} mm, "
+              f"spoke {ZONE_THERMAL_SPOKE_WIDTH_MM} mm)", flush=True)
     except Exception as exc:  # noqa: BLE001 - fill is best-effort; KiCad refills on open
         print(f"zone fill skipped ({exc}); KiCad fills on open", flush=True)
 

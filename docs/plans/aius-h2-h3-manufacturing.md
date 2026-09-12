@@ -143,6 +143,19 @@ S/PDIF path (3.3 V logic, ≥16 Mbit/s) is a short L1 run over L2 GND, far insid
 the FR-4 bandwidth. This is a feasibility argument; final continuity is enforced
 by DRC/pour review at H3c.
 
+**Correction (2026-09-11, from the H3e second review pass).** The routed
+canonical board's inner layers are solid GND, not the "L3 GND+power islands"
+described above: `In1.Cu` and `In2.Cu` are both continuous GND pours (91.1%
+copper coverage each, measured at `7aed113`), and every power net
+(`VBUS_RAW`, `VBUS_5V`, `EXP_USBH_VBUS`, `+3V3`) routes as a track on
+`F.Cu`/`B.Cu` instead. The return-path argument above still holds with this
+correction — two solid GND inner layers is a stronger reference plane than
+the assumed L3 islands, not a weaker one. The "GND stitching vias flanking
+each pair's break-in" described above is not present at `7aed113` — no
+differential-pair connector pad has a GND via within 3 mm (H3e second pass,
+finding R3); stitching for this purpose is in progress in
+`electronics/scripts/route_gnd_stitch.py`.
+
 ### Phase H2c — mechanical and placement feasibility ✓ SHIPPED 2026-08-15
 
 ```yaml
@@ -203,7 +216,9 @@ return plane, both independent electrical failures that 4-layer resolves. Per th
 escalation rule this is a recorded electrical reason, not a mechanical one.
 
 **Stackup lock.** Route against the JLC04161H-7628 / PCBWay 4-layer 1.6 mm class:
-L1 signal / L2 solid GND / L3 GND+power / L4 signal, L1→L2 ≈ 0.20–0.21 mm prepreg.
+L1 signal / L2 solid GND / L3 GND+power / L4 signal (corrected 2026-09-11: the
+routed board's L3 is solid GND, not GND+power islands — see H2b's correction
+above), L1→L2 ≈ 0.20–0.21 mm prepreg.
 Design-target impedance geometry (from H2a, JLCPCB 0.2104 mm; corrected against
 the calculator on 2026-09-09): **USB 90 Ω** at w ≈ 0.25 mm / s ≈ 0.15 mm;
 **Ethernet 100 Ω** at w ≈ 0.20 mm / s ≈ 0.15 mm. The
@@ -277,7 +292,10 @@ unit: parent-only
 **Progress (2026-08-16): board scaffolded.** `electronics/scripts/scaffold_pcb.py`
 (run in the pinned container via the `pcbnew` Python API) builds
 `electronics/aius-carrier.kicad_pcb` from the schematic netlist: 4 copper layers
-(L1 sig / L2 GND / L3 GND+power / L4 sig), the 96 × 95 mm Edge.Cuts outline
+(L1 sig / L2 GND / L3 GND+power / L4 sig — corrected 2026-09-11: L3 comes out
+solid GND, see H2b's correction), the 99 × 95 mm Edge.Cuts outline (corrected
+2026-09-11 from an earlier 96 × 95 mm figure; the board's 99 mm width against
+the Hammond 100.00 ± 0.51 mm slot span leaves about 0.5 mm slack per side)
 (H2c; final Hammond-slot trim is a pre-order mechanical-review item), all 62
 footprints loaded and net-assigned (69 nets, 169 ratsnest), initial placement by
 functional zone (optical/USB-C/magjack on the rear edge, Teensy central with its
@@ -433,6 +451,44 @@ the routed board. **Gate not yet met:** the package is a review/quote snapshot,
 not order-ready, until the H3c punch-list (22+3) is cleared to DRC 0 and DFM is
 checked against each fab's rules.
 
+**Progress (2026-09-11): DFM rule set encoded and run; 31 of 90 violations
+need an owner decision.** JLCPCB's published 4-layer capability (outer/inner
+3.5 mil trace/space, via drill/diameter, hole-to-hole, hole-to-copper,
+copper-to-edge, silk width/height, mask bridge — no JLCPCB capability
+document is filed under `evidence/`, so these are the published values as of
+2026-09-11) is now a KiCad custom design-rule overlay,
+[`electronics/dfm/jlcpcb-4l.kicad_dru`](../../electronics/dfm/jlcpcb-4l.kicad_dru),
+run by [`electronics/scripts/check_dfm.sh`](../../electronics/scripts/check_dfm.sh)
+against a disposable scratch copy of the board (merged `.kicad_dru`,
+DFM-relevant rule severities forced to `error`, fab mask-bridge minimum
+applied) — see [README §DFM gate](../../electronics/README.md#dfm-gate-jlcpcb-4-layer)
+for the full mechanism. First run against the routed board: **90 violations**
+(59 `text_thickness`, 26 `hole_clearance`, 5 `solder_mask_bridge`). The silk
+fix (`check_dfm.sh --fix`, reference/value text stroke width raised to
+JLCPCB's 0.153 mm minimum — a text-property edit only) clears all 59
+`text_thickness` violations with no other change, proven on a scratch
+candidate: DFM run drops to **31 violations** (26 `hole_clearance`, 5
+`solder_mask_bridge`), the base `kicad-cli pcb drc --severity-all` stays
+**0 violations, 0 unconnected items**, `test_scaffold.py` stays 8/8, and
+`check_footprints.py --board` stays 158/158. **Not yet applied to the
+canonical board**: an initial attempt also raised the board's global
+hole-clearance design-rule floor to close the 26 `hole_clearance` gap, but a
+full-board zone refill under that floor left the flagged NPTH-to-plane gaps
+completely unchanged (0.2505 mm actual, identical before and after) while
+silently altering unrelated GND-net copper connectivity elsewhere on the
+board — an uncontrolled, out-of-scope side effect, not a safe mechanical
+fix; that attempt was not kept. The remaining 31 violations are owner
+decisions, not script fixes: **26 `hole_clearance`** — J1/U20/U24/J17/J20's
+NPTH mounting holes sit 0.2505 mm from the In1.Cu/In2.Cu GND plane fill,
+0.0035 mm short of JLCPCB's 0.254 mm minimum; the real fix is a targeted,
+reviewed keepout or placement change at those four mounting holes
+(`route_gnd_stitch.py`-style scoped intervention), not a global rule change.
+**5 `solder_mask_bridge`** — U11's fine-pitch pads (0.65 mm pitch) leave less
+than JLCPCB's 0.2 mm minimum mask web at `pad_to_mask_clearance = 0`; clearing
+it needs either a global negative mask-expansion trade-off (affects every pad
+on the board) or a different U11 footprint/package. `export_fab.sh` now runs
+the DFM report (non-fatal) alongside its existing DRC report.
+
 ### Phase H3e — independent review, quote, order-ready
 
 ```yaml
@@ -502,6 +558,67 @@ residual is not a scripted-placement problem — consistent with B1/B3 being the
 real issues. Rework sequence: B4/M3 schematic → B3/M1 placement+footprint →
 B1/B2 planes+stackup → re-route → M2 power widen → DRC/DFM → re-review.
 
+**Second review pass (2026-09-11): NOT order-ready — findings, most-severe
+first.** A second independent review measured the routed geometry directly on
+the stitched, DRC-0 canonical board at `7aed113` (post `route_gnd_stitch.py`)
+rather than relying on the DRC-clean pass alone. It found the differential
+pairs are not routed as coupled pairs and the GND planes are heavily slotted
+by the zone clearance setting — both order blockers — plus fixable items and
+mechanical items carried over from H2c/H3b that still need a decision or a
+physical verification:
+
+- **R1 (blocks order) — no differential pair is routed as a coupled pair.**
+  `USB_DP`/`USB_DM` (device USB) run 35.50 mm / 41.64 mm with a 6.15 mm skew,
+  2 vias each, and sit up to 2.55 mm apart on `B.Cu` instead of running side by
+  side. `USBH_DP`/`USBH_DM` (host USB) skew only 0.15 mm but separate by
+  16 mm after a 2.1 mm coupled run. `ETH_TXP`/`ETH_TXN` run 17.70 mm /
+  15.46 mm with a minimum gap of 1.07 mm. `ETH_RXP`/`ETH_RXN` run 13.47 mm /
+  10.10 mm with `RXP` on `B.Cu` and `RXN` on `F.Cu` — opposite layers.
+  `ETH_TXN` runs coupled to `ETH_RXP` (a different pair) for 4.8 mm at
+  0.152–0.187 mm. `USB_DM` runs 3.2 mm at 0.167 mm from `SPDIF_RX`, an
+  unrelated single-ended net. The USB device pair necks to 0.151–0.188 mm at
+  the `J1`/`U1` fan-out. Fix in progress:
+  `electronics/scripts/route_diff_pairs.py` (coupled `F.Cu` routing, locked,
+  before the Freerouting pass).
+- **R2 (fix before order) — the GND planes are slotted by the 0.5 mm zone
+  clearance.** `In1.Cu` is 91.5% void along `x = 59.0` and 99.6% void along
+  `x = 74.24` for `y` 2.7–59; the magjack and `J18` pin fields carry solid
+  voids; `ETH_TXN` runs off-plane for 38.6% of its length. Fix in progress:
+  reducing the zone clearance/thermal gap to 0.25 mm in
+  `route_import_ses.py`.
+- **R3 (fix before order) — single-via supply/return paths.** `VBUS_RAW`
+  passes through single 0.3 mm vias at (48.02, 8.42) and (47.39, 13.87) in
+  series. `J1`'s GND connection routes through one via at (41.80, 8.21). 37
+  SMD GND pads have no via within roughly 1 mm (e.g. `J15.4` at 11.4 mm,
+  `C21.2` at 13.6 mm, `C20.2` at 9.5 mm, `J16.3` at 9.3 mm, `C14.2` at
+  6.6 mm, `U1.3` at 3.5 mm). No differential-pair pad at
+  `J1`/`U1`/`J2`/`J20`/`J18` has a GND via within 3 mm. Fix in progress:
+  extending `route_gnd_stitch.py`.
+- **R4 (fix before order / verify) — mechanical.** The outline is 99 × 95 mm
+  (`scaffold_pcb.py`'s `BOARD_W = 99.0`), against the Hammond slot span of
+  100.00 ± 0.51 mm. The internal USB cable envelope is not drawn: `J2` opens
+  toward +Y at `y` ≈ 49.6 with the A-plug overmold reaching `y` ≈ 85, over
+  the DNP `J12`/`J13` footprints, while the Teensy micro-B faces +Y at
+  `y` ≈ 63 — the cable's U-turn needs roughly 22 mm beyond `y = 95`. `U10`'s
+  courtyard overshoots the board edge by 0.34 mm. The rear connector span
+  (`x` 5.7–95.7) fits the 97.10 mm bezel window only if centred. No cutout
+  drawing or mounting holes exist yet (the board is slot-mounted). Owner
+  decisions needed: the cable envelope/route, and the Hammond slot width
+  against the 1.5862 mm stackup.
+- **R5 (notes).** A GND via at (89.89, 24.41) sits exactly 0.150 mm from
+  `ETH_TXP`. Several reference designators sit inside a neighbouring
+  footprint's courtyard (`C30` under `J20`, `R4` under `U10`, `C20`/`C21`
+  under `U20`, `C25` under `U24`, `R17` in `R5`'s courtyard, `C22` in `U21`'s
+  courtyard, `U1` in `C2`'s courtyard; `C1`'s reference text touches `C2`'s
+  pad 1). `CHASSIS` is 115 mm of 0.2 mm track linking the `J1`/`J2`/`J20`
+  shells, floating by decision (owner call still open: a DNP RC-tie
+  footprint near `J1`). Pad identity on the board matches `J403` pin 5 and
+  the USB4105 drawing for every pin, including the `UNCOVERED` ones.
+
+None of these fixes are complete. The board stays a review/quote snapshot,
+not order-ready, pending the coupled-pair re-route, the plane-clearance
+change, the GND-stitch extension, and the mechanical decisions above.
+
 ## Recovery audit (2026-09-09)
 
 The owner resumed layout completion. The first fresh KiCad 10.0.4 baseline
@@ -555,8 +672,9 @@ stop without a custom spacer. U10 now has 53 underside pads; its symbol and
 the exported netlist use J18/J19 for the moved interfaces. Stock parts,
 unkeyed-cable mapping and remaining physical checks are in the footprint review.
 
-**Placement recovery contract (prebuild review):** preserve the 100 × 95 mm
-board envelope and place the Teensy with microSD facing the rear panel, between
+**Placement recovery contract (prebuild review):** preserve the 99 × 95 mm
+(corrected 2026-09-11 from an earlier 100 × 95 mm figure) board envelope and
+place the Teensy with microSD facing the rear panel, between
 USB-C and Ethernet, rather than claiming inaccessible central placement meets
 the card-access requirement. Rear optical/USB-C/magjack bodies must meet a common
 panel datum; the internal USB cable gets an explicit insertion/bend envelope.

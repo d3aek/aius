@@ -1,0 +1,70 @@
+(version 1)
+# JLCPCB standard 4-layer fabrication capability, expressed as KiCad custom
+# design rules for the H3d DFM gate
+# (docs/plans/aius-h2-h3-manufacturing.md Phase H3d). Run via
+# electronics/scripts/check_dfm.sh, which merges this file with the
+# canonical electronics/aius-carrier.kicad_dru into a disposable scratch
+# project copy -- it never replaces the canonical .kicad_dru.
+#
+# No JLCPCB capability document is filed under evidence/source-snapshots/ or
+# docs/reference/datasheets.md (checked 2026-09-11). The numbers below are JLCPCB's
+# published standard 4-layer capability as of 2026-09-11, not a filed
+# snapshot -- re-derive against JLCPCB's live capability page before an
+# order if this file is more than a few months old:
+#   outer/inner min trace + space: 3.5 mil / 3.5 mil (0.09 mm) -- matches the
+#     H2a-recorded jlcpcb-4L-1.6 stackup feasibility inputs
+#     (electronics/feasibility/stackups.json: min_trace_mm / min_space_mm).
+#   min via drill: 0.2 mm; min via (finished) diameter: 0.45 mm, giving a
+#     0.125 mm minimum annular ring.
+#   min hole-to-hole spacing: 0.5 mm.
+#   min hole-to-copper clearance (PTH and NPTH): 0.254 mm.
+#   min copper-to-board-edge clearance: 0.3 mm.
+#   min silkscreen line (text stroke) width: 0.153 mm; min silkscreen
+#     character height: 1 mm.
+#   min solder-mask bridge (sliver) width: 0.2 mm -- applied via the scratch
+#     board's own `solder_mask_min_width` setup key by check_dfm.sh, since
+#     KiCad has no `.kicad_dru` constraint for mask-web geometry.
+
+(rule "JLCPCB 4L min trace width"
+  (condition "A.Type == 'Track'")
+  (constraint track_width (min 0.09mm)))
+
+(rule "JLCPCB 4L min copper-to-copper clearance"
+  (constraint clearance (min 0.09mm)))
+
+(rule "JLCPCB 4L min via drill"
+  (condition "A.Type == 'Via'")
+  (constraint hole_size (min 0.2mm)))
+
+(rule "JLCPCB 4L min via diameter"
+  (condition "A.Type == 'Via'")
+  (constraint via_diameter (min 0.45mm)))
+
+(rule "JLCPCB 4L min via annular ring"
+  (condition "A.Type == 'Via'")
+  (constraint annular_width (min 0.125mm)))
+
+(rule "JLCPCB 4L min hole-to-hole spacing"
+  (constraint hole_to_hole (min 0.5mm)))
+
+(rule "JLCPCB 4L min hole-to-copper clearance"
+  (constraint hole_clearance (min 0.254mm)))
+
+(rule "JLCPCB 4L min copper-to-board-edge clearance"
+  (constraint edge_clearance (min 0.3mm)))
+
+(rule "JLCPCB 4L min front silkscreen line width"
+  (layer "F.SilkS")
+  (constraint text_thickness (min 0.153mm)))
+
+(rule "JLCPCB 4L min back silkscreen line width"
+  (layer "B.SilkS")
+  (constraint text_thickness (min 0.153mm)))
+
+(rule "JLCPCB 4L min front silkscreen character height"
+  (layer "F.SilkS")
+  (constraint text_height (min 1mm)))
+
+(rule "JLCPCB 4L min back silkscreen character height"
+  (layer "B.SilkS")
+  (constraint text_height (min 1mm)))
