@@ -421,6 +421,18 @@ avoids every other foreign pad it would otherwise clip (a growing lateral
 detour into the nearest corridor segment, per-side so P also dodges N's own
 destination pad and vice versa).
 
+**H3i scope ruling (2026-09-12):** `--pairs` (comma-separated slugs;
+default `usb-device`) scopes which pairs this script rips and re-routes,
+hand-routing only the USB device pair by default and leaving USB host and
+both Ethernet pairs' existing copper untouched. This follows the owner's
+relaxed accepted-pair contract (nominal class widths, intra-pair skew
+<=5 mm, vias and uncoupled sections allowed wherever DRC-clean), under
+which Freerouting's own USB host and Ethernet results (0.15, 2.24 and
+3.37 mm skew) already stand without hand-routing. `--measure` separately
+reports P/N length, skew, via count and layers for all four pairs from the
+board exactly as currently routed, touching no copper, independent of the
+`--pairs` selection.
+
 Rotating U1 (the device-USB ESD shunt, a symmetric chip with no directional
 meaning) 180 degrees in `scaffold_pcb.py`'s `PLACEMENT` lines its D+/D- pad
 order up with both J1's A6/A7 mirror pins and J2's fixed pad order, so the
@@ -721,38 +733,13 @@ violations, 0 unconnected items**; `check_footprints.py --board` →
 **158/158**; a second `--apply-fix` run reports **0 silk texts bumped, 0
 overrides applied** (zone refill still runs, unchanged geometry).
 
-## Board (H3 recovery — regenerated and routed, 2026-09-11)
+## Board (H3g U1 fan-through, 2026-09-12)
 
-`aius-carrier.kicad_pcb` is regenerated from the netlist scaffold
-(`scaffold_pcb.py` → `route_export_dsn.py` → Freerouting → `route_import_ses.py`
-→ `route_cleanup.py`) and no longer carries the rejected 2026-08-16 autoroute.
-The companion `aius-carrier.kicad_pro` keeps its schematic-side settings
-(`sheets`, `schematic.top_level_sheets`, etc.) and gains the scaffold's four net
-classes (`Power`/`USB90`/`Eth100`/`Default`) merged in rather than replaced
-wholesale; a subsequent pcbnew save through the routing pipeline round-trips the
-file to KiCad 10.0.4's full project schema (adds default keys such as
-`rule_severities`, `teardrop_options`; drops nothing).
-
-DRC against the fab rule set (`--severity-all`) is now **0 violations, 0
-unconnected items** at `7aed113`, after `route_gnd_stitch.py` closed the
-17-item GND punch-list this section previously reported (17 new stitching
-vias, 11 connecting tracks). The board carries 578 tracks and 73 vias, and
-0 tracks land on `In1.Cu`/`In2.Cu` — confirmed both by the `.kicad_dru`
-blanket ban (0 violations) and a direct layer-membership check.
-`route_export_dsn.py`'s Specctra DSN correctly carries each net's assigned
-class (`Power`/`USB90`/`Eth100`, not one collapsed 0.20 mm class):
-`grep '(class'`/`(rule (width` on the exported DSN shows `Power,Default` at
-500/150, `USB90,Default` at 251/150 and `Eth100,Default` at 201/150
-(thousandths of a mm), plus `kicad_default` at 200/150 for everything else —
-no fix was needed to the script.
-
-DRC-clean does not mean order-ready: the H3e second review pass (2026-09-11)
-measured the routed geometry directly and found every differential pair
-single-ended rather than coupled, and both GND planes heavily slotted by the
-0.5 mm zone clearance — neither shows up in a connectivity-only DRC pass. The
-fixes in progress for both are tracked in the owning plan's H3e section.
-
-The manufacturing package (`export_fab.sh`) exports cleanly against the routed
-board (Gerbers, drill, CPL, STEP, BOM); this is a review/quote snapshot, not
-order-ready. The owning plan is
-[`aius-h2-h3-manufacturing.md`](../docs/plans/aius-h2-h3-manufacturing.md).
+`aius-carrier.kicad_pcb` regenerates from the netlist scaffold at `d3a38a5` via
+the routing pipeline, closing the U1-pin-3 GND residual the prior pass left open.
+USB device routes hand-scripted through U1 at 0 vias. USB host, ETH RX and ETH TX
+stand on Freerouting's own result (skew 3.058/3.368/2.238 mm, within the 5 mm
+accepted-pair contract). Gates: `kicad-cli pcb drc --severity-all` **0/0**,
+`check_dfm.sh` **0**, `check_routing_geometry.py` **0 arcs/0 off-grid**,
+`check_footprints.py --board` **158/158**, `export_fab.sh` clean. Plan:
+[aius-h2-h3-manufacturing.md](../docs/plans/aius-h2-h3-manufacturing.md).

@@ -16,35 +16,32 @@ of the 15-degree-multiple contract this board's fab review requires) --
 `_insert_lateral_tooth` and `_detour_around_pad_row` are the two primitives
 every detour in this script builds on, specifically so a growing
 avoidance amplitude never drifts a bend off that grid. USB host and
-Ethernet TX route at 0 vias, entirely on F.Cu. Rotating U1 180 degrees
+Ethernet TX route at 0 vias, entirely on F.Cu. U1 sits at 0 degrees
 (`scaffold_pcb.py` PLACEMENT -- a symmetric ESD chip with no directional
-meaning) lines its own D+/D- pad order up with J1's A6/A7 mirror pins and
-J2's fixed pad order, so the whole J1-to-U1-to-J2 chain *would* route at
-0 vias on that basis alone. J1's own B6/A7/A6/B7 mirror-pin interleaving no
-longer forces the *bridge ties themselves* to cross (H3h, see
-`_route_j1_via_free_bridge`) -- each mirror pin's bridge now dips off the
-row on its own side (D+ above, D- below) instead of sharing the row's own
-height, so the two bridges' interleaved spans never actually occupy the
-same territory, genuinely 0 vias for that bond. But A6's own bridge, going
-above the row, boxes A7 in on three sides (its own two "legs" plus the flat
-top -- J1's exact 0.5 mm pitch centres that bridge's span on A7 the same
-way it already centres the connector's own order-reversal fact), so A7's
-own continuing trunk to U1 cannot leave from A7 itself any more; it launches
-from B7 instead (bonded to A7 by its own via-free bridge), which sits on
-the *wrong* side of the coupled pair for this corridor and needs the same
-kind of disclosed via pair ETH_RXP/ETH_RXN already needs, for the same
-underlying reason -- see `_route_usb_device_pair`'s own comment for the
-full argument (and why no F.Cu-only exit shape or B.Cu dip placement
-avoids it). ETH_RXP/ETH_RXN's own disclosed via pair: J20's magjack pin
-field and the RXP/RXN-to-J18 cable-pin contract (`ethernet.json`, "1 RX+,
-2 RX-, ... 6 TX+") fix ETH_TX and ETH_RX to *opposite* handedness
-conventions at J18 (confirmed by direct pad-position measurement), so no
-single J18 rotation can satisfy both -- rotating J18 to fix RX's crossing
-measurably breaks TX's own 0-via route instead. Both disclosed pairs print
-a `DISCLOSED EXCEPTION` line at run time. J2 (the USB-A jack) may be
-relocated/rotated freely per an design decision, but was not needed: the U1
-rotation above already clears the J1-to-J2 chain's own order reversal
-without touching J2.
+meaning), which lines its own pins 1/2 up DP-left/DM-right -- the same
+handedness J1's own via-free B6/B7 mirror-pin bridges exit with (H3h, see
+`_route_j1_via_free_bridge`; each bridge dips off the row on its own side,
+D+ above / D- below, so the two bridges' interleaved spans never occupy the
+same territory, genuinely 0 vias for that bond, and each only boxes in the
+row's *other* mirror pin -- A7 for the D+ bridge, A6 for the D- bridge --
+never the primary pad itself). B6/B7 (not A6/A7) are therefore this pair's
+own primary J1 hop (PAIR_SPECS), so the whole J1-to-U1 leg routes as an
+ordinary coupled hop: 0 vias, 0 crossings (H3i, 2026-09-12). J2's own fixed
+pad order (DM-left/DP-right) is the opposite handedness from U1's, so the
+pair's one unavoidable crossing lands on the open U1-to-J2 run instead,
+placed at that run's own midpoint (comfortably clear of both ends) --
+see `_route_usb_device_pair`'s own comment for the full argument.
+ETH_RXP/ETH_RXN's own disclosed via pair: J20's magjack pin field and the
+RXP/RXN-to-J18 cable-pin contract (`ethernet.json`, "1 RX+, 2 RX-, ... 6
+TX+") fix ETH_TX and ETH_RX to *opposite* handedness conventions at J18
+(confirmed by direct pad-position measurement), so no single J18 rotation
+can satisfy both -- rotating J18 to fix RX's crossing measurably breaks
+TX's own 0-via route instead. Both disclosed pairs print a
+`DISCLOSED EXCEPTION` line at run time. J2 (the USB-A jack) may be
+relocated/rotated freely per an design decision, but was not needed: U1's own
+rotation clears the J1-to-U1 leg's order reversal without touching J2, and
+the residual crossing this leaves on the U1-to-J2 leg is placed well clear
+of both connectors instead.
 
 This script also now avoids real foreign pads, not just foreign tracks: it
 gathers every pad on the board that is not part of a leg's own P or N net
@@ -154,19 +151,42 @@ VIA_DRILL_MM = 0.30
 # standoff clamp to actually bind.
 MIN_VIA_STANDOFF_FROM_PAD_MM = 1.05
 
-# Standoff for `_route_crossing_leg`'s own transition via from an SMD
-# endpoint with no drill of its own to collide with (unlike
-# MIN_VIA_STANDOFF_FROM_PAD_MM's own through-hole case) -- used for J1's own
-# B7 launch in `_route_usb_device_pair` (H3h). Swept empirically against
-# this leg's own real geometry: 0.1 left the dip's own via close enough to
-# A6's own pad for a real `kicad-cli pcb drc` `clearance` finding; 0.5 moved
-# the dip late enough to re-collide with P's own coupled offset line instead
-# (the same self-clearance failure mode a plain vertical A7 exit hit before
-# this leg moved to B7 at all). 0.2 is the best point found in that bounded
-# sweep (H3c) -- it does not fully clear either neighbour (a residual
-# `clearance`/`hole_clearance` finding against A6 remains, disclosed rather
-# than chased further), but it is materially better than either extreme.
-J1_CROSSING_VIA_STANDOFF_MM = 0.2
+# H3i U1-to-J2 crossing placement (see `_route_usb_device_pair`): half the
+# span of the short local "swap leg" the pair's one unavoidable crossing
+# happens on, bracketed on either side by a plain coupled-pitch extension --
+# keeps the crossing's own diagonal (and therefore the order-swap point
+# `_dip_across_paths` finds) localised to that short span around the run's
+# own midpoint, rather than the shape `_route_crossing_leg` would otherwise
+# produce hugging one of the leg's two real endpoints (U1's fan-out or J2)
+# when handed the endpoints directly.
+U1_J2_CROSSING_HALF_SPAN_MM = 1.5
+
+# Pitch the U1-to-J2 pair fans out to for the crossing itself (see
+# `_route_usb_device_pair`), replacing the coupled USB90 pitch (~0.4 mm) for
+# just that local span. At the coupled pitch the crossing's own transition
+# via sits close enough to the *other*, undipped line's own diagonal to
+# violate its real clearance -- measured directly (a `kicad-cli pcb drc`
+# `clearance` finding against the via, not just a same-layer track gap
+# `_route_crossing_leg`'s own self-check ever samples): the via's real floor
+# against foreign copper is a via radius (0.3 mm) plus the netclass gap
+# (0.15 mm) plus a track half-width (0.1255 mm), ~0.58 mm, and at the
+# coupled pitch the perpendicular distance from the via to the other line's
+# own diagonal is only pitch/sqrt(2) =~ 0.28 mm -- short regardless of the
+# dip's own margin, since growing the margin only moves the via *along* the
+# other line's diagonal, never away from it. Doubling the pitch to 2 mm
+# during the crossing (the same 45-degree fan-out/fan-in primitive as the
+# U1 GND-clearance fan above) makes that same distance ~1.41 mm, comfortably
+# past the 0.58 mm floor.
+U1_J2_CROSSING_PITCH_MM = 2.0
+
+# Standoff for the U1-to-J2 crossing's own transition via, overriding
+# `_route_crossing_leg`'s default (`MIN_VIA_STANDOFF_FROM_PAD_MM`, sized for
+# a through-hole neighbour): this crossing's own endpoints (`wide_p_lo`/
+# `wide_n_lo`/`wide_p_hi`/`wide_n_hi` in `_route_usb_device_pair`) are
+# synthetic waypoints, not real pads, so there is no drilled hole nearby to
+# protect -- zero lets the dip cover the order-swap diagonal from its own
+# first point rather than clamping past a real portion of it.
+U1_J2_CROSSING_VIA_STANDOFF_MM = 0.0
 
 # H3h J1 via-free mirror-pin bridge (see `_route_j1_via_free_bridge`): each of
 # J1's two bridges dips off the row's own pad-height span entirely -- one
@@ -204,25 +224,27 @@ J1_BRIDGE_INSET_FRACTION = 0.02
 PAIR_SPECS = [
     {
         # J1's stacked A/B mirror pins carry identical nets but opposite
-        # left/right order (A6 right of A7; B6 left of B7). U1 is rotated
-        # 180 degrees (scaffold_pcb.py PLACEMENT -- it is a symmetric ESD
-        # chip with no directional/mechanical meaning) so its own D+/D- pad
-        # order flips to DM-left/DP-right, matching J2's fixed DM-left/
-        # DP-right pad order; A6/A7 (also DM-left/DP-right) is therefore the
-        # primary hop, staying coupled with zero vias all the way to J2, and
-        # B6/B7 (the opposite-handed mirror pins) is the bridge -- via-free
-        # (H3h, see `_route_j1_via_free_bridge`), but A6's own bridge then
-        # boxes A7 in, so N/D-'s own leg to U1 needs its own disclosed via
-        # pair instead (see `_route_usb_device_pair`'s own comment): the
-        # connector's physical B/A/A/B row interleaving forces a crossing
-        # somewhere in this corridor regardless of which mirror pin is
-        # chosen primary -- an inherent USB-C topology fact, not fixable by
-        # rotation.
+        # left/right order (A6 right of A7, DM-left/DP-right; B6 left of B7,
+        # DP-left/DM-right). U1 sits at 0 degrees (scaffold_pcb.py PLACEMENT
+        # -- a symmetric ESD chip with no directional/mechanical meaning) so
+        # its own pins 1/2 read DP-left/DM-right too -- matching B6/B7, not
+        # A6/A7 -- so B6/B7 (not A6/A7) is this pair's primary hop, staying
+        # coupled with zero vias, zero crossings all the way to U1, and A6/A7
+        # (the opposite-handed mirror pins) is the bridge -- via-free (H3h,
+        # see `_route_j1_via_free_bridge`); each bridge only boxes in the
+        # *other* mirror pin (A7 for the D+ bridge, A6 for the D- bridge),
+        # never the new primary pad itself, so this leg's own launch needs no
+        # workaround. J2's own fixed pad order (DM-left/DP-right) is the
+        # opposite handedness from U1's, so the pair's one unavoidable
+        # crossing lands on the open U1-to-J2 run instead (see
+        # `_route_usb_device_pair`'s own comment) -- an inherent USB-C
+        # topology fact (someone in this J1-U1-J2 chain must reverse), not
+        # fixable by rotation, just relocatable to the least-congested leg.
         "label": "USB device",
         "p_net": "USB_DP", "n_net": "USB_DM", "class": "USB90",
-        "p_hops": [("J1", "A6"), ("U1", "1"), ("J2", "3")],
-        "n_hops": [("J1", "A7"), ("U1", "2"), ("J2", "2")],
-        "p_bridge": ("J1", "B6"), "n_bridge": ("J1", "B7"),
+        "p_hops": [("J1", "B6"), ("U1", "1"), ("J2", "3")],
+        "n_hops": [("J1", "B7"), ("U1", "2"), ("J2", "2")],
+        "p_bridge": ("J1", "A6"), "n_bridge": ("J1", "A7"),
     },
     {
         "label": "USB host",
@@ -231,16 +253,28 @@ PAIR_SPECS = [
         "n_hops": [("J14", "3"), ("U10", "UHDM")],
     },
     {
-        "label": "ETH TX",
-        "p_net": "ETH_TXP", "n_net": "ETH_TXN", "class": "Eth100",
-        "p_hops": [("J20", "1"), ("J18", "6")],
-        "n_hops": [("J20", "2"), ("J18", "5")],
-    },
-    {
+        # H3j (2026-09-12): routed before ETH TX -- RX's own leg needs the
+        # disclosed crossing fallback (`_route_crossing_leg_avoiding_self_
+        # cross`), which has no obstacle awareness at all (not even real
+        # board pads, let alone a sibling pair's own track), while TX's own
+        # ordinary leg goes through `_route_leg_avoiding_pads`'s ordinary
+        # obstacle-aware retry. Routing RX first and folding its own
+        # finalized track into every later pair's own obstacles
+        # (`sibling_pair_obstacles` in `main`) lets TX's own retry dodge RX,
+        # the only direction this module's own obstacle mechanisms can act
+        # on -- confirmed necessary by a real `kicad-cli pcb drc`
+        # `shorting_items` finding between ETH_TXN and ETH_RXP/ETH_RXN when
+        # TX was routed first instead.
         "label": "ETH RX",
         "p_net": "ETH_RXP", "n_net": "ETH_RXN", "class": "Eth100",
         "p_hops": [("J20", "3"), ("J18", "1")],
         "n_hops": [("J20", "6"), ("J18", "2")],
+    },
+    {
+        "label": "ETH TX",
+        "p_net": "ETH_TXP", "n_net": "ETH_TXN", "class": "Eth100",
+        "p_hops": [("J20", "1"), ("J18", "6")],
+        "n_hops": [("J20", "2"), ("J18", "5")],
     },
 ]
 
@@ -477,26 +511,67 @@ def _insert_lateral_tooth(points: list[Pt], segment_index: int, amplitude_mm: fl
     return points[:segment_index + 1] + tooth + points[segment_index + 1:]
 
 
-def _add_serpentine(points: list[Pt], extra_needed_mm: float, side_sign: float) -> list[Pt]:
-    """Insert one 45-degree meander tooth into the longest straight run of
-    `points` to add exactly extra_needed_mm of path length, deviating away
-    from the paired net. `side_sign` is this net's own offset sign from
-    `_build_leg` (the same sign `_offset_polyline` used to place it on its
-    side of the centerline) -- deviating *further* along that same
-    perpendicular moves away from centerline and therefore away from the
-    other net, which sits on the opposite (-side_sign) side. A single
-    square-cornered tooth of amplitude `a` replacing a straight run of
-    length L adds 2*a*(sqrt(2)-1) of extra length (two 45-degree legs of
-    length a*sqrt(2) each replacing a total run of 2*a along the original
-    direction); solving for a gives the amplitude needed."""
-    lengths = [(index, (b - a).length()) for index, (a, b) in enumerate(zip(points, points[1:]))]
-    index, longest = max(lengths, key=lambda item: item[1])
+def _add_serpentine(points: list[Pt], extra_needed_mm: float, side_sign: float,
+                     width_mm: float | None = None, obstacles: list[tuple[Pt, float]] | None = None,
+                     clearance_mm: float = 0.15) -> list[Pt]:
+    """Insert one 45-degree meander tooth into a straight run of `points` to
+    add exactly extra_needed_mm of path length, deviating away from the
+    paired net. `side_sign` is this net's own offset sign from `_build_leg`
+    (the same sign `_offset_polyline` used to place it on its side of the
+    centerline) -- deviating *further* along that same perpendicular moves
+    away from centerline and therefore away from the other net, which sits
+    on the opposite (-side_sign) side. A single square-cornered tooth of
+    amplitude `a` replacing a straight run of length L adds
+    2*a*(sqrt(2)-1) of extra length (two 45-degree legs of length a*sqrt(2)
+    each replacing a total run of 2*a along the original direction); solving
+    for a gives the amplitude needed.
+
+    When `obstacles`/`width_mm` are given (H3i: a real foreign pad -- e.g.
+    J14's own mounting pad -- can sit directly in the longest run's own
+    path), tries every run longest-first rather than only the single
+    longest, keeping the first violation-free tooth found or, failing that,
+    the least-bad one tried (this module's own bounded-iterations
+    convention) -- a serpentine landing on a real pad is exactly as real a
+    short as any other track doing so, not a style residual."""
+    lengths = sorted(
+        ((index, (b - a).length()) for index, (a, b) in enumerate(zip(points, points[1:]))),
+        key=lambda item: item[1], reverse=True)
     tooth_extra_per_mm_amplitude = 2 * (math.sqrt(2) - 1)
-    amplitude = extra_needed_mm / tooth_extra_per_mm_amplitude
-    amplitude = min(amplitude, longest / 2 - 1e-6)
-    if amplitude <= 0:
-        raise ValueError("no straight run long enough to absorb the required serpentine")
-    return _insert_lateral_tooth(points, index, amplitude, side_sign)
+    amplitude_needed = extra_needed_mm / tooth_extra_per_mm_amplitude
+    # Two independent "best" trackers -- a full-capacity candidate (one
+    # whose own run is long enough to add the entire extra_needed_mm) is
+    # always preferred over a capped one, however small its own violation,
+    # since a capped tooth silently leaves most of the required skew
+    # uncorrected even when it clears every obstacle outright (measured: a
+    # naive single "lowest shortfall wins" comparison picked a capped tooth
+    # on J14's own tiny 0.4 mm lead segment over a full-capacity run with a
+    # small residual, correcting only ~6% of the needed length).
+    best_full_candidate: list[Pt] | None = None
+    best_full_shortfall: float | None = None
+    best_partial_candidate: list[Pt] | None = None
+    best_partial_shortfall: float | None = None
+    for index, longest in lengths:
+        amplitude = min(amplitude_needed, longest / 2 - 1e-6)
+        if amplitude <= 0:
+            continue
+        candidate = _insert_lateral_tooth(points, index, amplitude, side_sign)
+        if obstacles is None or width_mm is None:
+            return candidate
+        violation = _first_pad_violation(candidate, width_mm, obstacles, clearance_mm)
+        shortfall = 0.0 if violation is None else violation[2]
+        is_full_capacity = amplitude >= amplitude_needed - 1e-9
+        if violation is None and is_full_capacity:
+            return candidate
+        if is_full_capacity:
+            if best_full_shortfall is None or shortfall < best_full_shortfall:
+                best_full_shortfall, best_full_candidate = shortfall, candidate
+        elif best_partial_shortfall is None or shortfall < best_partial_shortfall:
+            best_partial_shortfall, best_partial_candidate = shortfall, candidate
+    if best_full_candidate is not None:
+        return best_full_candidate
+    if best_partial_candidate is not None:
+        return best_partial_candidate
+    raise ValueError("no straight run long enough to absorb the required serpentine")
 
 
 def _emit_polyline(board, net, layer: int, width_mm: float, points: list[Pt]) -> list:
@@ -595,53 +670,221 @@ def _exit_point(pad: Pt, exit_direction: Pt | None) -> Pt:
     return pad if exit_direction is None else pad + exit_direction
 
 
-def _leg_lead_from(pad: Pt, exit_point: Pt, target: Pt) -> list[Pt]:
+def _symmetric_pad_approach_fan(offset_end: Pt, pad: Pt, direction: Pt) -> list[Pt]:
+    """H3i symmetric pad-approach fan: the final lead between a coupled
+    offset line's own end (`offset_end`, still at the pair's coupled pitch)
+    and the real pad it terminates at (`pad`, at that pad's own native
+    pitch), when the two pitches differ. Decomposing `pad - offset_end`
+    into its `direction`-parallel and perpendicular components gives the
+    along-leg distance and the pitch difference for *this one line*; the
+    perpendicular component's magnitude is exactly `pitch_difference / 2`
+    for a true differential pair (both pads sit symmetric about the same
+    centreline the coupled offset already used), so a single 45-degree leg
+    of that same length closes it exactly -- the definition of a 45-degree
+    bend is equal along/perpendicular run. Placing that leg immediately
+    before `pad` (a straight run first, the 45-degree leg last) means the
+    fan starts a distance `pitch_difference / 2` before the pad row, landing
+    exactly on the pad's own axis, then continuing zero-length straight into
+    the pad centre -- the docstring's own '~1 mm fan at <=2 mm pitch' shape.
+    Called identically for both P and N (see `_leg_lead_from`/`_leg_lead_to`)
+    -- each line's own perpendicular component is equal in magnitude and
+    opposite in sign, producing the 'one symmetric fan' shape without any
+    joint P/N computation. Falls back to the previous plain `_bend_path` when
+    the pitches already match (nothing to fan) or the leg is too short to fit
+    the fan's own straight run (a genuinely crowded hop -- unchanged from
+    before this fix)."""
+    diff = pad - offset_end
+    perp = _perp(direction)
+    along = diff.x * direction.x + diff.y * direction.y
+    perp_component = diff.x * perp.x + diff.y * perp.y
+    fan_length = abs(perp_component)
+    if fan_length < 1e-6 or abs(along) < fan_length - 1e-9:
+        return _bend_path(offset_end, pad)
+    transition = offset_end + direction * (along - math.copysign(fan_length, along))
+    return _dedup([offset_end, transition, pad])
+
+
+def _lead_avoiding_pads(offset_end: Pt, pad: Pt, direction: Pt,
+                         obstacles: list[tuple[Pt, float]] | None, width_mm: float | None,
+                         clearance_mm: float, max_attempts: int = 20) -> list[Pt]:
+    """`_symmetric_pad_approach_fan`, plus a bounded retry (this module's own
+    convention) that grows a lateral tooth into the straight `offset_end`-to-
+    `pad` chord when the fan's own shape clips a real foreign pad -- e.g.
+    U10's own UHDM/UH5V leads sitting close enough to USBH_DP/USBH_DM's own
+    approach for a real `kicad-cli pcb drc` `shorting_items`/`solder_mask_
+    bridge` finding, not just a tight clearance (design decision, 2026-09-12:
+    the fan need not stay symmetric or short, only >= clearance_mm from
+    everything). `obstacles`/`width_mm` are optional -- omitted, this is
+    exactly `_symmetric_pad_approach_fan` (used by the `_leg_lead_from`/
+    `_leg_lead_to` departure/arrival wrappers before any obstacle is
+    known)."""
+    points = _symmetric_pad_approach_fan(offset_end, pad, direction)
+    if obstacles is None or width_mm is None:
+        return points
+    chord = [offset_end, pad]
+    amplitude = 0.0
+    side = 1.0
+    best_points, best_shortfall = points, None
+    for _attempt in range(max_attempts):
+        violation = _first_pad_violation(points, width_mm, obstacles, clearance_mm)
+        shortfall = 0.0 if violation is None else violation[2]
+        if best_shortfall is None or shortfall < best_shortfall:
+            best_shortfall, best_points = shortfall, points
+        if violation is None:
+            return points
+        obstacle_center, _closest_sample, _ = violation
+        perp = _perp(direction)
+        to_obstacle = obstacle_center - _midpoint(offset_end, pad)
+        obstacle_side = 1.0 if (to_obstacle.x * perp.x + to_obstacle.y * perp.y) >= 0 else -1.0
+        side = -obstacle_side
+        amplitude = min(amplitude + shortfall + width_mm / 2 + clearance_mm + 0.1, MAX_AVOIDANCE_TOOTH_MM)
+        try:
+            points = _insert_lateral_tooth(chord, 0, amplitude, side)
+        except ValueError:
+            break
+    return best_points
+
+
+def _leg_lead_from(pad: Pt, exit_point: Pt, target: Pt, direction: Pt,
+                    obstacles: list[tuple[Pt, float]] | None = None, width_mm: float | None = None,
+                    clearance_mm: float = 0.15) -> list[Pt]:
     """Path from `pad` to `target`, straight to `exit_point` first when it
-    differs from `pad` (see `_exit_point`)."""
+    differs from `pad` (see `_exit_point`); otherwise a symmetric
+    pad-approach fan (`_lead_avoiding_pads`, reversed -- the fan lands at
+    `pad`, the departure end, rather than at `target`), grown clear of any
+    given foreign-pad `obstacles`."""
     if exit_point.x == pad.x and exit_point.y == pad.y:
-        return _bend_path(pad, target)
+        return list(reversed(_lead_avoiding_pads(target, pad, direction * -1.0, obstacles, width_mm, clearance_mm)))
     return _dedup([pad] + _bend_path(exit_point, target))
 
 
-def _leg_lead_to(source: Pt, exit_point: Pt, pad: Pt) -> list[Pt]:
+def _leg_lead_to(source: Pt, exit_point: Pt, pad: Pt, direction: Pt,
+                  obstacles: list[tuple[Pt, float]] | None = None, width_mm: float | None = None,
+                  clearance_mm: float = 0.15) -> list[Pt]:
     """Mirror of `_leg_lead_from` for a path arriving at `pad`."""
     if exit_point.x == pad.x and exit_point.y == pad.y:
-        return _bend_path(source, pad)
+        return _lead_avoiding_pads(source, pad, direction, obstacles, width_mm, clearance_mm)
     return _dedup(_bend_path(source, exit_point) + [pad])
 
 
+# Extra straight-chord margin `_leg_centerline` adds on top of a fan's own
+# pitch-difference requirement when sizing that end's own inset -- see the
+# inset computation's own comment for why a chord sized to the fan alone
+# leaves `_lead_avoiding_pads`'s own perpendicular-tooth retry too little
+# amplitude headroom against a real, tightly-spaced destination pad.
+#
+# H3i re-verification (2026-09-12): reverted from 1.0 back to 0.0 (this
+# constant's own pre-existing default) after a real `check_routing_geometry.py`
+# run against the USB device pair's own U1-to-J2 leg found 7 off-grid
+# bend/angle findings at the narrowed-leg-to-J2 approach -- the wider inset
+# this margin forces there gives `_route_leg_avoiding_pads` a longer raw
+# chord to retry against, and `_lead_avoiding_pads`'s own tooth insertion
+# only stays on the 15-degree grid when the chord it inserts into already
+# is (`_insert_lateral_tooth`'s own docstring), which a raw pad-to-fan chord
+# is not guaranteed to be. At 0.0 the same pair re-routes DRC-clean (0
+# violations) and geometry-clean (0 arcs / 0 off-grid) standalone. This
+# constant was sized for the USB host leg's own approach to U10's tightly
+# packed UHDP/UHDM/UH5V column (see the inset computation's own comment) --
+# moot under the H3i default scope (`--pairs usb-device` only), since that
+# leg is no longer hand-routed by default; re-enable non-zero only alongside
+# re-verifying `--pairs usb-host` standalone.
+LEAD_OBSTACLE_MARGIN_MM = 0.0
+
+
 def _leg_centerline(p_a: Pt, p_b: Pt, n_a: Pt, n_b: Pt, half_pitch_mm: float,
-                     exit_a: Pt | None, exit_b: Pt | None) -> tuple[list[Pt], float]:
+                     exit_a: Pt | None, exit_b: Pt | None
+                     ) -> tuple[list[Pt], float, Pt, Pt]:
     """The centerline + side_sign portion of `_build_leg`, factored out so
     `_route_leg_avoiding_pads` can locate an obstacle against the same base
     geometry every retry targets a tooth into (see `_insert_lateral_tooth`),
-    without re-deriving the exit-point/inset/bend-shape logic itself."""
+    without re-deriving the exit-point/inset/bend-shape logic itself. Also
+    returns the centerline's own near/far segment directions -- the leg's
+    direction of travel at each end -- so `_build_leg` can hand them to
+    `_symmetric_pad_approach_fan` for that end's own pad-approach lead."""
     exit_p_a, exit_n_a = _exit_point(p_a, exit_a), _exit_point(n_a, exit_a)
     exit_p_b, exit_n_b = _exit_point(p_b, exit_b), _exit_point(n_b, exit_b)
-    hop_a, hop_b = _midpoint(exit_p_a, exit_n_a), _midpoint(exit_p_b, exit_n_b)
-    leg_vector = hop_b - hop_a
+    base_hop_a, base_hop_b = _midpoint(exit_p_a, exit_n_a), _midpoint(exit_p_b, exit_n_b)
+    leg_vector = base_hop_b - base_hop_a
     leg_length = leg_vector.length()
+
+    def _resolve(hop_a: Pt, hop_b: Pt) -> tuple[list[Pt], float, Pt, Pt] | None:
+        for diagonal_first in (True, False):
+            candidate = _bend_path(hop_a, hop_b, diagonal_first)
+            near_direction = _unit(candidate[1] - candidate[0])
+            far_direction = _unit(candidate[-1] - candidate[-2])
+            near_sign = _side_sign_at(p_a, candidate[0], near_direction)
+            far_sign = _side_sign_at(p_b, candidate[-1], far_direction)
+            if near_sign == far_sign:
+                return candidate, near_sign, near_direction, far_direction
+        return None
+
+    hop_a, hop_b = base_hop_a, base_hop_b
     if leg_length > 1e-6:
-        inset = min(2 * half_pitch_mm, leg_length * 0.3)
+        base_inset = min(2 * half_pitch_mm, leg_length * 0.3)
         direction = _unit(leg_vector)
-        hop_a = hop_a + direction * inset
-        hop_b = hop_b - direction * inset
-    for diagonal_first in (True, False):
-        candidate = _bend_path(hop_a, hop_b, diagonal_first)
-        near_direction = _unit(candidate[1] - candidate[0])
-        far_direction = _unit(candidate[-1] - candidate[-2])
-        near_sign = _side_sign_at(p_a, candidate[0], near_direction)
-        far_sign = _side_sign_at(p_b, candidate[-1], far_direction)
-        if near_sign == far_sign:
-            return candidate, near_sign
-    raise ValueError(
-        "no 45-degree bend keeps this leg's P/N handedness consistent end to end -- "
-        "the pads' physical winding needs an actual conductor crossing (a via) on this corridor")
+        hop_a = base_hop_a + direction * base_inset
+        hop_b = base_hop_b - direction * base_inset
+
+    resolved = _resolve(hop_a, hop_b)
+    if resolved is None:
+        raise ValueError(
+            "no 45-degree bend keeps this leg's P/N handedness consistent end to end -- "
+            "the pads' physical winding needs an actual conductor crossing (a via) on this corridor")
+
+    if leg_length > 1e-6:
+        # H3i symmetric pad-approach fan: reserve enough straight lead room
+        # at whichever end has a real pin-pitch mismatch for
+        # `_symmetric_pad_approach_fan`'s own 45-degree legs to actually
+        # fit, not just the flat `2 * half_pitch_mm` `base_inset` above uses
+        # -- that flat value left only ~0.5 mm of lead on ETH TX's own
+        # approach to J18 (2 mm native pitch vs ~0.35 mm coupled), short of
+        # the ~0.82 mm the fan needs, so the fan's own
+        # `abs(along) < fan_length` guard silently fell back to the old
+        # naive `_bend_path` lead there -- measured directly (a real
+        # `kicad-cli pcb drc` 0.047 mm self-clearance finding at the
+        # unfanned approach). Each end's own native half-pitch, read off its
+        # real pads, sizes that end's own inset independently. Re-verified
+        # against the same handedness check `base_inset` already passed
+        # (never assumed): a wider inset shortens the centerline enough, on
+        # some corridors, to flip which 45-degree bend shape keeps P/N
+        # consistent, or to spuriously pass a corridor that actually needs a
+        # via crossing (measured directly on ETH RX) -- keep the wider inset
+        # only when it re-confirms the same non-crossing verdict.
+        # The extra `+ LEAD_OBSTACLE_MARGIN_MM` beyond the fan's own
+        # pitch-difference requirement gives `_lead_avoiding_pads`'s own
+        # perpendicular-tooth retry a long enough chord to actually clear a
+        # real foreign pad near the destination -- `_insert_lateral_tooth`
+        # caps its own amplitude at half the chord length, so a chord sized
+        # to the fan alone (e.g. ~1.1 mm approaching U10's own UHDP/UHDM,
+        # each a large 1.7x1.7 mm THT pad needing ~1.48 mm real clearance
+        # from a neighbour on the same column) can never reach the
+        # amplitude a genuinely tight destination needs, independent of how
+        # far `MAX_AVOIDANCE_TOOTH_MM` itself allows -- measured directly (a
+        # real `kicad-cli pcb drc` `shorting_items` finding against U10's
+        # own UHDM pad, unchanged by raising the global cap alone).
+        native_half_a = (p_a - n_a).length() / 2
+        native_half_b = (p_b - n_b).length() / 2
+        inset_a = min(max(2 * half_pitch_mm, abs(native_half_a - half_pitch_mm) + LEAD_OBSTACLE_MARGIN_MM),
+                       leg_length * 0.3)
+        inset_b = min(max(2 * half_pitch_mm, abs(native_half_b - half_pitch_mm) + LEAD_OBSTACLE_MARGIN_MM),
+                       leg_length * 0.3)
+        if inset_a > base_inset or inset_b > base_inset:
+            direction = _unit(leg_vector)
+            wide_hop_a = base_hop_a + direction * inset_a
+            wide_hop_b = base_hop_b - direction * inset_b
+            wide_resolved = _resolve(wide_hop_a, wide_hop_b)
+            if wide_resolved is not None:
+                resolved = wide_resolved
+
+    return resolved
 
 
 def _build_leg(p_a: Pt, p_b: Pt, n_a: Pt, n_b: Pt, half_pitch_mm: float,
                 exit_a: Pt | None = None, exit_b: Pt | None = None,
-                avoidance_teeth: dict[int, tuple[float, float]] | None = None
+                avoidance_teeth: dict[int, tuple[float, float]] | None = None,
+                width_mm: float | None = None, clearance_mm: float = 0.15,
+                p_obstacles: list[tuple[Pt, float]] | None = None,
+                n_obstacles: list[tuple[Pt, float]] | None = None
                 ) -> tuple[list[Pt], list[Pt], float]:
     """One coupled leg between two hops: centerline from the P/N midpoints,
     offset +-half_pitch_mm per segment, then a lead from each real pad
@@ -693,10 +936,19 @@ def _build_leg(p_a: Pt, p_b: Pt, n_a: Pt, n_b: Pt, half_pitch_mm: float,
     segment's own index. Every point this produces stays on the
     straight-segments, 15-degree-multiple-bends grid -- unlike an earlier
     arbitrary bend-point nudge this replaced, which could tilt the leg's
-    own segments off that grid entirely."""
+    own segments off that grid entirely.
+
+    `width_mm`/`clearance_mm`/`p_obstacles`/`n_obstacles`, when given, make
+    each end's own pad-approach lead obstacle-aware too (`_leg_lead_from`/
+    `_leg_lead_to`'s own `_lead_avoiding_pads`) -- the interior avoidance
+    teeth above never reach the lead itself (a fixed function of the pad and
+    the offset line's own endpoint), so a real foreign pad sitting close to
+    a fanned-out approach (U10's own UHDM/UH5V leads against USBH_DP/
+    USBH_DM) needs this second, independent mechanism."""
     exit_p_a, exit_n_a = _exit_point(p_a, exit_a), _exit_point(n_a, exit_a)
     exit_p_b, exit_n_b = _exit_point(p_b, exit_b), _exit_point(n_b, exit_b)
-    centerline, side_sign = _leg_centerline(p_a, p_b, n_a, n_b, half_pitch_mm, exit_a, exit_b)
+    centerline, side_sign, near_direction, far_direction = _leg_centerline(
+        p_a, p_b, n_a, n_b, half_pitch_mm, exit_a, exit_b)
     if avoidance_teeth is not None:
         for segment_index in sorted(avoidance_teeth, reverse=True):
             amplitude_mm, tooth_side = avoidance_teeth[segment_index]
@@ -705,12 +957,27 @@ def _build_leg(p_a: Pt, p_b: Pt, n_a: Pt, n_b: Pt, half_pitch_mm: float,
     p_offset = _offset_polyline(centerline, side_sign, half_pitch_mm)
     n_offset = _offset_polyline(centerline, -side_sign, half_pitch_mm)
 
-    p_points = _dedup(_leg_lead_from(p_a, exit_p_a, p_offset[0])[:-1]
+    p_points = _dedup(_leg_lead_from(p_a, exit_p_a, p_offset[0], near_direction,
+                                      p_obstacles, width_mm, clearance_mm)[:-1]
                        + p_offset
-                       + _leg_lead_to(p_offset[-1], exit_p_b, p_b)[1:])
-    n_points = _dedup(_leg_lead_from(n_a, exit_n_a, n_offset[0])[:-1]
+                       + _leg_lead_to(p_offset[-1], exit_p_b, p_b, far_direction,
+                                      p_obstacles, width_mm, clearance_mm)[1:])
+    # N's own lead-avoidance obstacles fold in P's own just-finalized points
+    # too (`_polyline_obstacles`, computed first, above) -- each side's own
+    # perpendicular-tooth retry only ever knows about *foreign* pads
+    # (`_lead_avoiding_pads` never sees its own coupled partner), so both
+    # sides independently pushing away from the same nearby foreign pad can
+    # converge toward *each other* instead (measured: a real `kicad-cli pcb
+    # drc` self-clearance short between P's and N's own leads at U10, each
+    # individually clear of every foreign pad).
+    n_obstacles_with_p = n_obstacles
+    if width_mm is not None:
+        n_obstacles_with_p = (n_obstacles or []) + _polyline_obstacles(p_points, width_mm)
+    n_points = _dedup(_leg_lead_from(n_a, exit_n_a, n_offset[0], near_direction,
+                                      n_obstacles_with_p, width_mm, clearance_mm)[:-1]
                        + n_offset
-                       + _leg_lead_to(n_offset[-1], exit_n_b, n_b)[1:])
+                       + _leg_lead_to(n_offset[-1], exit_n_b, n_b, far_direction,
+                                      n_obstacles_with_p, width_mm, clearance_mm)[1:])
     return p_points, n_points, side_sign
 
 
@@ -746,8 +1013,12 @@ def _first_pad_violation(points: list[Pt], width_mm: float, obstacles: list[tupl
 # avoidance tooth before giving up on this obstacle and keeping its
 # least-bad attempt (this project's own "bounded iterations, stop at
 # diminishing returns" convention, H3c) -- a genuinely blocked corridor
-# should stop growing rather than produce an absurdly large detour.
-MAX_AVOIDANCE_TOOTH_MM = 4.8
+# should stop growing rather than produce an absurdly large detour. Raised
+# from 4.8 (design decision, 2026-09-12: coupling gap/uncoupled-section length
+# are no longer acceptance criteria, so a larger, simpler detour that
+# actually clears a real pad -- e.g. U10's own tightly-spaced UHDP/UHDM/
+# UH5V row -- beats a tighter one that still shorts).
+MAX_AVOIDANCE_TOOTH_MM = 12.0
 
 
 def _route_leg_avoiding_pads(p_a: Pt, p_b: Pt, n_a: Pt, n_b: Pt, half_pitch_mm: float, width_mm: float,
@@ -781,14 +1052,16 @@ def _route_leg_avoiding_pads(p_a: Pt, p_b: Pt, n_a: Pt, n_b: Pt, half_pitch_mm: 
     without ever reaching zero shortfall, and the caller's own DRC-facing
     report should reflect the best geometry actually tried, not whichever
     happened to be computed last."""
-    base_centerline, _base_side_sign = _leg_centerline(p_a, p_b, n_a, n_b, half_pitch_mm, exit_a, exit_b)
+    base_centerline, _base_side_sign, _base_near_direction, _base_far_direction = _leg_centerline(
+        p_a, p_b, n_a, n_b, half_pitch_mm, exit_a, exit_b)
     avoidance_teeth: dict[int, tuple[float, float]] = {}
     best_shortfall: float | None = None
     best_points: tuple[list[Pt], list[Pt], float] | None = None
     for _attempt in range(max_attempts):
         try:
             p_points, n_points, leg_side_sign = _build_leg(
-                p_a, p_b, n_a, n_b, half_pitch_mm, exit_a, exit_b, avoidance_teeth or None)
+                p_a, p_b, n_a, n_b, half_pitch_mm, exit_a, exit_b, avoidance_teeth or None,
+                width_mm, clearance_mm, p_obstacles, n_obstacles)
         except ValueError:
             # A tooth grew past its segment's own length (too short to
             # absorb it) -- stop growing and keep the best attempt found.
@@ -928,14 +1201,10 @@ def _route_crossing_leg(p_a: Pt, p_b: Pt, n_a: Pt, n_b: Pt, dip_margin_mm: float
     # n_a/n_b are usually a real connector's own pins (through-hole or SMD
     # with a neighbour's drilled hole nearby) -- keep the full pad standoff
     # by default so a transition via never lands on a drilled hole.
-    # `via_standoff_mm` is overridable for an SMD endpoint with no nearby
-    # drill of its own to collide with (see J1's own B7 launch in
-    # `_route_usb_device_pair`): the default standoff, sized for a
-    # through-hole neighbour, clamps the dip's own start well past where the
-    # two paths actually swap order for a short corridor like that one --
-    # confirmed by a real same-pair self-clearance violation (the dip's own
-    # growing-margin retry cannot fix this, since the standoff clamp -- not
-    # the margin -- is what is binding).
+    # `via_standoff_mm` is overridable for a short corridor or an SMD
+    # endpoint with no nearby drill of its own to collide with, where the
+    # default (sized for a through-hole neighbour) would clamp the dip's own
+    # start well past where the two paths actually swap order.
     n_runs = _dip_across_paths(p_path, n_path, n_a, n_b, dip_margin_mm, via_standoff_mm=via_standoff_mm)
     return [(p_path, pcbnew.F_Cu)], n_runs
 
@@ -1170,7 +1439,13 @@ def _emit_runs(board, net, width_mm: float, runs: list[tuple[list[Pt], int]]) ->
 # then fans back to the coupled pitch before continuing to J2 -- 0 vias, per
 # the module's own "read positions off the board" convention.
 U1_FAN_CLEARANCE_MM = 0.15
-U1_FAN_MARGIN_AFTER_GND_MM = 0.15
+# The widened plateau must also leave room for U1's GND stitch via (placed by
+# route_gnd_stitch.py in line with pin 3, on the side away from the pin row):
+# pitch >= via diameter + 2 x clearance + track width, and the plateau runs on
+# past the pad edge by via diameter + 2 x clearance before fanning back in.
+# Under the 2026-09-12 tolerance ruling the extra uncoupled length is free.
+U1_FAN_VIA_PITCH_MIN_MM = VIA_DIAMETER_MM + 2 * U1_FAN_CLEARANCE_MM
+U1_FAN_MARGIN_AFTER_GND_MM = VIA_DIAMETER_MM + 2 * U1_FAN_CLEARANCE_MM
 U1_FAN_PITCH_ROUND_STEP_MM = 0.05
 
 
@@ -1179,22 +1454,87 @@ def _round_up_to_step_mm(value_mm: float, step_mm: float) -> float:
     return math.ceil(value_mm / step_mm - 1e-9) * step_mm
 
 
+def _pair_slug(label: str) -> str:
+    return label.lower().replace(" ", "-")
+
+
+def _select_pair_specs(pairs_argument: str | None) -> list[dict]:
+    """Filter `PAIR_SPECS` down to the `--pairs` selection (comma-separated
+    slugs, e.g. `usb-device,eth-tx`). Default (no `--pairs`): USB device
+    only -- the H3i ruling hand-routes just that pair and leaves the other
+    three to Freerouting (design decisions 2026-09-12: relaxed skew/via/layer
+    tolerances mean Freerouting's own USBH/ETH results already stood on
+    their own, 0.15/2.24/3.37 mm skew)."""
+    known = {_pair_slug(spec["label"]): spec for spec in PAIR_SPECS}
+    if not pairs_argument:
+        selected = ["usb-device"]
+    else:
+        selected = [slug.strip() for slug in pairs_argument.split(",") if slug.strip()]
+    unknown = [slug for slug in selected if slug not in known]
+    if unknown:
+        raise ValueError(f"unknown --pairs value(s) {unknown!r} -- known: {sorted(known)}")
+    return [known[slug] for slug in selected]
+
+
+def _net_track_stats(board, net) -> tuple[float, int, set[str]]:
+    """Sum this net's currently-routed track length (mm), via count, and the
+    set of copper layers its tracks occupy -- reads the board as-is, adds or
+    removes nothing."""
+    length_mm = 0.0
+    via_count = 0
+    layer_names: set[str] = set()
+    net_code = net.GetNetCode()
+    for track in board.GetTracks():
+        if track.GetNetCode() != net_code:
+            continue
+        if isinstance(track, pcbnew.PCB_VIA):
+            via_count += 1
+            continue
+        length_mm += track.GetLength() / 1e6
+        layer_names.add("F.Cu" if track.GetLayer() == pcbnew.F_Cu else "B.Cu")
+    return length_mm, via_count, layer_names
+
+
+def _measure_pairs(board_path: str) -> int:
+    """`--measure`: report P/N length, skew, via count and layers for all
+    four `PAIR_SPECS` pairs exactly as currently routed on `board_path`,
+    independent of which pairs this run's own `--pairs` selection routed --
+    no track or via is added, removed, or moved. Used post-pipeline (after
+    Freerouting + `route_import_ses.py` + cleanup) to check the relaxed
+    skew tolerance (design decisions 2026-09-12, MAX_SKEW_MM's own 0.5 mm
+    constant is this script's own tighter hand-routing target, not that
+    5 mm acceptance bar) against every pair regardless of routing origin."""
+    board = pcbnew.LoadBoard(board_path)
+    for spec in PAIR_SPECS:
+        p_net = _find_net(board, spec["p_net"])
+        n_net = _find_net(board, spec["n_net"])
+        p_length, p_vias, p_layers = _net_track_stats(board, p_net)
+        n_length, n_vias, n_layers = _net_track_stats(board, n_net)
+        skew_mm = p_length - n_length
+        layer_names = sorted(p_layers | n_layers)
+        print(f"== {spec['label']}: P {p_length:.3f} mm, N {n_length:.3f} mm, "
+              f"skew {skew_mm:.3f} mm, vias {p_vias + n_vias}, layers {layer_names}", flush=True)
+    return 0
+
+
 def _route_usb_device_pair(board, p_pads: list, n_pads: list,
                             p_obstacles: list[tuple[Pt, float]], n_obstacles: list[tuple[Pt, float]],
                             half_pitch_mm: float, width_mm: float, gap_mm: float,
-                            foreign_candidates: list, blocked_ids: set[int], n_bridge_pad
+                            foreign_candidates: list, blocked_ids: set[int],
+                            p_bridge_points: list[Pt]
                             ) -> tuple[list, list, float, float, float, set[str], dict, bool]:
     """Route the USB device pair's J1->U1->J2 corridor (`p_pads`/`n_pads` are
     the three resolved (J1, U1, J2) pads for each side, in that order) as one
     fan-through run per net instead of the ordinary two independent
-    `_build_leg` hops -- see the module comment above. `n_bridge_pad` is
-    N/D-'s own J1 mirror pin (B7) -- see the comment at its own call site
-    below for why this leg launches from there instead of N's own primary
-    hop pad (A7). Returns (p_legs, n_legs, p_length, n_length,
-    last_side_sign, ripped_nets, report, needed_crossing) -- the first seven
-    in the same shapes `main`'s generic per-hop loop produces, so the
-    caller's skew-matching and bridge-routing code afterward is unchanged;
-    `needed_crossing` tells `main` whether to print its own disclosure line."""
+    `_build_leg` hops -- see the module comment above. `p_bridge_points` is
+    P/D+'s own already-computed J1 via-free bridge polyline (`main`'s own
+    `bridge_runs["p"]`), needed to clear its own highest point before this
+    leg's own J1-to-U1 lead starts. Returns (p_legs, n_legs, p_length,
+    n_length, last_side_sign, ripped_nets, report, needed_crossing) -- the
+    first seven in the same shapes `main`'s generic per-hop loop produces, so
+    the caller's skew-matching and bridge-routing code afterward is
+    unchanged; `needed_crossing` tells `main` whether to print its own
+    disclosure line (always true here -- see below)."""
     p_j1, p_u1, p_j2 = (_pad_point(pad) for pad in p_pads)
     n_j1, n_u1, n_j2 = (_pad_point(pad) for pad in n_pads)
     if abs(p_u1.y - n_u1.y) > 1e-6:
@@ -1215,71 +1555,119 @@ def _route_usb_device_pair(board, p_pads: list, n_pads: list,
 
     coupled_half = half_pitch_mm
     native_half = abs(p_u1.x - n_u1.x) / 2
-    full_pitch_min = gnd_width_mm + 2 * U1_FAN_CLEARANCE_MM + width_mm
+    full_pitch_min = max(gnd_width_mm + 2 * U1_FAN_CLEARANCE_MM,
+                         U1_FAN_VIA_PITCH_MIN_MM) + width_mm
     widened_half = _round_up_to_step_mm(full_pitch_min, U1_FAN_PITCH_ROUND_STEP_MM) / 2
     fan_out_span = (native_half - coupled_half) + (widened_half - native_half)
     fan_in_span = widened_half - coupled_half
 
     y_native = p_u1.y
-    y_entry_boundary = y_native - (native_half - coupled_half)
-    y_wide_start = y_native + (widened_half - native_half)
-    y_wide_end = gnd_point.y + gnd_half_height_mm + U1_FAN_MARGIN_AFTER_GND_MM
-    y_exit_boundary = y_wide_end + fan_in_span
+    # H3i: which side of the native pin row GND falls on flips with U1's own
+    # rotation (H3g assumed GND trails the row on the J2/exit side; at 0
+    # degrees GND instead leads it on the J1/entry side -- read off the
+    # board every run rather than assumed, so this recipe keeps working
+    # under either rotation). The widened plateau that clears GND always
+    # goes on GND's own side; the opposite side is a plain coupled<->native
+    # transition with nothing left to clear.
+    if gnd_point.y < y_native:
+        y_wide_inner = y_native - (widened_half - native_half)
+        y_wide_outer = gnd_point.y - gnd_half_height_mm - U1_FAN_MARGIN_AFTER_GND_MM
+        y_entry_boundary = y_wide_outer - fan_in_span
+        y_exit_boundary = y_native + (native_half - coupled_half)
+        widened_ys = (y_wide_outer, y_wide_inner)
+    else:
+        y_wide_start = y_native + (widened_half - native_half)
+        y_wide_end = gnd_point.y + gnd_half_height_mm + U1_FAN_MARGIN_AFTER_GND_MM
+        y_entry_boundary = y_native - (native_half - coupled_half)
+        y_exit_boundary = y_wide_end + fan_in_span
+        widened_ys = (y_wide_start, y_wide_end)
 
     def _fan_points(side: float) -> list[Pt]:
         return [
             Pt(centreline_x + side * coupled_half, y_entry_boundary),
-            Pt(centreline_x + side * widened_half, y_wide_start),
-            Pt(centreline_x + side * widened_half, y_wide_end),
+            Pt(centreline_x + side * widened_half, widened_ys[0]),
+            Pt(centreline_x + side * widened_half, widened_ys[1]),
             Pt(centreline_x + side * coupled_half, y_exit_boundary),
         ]
 
     p_fan, n_fan = _fan_points(p_side), _fan_points(n_side)
 
-    # A7/D-'s own row exit cannot leave from A7 itself any more (H3h): A6's
-    # own via-free bridge (`_route_j1_via_free_bridge`) dips to the *board*
-    # side directly above A7's own column -- J1's exact 0.5 mm mirror-pin
-    # pitch centres that bridge's span on A7 the same way it already centres
-    # the connector's own inherent order-reversal fact (see the README's own
-    # "not converted" note) -- so any path leaving A7 upward is boxed in on
-    # three sides by the bridge's own two "legs" and flat top, confirmed by a
-    # real same-pair self-clearance violation at every F.Cu-only exit shape
-    # tried (a plain vertical, a 45-degree sideways dodge in either
-    # direction), and by a real `kicad-cli pcb drc` `hole_clearance`/
-    # `hole_to_hole`/`clearance` finding at every via size and standoff tried
-    # for a B.Cu dip landing anywhere inside that same box (J1's 0.5 mm pitch
-    # leaves less room than any board-legal via needs from the row's own
-    # neighbouring pads, let alone the bridge's own copper too). A7 is
-    # already bonded to B7 by its own via-free bridge (bullet 1), so this
-    # leg instead launches from B7 -- clear of the box entirely, at the cost
-    # of needing the same disclosed via pair `_route_crossing_leg` already
-    # gives ETH_RXP/ETH_RXN for an inherent order reversal: B7 sits on the
-    # *wrong* side of the coupled pair for this corridor (J1's own B6/A7/A6/
-    # B7 interleaving again), so its path to the fan entry must swap sides
-    # with P's own, provably impossible on one copper layer alone.
-    n_bridge_point = _pad_point(n_bridge_pad)
-    # B7 is SMD (no drill of its own to collide with), unlike the
-    # through-hole neighbours `_route_crossing_leg`'s own default standoff
-    # (MIN_VIA_STANDOFF_FROM_PAD_MM) is sized for -- that default clamps the
-    # dip's own start well past the point where P's and N's raw paths
-    # actually swap order on this short, near-vertical corridor (P's own
-    # lead converges to its coupled column almost immediately off A6), which
-    # a real same-pair self-clearance violation confirmed the dip's own
-    # growing-margin retry cannot fix (the standoff clamp, not the margin,
-    # is what is binding). J1_CROSSING_VIA_STANDOFF_MM matches the smaller
-    # standoff an SMD pad needs instead.
-    p_pre_runs, n_pre_runs = _route_crossing_leg_avoiding_self_cross(
-        p_j1, p_fan[0], n_bridge_point, n_fan[0], width_mm, gap_mm,
-        via_standoff_mm=J1_CROSSING_VIA_STANDOFF_MM)
-    p_post, n_post, post_side_sign = _route_leg_avoiding_pads(
-        p_fan[-1], p_j2, n_fan[-1], n_j2, coupled_half, width_mm,
-        p_obstacles, n_obstacles, gap_mm, exit_a=None, exit_b=None)
+    # J1 -> U1: an ordinary coupled hop, 0 vias, 0 crossings -- U1's own
+    # DP-left/DM-right pin order (0 degrees, scaffold_pcb.py PLACEMENT)
+    # matches this pair's own primary J1 hop (B6/B7, also DP-left/DM-right;
+    # see the PAIR_SPECS "USB device" comment), so no handedness reversal
+    # exists on this leg at all. Both exits go straight +Y first
+    # (`PAD_ROW_EXIT_DIRECTION`'s own mechanism, given a local displacement
+    # here rather than a table entry) before converging with 45-degree legs
+    # to the coupled pitch: P's own via-free bridge (`p_bridge_points`) bows
+    # up from B6 to clear the row (H3h), and N's own lead-out would
+    # otherwise cross that bow's riser at close range (measured: a real
+    # planar intersection, not just a clearance shortfall the pad-obstacle
+    # retry loop can push away from, since the retry only bends the
+    # centerline's own interior, never the fixed pad-to-offset-line lead).
+    # Clearing the bridge's own highest point first, before either line's
+    # own diagonal starts, keeps both leads on the correct side of it.
+    exit_up_mm = max(point.y for point in p_bridge_points) - p_j1.y + width_mm + gap_mm
+    j1_exit = Pt(0.0, exit_up_mm)
+    p_pre, n_pre, _pre_side_sign = _route_leg_avoiding_pads(
+        p_j1, p_fan[0], n_j1, n_fan[0], half_pitch_mm, width_mm,
+        p_obstacles, n_obstacles, gap_mm, exit_a=j1_exit, exit_b=None)
 
-    p_last_points, p_last_layer = p_pre_runs[-1]
-    p_pre_runs = p_pre_runs[:-1] + [(_dedup(p_last_points + p_fan[1:] + p_post[1:]), p_last_layer)]
-    n_last_points, n_last_layer = n_pre_runs[-1]
-    n_pre_runs = n_pre_runs[:-1] + [(_dedup(n_last_points + n_fan[1:] + n_post[1:]), n_last_layer)]
-    p_runs, n_runs = p_pre_runs, n_pre_runs
+    # U1 -> J2: J2's own fixed pad order (DM-left/DP-right) is the opposite
+    # handedness from U1's (DP-left/DM-right), so exactly one crossing is
+    # unavoidable somewhere on this corridor -- an inherent USB-C topology
+    # fact once J1's own order-reversal is resolved at the J1/U1 end instead
+    # (see the PAIR_SPECS comment). Placed at this open run's own midpoint
+    # (`U1_J2_CROSSING_HALF_SPAN_MM`, comfortably clear of both U1's fan-out
+    # and J2 on a ~20 mm run), and temporarily fanned out to a wider
+    # `U1_J2_CROSSING_PITCH_MM` pitch for the swap itself: at the coupled
+    # USB90 pitch (~0.4 mm) the crossing's own transition via sits close
+    # enough to the *other*, undipped line's own diagonal to violate its
+    # real clearance (measured directly -- growing `_route_crossing_leg`'s
+    # own dip margin cannot fix this, since that retry only checks
+    # same-layer track-to-track gaps, never a via's own footprint). Widening
+    # first (a plain 45-degree fan, same primitive as the U1 GND-clearance
+    # fan above) gives the diagonal a shallower approach and the via real
+    # room, then narrows back to coupled pitch afterward before continuing
+    # to J2 (whose own further pitch mismatch gets the ordinary symmetric
+    # pad-approach fan, `_symmetric_pad_approach_fan`).
+    cross_y = (p_fan[-1].y + p_j2.y) / 2
+    crossing_half_mm = U1_J2_CROSSING_PITCH_MM / 2
+    fan_span = crossing_half_mm - coupled_half
+    y_swap_lo = cross_y - U1_J2_CROSSING_HALF_SPAN_MM
+    y_swap_hi = cross_y + U1_J2_CROSSING_HALF_SPAN_MM
+    y_narrow = y_swap_hi + fan_span
+
+    wide_p_lo = Pt(centreline_x + p_side * crossing_half_mm, y_swap_lo)
+    wide_n_lo = Pt(centreline_x + n_side * crossing_half_mm, y_swap_lo)
+    wide_p_hi = Pt(centreline_x + n_side * crossing_half_mm, y_swap_hi)  # P swaps to N's own side
+    wide_n_hi = Pt(centreline_x + p_side * crossing_half_mm, y_swap_hi)  # N swaps to P's own side
+    narrow_p = Pt(centreline_x + n_side * coupled_half, y_narrow)
+    narrow_n = Pt(centreline_x + p_side * coupled_half, y_narrow)
+
+    p_widen = _bend_path(p_fan[-1], wide_p_lo)
+    n_widen = _bend_path(n_fan[-1], wide_n_lo)
+    p_cross_runs, n_cross_runs = _route_crossing_leg_avoiding_self_cross(
+        wide_p_lo, wide_p_hi, wide_n_lo, wide_n_hi, width_mm, gap_mm,
+        via_standoff_mm=U1_J2_CROSSING_VIA_STANDOFF_MM)
+    p_narrow = _bend_path(wide_p_hi, narrow_p)
+    n_narrow = _bend_path(wide_n_hi, narrow_n)
+    p_stage_c, n_stage_c, post_side_sign = _route_leg_avoiding_pads(
+        narrow_p, p_j2, narrow_n, n_j2, half_pitch_mm, width_mm,
+        p_obstacles, n_obstacles, gap_mm)
+
+    p_cross_points, p_cross_layer = p_cross_runs[-1]  # single F.Cu run -- P never dips
+    p_runs = [(_dedup(p_pre + p_fan[1:] + p_widen[1:] + p_cross_points[1:] + p_narrow[1:] + p_stage_c[1:]),
+               p_cross_layer)]
+
+    n_cross_first_points, n_cross_first_layer = n_cross_runs[0]
+    n_cross_last_points, n_cross_last_layer = n_cross_runs[-1]
+    n_runs = (
+        [(_dedup(n_pre + n_fan[1:] + n_widen[1:] + n_cross_first_points[1:]), n_cross_first_layer)]
+        + list(n_cross_runs[1:-1])
+        + [(_dedup(n_cross_last_points + n_narrow[1:] + n_stage_c[1:]), n_cross_last_layer)]
+    )
+
     p_length = sum(_path_length(points) for points, _layer in p_runs)
     n_length = sum(_path_length(points) for points, _layer in n_runs)
 
@@ -1296,24 +1684,39 @@ def _route_usb_device_pair(board, p_pads: list, n_pads: list,
         "gnd_clearance_mm": gnd_clearance_mm,
         "uncoupled_span_mm": y_exit_boundary - y_entry_boundary,
         "fan_out_span_mm": fan_out_span,
+        "crossing_y_mm": cross_y,
+        "crossing_margin_u1_mm": cross_y - p_fan[-1].y,
+        "crossing_margin_j2_mm": p_j2.y - cross_y,
     }
-    return [p_runs], [n_runs], p_length, n_length, post_side_sign, ripped_nets, report, len(n_runs) > 1
+    return [p_runs], [n_runs], p_length, n_length, post_side_sign, ripped_nets, report, True
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--board", type=Path, default=DEFAULT_BOARD,
                          help="board .kicad_pcb path (default: canonical aius-carrier.kicad_pcb)")
+    parser.add_argument("--pairs", type=str, default=None,
+                         help="comma-separated pair slugs to route (default: usb-device only); "
+                              "known slugs: " + ", ".join(_pair_slug(spec["label"]) for spec in PAIR_SPECS))
+    parser.add_argument("--measure", action="store_true",
+                         help="report P/N length, skew, via count and layers for all four pairs as "
+                              "currently routed, without touching any copper, then exit (ignores --pairs)")
     args = parser.parse_args()
     board_path = str(args.board)
 
+    if args.measure:
+        return _measure_pairs(board_path)
+
+    selected_specs = _select_pair_specs(args.pairs)
+
     board = pcbnew.LoadBoard(board_path)
     target_bare_names = _target_bare_names(PAIR_SPECS)
+    selected_bare_names = _target_bare_names(selected_specs)
 
     # ---- resolve everything the rest of the script needs from the board,
     # before any board.Remove() call (see the module docstring). ----
     resolved = []
-    for spec in PAIR_SPECS:
+    for spec in selected_specs:
         entry = {
             "spec": spec,
             "p_net": _find_net(board, spec["p_net"]),
@@ -1328,8 +1731,14 @@ def main() -> int:
         resolved.append(entry)
 
     all_tracks_snapshot = list(board.GetTracks())
+    # Only the *selected* pairs' own copper is unconditionally stripped for
+    # re-routing (`--pairs`, default usb-device only); an unselected pair's
+    # copper stays on the board untouched. `target_bare_names` (all four
+    # pairs) still gates `foreign_candidates` below so an unselected pair's
+    # existing tracks are never misclassified as foreign, blocking copper --
+    # they are simply not routed this run, never ripped.
     own_tracks = [track for track in all_tracks_snapshot
-                  if _bare_net_name(track.GetNetname()) in target_bare_names]
+                  if _bare_net_name(track.GetNetname()) in selected_bare_names]
     foreign_candidates = [track for track in all_tracks_snapshot
                            if track.GetLayer() == pcbnew.F_Cu
                            and _bare_net_name(track.GetNetname()) not in target_bare_names]
@@ -1338,6 +1747,16 @@ def main() -> int:
     # purely from the held pad/net references and the static foreign-copper
     # snapshot -- no board mutation yet. ----
     blocked_ids: set[int] = set()
+    # Every pair's own finalized F.Cu points, sampled and folded into every
+    # *later* pair's own obstacle set (`_polyline_obstacles`, the same
+    # "not-yet-emitted copper as an obstacle" mechanism this module already
+    # uses for J1's own bridges) -- `_foreign_pad_obstacles` only ever sees
+    # real board pads, never a sibling pair's own routed track, so two
+    # unrelated pairs terminating at neighbouring connectors (ETH TX and
+    # ETH RX, both at J18/J20) could otherwise cross each other's copper
+    # outright (measured: a real `kicad-cli pcb drc` `shorting_items`
+    # finding between ETH_TXN and ETH_RXP with no shared obstacle to avoid).
+    sibling_pair_obstacles: list[tuple[Pt, float]] = []
     pair_plans = []
     for entry in resolved:
         spec = entry["spec"]
@@ -1350,8 +1769,8 @@ def main() -> int:
         # `foreign_candidates`' track-ripping (see the module docstring).
         # Excluded per side, not together: P must still dodge N's own pads
         # (and vice versa) -- see `_route_leg_avoiding_pads`'s docstring.
-        p_obstacles = _foreign_pad_obstacles(board, {spec["p_net"]}, pcbnew.F_Cu)
-        n_obstacles = _foreign_pad_obstacles(board, {spec["n_net"]}, pcbnew.F_Cu)
+        p_obstacles = _foreign_pad_obstacles(board, {spec["p_net"]}, pcbnew.F_Cu) + sibling_pair_obstacles
+        n_obstacles = _foreign_pad_obstacles(board, {spec["n_net"]}, pcbnew.F_Cu) + sibling_pair_obstacles
 
         bridge_runs = {}
         if "p_bridge_pad" in entry and "n_bridge_pad" in entry:
@@ -1368,6 +1787,20 @@ def main() -> int:
             bridge_runs["n"] = _route_j1_via_free_bridge(
                 _pad_point(n_bridge_pad), _pad_point(n_pads[0]),
                 n_bridge_pad.GetSize().y / 2e6, side=-1.0)
+            # Each bridge's own bow rises well clear of J1's row (see
+            # `_route_j1_via_free_bridge`), directly through the corridor the
+            # *other* net's own primary leg launches into on its way to U1 --
+            # a real same-run `kicad-cli pcb drc` clearance finding at the P
+            # bridge's own riser confirmed this is a genuine collision, not
+            # just close. Neither bridge is a foreign *pad*, so
+            # `_foreign_pad_obstacles` never sees it; register each bridge's
+            # own polyline as an extra obstacle for the other net's leg
+            # (`_polyline_obstacles`, the same "not-yet-emitted copper as an
+            # obstacle" mechanism this module already uses elsewhere).
+            for points, _layer in bridge_runs["p"]:
+                n_obstacles = n_obstacles + _polyline_obstacles(points, width_mm)
+            for points, _layer in bridge_runs["n"]:
+                p_obstacles = p_obstacles + _polyline_obstacles(points, width_mm)
         elif "p_bridge_pad" in entry:
             bridge_runs["p"] = [(_bend_path(_pad_point(entry["p_bridge_pad"]), _pad_point(p_pads[0])), pcbnew.F_Cu)]
         elif "n_bridge_pad" in entry:
@@ -1394,7 +1827,7 @@ def main() -> int:
                 usb_device_crossing = (
                     _route_usb_device_pair(board, p_pads, n_pads, p_obstacles, n_obstacles,
                                             half_pitch_mm, width_mm, gap_mm, foreign_candidates, blocked_ids,
-                                            entry["n_bridge_pad"]))
+                                            bridge_runs["p"][0][0]))
             p_legs += p_legs_new
             n_legs += n_legs_new
             ripped_this_pair |= fan_ripped
@@ -1430,11 +1863,15 @@ def main() -> int:
             # leg's length is already whatever the topology forces.
             if skew_mm > 0:
                 last_points, last_layer = n_legs[-1][-1]
-                n_legs[-1][-1] = (_add_serpentine(last_points, extra, side_sign=-last_side_sign), last_layer)
+                n_legs[-1][-1] = (_add_serpentine(last_points, extra, side_sign=-last_side_sign,
+                                                   width_mm=width_mm, obstacles=n_obstacles, clearance_mm=gap_mm),
+                                  last_layer)
                 n_length += extra
             else:
                 last_points, last_layer = p_legs[-1][-1]
-                p_legs[-1][-1] = (_add_serpentine(last_points, extra, side_sign=last_side_sign), last_layer)
+                p_legs[-1][-1] = (_add_serpentine(last_points, extra, side_sign=last_side_sign,
+                                                   width_mm=width_mm, obstacles=p_obstacles, clearance_mm=gap_mm),
+                                  last_layer)
                 p_length += extra
             skew_mm = p_length - n_length
 
@@ -1454,6 +1891,11 @@ def main() -> int:
             "u1_fanthrough_report": u1_fanthrough_report,
             "usb_device_crossing": usb_device_crossing,
         })
+        for leg in p_legs + n_legs:
+            for points, layer in leg:
+                if layer != pcbnew.F_Cu:
+                    continue
+                sibling_pair_obstacles += _polyline_obstacles(points, width_mm)
 
     # ---- mutate the board: every removal first, then every addition. ----
     removed_tracks = sum(1 for track in own_tracks if not isinstance(track, pcbnew.PCB_VIA))
@@ -1502,11 +1944,13 @@ def main() -> int:
                   f"the pads' physical left/right order reverses end to end on this corridor, a planar "
                   f"crossing no 45-degree bend choice can avoid on one copper layer alone", flush=True)
         if plan["usb_device_crossing"]:
-            print("   DISCLOSED EXCEPTION: N/D-'s own J1-to-U1 leg needed a via pair -- A7's own "
-                  "primary pad is boxed in by A6's own via-free bridge (see _route_j1_via_free_bridge), "
-                  "so this leg launches from B7 instead (bonded to A7 by its own bridge), whose physical "
-                  "left/right order still reverses end to end on this corridor, a planar crossing no "
-                  "45-degree bend choice can avoid on one copper layer alone", flush=True)
+            report = plan["u1_fanthrough_report"] or {}
+            print("   DISCLOSED EXCEPTION: U1-to-J2 leg needed a via pair -- J2's own fixed "
+                  "DM-left/DP-right pad order is the opposite handedness from U1's DP-left/DM-right "
+                  f"pin order, a planar crossing no 45-degree bend choice can avoid on one copper layer "
+                  f"alone; placed at y={report.get('crossing_y_mm', float('nan')):.3f} mm, "
+                  f"{report.get('crossing_margin_u1_mm', float('nan')):.3f} mm clear of U1's own fan-out and "
+                  f"{report.get('crossing_margin_j2_mm', float('nan')):.3f} mm clear of J2", flush=True)
         if plan["u1_fanthrough_report"] is not None:
             report = plan["u1_fanthrough_report"]
             print(f"   Recipe B (U1 fan-through): native pitch {report['native_pitch_mm']:.3f} mm, "

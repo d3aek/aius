@@ -55,16 +55,16 @@ PLACEMENT = {
                                    # (45.0) -- H3e placement pass 2026-09-12 -- so the
                                    # whole J1-U1-J2 run is a straight corridor instead
                                    # of a 2 mm lateral jog at J2's own end.
-    "U1": (45.0, 13.0, 180.0),    # device USB shunt ESD; rotated 180 deg (no directional/
-                                   # mechanical meaning for this chip) so its own D+/D-
-                                   # pad order flips to DM-left/DP-right, matching both
-                                   # J1's A6/A7 mirror pins and J2's fixed DM-left/DP-right
-                                   # pads -- see route_diff_pairs.py's PAIR_SPECS "USB
-                                   # device" entry, which pairs with this. Moved from
-                                   # y=10.0 to y=13.0 (H3e placement pass 2026-09-12):
-                                   # J1's own A/B row tip sits at y=7.93, so this leaves
-                                   # ~4.5 mm of clear board for J1's A7/B7 mirror-pin
-                                   # bridge detour instead of ~1.5 mm.
+    "U1": (45.0, 13.0, 0.0),      # device USB shunt ESD, pins 1/2 toward J1. At 0 deg its
+                                   # D+/D- pad order is DP-left/DM-right, the order J1's
+                                   # via-free mirror bridges exit with (D+ from B6, D- from
+                                   # B7; datasheet row B7 A6 A7 B6). J2's fixed pads are
+                                   # DM-left/DP-right, so the pair's one unavoidable
+                                   # crossing happens in the open U1-J2 run, never at J1's
+                                   # 0.5 mm pitch -- see route_diff_pairs.py's "USB device"
+                                   # PAIR_SPECS entry. y=13.0 (H3e placement pass
+                                   # 2026-09-12): J1's row tip sits at y=7.93, leaving
+                                   # ~4.5 mm for the bridges and the coupled fan-in.
     "U2": (53.0, 18.0, 0.0),      # upstream power limiter
     "U21": (18.0, 20.0, 0.0),
     "U23": (28.0, 17.0, 0.0),

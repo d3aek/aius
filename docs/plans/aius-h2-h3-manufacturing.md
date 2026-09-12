@@ -6,7 +6,7 @@ component: aius
 subtype: design
 status: in-progress
 tags: [aius, hardware, kicad, pcb, layout, impedance, dfm, manufacturing]
-updated: 2026-09-11
+updated: 2026-09-12
 toc: true
 ---
 
@@ -68,6 +68,22 @@ Answers to the H3e second-pass questions (R4/R5), recorded verbatim in intent:
 - **Track geometry: straight segments only, no curves or arcs; bends at multiples
   of 15° with straight sections between.** Enforced by a routing-geometry check
   in the pipeline, not by convention.
+- **USB and Ethernet tolerances follow the modes the Teensy actually uses, not
+  the bus limits.** The device port is a CDC serial port plus HalfKay recovery;
+  the host port and Ethernet (10/100 only, 125 MHz signalling) are likewise far
+  below their bus limits. Accepted pair contract: nominal class widths (0.251 mm
+  USB, 0.201 mm Ethernet) for the characteristic impedance; intra-pair skew
+  ≤ 5 mm; via crossings and uncoupled sections allowed wherever they are
+  DRC-clean; no serpentine length matching. The "pairs on top with no vias"
+  ideal is withdrawn as an acceptance criterion; the four pairs still route as
+  pairs where it costs nothing.
+- **The optical path is held to the same real-world bar: the carrier is never
+  above 48 kHz.** S/PDIF at 48 kHz is 3.072 Mbit/s biphase-mark (about 6 MHz
+  transition rate) on 3.3 V single-ended logic, so the `SPDIF_*` / optical
+  receiver and transmitter nets carry no impedance, length, layer or coupling
+  constraint beyond DRC; they stay in the Default net class and route on any
+  layer with vias as the router needs. H2b's "≥16 Mbit/s logic-path check" is
+  superseded by this ruling.
 
 ## Gate ladder
 
@@ -451,6 +467,30 @@ confirmed by direct layer-membership check). `export_fab.sh` and
 closes the H3c GND punch-list; it is still a review/quote snapshot, not an
 order-ready package, pending the H3e independent design review.
 
+**Progress 2026-09-12: U1 fan-through closes the last GND residual, canonical
+board re-applied.** With the widened `U1_FAN_VIA_PITCH_MIN_MM` /
+`U1_FAN_MARGIN_AFTER_GND_MM` constants in `route_diff_pairs.py`, a fresh
+`scaffold_pcb.py` → `route_diff_pairs.py` → `route_export_dsn.py` →
+Freerouting (`-mp 40`) → `route_import_ses.py` → `route_cleanup.py` →
+`route_gnd_stitch.py` run stitched U1's own GND pin (pad 3) onto its own via,
+closing the single-item unconnected residual (`U1-3` ↔ `C2-2`) the prior
+`.scratch/pairs7/final/` candidate left open. Freerouting's own routing pass
+has run-to-run variance (no fixed seed observed): two earlier candidates from
+the same scaffold each landed a different single clearance/unconnected
+residual near the J10–J17 expansion-header row before a third attempt
+produced `kicad-cli pcb drc --severity-all` **0 violations, 0 unconnected
+items**. That candidate was applied to the canonical
+`electronics/aius-carrier.kicad_pcb` (`electronics/aius-carrier.kicad_pro`'s
+`net_settings` and `board.design_settings` merged in via `jq`, every other
+key preserved; `.kicad_dru` confirmed byte-identical to the candidate's own
+copy), and every gate re-run against the canonical board's default paths
+reproduces the candidate's counts exactly: DRC 0/0, `check_dfm.sh` 0,
+`check_routing_geometry.py` 0 arcs/0 off-grid, `check_footprints.py --board`
+158/158, and `export_fab.sh` exports the full manufacturing package cleanly.
+Measured pair skew on the canonical board: USB device 0.000 mm (2 vias), USB
+host 3.058 mm (2 vias), ETH RX 3.368 mm (0 vias), ETH TX 2.238 mm (0 vias) —
+all within the 5 mm accepted-pair contract.
+
 ### Phase H3d — DRC/DFM clean + manufacturing package
 
 ```yaml
@@ -523,6 +563,16 @@ working-tree `aius-carrier.kicad_dru`: DFM 0 violations, base
 `kicad-cli pcb drc --severity-all` 0 violations / 0 unconnected items,
 `check_footprints.py --board` 158/158, and a second `--apply-fix` run
 reports 0 silk texts bumped and 0 overrides applied.
+
+**Progress 2026-09-12: DFM 0 on the U1-fan-through canonical board.**
+`check_dfm.sh --apply-fix` against the re-applied canonical board (see the
+H3c progress note above) bumped 61 silk text items and applied U1's own
+`overrides.json` entry as before; `check_dfm.sh` against the fixed board then
+reports **0 DFM violations**, and `export_fab.sh` exports Gerbers, drill,
+CPL, STEP and BOM into `electronics/manufacturing/` with no fatal step
+(the pre-existing missing-3D-model warnings for stock SMD passives/connectors
+are unchanged, non-fatal to the export). This remains a review/quote
+snapshot pending the H3e independent design review below.
 
 ### Phase H3e — independent review, quote, order-ready
 
