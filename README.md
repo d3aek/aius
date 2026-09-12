@@ -126,16 +126,18 @@ KiCad environment. Each directory under [`docs/`](docs/) carries its own index.
 
 ## Hardware, and what is next
 
-A carrier board exists as a captured, ERC-clean KiCad schematic: Teensy socket,
-optical in and out, the transmitter gate and a diagnostic bypass mux, native
-Ethernet with a magjack, a single rear USB-C 5 V input, keyed expansion headers,
-and a stock Hammond enclosure. It has not been laid out or ordered, and **no PCB
-order is authorised by the current state of this repository**. Two layers is
-still an assumption; it goes to four only if a documented electrical constraint
-forces it.
+The carrier board is a routed, DRC/DFM-clean four-layer KiCad design: Teensy
+socket, optical in and out, the transmitter gate and a diagnostic bypass mux,
+native Ethernet with a magjack, a single rear USB-C 5 V input, keyed expansion
+headers, and a stock Hammond enclosure. Two layers proved electrically
+infeasible for controlled-impedance USB/Ethernet routing, so the board escalated
+to four ([H2/H3 manufacturing plan](docs/plans/aius-h2-h3-manufacturing.md)).
+Layout, impedance-controlled routing and the manufacturing package (Gerbers,
+drill, CPL, STEP, BOM, fabrication drawing) are done, and **no PCB order is
+authorised by the current state of this repository**.
 
-What remains is two-layer feasibility against a real fabricator stackup, then
-layout, then a prototype order.
+What remains is the independent design review's mechanical closeout: the bench
+XY fit check, the open-work register's footprint gate, and fabricator quotes.
 
 ## Licence
 

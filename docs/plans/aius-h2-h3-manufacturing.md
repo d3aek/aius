@@ -491,7 +491,7 @@ Measured pair skew on the canonical board: USB device 0.000 mm (2 vias), USB
 host 3.058 mm (2 vias), ETH RX 3.368 mm (0 vias), ETH TX 2.238 mm (0 vias) —
 all within the 5 mm accepted-pair contract.
 
-### Phase H3d — DRC/DFM clean + manufacturing package
+### Phase H3d — DRC/DFM clean + manufacturing package ✓ SHIPPED 2026-09-12
 
 ```yaml
 outcome: DRC 0 against the fab rule set, DFM checks cleared, and a complete
@@ -580,6 +580,10 @@ Gerber step, renders `aius-carrier-fab-drawing.pdf` (dimensioned 99x95 mm
 outline, both Hammond keepout bands and the rear datum called out, and a
 stackup/DFM notes block, every value read from the board/`stackups.json`
 rather than hardcoded) into `electronics/manufacturing/`.
+
+**Closeout.** DRC 0, DFM 0, and a complete manufacturing package (Gerbers,
+drill, BOM, CPL, STEP, fabrication drawing) are in hand for the canonical
+board — this phase's gate is met in full.
 
 ### Phase H3e — independent review, quote, order-ready
 
@@ -737,8 +741,8 @@ layout complete for order purposes; R5 cosmetic pass pending.** Independent
   pads; no mirrored parts.
 
 Order still waits on: the bench XY fit (M4) and the register's footprint gate
-(run once, after layout, per the rulings), a fabrication drawing, and the
-quotes / cost-model refresh.
+(run once, after layout, per the rulings), and the quotes / cost-model
+refresh — the fabrication drawing landed the same day (H3d).
 
 ## Recovery audit (2026-09-09)
 

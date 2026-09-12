@@ -32,6 +32,10 @@ Two documents are the entry points for "what is still open":
   codec-slot swap rather than a larger arena.
 - **[Aius hardware spec](aius-hardware-spec.md)** — the buildable specification
   for the carrier board and the single hardware source of truth.
+- **[Aius H2/H3 manufacturing readiness](aius-h2-h3-manufacturing.md)** — take
+  the carrier from an ERC-clean schematic to an order-ready manufacturing
+  package: feasibility, footprints, layout, impedance-controlled routing,
+  DRC/DFM-clean Gerbers, an independent review, and a real fabricator quote.
 - **[Aius network and firmware recovery hardening](aius-network-hardening.md)** —
   replaces unproven initialization, socket-ownership, USB and watchdog recovery
   claims with explicit portable state machines and evidence from the deployed

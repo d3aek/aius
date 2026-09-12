@@ -49,10 +49,17 @@ Turning this into an orderable PCB is the gated hardware work:
 1. **Schematic (H1) — *done* (2026-07-19).** Captured as the generated,
    ERC-clean project in [`electronics/`](../../electronics/README.md)
    ([plan](../plans/aius-h1-schematic.md), shipped).
-2. **Two-layer feasibility (H2)** — prove 90 Ω USB / 100 Ω Ethernet geometry and
-   continuous return paths against the fabricator's stackup. Not started.
-3. **Layout + route (H3)** — placement, impedance-controlled routing, ERC/DRC,
-   manufacturing outputs, quote. Not started.
+2. **Feasibility (H2) — *done* (2026-08-15).** 90 Ω USB / 100 Ω Ethernet
+   geometry and continuous return paths proved against the fabricator's
+   stackup; the two-layer hypothesis failed electrically and the board
+   escalated to four layers
+   ([plan](../plans/aius-h2-h3-manufacturing.md), shipped).
+3. **Layout + route (H3) — layout and the manufacturing package are done;
+   order-readiness is not.** Placement, impedance-controlled routing,
+   DRC/DFM-clean Gerbers and the independent review's layout findings are
+   closed; the order still waits on the bench XY fit, the open-work
+   register's footprint gate, and fabricator quotes
+   ([plan](../plans/aius-h2-h3-manufacturing.md)).
 
 See the [hardware spec](../plans/aius-hardware-spec.md) for the full gate order.
 Regenerate this figure with `python3 board-floorplan.py`.

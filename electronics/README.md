@@ -90,7 +90,7 @@ electronics/generate.py electronics/connectivity/power-usb.json /tmp/one-sheet.k
 # ERC gate (exit 0 = no errors); --all also prints warnings
 electronics/scripts/erc.sh
 
-# render SVG (one per page) + PDF into this directory
+# render schematic SVG (one per page) + PDF, plus PCB SVGs/PNGs, into this directory
 electronics/scripts/render.sh
 ```
 
@@ -98,6 +98,18 @@ The KiCad wrapper runs as the invoking user and writes outputs into this
 checkout. Direct Compose invocations should set `AIUS_UID` and `AIUS_GID` to the
 caller's IDs (defaults are 1000). ERC reports are written to `.scratch/`;
 the textual summary and exit code are the result.
+
+`electronics/scripts/render.sh` also renders the canonical
+`aius-carrier.kicad_pcb`: `aius-carrier-pcb-top.svg` /
+`aius-carrier-pcb-bottom.svg` (2D `kicad-cli pcb export svg`, page sized to
+the board — top is `F.Cu`/`F.SilkS`/`F.Mask`/`F.Fab`/`Edge.Cuts`, bottom is
+`B.Cu`/`B.SilkS`/`B.Mask`/`Edge.Cuts` mirrored), `aius-carrier-pcb-in1.svg` /
+`aius-carrier-pcb-in2.svg` (the `In1.Cu`/`In2.Cu` reference planes plus
+`Edge.Cuts`, for routing review), and `aius-carrier-pcb-top.png` /
+`aius-carrier-pcb-bottom.png` (3D raytraced `kicad-cli pcb render`, 1600x1200,
+default preset — the container renders headlessly without a GPU; a run that
+fails is skipped with a warning rather than failing the script). Missing 3D
+models on unpurchased parts are acceptable render warnings, not errors.
 
 ## ERC status
 

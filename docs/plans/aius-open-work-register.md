@@ -2053,9 +2053,12 @@ ends left open:
 - **H2 footprint gate** — validate the Gerber against the RS PRO PCB
   layout drawings before any board order; evidence filed (datasheets +
   AP214 STEP models), gate recorded in
-  [`aius-h1-schematic.md`](aius-h1-schematic.md). Activates with the H2
-  layout phase. **Not scheduled (no ruling 2026-09-04)** — H3b–H3e and this
-  gate got no date (D7).
+  [`aius-h1-schematic.md`](aius-h1-schematic.md). **Still open as of
+  2026-09-12** — H3b/H3c are shipped, H3d (DRC/DFM-clean manufacturing
+  package) is shipped, and H3e's layout is complete under the owner
+  rulings; the order now waits on this gate plus the bench XY fit (M4) and
+  the quotes/cost-model refresh
+  ([`aius-h2-h3-manufacturing.md`](aius-h2-h3-manufacturing.md) §Phase H3e).
 
 ## Open defects — sample-rate and latency delivery
 
