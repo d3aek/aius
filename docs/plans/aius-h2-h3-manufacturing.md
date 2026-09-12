@@ -315,7 +315,7 @@ footprint-clean.** Driven from 13 → 0:
 does not block H3b/H3c (it affects physical seating, not the netlist or routing
 topology), but it is a hard pre-order gate item.
 
-### Phase H3b — netlist and placement
+### Phase H3b — netlist and placement ✓ SHIPPED 2026-09-12
 
 ```yaml
 outcome: A .kicad_pcb with the netlist imported, board outline + mounting per H2c,
@@ -371,7 +371,7 @@ board per the recovery contract; the U10 courtyard overshoot and enclosure
 cutout alignment remain pre-order mechanical-review items (unchanged from the
 Recovery audit). H3c below covers the actual routing.
 
-### Phase H3c — impedance-controlled routing
+### Phase H3c — impedance-controlled routing ✓ SHIPPED 2026-09-12
 
 ```yaml
 outcome: Fully routed board on the H2d stackup — USB 90 Ω and Ethernet 100 Ω pairs
@@ -703,6 +703,35 @@ physical verification:
 None of these fixes are complete. The board stays a review/quote snapshot,
 not order-ready, pending the coupled-pair re-route, the plane-clearance
 change, the GND-stitch extension, and the mechanical decisions above.
+
+**Third review pass (2026-09-12) against `99fe612` and the design decisions:
+layout complete for order purposes; R5 cosmetic pass pending.** Independent
+`kicad-cli pcb drc --severity-all`: 0 violations, 0 unconnected.
+
+- R1 resolved: USB device 33.67/33.67 mm skew 0 (2 vias), USB host 48.28/45.22
+  skew 3.06, ETH TX 17.70/15.46 skew 2.24, ETH RX 13.47/10.10 skew 3.37 mm; all
+  at class width, none within 0.15 mm of a foreign net.
+- R2 closed by ruling: plane void along U10's pin rows is 78.5 / 86.0 % and is
+  the pads themselves (0.25 mm zone clearance leaves webs; whole-plane coverage
+  91.7 % on both layers; 0 tracks on In1/In2).
+- R3 closed by ruling: VBUS_RAW 5 vias, VBUS_5V 4; 36 of 39 SMD GND pads have a
+  via within 1.5 mm (J2.4, J1.A1, J1.B12 farther). Break-in GND vias are absent
+  at 10 of 20 pair pads; at 12 Mbit/s CDC use and 100BASE-TX this return-path
+  nicety has no bearing, and `route_gnd_stitch.py` adds them wherever a site
+  exists.
+- R4 resolved: outline 99 × 95, the three rule areas at the stated bounds with
+  no pads inside the cable envelope, rear parts on the y = 0 datum; U10's
+  courtyard overhangs the rear edge by 0.30 mm because the microSD slot sits at
+  the panel — deliberate.
+- R5 resolved: `electronics/scripts/tidy_silk_refs.py` moved the references of
+  C20, C21, C22, C25, R17, C14, C1, R4 and U2 out of neighbouring courtyards
+  and pads by polygon collision (C13 never truly intersected J2's notched
+  courtyard); DRC 0/0 and DFM 0 unchanged. R6/C5 present and DNP; no silk over
+  pads; no mirrored parts.
+
+Order still waits on: the bench XY fit (M4) and the register's footprint gate
+(run once, after layout, per the rulings), a fabrication drawing, and the
+quotes / cost-model refresh.
 
 ## Recovery audit (2026-09-09)
 

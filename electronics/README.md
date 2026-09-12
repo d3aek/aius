@@ -634,6 +634,16 @@ dropped, and neither the canonical board's own `kicad-cli pcb drc
 findings needs `route_diff_pairs.py`'s own centerline construction to bend on
 the 15-degree grid from the start, not a post-hoc nudge.
 
+**H3e third-pass silkscreen tidy (2026-09-12)** closes the reviewed
+reference-vs-neighbour collisions: [`scripts/tidy_silk_refs.py`](scripts/tidy_silk_refs.py)
+relocates a violating `F.SilkS` reference to the first collision-free position
+among eight fixed offsets around its own courtyard, touching only position/
+rotation, never text size or stroke. Against the canonical board it moved 9
+references (`C20`, `C21`, `C22`, `C25`, `R17`, `C1`, `C14`, `R4`, plus a
+genuine `U2`-vs-`C1` text overlap this pass also caught) with 0 residuals,
+`kicad-cli pcb drc --severity-all` and `check_dfm.sh` stay 0/0, and
+`check_routing_geometry.py` is unchanged since no copper is touched.
+
 ## Fabrication export (H3d)
 
 [`scripts/export_fab.sh`](scripts/export_fab.sh) runs a DRC report, then a DFM
