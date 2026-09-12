@@ -650,16 +650,29 @@ genuine `U2`-vs-`C1` text overlap this pass also caught) with 0 residuals,
 report against the JLCPCB 4-layer capability rule set, then the
 routing-geometry gate (§Routing-geometry gate above — all three non-fatal
 here, every gate is enforced separately before order), then exports the full
-manufacturing package — Gerbers, drill, CPL, STEP, BOM — via `kicad-cli`.
-Takes the same `--board <path>` argument as the routing scripts, defaulting to
-the canonical board; the output directory (`<board-dir>/manufacturing/`) and
-every exported filename's stem are derived from the given board's own
-directory and filename, so a scaffolded candidate's package lands beside the
-candidate rather than in `electronics/manufacturing/`.
+manufacturing package — Gerbers, a fabrication drawing PDF, drill, CPL, STEP,
+BOM — via `kicad-cli`. Takes the same `--board <path>` argument as the
+routing scripts, defaulting to the canonical board; the output directory
+(`<board-dir>/manufacturing/`) and every exported filename's stem are derived
+from the given board's own directory and filename, so a scaffolded
+candidate's package lands beside the candidate rather than in
+`electronics/manufacturing/`.
 
 ```bash
 electronics/scripts/export_fab.sh [--board <candidate.kicad_pcb>]
 ```
+
+[`scripts/fab_drawing.py`](scripts/fab_drawing.py), run right after the
+Gerber step, renders `<board-stem>-fab-drawing.pdf`
+(`Edge.Cuts` + `User.Drawings` + `F.Fab`). It shows the dimensioned board
+outline, the two Hammond slot-edge keepout bands and the rear (`y = 0`) datum
+called out in place, and a notes block covering the 4-layer JLC04161H-7628
+stackup, the 2026-09-12 controlled-impedance tolerance ruling, min
+trace/space and via, NPTH count/diameters, solder mask/silk colour, and
+nominal board thickness. Every value is read from the board itself or its
+sidecar `.kicad_pro` / [`feasibility/stackups.json`](feasibility/stackups.json)
+rather than hardcoded, on a disposable scratch copy it never saves back over
+the canonical/candidate board.
 
 An unrouted candidate (e.g. straight out of `scaffold_pcb.py`, before
 `route_import_ses.py`) still exports cleanly: DRC, DFM, and the

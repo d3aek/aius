@@ -574,6 +574,13 @@ CPL, STEP and BOM into `electronics/manufacturing/` with no fatal step
 are unchanged, non-fatal to the export). This remains a review/quote
 snapshot pending the H3e independent design review below.
 
+**Progress (2026-09-12): fabrication drawing added to the package.**
+`electronics/scripts/fab_drawing.py`, wired into `export_fab.sh` after the
+Gerber step, renders `aius-carrier-fab-drawing.pdf` (dimensioned 99x95 mm
+outline, both Hammond keepout bands and the rear datum called out, and a
+stackup/DFM notes block, every value read from the board/`stackups.json`
+rather than hardcoded) into `electronics/manufacturing/`.
+
 ### Phase H3e — independent review, quote, order-ready
 
 ```yaml

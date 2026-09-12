@@ -3,10 +3,11 @@
 # Runs DRC (report only), the JLCPCB 4L DFM rule set (report only, via
 # check_dfm.sh), and the routing-geometry gate (report only, via
 # check_routing_geometry.py -- straight-segments-only / 15-degree-bend Owner
-# ruling), then writes Gerbers, drill, placement (CPL), STEP, and a BOM into
-# electronics/manufacturing/ via the pinned KiCad 10.0.4 container. The
-# Gerber/drill set is fabricator-neutral (accepted by both PCBWay and JLCPCB); the
-# 2-vs-4-layer stackup + impedance geometry live in the H2/H3 plan.
+# ruling), then writes Gerbers, a fabrication drawing PDF, drill, placement
+# (CPL), STEP, and a BOM into electronics/manufacturing/ via the pinned KiCad
+# 10.0.4 container. The Gerber/drill set is fabricator-neutral (accepted by
+# both PCBWay and JLCPCB); the 2-vs-4-layer stackup + impedance geometry live
+# in the H2/H3 plan.
 #
 # Usage: electronics/scripts/export_fab.sh [--board <path>]
 # Env:   AIUS_DOCKER_BIN (passed through to ../../scripts/kicad.sh)
@@ -53,6 +54,9 @@ echo "==> Routing geometry report (straight segments / 15-degree bends, non-fata
 
 echo "==> Gerbers"
 "$kicad" pcb export gerbers -o "$out/gerbers/" "$board"
+
+echo "==> Fabrication drawing (dimensioned outline, keepout/datum callouts, stackup notes)"
+"$kicad" --python electronics/scripts/fab_drawing.py --board "$board"
 
 echo "==> Drill files"
 "$kicad" pcb export drill -o "$out/gerbers/" "$board"
