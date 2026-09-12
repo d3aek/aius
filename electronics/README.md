@@ -429,6 +429,83 @@ cluster introduced by this pass. A scoped `.scratch/placement2/final/`
 candidate (board, `.kicad_pro`, `.kicad_dru`, `fp-lib-table`, DRC/DFM/geometry
 reports) carries this result; it is not the canonical board.
 
+**H3e via-clearance pass (2026-09-12)** re-ran `route_diff_pairs.py` against
+that same `.scratch/placement2/final/` candidate after fixing the script's
+own bridge-crossing geometry: the mirror-pin bridge's disclosed via pair now
+detours P (the net staying on F.Cu) to a *deeper* bow than N (the net
+carrying the via) — P's own bow is unavoidably centred on N's destination
+pad (J1's exact 0.5 mm pin pitch), so P has to clear N's crossing geometry
+the same way it clears a row pad, not just sit at the same depth (an equal
+-depth bow measured a literal `kicad-cli pcb drc`-visible copper overlap,
+independent of how deep both went together). `kicad-cli pcb drc
+--severity-all` against the resulting candidate: **16 violations / 6
+unconnected** (down from 29/6; both counts exclude the 6
+`lib_footprint_issues` findings present in both runs, unrelated to this
+script's own net geometry). The J1 bridge via's `hole_clearance` against
+A5/A6/B6 (0.18-0.22 mm vs the 0.25 mm floor) and ETH_RXN's crossing-via
+`hole_to_hole` against J18 (0.372 mm vs 0.4495 mm, fixed via a corrected
+`MIN_VIA_STANDOFF_FROM_PAD_MM`) are both fully closed. Two residuals remain
+disclosed rather than chased further per this script's own H3c "bounded
+iterations" convention: the same bridge via's own crossing now falls
+~0.18-0.20 mm short of clearing the coupled P net's track (the same 0.5 mm
+pin pitch that centres P's bow on N's own pad also caps the best-achievable
+via-to-track separation at ~0.50 mm against the ~0.5755 mm a standard
+0.6/0.3 mm via really needs), and it lands close enough to a pre-existing
+Freerouting-placed TX_ENABLE track on B.Cu to short against it (this
+script's own foreign-copper rip pass only ever tracks F.Cu candidates, so a
+B.Cu collision is never seen or ripped, only found by DRC). U1's own GND-pin
+clearance and ETH_TXN/ETH_TXP's own self-clearance are unchanged from the
+prior pass — several exit-vector approaches were tried for U1 (see
+`PAD_ROW_EXIT_DIRECTION`'s own comment) and reverted: `_exit_point`'s
+straight-line displacement only holds for a short inset before `_build_leg`
+re-converges onto the raw pad-to-pad centreline, and U1's GND pin sits far
+enough along the leg that the re-convergence undoes the shift before it
+clears the pin, matching the existing retry loop's own convergence with no
+improvement at any vector tried.
+
+**H3g U1 fan-through (2026-09-12)** closes the U1 GND-vs-D+/D- `shorting_items`
+residual from the H3e passes above: `route_diff_pairs.py`'s
+`_route_usb_device_pair` now treats U1 as a straight electrical pass-through
+rather than an ordinary `_build_leg` hop, since U1 sits on the exact same x
+centreline as J1's and J2's own D+/D- midpoints (measured: 45.0 mm on all
+three). It fans the coupled USB90 pair out to U1's own pin 1/2 pitch (0.70 mm,
+read off the board every run — not the 0.95 mm first assumed), each line's
+centreline running straight through its own pad, widens further to 0.90 mm
+past pin 3 (GND, opposite side; `padwidth + 2*0.15 + 0.251` rounded up to a
+0.05 mm step) for 0.175 mm of measured clearance on both edges, then fans back
+to the coupled pitch — 0 vias, an uncoupled span of 1.549 mm (inside the
+recipe's 3.5 mm ESD-fan-through allowance). Against a fresh `scaffold_pcb.py`
+candidate run through the full pipeline (`scaffold_pcb.py` → `route_diff_pairs.py`
+→ `route_export_dsn.py` → Freerouting `-mp 40` → `route_import_ses.py` →
+`route_cleanup.py` → `route_gnd_stitch.py`), `kicad-cli pcb drc --severity-all`
+reports **14 violations / 3 unconnected** (down from 16/6): U1's own
+GND-vs-D+/D- `shorting_items` finding is gone, and `USB_DP`/`USB_DM` show full
+connectivity from J1 through U1 to J2. `check_routing_geometry.py` stays 0
+arcs / 0 off-grid; `check_footprints.py --board` stays 158/158. Every residual
+violation is pre-existing and untouched by this pass: the J1 mirror-pin
+bridge via's own crossing still falls ~0.12-0.15 mm short of clearing the
+coupled P track (see the H3e via-clearance pass above), ETH_TXN/ETH_TXP's own
+self-clearance, U10's UHDM lead against USBH_DP/USBH_DM, and two
+`route_gnd_stitch.py` VBUS_RAW parallel vias left single-layer by design. A
+scoped `.scratch/pairs4/final/` candidate (board, `.kicad_pro`, `.kicad_dru`,
+`fp-lib-table`, DRC/geometry/footprint reports) carries this result; it is
+not the canonical board.
+
+**J1's own B6/A7/A6/B7 mirror-pin bridge was not converted to a via-free
+bridge.** Verifying the real footprint (never assumed) found the row's
+mirror-pin order is `B6(D+) A7(D-) A6(D+) B7(D-)` at 0.5 mm pitch, not the
+`A6(D+) A7(D-) B7(D-) B6(D+)` adjacency a via-free "straight D- stub from A7
+to B7" design would need. On the real board A6 (D+) sits exactly on the
+straight line between A7 and B7 (the stub's own midpoint), so that stub would
+short against A6's own pad regardless of how the D+ bridge routes around it;
+forcing both bridges' detours to the same side (the only side that does not
+collide with the coupled legs' own continuation, per `_route_bridge_pair`'s
+own docstring) still leaves their overlapping spans (`B6->A6` and `A7->B7`)
+interleaved — an order-reversing connection this module's own analysis
+already documents as provably unavoidable in the plane without a via. The
+existing via-based bridge (`_route_bridge_pair_avoiding_self_cross`) is
+therefore left unchanged; this residual stays disclosed as before.
+
 ### Routing-geometry gate (H3f)
 
 [`scripts/check_routing_geometry.py`](scripts/check_routing_geometry.py) enforces

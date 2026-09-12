@@ -122,19 +122,25 @@ VIA_DIAMETER_MM = 0.60
 VIA_DRILL_MM = 0.30
 
 # Minimum distance (along the dip's own scan axis) a crossing-leg transition
-# via keeps from a through-hole pad's own coordinate -- via drill (0.3 mm)
-# plus a real board hole-to-hole minimum (measured on this board: KiCad's
-# fab-rule floor is ~0.45 mm), rounded up with margin. Without this floor a
-# crossing point close to one end clamps the dip boundary to that end's own
-# pad location, landing the via's drilled hole on top of the pad's (a real
-# `holes_co_located` DRC finding regardless of net -- a hole-to-hole rule is
-# a manufacturing constraint, not a net-clearance one). Deliberately not the
-# 1.2 mm first tried: that value pushed the dip's own lead far enough along
-# the corridor to clip the OTHER net's uninterrupted path instead (measured
-# on ETH_RXP/RXN); 0.6 mm still clears every hole-to-hole finding this
-# script produces while leaving the dip's near boundary close enough to the
-# pad not to wander into the corridor's own crossing zone.
-MIN_VIA_STANDOFF_FROM_PAD_MM = 0.6
+# via keeps from a through-hole pad's own coordinate -- via drill radius
+# (0.15 mm) plus the through-hole pad's own drill radius (0.4 mm, J18's 0.8
+# mm magjack drill) plus the board's real hole-to-hole minimum (0.4495 mm,
+# read off a `kicad-cli pcb drc` finding), rounded up with margin: 0.9995 mm
+# needed center-to-center, along one axis when (as here) the via and pad
+# share the other coordinate. Without this floor a crossing point close to
+# one end clamps the dip boundary to that end's own pad location, landing
+# the via's drilled hole too close to the pad's (a real `hole_to_hole` DRC
+# finding regardless of net -- a hole-to-hole rule is a manufacturing
+# constraint, not a net-clearance one). Deliberately not the 1.2 mm first
+# tried: that value pushed the dip's own lead far enough along the corridor
+# to clip the OTHER net's uninterrupted path instead (measured on
+# ETH_RXP/RXN). A previous, smaller 0.6 mm standoff was not actually
+# binding on ETH_RXN's own dip (the scan's own flip-point + dip-margin
+# arithmetic landed closer to J18's pad2 than the standoff alone would have
+# allowed) -- confirmed by a real `kicad-cli pcb drc` hole_to_hole finding at
+# 0.372 mm actual, short of the 0.4495 mm minimum; 1.05 mm forces the
+# standoff clamp to actually bind.
+MIN_VIA_STANDOFF_FROM_PAD_MM = 1.05
 
 # Minimum row-detour bow amplitude for a mirror-pin bridge stub (see
 # `_route_bridge_pair`): J1's own USB-C pads measure 0.3 x 1.15 mm, so a
@@ -145,6 +151,97 @@ MIN_VIA_STANDOFF_FROM_PAD_MM = 0.6
 # finding against the bridge's own "other" mirror-pin pad at the smaller
 # amplitude.
 PAD_ROW_CLEAR_MM = 0.9
+
+# The mirror-pin bridge's own disclosed crossing (see `_route_bridge_pair`)
+# needs a genuinely different bow depth than the plain lateral pad-avoidance
+# PAD_ROW_CLEAR_MM above: that value only clears the *other* mirror pin's own
+# pad height for a *track* passing beside it, not the much larger footprint a
+# *via* needs before its drilled hole and copper clear every row pad -- J1's
+# 0.5 mm pin pitch leaves as little as 0.2 mm edge-to-edge between adjacent
+# pads, nowhere near VIA_DIAMETER_MM/2 + the 0.15 mm netclass gap (0.45 mm)
+# of copper clearance a via needs from unrelated row copper. Measured via a
+# real `kicad-cli pcb drc` hole_clearance/clearance finding: the crossing via
+# landed only 0.18-0.22 mm from A5/A6/B6's own copper at PAD_ROW_CLEAR_MM's
+# own (smaller) depth. 0.1 mm added above the strict geometric minimum as
+# margin. Applied twice in `_route_bridge_pair`: once so the via-carrying net
+# (N) clears the row's own pads, and a second time so the *other* net (P,
+# which stays on F.Cu throughout) clears N's own crossing geometry the same
+# way a row pad would -- see BRIDGE_P_EXTRA_DEPTH_MM below.
+BRIDGE_VIA_ROW_CLEARANCE_MM = VIA_DIAMETER_MM / 2 + 0.15 + 0.1
+
+# P's own bow must go *deeper* than N's (not the same depth, and not
+# shallower) -- both bridge stubs share the same 1 mm span but from opposite
+# ends (B6->A6 vs B7->A7), so P's own flat bottom is unavoidably centred
+# exactly on N's own destination pad A7 (their midpoints coincide: J1's 0.5
+# mm pin pitch makes every one of B6/A7/A6/B7 exactly 0.5 mm from the next).
+# N's own return climb from its crossing via back up to A7 necessarily
+# passes through that same column -- if P's flat sits at or above N's own
+# crossing depth, N's return climb crosses straight through P's flat (a real
+# `kicad-cli pcb drc` clearance finding, confirmed empirically: equal bow
+# depths measured a -0.25 mm actual "gap" -- a literal overlap -- regardless
+# of how deep both went together). Only once P is deeper than N's own
+# transition point does N's climb stay entirely above P's flat. Swept
+# empirically against this board's real geometry: P clears N with margin
+# starting around 0.45 mm of extra depth, plateauing at 0.55 -- reusing
+# BRIDGE_VIA_ROW_CLEARANCE_MM's own value keeps one justified constant
+# instead of a second magic number.
+BRIDGE_P_EXTRA_DEPTH_MM = BRIDGE_VIA_ROW_CLEARANCE_MM
+
+# A pre-existing (Freerouting-placed) TX_ENABLE track runs on B.Cu through
+# this board area (measured: (55.527,15.505)-(41.449,1.426), a near-45-degree
+# diagonal) -- `_mark_blocking_foreign_copper` only ever tracks F.Cu foreign
+# candidates for this script's own rip-and-relay pass (the module
+# docstring's own scope), so a B.Cu crossing via/dip is never seen or ripped
+# against it, only found by a real `kicad-cli pcb drc` shorting_items
+# finding. Tried moving the crossing depth to dodge this diagonal
+# (measured perpendicular distances from ~0.16 mm at BRIDGE_VIA_ROW_
+# CLEARANCE_MM's own depth up through several deeper candidates); every
+# depth tried either stayed too close to this same diagonal or moved the
+# B.Cu dip segment itself across a *different* point of the same long
+# diagonal track instead (real `kicad-cli pcb drc` findings both ways) --
+# not chased further past this bounded search per the module's own H3c
+# convention. Disclosed residual, not a parameter this constant file
+# resolves.
+
+# Horizontal inset fraction (of the bridge stub's own span) for each end's
+# 45-degree corner in `_detour_around_pad_row`, used only for the mirror-pin
+# bridge's overlapping/crossing case -- deliberately much smaller than that
+# function's own general-purpose 0.4 default, so almost the entire 1 mm span
+# is flat, full-depth bow rather than a short 45-degree corner near the row.
+# Swept empirically: 0.02 leaves ample same-layer P/N clearance once combined
+# with BRIDGE_P_EXTRA_DEPTH_MM's own asymmetric depth and
+# BRIDGE_VIA_STANDOFF_MM below.
+BRIDGE_CROSSING_INSET_FRACTION = 0.02
+
+# Standoff (see `_dip_across_paths`) for the mirror-pin bridge's own crossing
+# dip -- how far the transition via sits from N's own bridge/primary pad
+# along the stub. Small (not BRIDGE_CROSSING_INSET_FRACTION's own span-scaled
+# minimum, which would put the via back at the row's own height on this ~1 mm
+# stub) but not zero, so the via does not coincide with the pad itself.
+#
+# Swept empirically against this board's real geometry alongside
+# BRIDGE_CROSSING_INSET_FRACTION and BRIDGE_P_EXTRA_DEPTH_MM: below ~0.05 the
+# real `kicad-cli pcb drc` engine (not just this script's own idealized
+# rectangular-pad model) lands the transition back on the row-clearing
+# 45-degree corner rather than the flat -- reintroducing the original
+# row-pad hole_clearance finding this constant exists to avoid. 0.05 keeps
+# the via in the deep, full-bow-depth flat, clearing every row pad with wide
+# margin (>0.6 mm measured, well past the 0.25/0.15 mm hole/copper
+# minimums). The crossing via's far transition (near A7) still cannot also
+# clear the coupled P net's own track with the standard 0.6/0.3 mm via at any
+# standoff swept here: P's own bridge stub spans B6-A6, whose shared midpoint
+# is mathematically A7's own coordinate (J1's mirror pins sit on an exact 0.5
+# mm pitch), so P's flat is centred exactly where N's return climb must also
+# pass -- the best achievable position (via equidistant from both of P's own
+# vertical legs) tops out around 0.49-0.50 mm separation against the
+# >=0.5755 mm a standard via really needs (0.3 mm radius + 0.1255 mm track
+# half-width + 0.15 mm netclass gap), a real, bounded ~0.18-0.20 mm shortfall
+# at this value. This is J1's own connector pitch, not a tunable parameter of
+# this script -- disclosed rather than chased further per this module's own
+# H3c "bounded iterations" convention; the fallback via's location is still
+# >=0.6 mm from every row pad/hole exactly as designed, only its own
+# coupled-net clearance is short.
+BRIDGE_VIA_STANDOFF_MM = 0.05
 
 # Each pair: bare P/N net names, its netclass, the ordered pad-to-pad hop list
 # shared by both sides (same length, same order -- element i is "the same
@@ -514,11 +611,21 @@ def _side_sign_at(reference: Pt, hop: Pt, local_direction: Pt) -> float:
 # U1's own GND pin sits close enough to its D+/D- pins that a forced exit
 # direction for one leg's travel (toward J1) opposes the other leg's
 # (toward J2), and was measured to trade the GND clearance for a worse
-# clearance against the *other* differential pin instead. U1's residual is
-# reported rather than forced through an exit direction; see the module
-# docstring's residual-findings note.
-PAD_ROW_EXIT_DIRECTION = {"J1": Pt(0.0, 1.0)}
+# clearance against the *other* differential pin instead. A same-shape
+# straight-displacement exit vector was tried for U1's own U1->J2 leg only
+# (a small Y component to avoid pins 1/2's own shared row, an X component to
+# shift the corridor off pin 3): `_exit_point`'s displacement only holds for
+# a short inset before `_build_leg` re-converges the offset polyline onto
+# the raw pad-to-pad centerline (by design, so the coupled line does not
+# permanently detour off a long leg for a short-range pad-row problem), and
+# U1's own pin 3 sits far enough along the leg (0.85 mm past pins 1/2) that
+# the re-convergence undoes the shift before it clears pin 3 -- measured no
+# improvement over the retry loop's own convergence (`_route_leg_avoiding_
+# pads`, which already treats pin 3 as a foreign-pad obstacle) at any exit
+# vector tried. U1's residual is reported rather than forced through an
+# exit direction; see the module docstring's residual-findings note.
 PAD_ROW_EXIT_MM = 1.2
+PAD_ROW_EXIT_DIRECTION = {"J1": Pt(0.0, PAD_ROW_EXIT_MM)}
 
 
 def _exit_point(pad: Pt, exit_direction: Pt | None) -> Pt:
@@ -528,7 +635,7 @@ def _exit_point(pad: Pt, exit_direction: Pt | None) -> Pt:
     and the lead back down to the real pad, so the two agree and a lead
     never has to double back toward the row to reach a still-too-close
     offset-line start."""
-    return pad if exit_direction is None else pad + exit_direction * PAD_ROW_EXIT_MM
+    return pad if exit_direction is None else pad + exit_direction
 
 
 def _leg_lead_from(pad: Pt, exit_point: Pt, target: Pt) -> list[Pt]:
@@ -943,7 +1050,7 @@ def _dip_across_paths(p_path: list[Pt], n_path: list[Pt], n_a: Pt, n_b: Pt, dip_
     raise ValueError("_dip_across_paths: expected an order flip between P and N but found none on either axis")
 
 
-def _detour_around_pad_row(a: Pt, b: Pt, bow_mm: float, side: float) -> list[Pt]:
+def _detour_around_pad_row(a: Pt, b: Pt, bow_mm: float, side: float, inset_fraction: float = 0.4) -> list[Pt]:
     """A 45-degree-and-90-degree-only up/across/down detour from `a` to `b`
     (both on the same pad row) that leaves the row entirely -- `side`
     (+1/-1) picks which perpendicular direction the detour bows toward, so
@@ -953,18 +1060,22 @@ def _detour_around_pad_row(a: Pt, b: Pt, bow_mm: float, side: float) -> list[Pt]
     The bow height (`bow_mm`, e.g. PAD_ROW_CLEAR_MM -- big enough to clear a
     real connector pad's own height) and each end's horizontal inset (how
     far the 45-degree corner pulls in from `a`/`b`) are capped independently
-    at `span * 0.4` (J1's own mirror-pin bridge stubs run barely 1 mm end to
-    end, far shorter than the 0.9 mm bow their tall pads need, so a single
-    45-degree leg cannot reach the full bow height without overshooting past
-    the opposite end). When the capped inset cannot reach the full bow
-    height on a 45-degree leg alone, the remaining height is a *vertical*
-    (90-degree) run at that inset's own x, still 15-degree-grid-consistent,
-    rather than reusing the bow height as the diagonal's own run and
-    producing an arbitrary-angle leg (a real bug this replaced: measured
-    non-45-degree tracks on `kicad-cli`'s own geometry when bow_mm exceeded
-    half the span)."""
+    at `span * inset_fraction` (J1's own mirror-pin bridge stubs run barely
+    1 mm end to end, far shorter than the 0.9 mm bow their tall pads need, so
+    a single 45-degree leg cannot reach the full bow height without
+    overshooting past the opposite end). `inset_fraction` defaults to 0.4 for
+    the general lateral-avoidance case; `_route_bridge_pair`'s own
+    overlapping/crossing case passes BRIDGE_CROSSING_INSET_FRACTION instead,
+    a smaller value that widens the flat bottom -- see that constant's own
+    comment. When the capped inset cannot reach the full bow height on a
+    45-degree leg alone, the remaining height is a *vertical* (90-degree) run
+    at that inset's own x, still 15-degree-grid-consistent, rather than
+    reusing the bow height as the diagonal's own run and producing an
+    arbitrary-angle leg (a real bug this replaced: measured non-45-degree
+    tracks on `kicad-cli`'s own geometry when bow_mm exceeded half the
+    span)."""
     span = abs(b.x - a.x)
-    diagonal_mm = min(bow_mm, span * 0.4)
+    diagonal_mm = min(bow_mm, span * inset_fraction)
     direction_sign = 1.0 if b.x >= a.x else -1.0
     detour_y = a.y + side * bow_mm
     near_diagonal_end = Pt(a.x + direction_sign * diagonal_mm, a.y + side * diagonal_mm)
@@ -992,39 +1103,49 @@ def _route_bridge_pair(p_a: Pt, p_b: Pt, n_a: Pt, n_b: Pt, offset_mm: float,
     Otherwise both detour off the row on the same side, away from the
     coupled legs continuing from p_b/n_b (a detour toward the legs' own
     direction of travel collides with them instead of the row problem it was
-    meant to solve). B6/A7/A6/B7 interleaving means even two detoured paths
-    still cross each other once (P has to pass from one side of N's pad to
-    the other, and vice versa) -- provably unavoidable in the plane for an
-    order-reversing connection, the same fact `_route_crossing_leg` handles
-    for a leg. `_dip_across_paths` finds that single point and gives N a
-    short B.Cu dip there; a `ValueError` (no crossing after detouring) means
-    the plain two-detour paths are already clear, so return them as is.
-    `dip_margin_mm` (default `offset_mm`, same as the detour bow amplitude)
-    is separated out so `_route_bridge_pair_avoiding_self_cross` can grow
-    just the dip's own bracket on retry without reshaping the detour bow."""
+    meant to solve), P deeper than N (see BRIDGE_P_EXTRA_DEPTH_MM -- P's own
+    flat bottom is unavoidably centred on N's own destination pad, so P has
+    to clear N's own crossing geometry the way it clears a row pad).
+    B6/A7/A6/B7 interleaving means even two detoured paths still cross each
+    other once (P has to pass from one side of N's pad to the other, and
+    vice versa) -- provably unavoidable in the plane for an order-reversing
+    connection, the same fact `_route_crossing_leg` handles for a leg.
+    `_dip_across_paths` finds that single point and gives N a short B.Cu dip
+    there; a `ValueError` (no crossing after detouring) means the plain
+    two-detour paths are already clear, so return them as is. `dip_margin_mm`
+    (default N's own bow depth) is separated out so
+    `_route_bridge_pair_avoiding_self_cross` can grow just the dip's own
+    bracket on retry without reshaping the detour bow."""
     collinear = abs(p_a.y - p_b.y) < 1e-6 and abs(n_a.y - n_b.y) < 1e-6 and abs(n_a.y - p_a.y) < 1e-6
     overlapping = collinear and min(n_a.x, n_b.x) < max(p_a.x, p_b.x) and min(p_a.x, p_b.x) < max(n_a.x, n_b.x)
     if not overlapping:
         return [(_bend_path(p_a, p_b), pcbnew.F_Cu)], [([n_a, n_b], pcbnew.F_Cu)]
 
-    # The bow has to clear the *other* mirror pin's own pad height (see
-    # PAD_ROW_CLEAR_MM), not just the coupled-pair pitch -- a bow sized only
-    # to offset_mm still passes directly over that pad's own extent for a
-    # tall connector pad like J1's.
-    bow_mm = max(offset_mm, PAD_ROW_CLEAR_MM)
+    # N's bow has to clear the *other* mirror pin's own pad height (see
+    # PAD_ROW_CLEAR_MM) plus the crossing via's own footprint from every row
+    # pad (BRIDGE_VIA_ROW_CLEARANCE_MM) -- a bow sized only to offset_mm or
+    # to PAD_ROW_CLEAR_MM alone still passes a via directly over that pad's
+    # own extent for a tall, tightly-pitched connector row like J1's. P goes
+    # deeper still (BRIDGE_P_EXTRA_DEPTH_MM) -- see this function's own
+    # docstring and that constant's comment.
+    n_bow_mm = max(offset_mm, PAD_ROW_CLEAR_MM) + BRIDGE_VIA_ROW_CLEARANCE_MM
+    p_bow_mm = n_bow_mm + BRIDGE_P_EXTRA_DEPTH_MM
     away_from_legs = -1.0 if p_b.y >= p_a.y else 1.0
-    p_detoured = _detour_around_pad_row(p_a, p_b, bow_mm, side=away_from_legs)
-    n_detoured = _detour_around_pad_row(n_a, n_b, bow_mm, side=away_from_legs)
+    p_detoured = _detour_around_pad_row(p_a, p_b, p_bow_mm, side=away_from_legs,
+                                         inset_fraction=BRIDGE_CROSSING_INSET_FRACTION)
+    n_detoured = _detour_around_pad_row(n_a, n_b, n_bow_mm, side=away_from_legs,
+                                         inset_fraction=BRIDGE_CROSSING_INSET_FRACTION)
     try:
-        # A mirror-pin bridge's own target pad (n_b) is an SMD pad with no
-        # drilled hole of its own to co-locate a via against, unlike
-        # `_route_crossing_leg`'s through-hole callers -- a tiny standoff
-        # (just enough that the via and pad don't literally coincide) lets
-        # the dip actually reach far enough to clear the crossing on a
-        # stub this short.
+        # BRIDGE_VIA_STANDOFF_MM keeps the transition point past each
+        # detour's own 45-degree corner (see BRIDGE_CROSSING_INSET_FRACTION)
+        # so it lands in the flat, full-bow-depth part of the detour -- a
+        # near-zero standoff left the via right on the corner, still at the
+        # row's own height, a real `kicad-cli pcb drc` hole_clearance/
+        # clearance finding against the row's own pads regardless of how
+        # deep the bow itself went.
         n_runs = _dip_across_paths(p_detoured, n_detoured, n_a, n_b,
-                                    dip_margin_mm=bow_mm if dip_margin_mm is None else dip_margin_mm,
-                                    via_standoff_mm=0.02)
+                                    dip_margin_mm=n_bow_mm if dip_margin_mm is None else dip_margin_mm,
+                                    via_standoff_mm=BRIDGE_VIA_STANDOFF_MM)
     except ValueError:
         n_runs = [(n_detoured, pcbnew.F_Cu)]
     return [(p_detoured, pcbnew.F_Cu)], n_runs
@@ -1103,6 +1224,110 @@ def _emit_runs(board, net, width_mm: float, runs: list[tuple[list[Pt], int]]) ->
     return items
 
 
+# H3g U1 fan-through (README §Routing "Recipe B"): U1 (the device-USB ESD
+# shunt, a SOT-23-3 with pins 1/2 the D+/D- pass-through and pin 3 GND on the
+# opposite side) sits on the *same* x centreline as J1's and J2's own D+/D-
+# midpoints (measured: all three at x=45.0 mm on this board), so the whole
+# J1-to-U1-to-J2 corridor is a single vertical run -- U1 is not a stub or a
+# via, it is a straight electrical pass-through both lines cross on their way
+# from J1 to J2. Treating it as an ordinary `_build_leg` hop (lead-in/out
+# stopping exactly at the pad centre, then a fresh centerline for the next
+# hop) does not model that: this function instead fans the coupled pair out
+# to U1's own pin 1/2 pitch (read off the board every run, never a hardcoded
+# mm value) so each line's centreline passes straight through its own pad,
+# widens further past pin 3 by >=0.15 mm clearance on both edges (a
+# `kicad-cli pcb drc` hole/copper clearance requirement, not a style choice),
+# then fans back to the coupled pitch before continuing to J2 -- 0 vias, per
+# the module's own "read positions off the board" convention.
+U1_FAN_CLEARANCE_MM = 0.15
+U1_FAN_MARGIN_AFTER_GND_MM = 0.15
+U1_FAN_PITCH_ROUND_STEP_MM = 0.05
+
+
+def _round_up_to_step_mm(value_mm: float, step_mm: float) -> float:
+    return math.ceil(value_mm / step_mm - 1e-9) * step_mm
+
+
+def _route_usb_device_pair(board, p_pads: list, n_pads: list,
+                            p_obstacles: list[tuple[Pt, float]], n_obstacles: list[tuple[Pt, float]],
+                            half_pitch_mm: float, width_mm: float, gap_mm: float,
+                            foreign_candidates: list, blocked_ids: set[int]
+                            ) -> tuple[list, list, float, float, float, set[str], dict]:
+    """Route the USB device pair's J1->U1->J2 corridor (`p_pads`/`n_pads` are
+    the three resolved (J1, U1, J2) pads for each side, in that order) as one
+    fan-through run per net instead of the ordinary two independent
+    `_build_leg` hops -- see the module comment above. Returns
+    (p_legs, n_legs, p_length, n_length, last_side_sign, ripped_nets,
+    report) in the same shapes `main`'s generic per-hop loop produces, so the
+    caller's skew-matching and bridge-routing code afterward is unchanged."""
+    p_j1, p_u1, p_j2 = (_pad_point(pad) for pad in p_pads)
+    n_j1, n_u1, n_j2 = (_pad_point(pad) for pad in n_pads)
+    if abs(p_u1.y - n_u1.y) > 1e-6:
+        raise ValueError("U1 fan-through: pins 1/2 are not on the same row -- "
+                          "re-derive this recipe for U1's current orientation")
+    centreline_x = (p_u1.x + n_u1.x) / 2
+    if abs((p_j1.x + n_j1.x) / 2 - centreline_x) > 0.01 or abs((p_j2.x + n_j2.x) / 2 - centreline_x) > 0.01:
+        raise ValueError("U1 fan-through: J1/U1/J2 are not on one shared x centreline -- "
+                          "the vertical-corridor assumption behind this recipe no longer holds")
+    p_side = 1.0 if p_u1.x > centreline_x else -1.0
+    n_side = -p_side
+
+    gnd_pad = _find_pad(board, "U1", "3")
+    gnd_point = _pad_point(gnd_pad)
+    gnd_size = gnd_pad.GetSize()
+    gnd_width_mm = gnd_size.x / 1e6
+    gnd_half_height_mm = gnd_size.y / 2e6
+
+    coupled_half = half_pitch_mm
+    native_half = abs(p_u1.x - n_u1.x) / 2
+    full_pitch_min = gnd_width_mm + 2 * U1_FAN_CLEARANCE_MM + width_mm
+    widened_half = _round_up_to_step_mm(full_pitch_min, U1_FAN_PITCH_ROUND_STEP_MM) / 2
+    fan_out_span = (native_half - coupled_half) + (widened_half - native_half)
+    fan_in_span = widened_half - coupled_half
+
+    y_native = p_u1.y
+    y_entry_boundary = y_native - (native_half - coupled_half)
+    y_wide_start = y_native + (widened_half - native_half)
+    y_wide_end = gnd_point.y + gnd_half_height_mm + U1_FAN_MARGIN_AFTER_GND_MM
+    y_exit_boundary = y_wide_end + fan_in_span
+
+    def _fan_points(side: float) -> list[Pt]:
+        return [
+            Pt(centreline_x + side * coupled_half, y_entry_boundary),
+            Pt(centreline_x + side * widened_half, y_wide_start),
+            Pt(centreline_x + side * widened_half, y_wide_end),
+            Pt(centreline_x + side * coupled_half, y_exit_boundary),
+        ]
+
+    p_fan, n_fan = _fan_points(p_side), _fan_points(n_side)
+
+    exit_a_j1 = PAD_ROW_EXIT_DIRECTION.get("J1")
+    p_pre, n_pre, _pre_side_sign = _route_leg_avoiding_pads(
+        p_j1, p_fan[0], n_j1, n_fan[0], coupled_half, width_mm,
+        p_obstacles, n_obstacles, gap_mm, exit_a=exit_a_j1, exit_b=None)
+    p_post, n_post, post_side_sign = _route_leg_avoiding_pads(
+        p_fan[-1], p_j2, n_fan[-1], n_j2, coupled_half, width_mm,
+        p_obstacles, n_obstacles, gap_mm, exit_a=None, exit_b=None)
+
+    p_full = _dedup(p_pre + p_fan[1:] + p_post[1:])
+    n_full = _dedup(n_pre + n_fan[1:] + n_post[1:])
+    p_runs, n_runs = [(p_full, pcbnew.F_Cu)], [(n_full, pcbnew.F_Cu)]
+
+    ripped_nets: set[str] = set()
+    ripped_nets |= _mark_blocking_foreign_copper(p_full, width_mm, gap_mm, foreign_candidates, blocked_ids)
+    ripped_nets |= _mark_blocking_foreign_copper(n_full, width_mm, gap_mm, foreign_candidates, blocked_ids)
+
+    gnd_clearance_mm = widened_half - width_mm / 2 - gnd_width_mm / 2
+    report = {
+        "native_pitch_mm": native_half * 2,
+        "widened_pitch_mm": widened_half * 2,
+        "gnd_clearance_mm": gnd_clearance_mm,
+        "uncoupled_span_mm": y_exit_boundary - y_entry_boundary,
+        "fan_out_span_mm": fan_out_span,
+    }
+    return [p_runs], [n_runs], _path_length(p_full), _path_length(n_full), post_side_sign, ripped_nets, report
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--board", type=Path, default=DEFAULT_BOARD,
@@ -1166,29 +1391,41 @@ def main() -> int:
         n_length = 0.0
         last_side_sign = 1.0
         crossing_legs: list[int] = []
+        u1_fanthrough_report: dict | None = None
 
-        for leg_index in range(len(p_pads) - 1):
-            p_a, p_b = _pad_point(p_pads[leg_index]), _pad_point(p_pads[leg_index + 1])
-            n_a, n_b = _pad_point(n_pads[leg_index]), _pad_point(n_pads[leg_index + 1])
-            exit_a = PAD_ROW_EXIT_DIRECTION.get(spec["p_hops"][leg_index][0])
-            exit_b = PAD_ROW_EXIT_DIRECTION.get(spec["p_hops"][leg_index + 1][0])
-            try:
-                p_points, n_points, side_sign = _route_leg_avoiding_pads(
-                    p_a, p_b, n_a, n_b, half_pitch_mm, width_mm, p_obstacles, n_obstacles, gap_mm, exit_a, exit_b)
-                p_runs, n_runs = [(p_points, pcbnew.F_Cu)], [(n_points, pcbnew.F_Cu)]
-                last_side_sign = side_sign
-            except ValueError:
-                p_runs, n_runs = _route_crossing_leg_avoiding_self_cross(p_a, p_b, n_a, n_b, width_mm, gap_mm)
-                crossing_legs.append(leg_index)
-            p_length += _runs_length(p_runs)
-            n_length += _runs_length(n_runs)
-            for points, layer in p_runs + n_runs:
-                if layer != pcbnew.F_Cu:
-                    continue  # foreign_candidates only tracks F.Cu copper (the task's own scope)
-                ripped_this_pair |= _mark_blocking_foreign_copper(
-                    points, width_mm, gap_mm, foreign_candidates, blocked_ids)
-            p_legs.append(p_runs)
-            n_legs.append(n_runs)
+        if spec["label"] == "USB device":
+            # Recipe B (README §Routing, H3g) -- U1 is a straight
+            # pass-through on this pair's own leg, not an ordinary hop; see
+            # `_route_usb_device_pair`'s own docstring.
+            p_legs_new, n_legs_new, p_length, n_length, last_side_sign, fan_ripped, u1_fanthrough_report = (
+                _route_usb_device_pair(board, p_pads, n_pads, p_obstacles, n_obstacles,
+                                        half_pitch_mm, width_mm, gap_mm, foreign_candidates, blocked_ids))
+            p_legs += p_legs_new
+            n_legs += n_legs_new
+            ripped_this_pair |= fan_ripped
+        else:
+            for leg_index in range(len(p_pads) - 1):
+                p_a, p_b = _pad_point(p_pads[leg_index]), _pad_point(p_pads[leg_index + 1])
+                n_a, n_b = _pad_point(n_pads[leg_index]), _pad_point(n_pads[leg_index + 1])
+                exit_a = PAD_ROW_EXIT_DIRECTION.get(spec["p_hops"][leg_index][0])
+                exit_b = PAD_ROW_EXIT_DIRECTION.get(spec["p_hops"][leg_index + 1][0])
+                try:
+                    p_points, n_points, side_sign = _route_leg_avoiding_pads(
+                        p_a, p_b, n_a, n_b, half_pitch_mm, width_mm, p_obstacles, n_obstacles, gap_mm, exit_a, exit_b)
+                    p_runs, n_runs = [(p_points, pcbnew.F_Cu)], [(n_points, pcbnew.F_Cu)]
+                    last_side_sign = side_sign
+                except ValueError:
+                    p_runs, n_runs = _route_crossing_leg_avoiding_self_cross(p_a, p_b, n_a, n_b, width_mm, gap_mm)
+                    crossing_legs.append(leg_index)
+                p_length += _runs_length(p_runs)
+                n_length += _runs_length(n_runs)
+                for points, layer in p_runs + n_runs:
+                    if layer != pcbnew.F_Cu:
+                        continue  # foreign_candidates only tracks F.Cu copper (the task's own scope)
+                    ripped_this_pair |= _mark_blocking_foreign_copper(
+                        points, width_mm, gap_mm, foreign_candidates, blocked_ids)
+                p_legs.append(p_runs)
+                n_legs.append(n_runs)
 
         skew_mm = p_length - n_length
         if abs(skew_mm) > MAX_SKEW_MM:
@@ -1237,6 +1474,7 @@ def main() -> int:
             "p_length": p_length, "n_length": n_length, "skew_mm": skew_mm,
             "bridge_runs": bridge_runs, "ripped": ripped_this_pair,
             "crossing_legs": crossing_legs, "bridge_crossing": bridge_crossing,
+            "u1_fanthrough_report": u1_fanthrough_report,
         })
 
     # ---- mutate the board: every removal first, then every addition. ----
@@ -1289,6 +1527,12 @@ def main() -> int:
             print("   DISCLOSED EXCEPTION: mirror-pin bridge needed a via pair -- the two bridges' "
                   "interleaved connector pins (B/A/A/B) force a crossing even after both detour off "
                   "the shared pad row", flush=True)
+        if plan["u1_fanthrough_report"] is not None:
+            report = plan["u1_fanthrough_report"]
+            print(f"   Recipe B (U1 fan-through): native pitch {report['native_pitch_mm']:.3f} mm, "
+                  f"widened to {report['widened_pitch_mm']:.3f} mm (GND clearance "
+                  f"{report['gnd_clearance_mm']:.3f} mm), uncoupled span {report['uncoupled_span_mm']:.3f} mm, "
+                  f"0 vias", flush=True)
 
     print(f"total foreign nets ripped across all pairs: {sorted(all_ripped_foreign)}", flush=True)
 
