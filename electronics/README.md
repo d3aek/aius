@@ -184,8 +184,15 @@ confirming a regeneration matches.
 
 [`scripts/scaffold_pcb.py`](scripts/scaffold_pcb.py) builds
 `aius-carrier.kicad_pcb` from a KiCad XML netlist: the initial four-layer
-placement + connectivity scaffold that H3c routes, not a routed board. Run
-from the Aius root, inside the container:
+placement + connectivity scaffold that H3c routes, not a routed board. It also
+emits three no-copper/no-footprint keepout rule areas per the H3e owner
+rulings (2026-09-12): a 1.5 mm band along both long edges (the Hammond
+1455N1201BK slot faces at `x=0` and `x=BOARD_W`) and an internal-USB-cable
+envelope from J2's own connector opening toward the Teensy micro-B port on
+U10 (a 16x12 mm plug-body rectangle plus a 10 mm-wide corridor, both F.Cu-only
+since the cable runs above the board's top side) — see `_usb_cable_envelope_polygon`
+and the `USB_CABLE_*` constants. Run from the Aius root, inside the
+container:
 
 ```bash
 scripts/kicad.sh sch export netlist --format kicadxml \
@@ -242,7 +249,11 @@ module directly for its constants) that the saved board's `(stackup ...)`
 block carries the expected four copper layers and per-layer thicknesses and
 that the saved `.kicad_pro` declares all four net classes with the expected
 width/clearance and at least one representative net assigned to each of
-`Power`/`USB90`/`Eth100`. Run it the same way as any other `pcbnew` script:
+`Power`/`USB90`/`Eth100`, and that the saved board carries exactly the three
+H3e keepout rule areas (both edge bands on every copper layer at their exact
+bounds, the USB cable envelope F.Cu-only and enclosing J2's own plug-body
+rectangle while staying clear of U10's own already-placed footprint). Run it
+the same way as any other `pcbnew` script:
 
 ```bash
 scripts/kicad.sh --python electronics/scripts/test_scaffold.py
@@ -383,15 +394,40 @@ directly off pad positions — so no J18 rotation clears RX without breaking
 TX's own already-0-via route). Both print a `DISCLOSED EXCEPTION` line.
 USB host and Ethernet TX route at the specified 0 vias. J2 (the USB-A jack)
 may be relocated/rotated freely per an design decision, but the U1 rotation
-above already clears the order reversal without touching it. Residual
-`kicad-cli pcb drc` findings on the full pipeline (35 violations / 7
-unconnected) concentrate in the same small set of genuinely congested
-footprints this script's own retry loops report as bounded — U1's GND pin
-within ~1 mm of its own D+/D- pins, J1's and J2's dense multi-pin rows,
-U10's UHDM lead, C30's centre-tap pad near the ETH_RX crossing, and the
-ETH_RXN via/pad hole-to-hole at J18 — reported rather than chased through
-further constant-tuning, the same "bounded iterations, stop at diminishing
-returns" stopping point as the GND punch-list above.
+above already clears the order reversal without touching it.
+
+**H3e placement pass 2 (2026-09-12)** moved U1 further from J1 (`y=10.0` to
+`y=13.0`, leaving ~4.5 mm for the J1 mirror-pin bridge detour instead of
+~1.5 mm), re-aligned J2 onto J1/U1's own D+/D- centreline (`x=43.0` to
+`x=45.0`), and moved C30 (the ETH_CT centre-tap cap) out of the J20-to-J18
+TX/RX corridor entirely (`(88.0, 23.0)` to `(93.5, 26.0)`) — plus the three
+keepout rule areas above. Rotating J18 90/270 degrees to split its TX/RX rows
+into separate x-corridors was tried and reverted: either rotation collapses
+one pair's own P/N pads onto identical x (a 2-row header has no orientation
+keeping both rows non-degenerate), which `route_diff_pairs.py`'s handedness
+check cannot route through at all (crashes rather than routing with a
+disclosed exception); J18 stays unrotated, since TX already routes at 0 vias
+there. Net effect on the full pipeline (`scaffold_pcb.py` → `route_diff_pairs.py`
+→ `route_export_dsn.py` → Freerouting `-mp 20` → `route_import_ses.py` →
+`route_cleanup.py` → `route_gnd_stitch.py`): **29 violations / 6 unconnected**,
+down from 35/7 — every finding involving C30 is gone, and the residual
+concentrates entirely in the same three genuinely-congested, connector-fixed
+spots this script's own retry loops already report as bounded: J1's own
+B6/B7 mirror-pin bridge via against its A6/A7/CC1 neighbours (`hole_clearance`
+0.18–0.22 mm vs the 0.25 mm floor, unchanged by placement since the bridge's
+1 mm span is entirely J1's own row geometry), U1's GND pin against its own
+D+/D- pins (`shorting_items`, an SOT-23-3-class chip's own pad
+layout — U1's rotation already faces GND away from J1, per the placement
+comment above, but does not increase the GND-to-D+/D- pad-to-pad distance
+itself), and ETH_TXN/ETH_TXP's own self-clearance plus ETH_RXN's via
+hole-to-hole at J18 (0.372 mm vs the 0.4495 mm floor — J18's 2 mm pin pitch,
+unaffected by any component this pass moved). `check_routing_geometry.py`
+stays 0 arcs / 0 off-grid, `check_footprints.py --board` stays 158/158, and
+`check_dfm.sh --apply-fix` then `check_dfm.sh` reports 51 DFM violations, all
+in the same three clusters at the DFM rule set's stricter thresholds — no new
+cluster introduced by this pass. A scoped `.scratch/placement2/final/`
+candidate (board, `.kicad_pro`, `.kicad_dru`, `fp-lib-table`, DRC/DFM/geometry
+reports) carries this result; it is not the canonical board.
 
 ### Routing-geometry gate (H3f)
 

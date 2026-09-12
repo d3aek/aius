@@ -122,6 +122,61 @@ class Scaffold(unittest.TestCase):
             self.assertTrue(any(scaffold_pcb._bare_net_name(pattern) == bare_name for pattern in members),
                             f"{net_class} missing {bare_name}: {members}")
 
+    def test_keepout_rule_areas(self):
+        """H3e design decisions (2026-09-12): both Hammond-slot edge bands and
+        the internal USB cable envelope are emitted as no-copper/no-footprint
+        rule areas with the expected bounds."""
+        result, path = self.build()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        board = pcbnew.LoadBoard(str(path))
+        rule_areas = [zone for zone in board.Zones() if zone.GetIsRuleArea()]
+        self.assertEqual(len(rule_areas), 3)
+        for zone in rule_areas:
+            self.assertTrue(zone.GetDoNotAllowFootprints())
+            self.assertTrue(zone.GetDoNotAllowTracks())
+            self.assertTrue(zone.GetDoNotAllowVias())
+            self.assertTrue(zone.GetDoNotAllowPads())
+            self.assertTrue(zone.GetDoNotAllowZoneFills())
+
+        def bbox_mm(zone):
+            bbox = zone.GetBoundingBox()
+            return (bbox.GetLeft() / 1e6, bbox.GetTop() / 1e6,
+                    bbox.GetRight() / 1e6, bbox.GetBottom() / 1e6)
+
+        edge_zones = [zone for zone in rule_areas if zone.GetLayerSet().Contains(pcbnew.In1_Cu)]
+        self.assertEqual(len(edge_zones), 2, "both Hammond-slot edge bands must be on every copper layer")
+        width = scaffold_pcb.EDGE_KEEPOUT_WIDTH_MM
+        edge_bboxes = sorted(bbox_mm(zone) for zone in edge_zones)
+        left, top, right, bottom = edge_bboxes[0]
+        self.assertAlmostEqual(left, 0.0, places=3)
+        self.assertAlmostEqual(right, width, places=3)
+        self.assertAlmostEqual(top, 0.0, places=3)
+        self.assertAlmostEqual(bottom, scaffold_pcb.BOARD_H, places=3)
+        left, top, right, bottom = edge_bboxes[1]
+        self.assertAlmostEqual(left, scaffold_pcb.BOARD_W - width, places=3)
+        self.assertAlmostEqual(right, scaffold_pcb.BOARD_W, places=3)
+        self.assertAlmostEqual(top, 0.0, places=3)
+        self.assertAlmostEqual(bottom, scaffold_pcb.BOARD_H, places=3)
+
+        envelope_zones = [zone for zone in rule_areas if zone not in edge_zones]
+        self.assertEqual(len(envelope_zones), 1)
+        envelope = envelope_zones[0]
+        self.assertTrue(envelope.GetLayerSet().Contains(pcbnew.F_Cu))
+        self.assertFalse(envelope.GetLayerSet().Contains(pcbnew.In1_Cu))
+        self.assertFalse(envelope.GetLayerSet().Contains(pcbnew.B_Cu))
+        left, top, right, bottom = bbox_mm(envelope)
+        jx, jy = scaffold_pcb.USB_CABLE_J2_OPENING_MM
+        half_w = scaffold_pcb.USB_CABLE_PLUG_WIDTH_MM / 2
+        # The plug-body rectangle (J2's own opening) must be fully enclosed.
+        self.assertLessEqual(left, jx - half_w)
+        self.assertGreaterEqual(right, jx + half_w)
+        self.assertLessEqual(top, jy)
+        self.assertGreaterEqual(bottom, jy + scaffold_pcb.USB_CABLE_PLUG_HEIGHT_MM)
+        # The corridor must stop clear of U10's own already-placed footprint
+        # (see USB_CABLE_U10_COURTYARD_LEFT_EDGE_MM) -- never re-claim U10's
+        # own courtyard as a foreign intrusion.
+        self.assertLess(right, scaffold_pcb.USB_CABLE_U10_COURTYARD_LEFT_EDGE_MM)
+
     def assert_rejected(self, fault, message):
         result, output = self.build(fault)
         self.assertNotEqual(result.returncode, 0)
@@ -160,7 +215,13 @@ class Scaffold(unittest.TestCase):
         subprocess.run(["kicad-cli", "pcb", "drc", "--format", "json", "-o", str(report), str(path)],
                        check=True, capture_output=True, text=True)
         drc = json.loads(report.read_text())
-        self.assertEqual(sum(v["type"] == "items_not_allowed" for v in drc["violations"]), 2)
+        # Count only the *added* tracks' own keepout violations -- isolates
+        # this test's own In1.Cu/In2.Cu fault from any other "items not
+        # allowed" finding the scaffold's own H3e keepout rule areas might
+        # independently report (e.g. against a footprint, not a track).
+        track_violations = [v for v in drc["violations"] if v["type"] == "items_not_allowed"
+                             and any("Track" in item["description"] for item in v["items"])]
+        self.assertEqual(len(track_violations), 2, json.dumps(track_violations, indent=2))
 
 
 if __name__ == "__main__":

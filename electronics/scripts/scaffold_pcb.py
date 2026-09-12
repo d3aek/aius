@@ -50,19 +50,41 @@ PLACEMENT = {
     "U24": (28.0, 8.5, 0.0),
     "J1": (45.0, 3.675, 180.0),   # USB-C port faces rear -Y
     "J20": (81.555, 19.685, 0.0), # RJ45 axis x86, housing face y0
-    "J2": (43.0, 42.0, 0.0),      # USB-A faces front; cable returns to Teensy USB
-    "U1": (45.0, 10.0, 180.0),    # device USB shunt ESD near entry; rotated 180 deg
-                                   # (no directional/mechanical meaning for this chip)
-                                   # so its own D+/D- pad order flips to DM-left/DP-right,
-                                   # matching both J1's A6/A7 mirror pins and J2's fixed
-                                   # DM-left/DP-right pads -- see route_diff_pairs.py's
-                                   # PAIR_SPECS "USB device" entry, which pairs with this.
+    "J2": (45.0, 42.0, 0.0),      # USB-A faces front; cable returns to Teensy USB.
+                                   # x re-aligned onto J1/U1's own D+/D- centreline
+                                   # (45.0) -- H3e placement pass 2026-09-12 -- so the
+                                   # whole J1-U1-J2 run is a straight corridor instead
+                                   # of a 2 mm lateral jog at J2's own end.
+    "U1": (45.0, 13.0, 180.0),    # device USB shunt ESD; rotated 180 deg (no directional/
+                                   # mechanical meaning for this chip) so its own D+/D-
+                                   # pad order flips to DM-left/DP-right, matching both
+                                   # J1's A6/A7 mirror pins and J2's fixed DM-left/DP-right
+                                   # pads -- see route_diff_pairs.py's PAIR_SPECS "USB
+                                   # device" entry, which pairs with this. Moved from
+                                   # y=10.0 to y=13.0 (H3e placement pass 2026-09-12):
+                                   # J1's own A/B row tip sits at y=7.93, so this leaves
+                                   # ~4.5 mm of clear board for J1's A7/B7 mirror-pin
+                                   # bridge detour instead of ~1.5 mm.
     "U2": (53.0, 18.0, 0.0),      # upstream power limiter
     "U21": (18.0, 20.0, 0.0),
     "U23": (28.0, 17.0, 0.0),
     "U10": (59.0, 59.89, 90.0),   # SD toward rear; .62mm pad copper-to-edge
     "U11": (10.0, 66.0, 0.0),
-    "J18": (84.0, 29.0, 0.0),     # Ethernet ribbon terminates beside magnetics
+    "J18": (84.0, 29.0, 0.0),     # Ethernet ribbon terminator. H3e placement pass
+                                   # 2026-09-12 tried rotating this 90/270 deg to split
+                                   # J18's TX/RX rows into separate x-corridors matching
+                                   # J20's own TXP/TXN-vs-RXP/RXN x split; both rotations
+                                   # collapse one pair's own P/N pads onto identical x
+                                   # (a rotated 2-row header has no orientation that keeps
+                                   # BOTH rows non-degenerate in x), which
+                                   # route_diff_pairs.py's handedness/crossing-detection
+                                   # cannot route through (ValueError: no order flip found).
+                                   # Kept unrotated: TX already routes at 0 vias here (its
+                                   # own P/N stay non-degenerate), and RX's own disclosed
+                                   # 1-via-pair exception is the accepted, inherent J18
+                                   # pinout fact (see route_diff_pairs.py's module
+                                   # docstring); the real H3c congestion this position had
+                                   # was C30 sitting in the shared corridor, moved below.
     "J19": (84.0, 44.0, 0.0),     # top-service cable, clear of SD/USB
     "R1": (49.5, 9.0, 0.0), "R2": (40.5, 9.0, 0.0),
     # DNP CHASSIS-GND RC tie (design decision 2026-09-12), left of J1's courtyard
@@ -76,9 +98,20 @@ PLACEMENT = {
     "C22": (21.5, 20.0, 0.0), "C24": (32.0, 16.0, 0.0),
     "C25": (27.5, 14.0, 0.0), "R40": (32.0, 19.0, 0.0),
     "R17": (55.0, 25.0, 0.0), "R18": (55.0, 28.0, 0.0),
-    "C13": (55.0, 45.0, 0.0), "C14": (55.0, 48.0, 90.0),
+    # Moved from y=45.0/48.0 (H3e placement pass 2026-09-12): the old spot sat
+    # inside the internal USB cable envelope's corridor to U10; y=37.0/40.0 is
+    # above the envelope's own plug-rectangle edge (y=41.5) and short of U10's
+    # own F.CrtYd courtyard (x >= 57.185), clear of both.
+    "C13": (55.0, 37.0, 0.0), "C14": (55.0, 40.0, 90.0),
     "C10": (86.0, 70.0, 0.0), "C11": (90.0, 70.0, 0.0),
-    "C30": (88.0, 23.0, 0.0),
+    "C30": (93.5, 26.0, 0.0),     # ETH_CT centre-tap cap. Moved from (88.0, 23.0)
+                                   # (H3e placement pass 2026-09-12): the old spot sat
+                                   # inside the J20-to-J18 TX/RX corridor (x 84-91);
+                                   # 93.5 clears the corridor, and y=26.0 clears both
+                                   # J20's own F.CrtYd courtyard (measured bounds
+                                   # x[76.31,95.70] y[-0.56,22.23]) and J20's own
+                                   # reference-text override below (92.0, 24.0), while
+                                   # staying close to J20's own ETH_CT pins (~86, 18-20).
     "R10": (7.0, 62.0, 90.0), "R11": (10.0, 62.0, 90.0),
     "R12": (14.0, 62.0, 90.0), "R13": (17.0, 62.0, 90.0),
     "R20": (17.0, 81.0, 90.0), "R21": (20.0, 81.0, 90.0),
@@ -91,6 +124,45 @@ PLACEMENT = {
 # Expansion connectors along the front edge.
 FRONT_ROW = ["J10", "J11", "J12", "J13", "J14", "J15", "J16", "J17"]
 FRONT_Y = 88.0
+
+# H3e placement pass (docs/plans/aius-h2-h3-manufacturing.md "Owner rulings
+# (2026-09-12)"): a copper/footprint keepout band along both long edges (the
+# Hammond 1455N1201BK slot faces at x=0 and x=BOARD_W) and a footprint/F.Cu
+# keepout for the internal USB-A-to-Teensy cable, so nothing is routed or
+# placed where the enclosure slot or the cable body physically occupies.
+EDGE_KEEPOUT_WIDTH_MM = 1.5
+
+# The internal cable runs from J2's own connector opening to the Teensy's own
+# micro-B port on U10, which "faces +Y at y ~= 63" per the design decision --
+# U10 is a fixed part (PLACEMENT keeps it at (59.0, 59.89, 90.0)); 63.0 is
+# its own datasheet mating-face offset beyond that anchor, not a separate
+# placement decision. U10's own F.CrtYd courtyard (measured bounds
+# x[57.185,76.055] y[-0.345,63.035]) already spans the full corridor height,
+# so the actual mating point sits inside U10's own already-placed footprint
+# by construction -- the keepout's job stops well short of U10's own
+# boundary, at x=48.0 (route_diff_pairs.py's own USBH_DP/USBH_DM leg to
+# U10's UHDP/UHDM pads detours around U10's own dense pin field between
+# x=48 and U10's courtyard edge, at y=65-68 -- measured: a keepout reaching
+# all the way to 56.0 clipped that detour's own copper, a real
+# `kicad-cli pcb drc` items_not_allowed finding against a genuinely-needed
+# signal route, not a foreign intrusion). The envelope's own polygon
+# endpoint below is clipped along the line toward (59.0, 63.0), not the
+# nominal mating point itself, so this keepout never re-flags U10's own
+# already-placed footprint, or its own already-routed legs, as a foreign
+# intrusion.
+USB_CABLE_U10_NOMINAL_OPENING_MM = (59.0, 63.0)
+USB_CABLE_U10_COURTYARD_LEFT_EDGE_MM = 57.185
+USB_CABLE_CORRIDOR_CLIP_X_MM = 48.0
+
+# J2's own opening sits past its own F.CrtYd courtyard (measured: J2's
+# courtyard extends to y=50.125, well past its D+/D- pads or shield tabs
+# alone -- KiCad's own DRC checks the footprint's courtyard against a
+# keepout, not just its pads), plus a small margin so the plug-body
+# rectangle below never claims any part of J2's own footprint.
+USB_CABLE_J2_OPENING_MM = (PLACEMENT["J2"][0], 50.125 + 0.875)
+USB_CABLE_PLUG_WIDTH_MM = 16.0   # right-angle USB-A plug overmould, J2 end
+USB_CABLE_PLUG_HEIGHT_MM = 12.0
+USB_CABLE_CORRIDOR_WIDTH_MM = 10.0
 
 # Default net class (everything not named in NETCLASS_SPECS below).
 DEFAULT_TRACK_MM = 0.2
@@ -218,6 +290,101 @@ def _insert_stackup(path: Path) -> None:
 
 def _bare_net_name(name: str) -> str:
     return name.rsplit("/", 1)[-1]
+
+
+def _convex_hull(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    """Andrew's monotone chain convex hull, counter-clockwise, no repeated
+    closing point. Used to combine the USB cable envelope's plug-body
+    rectangle and corridor-strip corners into one simple (non-self-
+    intersecting) polygon outline -- the two shapes overlap (the corridor's
+    near end sits inside the plug rectangle), so a hull is the simplest
+    always-valid union; it may claim a little more board area than the exact
+    union, never less, which is the safe direction for a keepout."""
+    pts = sorted(set(points))
+    if len(pts) <= 2:
+        return pts
+
+    def cross(o, a, b):
+        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+    lower: list[tuple[float, float]] = []
+    for p in pts:
+        while len(lower) >= 2 and cross(lower[-2], lower[-1], p) <= 0:
+            lower.pop()
+        lower.append(p)
+    upper: list[tuple[float, float]] = []
+    for p in reversed(pts):
+        while len(upper) >= 2 and cross(upper[-2], upper[-1], p) <= 0:
+            upper.pop()
+        upper.append(p)
+    return lower[:-1] + upper[:-1]
+
+
+def _usb_cable_envelope_polygon() -> list[tuple[float, float]]:
+    """The internal USB-A-to-Teensy cable keepout: a convex hull of (a) the
+    16x12 mm plug-body rectangle, its near edge at J2's own opening and
+    extending away from J2's pads (see USB_CABLE_J2_OPENING_MM) toward U10,
+    and (b) the 10 mm-wide corridor strip from that opening toward U10's own
+    micro-B mating face, clipped at U10's own footprint boundary (see the
+    USB_CABLE_* constants for the owner-ruled dimensions and both
+    endpoints)."""
+    jx, jy = USB_CABLE_J2_OPENING_MM
+    half_w = USB_CABLE_PLUG_WIDTH_MM / 2
+    plug_corners = [
+        (jx - half_w, jy), (jx + half_w, jy),
+        (jx + half_w, jy + USB_CABLE_PLUG_HEIGHT_MM), (jx - half_w, jy + USB_CABLE_PLUG_HEIGHT_MM),
+    ]
+
+    # The corridor leaves from the plug body's own far/back edge (away from
+    # J2's connector opening), not the opening point itself -- anchoring at
+    # the opening lets one of the two perpendicular-offset corridor corners
+    # swing behind the plug rectangle's near edge (toward smaller y), back
+    # over J2's own connector body, when the corridor direction is steep
+    # relative to the plug's own long axis (measured: exactly this clipped
+    # J2's own shield-tab pad before the anchor moved to the back edge).
+    corridor_start = (jx, jy + USB_CABLE_PLUG_HEIGHT_MM)
+    # Clip the corridor's far end along the line toward U10's nominal mating
+    # point -- see USB_CABLE_CORRIDOR_CLIP_X_MM's own comment for why the
+    # polygon must stop short of both U10's own boundary and its own routed
+    # USBH leg's detour, rather than reach the nominal point itself.
+    target_x, target_y = USB_CABLE_U10_NOMINAL_OPENING_MM
+    clip_x = USB_CABLE_CORRIDOR_CLIP_X_MM
+    clip_t = (clip_x - corridor_start[0]) / (target_x - corridor_start[0])
+    ux = clip_x
+    uy = corridor_start[1] + (target_y - corridor_start[1]) * clip_t
+    dx, dy = ux - corridor_start[0], uy - corridor_start[1]
+    length = (dx ** 2 + dy ** 2) ** 0.5
+    unit = (dx / length, dy / length)
+    perp = (-unit[1], unit[0])
+    half_corridor = USB_CABLE_CORRIDOR_WIDTH_MM / 2
+    corridor_corners = [
+        (corridor_start[0] + perp[0] * half_corridor, corridor_start[1] + perp[1] * half_corridor),
+        (corridor_start[0] - perp[0] * half_corridor, corridor_start[1] - perp[1] * half_corridor),
+        (ux + perp[0] * half_corridor, uy + perp[1] * half_corridor),
+        (ux - perp[0] * half_corridor, uy - perp[1] * half_corridor),
+    ]
+    return _convex_hull(plug_corners + corridor_corners)
+
+
+def _add_rule_area(board, layer_set, outline_mm: list[tuple[float, float]]) -> None:
+    """Add a no-copper/no-footprint rule area (KiCad keepout zone) on
+    `layer_set` with the given outline. Every rule area this script emits
+    forbids tracks, vias, pads, footprints and zone fills alike -- the owner
+    rulings this implements ("no copper, no footprints") never mean to allow
+    a subset of those."""
+    zone = pcbnew.ZONE(board)
+    zone.SetLayerSet(layer_set)
+    zone.SetIsRuleArea(True)
+    zone.SetDoNotAllowTracks(True)
+    zone.SetDoNotAllowVias(True)
+    zone.SetDoNotAllowPads(True)
+    zone.SetDoNotAllowFootprints(True)
+    zone.SetDoNotAllowZoneFills(True)
+    poly = zone.Outline()
+    poly.NewOutline()
+    for x, y in outline_mm:
+        poly.Append(pcbnew.FromMM(x), pcbnew.FromMM(y))
+    board.Add(zone)
 
 
 def _write_net_classes(project: dict, net_by_name: dict) -> None:
@@ -362,11 +529,11 @@ def main():
     unplaced = set(fp_by_ref) - placed
     if unplaced:
         raise ValueError(f"missing placement: {sorted(unplaced)}")
-    for ref, position in {"J1": (51.0, 5.0), "U1": (47.5, 11.0),
-                          "J20": (92.0, 24.0), "U11": (6.0, 68.5),
+    for ref, position in {"J1": (51.0, 5.0), "U1": (41.0, 16.0),
+                          "J20": (88.0, 15.0), "U11": (6.0, 68.5),
                           "U2": (51.5, 15.0), "U23": (23.5, 17.0),
                           "R4": (57.0, 22.0), "R1": (51.5, 9.0),
-                          "R2": (38.5, 9.0)}.items():
+                          "R2": (38.5, 9.0), "C14": (50.0, 44.0)}.items():
         field = fp_by_ref[ref].Reference()
         field.SetPosition(pcbnew.VECTOR2I(*(pcbnew.FromMM(v) for v in position)))
         field.SetTextAngle(pcbnew.EDA_ANGLE(0, pcbnew.DEGREES_T))
@@ -394,6 +561,23 @@ def main():
         # after routing. Headless ZONE_FILLER on a freshly scripted board is
         # crash-prone, and an unfilled outline carries the same design intent.
         print(f"added {len(board.Zones())} GND zones (unfilled)", flush=True)
+
+    # H3e owner-ruled keepouts: both Hammond-slot edge bands (copper + parts,
+    # every copper layer) and the internal USB cable envelope (parts + F.Cu
+    # copper only -- the cable runs above the board's top side).
+    all_cu = pcbnew.LSET.AllCuMask(board.GetCopperLayerCount())
+    _add_rule_area(board, all_cu, [
+        (0.0, 0.0), (EDGE_KEEPOUT_WIDTH_MM, 0.0),
+        (EDGE_KEEPOUT_WIDTH_MM, BOARD_H), (0.0, BOARD_H),
+    ])
+    _add_rule_area(board, all_cu, [
+        (BOARD_W - EDGE_KEEPOUT_WIDTH_MM, 0.0), (BOARD_W, 0.0),
+        (BOARD_W, BOARD_H), (BOARD_W - EDGE_KEEPOUT_WIDTH_MM, BOARD_H),
+    ])
+    front_only = pcbnew.LSET()
+    front_only.AddLayer(pcbnew.F_Cu)
+    _add_rule_area(board, front_only, _usb_cable_envelope_polygon())
+    print("added 3 rule areas (2 edge keepouts + 1 USB cable envelope)", flush=True)
 
     board.BuildListOfNets()
     print("saving board...", flush=True)
