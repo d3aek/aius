@@ -617,6 +617,37 @@ def _place_via_near_point(board, anchor_point, anchor_layer, offsets_mm, keepout
     return None, None
 
 
+def _via_bridge_collides(board, via_a, via_b, layer, track_keepout_radius, hole_keepout_radius,
+                          exclude_netcode, sample_count=12):
+    """True when a straight same-net track bridging two already-placed vias
+    `via_a`/`via_b` on `layer` would collide with foreign copper.
+
+    Unlike `_path_collides_from_anchor` (built for extending a track from an
+    existing anchor to a *new* via, so it deliberately checks that new via's
+    final position at full via-sized clearance, unexcluded), both endpoints
+    here are already-placed, already-DRC-valid vias -- there is no new via
+    being validated, only a track between two existing ones. Excluding both
+    vias' own keys at every sample, including the endpoints, avoids a via
+    always "colliding" with its own drilled hole (`_colliders`' unconditional
+    hole-to-hole check yields any via whose center lies within its own drill
+    radius of the sample point, and the endpoints of this path sit exactly on
+    `via_a`/`via_b`'s own centers). This was the prior bug: the old call site
+    used plain `_path_collides` with no exclusion at all, so this check always
+    reported a collision and the B.Cu bridge was never added, leaving the
+    parallel via connected on F.Cu only -- a genuine DRC `via_dangling`
+    finding, not a false positive from a real obstruction."""
+    exclude_keys = {_key(via_a), _key(via_b)}
+    start, end = via_a.GetPosition(), via_b.GetPosition()
+    if _crosses_foreign_track(board, start, end, layer, exclude_netcode, exclude_keys):
+        return True
+    for step in range(sample_count + 1):
+        t = step / sample_count
+        point = pcbnew.VECTOR2I(int(start.x + t * (end.x - start.x)), int(start.y + t * (end.y - start.y)))
+        if _collides(board, point, track_keepout_radius, hole_keepout_radius, exclude_netcode, exclude_keys):
+            return True
+    return False
+
+
 def _stitch_smd_pads_without_via(board, netcode, keepout_radius, hole_keepout_radius,
                                   via_diameter, via_drill, track_width, track_keepout_radius):
     """Every SMD GND pad without a via within 1.0 mm gets one, joined to the
@@ -822,8 +853,8 @@ def _stitch_power_via_redundancy(board, keepout_radius, hole_keepout_radius, via
             # anything, just an expensive way to end an F.Cu stub. Bridge the
             # same two via positions on B.Cu too, so the new via genuinely
             # carries current on both layers alongside the original.
-            if not _path_collides(board, via.GetPosition(), parallel.GetPosition(),
-                                   keepout_radius, hole_keepout_radius, netcode):
+            if not _via_bridge_collides(board, via, parallel, pcbnew.B_Cu, power_track_keepout_radius,
+                                         hole_keepout_radius, netcode):
                 back_track = pcbnew.PCB_TRACK(board)
                 back_track.SetStart(via.GetPosition())
                 back_track.SetEnd(parallel.GetPosition())
@@ -831,12 +862,21 @@ def _stitch_power_via_redundancy(board, keepout_radius, hole_keepout_radius, via
                 back_track.SetLayer(pcbnew.B_Cu)
                 back_track.SetNetCode(netcode)
                 board.Add(back_track)
+                added += 1
+                print(f"  added parallel via for {net_name} beside {location} at "
+                      f"({parallel.GetPosition().x / 1e6:.3f}, {parallel.GetPosition().y / 1e6:.3f})", flush=True)
             else:
-                print(f"  parallel via for {net_name} at {location} could not get a B.Cu bridge "
-                      f"(single-layer only)", flush=True)
-            added += 1
-            print(f"  added parallel via for {net_name} beside {location} at "
-                  f"({parallel.GetPosition().x / 1e6:.3f}, {parallel.GetPosition().y / 1e6:.3f})", flush=True)
+                # A genuine foreign obstruction blocks the B.Cu bridge: a
+                # parallel via connected on F.Cu only is a `via_dangling`
+                # finding waiting to happen, so undo it (via + its F.Cu
+                # connecting track) rather than leave dead, disconnected
+                # copper on the board.
+                board.Remove(parallel)
+                if _track is not None:
+                    board.Remove(_track)
+                unresolved.append(f"{net_name} via at {location}")
+                print(f"  parallel via for {net_name} at {location} could not get a B.Cu bridge, "
+                      f"removed (single-layer-only would be via_dangling)", flush=True)
     return added, unresolved
 
 

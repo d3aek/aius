@@ -303,6 +303,29 @@ reads the plane-layer type (`pcbnew.LT_POWER`, set by
 [`scripts/scaffold_pcb.py`](scripts/scaffold_pcb.py)) straight off the board,
 so no post-export DSN rewrite is needed to keep Freerouting off the planes.
 
+**H3h DSN footprint-keepout fix (2026-09-12)** closed a Freerouting-only
+residual: `I2S_TXD_T`/`I2S_RXD_T` (R28/R29 to U10 pins 7/8) stayed unrouted
+across the whole pipeline even though `scaffold_pcb.py`'s USB cable envelope
+rule area forbids footprints only (`DoNotAllowTracks`/`DoNotAllowVias` both
+`False` — the cable rests on solder mask, so only parts must avoid it).
+`ExportSpecctraDSN` writes every rule area as a plain DSN `(keepout ...)`
+block regardless of its own per-item flags — confirmed by grepping the
+exported DSN, where the envelope (its polygon on `F.Cu` only, unlike the two
+all-layer edge keepouts which repeat their polygon on every copper layer)
+landed as an ordinary `(keepout "" (polygon F.Cu ...))`, indistinguishable
+from a copper-forbidding one — so Freerouting always treated it as a
+track/via keepout too. The fix detaches every
+footprint-only rule area (`DoNotAllowTracks`/`DoNotAllowVias` both `False`)
+from the in-memory board copy the script builds for export, right before
+calling `ExportSpecctraDSN`; the board on disk is never saved by this script,
+so the canonical/candidate `.kicad_pcb` keeps the rule area (still enforced
+by `kicad-cli pcb drc` against footprint placement) unchanged. Against a
+fresh `scaffold_pcb.py` → `route_diff_pairs.py` → `route_export_dsn.py` →
+Freerouting `-mp 40` → `route_import_ses.py` → `route_cleanup.py` →
+`route_gnd_stitch.py` run: both I2S nets show full connectivity in
+Freerouting's own unrouted-connections report and in `kicad-cli pcb drc
+--severity-all`'s `unconnected_items`.
+
 [`scripts/route_import_ses.py`](scripts/route_import_ses.py) sets every GND
 zone's local clearance and thermal-relief gap to 0.25 mm (spoke width stays
 0.5 mm, a fabricable solder joint) before filling — KiCad's 0.5/0.5 mm zone
@@ -361,6 +384,24 @@ connector-pin-field congestion), and a parallel via for one of VBUS_RAW's
 two single-via hops (the other found no collision-free site and stays a
 residual); `kicad-cli pcb drc --severity-all` on the result is 0
 violations, 0 unconnected items.
+
+**H3h parallel-via bridging fix (2026-09-12)** closed a `via_dangling`
+residual on the Power-class redundancy pass above: the B.Cu bridging track
+between a Power-class via and its new parallel via used the plain
+`_path_collides` check, which has no exclusion at all, so it always reported
+a collision at the two samples landing exactly on the vias' own centers (the
+unconditional hole-to-hole check `_colliders` runs against every via yields
+any via whose center lies within its own drill radius of the sample point) —
+the B.Cu bridge was therefore never added, leaving each new parallel via
+connected on F.Cu only, a genuine DRC finding rather than a false positive.
+The dedicated `_via_bridge_collides` check excludes both vias' own keys at
+every sample, including the endpoints, and a via whose bridge still
+genuinely collides with foreign copper is now removed (with its F.Cu
+connecting track) rather than left dangling. On a fresh full-pipeline
+candidate: `via_dangling` went from 2 (both on `VBUS_RAW`'s parallel vias) to
+0, with no new violation introduced (`clearance`/`shorting_items`/
+`solder_mask_bridge` unchanged, all pre-existing `route_diff_pairs.py`
+residuals).
 
 [`scripts/route_diff_pairs.py`](scripts/route_diff_pairs.py) is the H3e
 diff-pair fix: it rips all eight USB/Ethernet pair nets' existing copper and
@@ -491,20 +532,55 @@ scoped `.scratch/pairs4/final/` candidate (board, `.kicad_pro`, `.kicad_dru`,
 `fp-lib-table`, DRC/geometry/footprint reports) carries this result; it is
 not the canonical board.
 
-**J1's own B6/A7/A6/B7 mirror-pin bridge was not converted to a via-free
-bridge.** Verifying the real footprint (never assumed) found the row's
-mirror-pin order is `B6(D+) A7(D-) A6(D+) B7(D-)` at 0.5 mm pitch, not the
-`A6(D+) A7(D-) B7(D-) B6(D+)` adjacency a via-free "straight D- stub from A7
-to B7" design would need. On the real board A6 (D+) sits exactly on the
-straight line between A7 and B7 (the stub's own midpoint), so that stub would
-short against A6's own pad regardless of how the D+ bridge routes around it;
-forcing both bridges' detours to the same side (the only side that does not
-collide with the coupled legs' own continuation, per `_route_bridge_pair`'s
-own docstring) still leaves their overlapping spans (`B6->A6` and `A7->B7`)
-interleaved — an order-reversing connection this module's own analysis
-already documents as provably unavoidable in the plane without a via. The
-existing via-based bridge (`_route_bridge_pair_avoiding_self_cross`) is
-therefore left unchanged; this residual stays disclosed as before.
+**H3h J1 via-free mirror-pin bridge, "Recipe C" (2026-09-12)** replaces J1's
+own via-based bridge (`_route_bridge_pair`/`_route_bridge_pair_avoiding_
+self_cross`, both removed) with two independent, genuinely via-free ties:
+D+'s bridge (A6↔B6) dips to the *board* side (+Y), D-'s bridge (B7↔A7) dips
+to the *connector* side (-Y) — `_route_j1_via_free_bridge`, reusing
+`_detour_around_pad_row`'s existing bow shape. Putting the two dips on
+opposite sides of the row means neither bridge's own copper ever enters the
+other's territory (each only reaches ~1.025 mm past the row on its own
+side), so the B6/A7/A6/B7 interleaving that forced the old bridge's own
+via never gets the chance to — measured 0 vias for both ties, real pad
+centres read off the board (B6 44.25, A7 44.75, A6 45.25, B7 45.75, all at
+y=7.355; tips at y=6.78/7.93): the D- dip's flat clears A6's own
+connector-side tip by ≈0.32 mm, the D+ dip's flat clears A7's own
+board-side tip by ≈0.32 mm, both above the 0.15 mm netclass gap + 0.1255 mm
+track half-width (0.2755 mm) floor.
+
+This does not make the *whole* USB device pair via-free, though — A6's own
+bridge, going above the row, encloses A7 on three sides (its own two "legs"
+plus the flat top, all real F.Cu copper), a fact confirmed the hard way: a
+plain vertical A7 exit, a 45-degree sideways dodge either direction, and a
+B.Cu dip at every via size and standoff swept all landed a real `kicad-cli
+pcb drc` `clearance`/`hole_clearance`/`hole_to_hole` finding against either
+the bridge itself or J1's own 0.5 mm-pitch neighbours (A6/B6) — the
+enclosure's own inner width is provably narrower than twice the clearance
+any board-legal via needs from either wall. A7 is already bonded to B7 by
+its own via-free bridge, so `_route_usb_device_pair`'s own leg to U1 now
+launches from B7 instead, at the cost of the same kind of disclosed via
+pair (`_route_crossing_leg_avoiding_self_cross`) ETH_RXP/ETH_RXN already
+needs, for the same underlying reason: B7 sits on the *wrong* side of the
+coupled pair for this corridor (J1's own interleaving again), and swapping
+which side a signal enters that corridor from does not change that this
+connector's physical order reversal must cross somewhere in the plane.
+`J1_CROSSING_VIA_STANDOFF_MM` (an SMD-sized standoff for `_route_crossing_
+leg`'s own transition via, swept empirically at 0.1/0.2/0.5 mm) narrows but
+does not close a residual clearance shortfall against A6 at this specific,
+extremely tight pitch (measured ≈0.04–0.05 mm short of the 0.15 mm floor at
+the best value found, 0.2 mm) — disclosed rather than chased further per
+this module's own H3c "bounded iterations" convention.
+
+Net result on `.scratch/pairs5/final/` (`route_diff_pairs.py` + zone refill
++ `kicad-cli pcb drc --severity-all`, not the full downstream pipeline):
+USB device now shows 2 vias (down from a single via *pair* before, but
+relocated from the bridge itself to the B7 leg) and a **different** small
+set of residual findings, all against J1's own A6 pad and a nearby
+B.Cu-only `VBUS_RAW` stitch track/via this script's own F.Cu-only rip pass
+never sees (same disclosed limitation the pre-existing TX_ENABLE B.Cu
+residual already documented). ETH_TXP/ETH_TXN's own self-clearance
+(0.047 mm) and USBH_DP/USBH_DM vs U10's UHDM lead (0.10 mm) are unchanged
+residuals from before this pass — not addressed by it.
 
 ### Routing-geometry gate (H3f)
 

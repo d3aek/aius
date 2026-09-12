@@ -50,6 +50,26 @@ def main() -> int:
     print(f"default net class: track {TRACK_MM} mm, clearance {CLEAR_MM} mm, "
           f"via {VIA_DIA_MM}/{VIA_DRILL_MM} mm", flush=True)
 
+    # pcbnew's Specctra DSN exporter writes every rule area as a plain DSN
+    # `(keepout ...)` block regardless of its own DoNotAllowTracks/Vias flags
+    # (confirmed against the exported DSN: scaffold_pcb.py's USB cable
+    # envelope, a footprint-only rule area with DoNotAllowTracks/Vias both
+    # False, still lands as `(keepout "" (polygon F.Cu ...))`, indistinguishable
+    # from the copper-forbidding edge keepouts) -- Freerouting then treats it
+    # as a track/via keepout too, even though nothing in the source board
+    # forbids routing there. Detach every footprint-only rule area from this
+    # in-memory board *before* exporting so Freerouting never sees it; this
+    # board is never saved, so the canonical/candidate .kicad_pcb keeps its
+    # rule area (still enforced by kicad-cli pcb drc against footprint
+    # placement) unchanged.
+    detached = 0
+    for zone in list(board.Zones()):
+        if zone.GetIsRuleArea() and not zone.GetDoNotAllowTracks() and not zone.GetDoNotAllowVias():
+            board.Remove(zone)
+            detached += 1
+    print(f"detached {detached} footprint-only rule area(s) before DSN export "
+          f"(Specctra export has no way to express a footprint-only keepout)", flush=True)
+
     ok = pcbnew.ExportSpecctraDSN(board, str(dsn_path))
     print(f"ExportSpecctraDSN -> {dsn_path}: {ok}", flush=True)
     return 0 if ok else 1
