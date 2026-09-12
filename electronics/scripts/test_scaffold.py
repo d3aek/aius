@@ -133,10 +133,13 @@ class Scaffold(unittest.TestCase):
         self.assertEqual(len(rule_areas), 3)
         for zone in rule_areas:
             self.assertTrue(zone.GetDoNotAllowFootprints())
-            self.assertTrue(zone.GetDoNotAllowTracks())
-            self.assertTrue(zone.GetDoNotAllowVias())
-            self.assertTrue(zone.GetDoNotAllowPads())
-            self.assertTrue(zone.GetDoNotAllowZoneFills())
+            # Edge bands ban copper; the cable envelope (F.Cu only) bans parts
+            # only, so the I2S corridor under the cable stays routable.
+            copper_banned = zone.GetLayerSet().Contains(pcbnew.In1_Cu)
+            self.assertEqual(zone.GetDoNotAllowTracks(), copper_banned)
+            self.assertEqual(zone.GetDoNotAllowVias(), copper_banned)
+            self.assertEqual(zone.GetDoNotAllowPads(), copper_banned)
+            self.assertEqual(zone.GetDoNotAllowZoneFills(), copper_banned)
 
         def bbox_mm(zone):
             bbox = zone.GetBoundingBox()

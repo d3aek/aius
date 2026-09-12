@@ -210,26 +210,94 @@ def _point_to_segment_distance_mm(point, seg_start, seg_end):
     return math.hypot(px - (ax + t * dx), py - (ay + t * dy))
 
 
-def _collides(board, center, keepout_radius, hole_keepout_radius, exclude_netcode, exclude_keys=None):
-    """True when a via centered at `center` would land inside any pad
-    (via-in-pad, regardless of net), within `hole_keepout_radius` of any
-    drilled hole (hole-to-hole / hole-to-copper spacing binds regardless of
-    net -- two isolated nets' drills can still break into each other), or
-    within `keepout_radius` of any different-net copper (the project's
-    Default clearance plus the via's own radius) -- the same conditions
-    `kicad-cli pcb drc` would flag. Uses each item's real geometry (bounding
-    circle for a pad, exact segment distance for a track or via) rather than
-    axis-aligned bounding boxes, which false-positive on any diagonal track
-    spanning the search area. Every pad is checked regardless of copper layer
-    -- an NPTH mechanical mounting hole has no copper but still enforces hole
-    clearance against a new via's own drill.
+def _orientation(point, query, other):
+    value = (query.y - point.y) * (other.x - query.x) - (query.x - point.x) * (other.y - query.y)
+    if value == 0:
+        return 0
+    return 1 if value > 0 else 2
+
+
+def _on_segment(point, query, other):
+    return (min(point.x, other.x) <= query.x <= max(point.x, other.x)
+            and min(point.y, other.y) <= query.y <= max(point.y, other.y))
+
+
+def _segments_intersect(a_start, a_end, b_start, b_end):
+    """True when the straight segments `a_start`-`a_end` and `b_start`-`b_end`
+    properly cross (including a collinear overlap or an endpoint landing on
+    the other segment) -- a strict geometric test, independent of any
+    clearance radius. A new track that literally crosses a foreign-net track
+    is always a short regardless of how close the anchor already sat to that
+    track before this search ran; `_path_collides_from_anchor`'s
+    pre-existing-condition exemption forgives *proximity* near the anchor,
+    never an outright intersection anywhere along the new copper."""
+    o1 = _orientation(a_start, a_end, b_start)
+    o2 = _orientation(a_start, a_end, b_end)
+    o3 = _orientation(b_start, b_end, a_start)
+    o4 = _orientation(b_start, b_end, a_end)
+    if o1 != o2 and o3 != o4:
+        return True
+    if o1 == 0 and _on_segment(a_start, b_start, a_end):
+        return True
+    if o2 == 0 and _on_segment(a_start, b_end, a_end):
+        return True
+    if o3 == 0 and _on_segment(b_start, a_start, b_end):
+        return True
+    if o4 == 0 and _on_segment(b_start, a_end, b_end):
+        return True
+    return False
+
+
+def _crosses_foreign_track(board, start, end, layer, exclude_netcode, exclude_keys=None):
+    """True when the straight prospective connecting track `start`-`end` on
+    `layer` properly crosses any other-net track on the same layer (vias
+    excluded -- a via's own clearance is already the stricter, always-checked
+    final-sample test). Runs once per candidate offset against the whole
+    segment, rather than the discrete per-sample clearance scan, since a
+    straight-line crossing is exact geometry, not something sampling could
+    miss or over-forgive."""
+    for track in board.GetTracks():
+        if isinstance(track, pcbnew.PCB_VIA):
+            continue
+        if track.GetLayer() != layer:
+            continue
+        if track.GetNetCode() == exclude_netcode:
+            continue
+        if exclude_keys and _key(track) in exclude_keys:
+            continue
+        if _segments_intersect(start, end, track.GetStart(), track.GetEnd()):
+            return True
+    return False
+
+
+def _colliders(board, center, keepout_radius, hole_keepout_radius, exclude_netcode, exclude_keys=None):
+    """Yield the `_key()` of every pad/track/via colliding with a via
+    centered at `center` -- via-in-pad (regardless of net), within
+    `hole_keepout_radius` of any drilled hole (hole-to-hole / hole-to-copper
+    spacing binds regardless of net -- two overlapping plated holes are a
+    fab/structural problem even on the *same* net, unlike ordinary copper
+    clearance, where same-net touching is the point), or within
+    `keepout_radius` of any different-net copper (the project's Default
+    clearance plus the via's own radius) -- the same conditions
+    `kicad-cli pcb drc` would flag. Uses each item's real
+    geometry (bounding circle for a pad, exact segment distance for a track
+    or via) rather than axis-aligned bounding boxes, which false-positive on
+    any diagonal track spanning the search area. Every pad is checked
+    regardless of copper layer -- an NPTH mechanical mounting hole has no
+    copper but still enforces hole clearance against a new via's own drill.
 
     `exclude_keys` (a set of `_key()` values) skips those specific pads/
     tracks/vias from every check below, regardless of net -- for a
     connecting track that deliberately starts on a real pad or via's own
     copper (or an anchor that *is* that exact pad, e.g. a differential pair
     with only one pad per net), that item is not a collision to avoid, it is
-    the connection point."""
+    the connection point.
+
+    A generator rather than a single boolean so a caller that only wants a
+    yes/no answer (`_collides`) can still short-circuit on the first hit,
+    while a caller that wants to know *which* items already collide right at
+    a real anchor point (`_path_collides_from_anchor`, to tell a pre-existing
+    condition apart from a new one) can collect every one of them."""
     keepout_radius_mm = keepout_radius / 1e6
     hole_keepout_radius_mm = hole_keepout_radius / 1e6
     for footprint in board.GetFootprints():
@@ -239,18 +307,33 @@ def _collides(board, center, keepout_radius, hole_keepout_radius, exclude_netcod
             pad_radius_mm = pad.GetBoundingRadius() / 1e6
             distance = _distance_mm(center, pad.GetPosition())
             if distance <= pad_radius_mm:
-                return True
+                yield _key(pad)
+                continue
             has_hole = pad.GetDrillSizeX() > 0
             if has_hole and distance <= pad_radius_mm + hole_keepout_radius_mm:
-                return True
+                yield _key(pad)
+                continue
             if (not has_hole and pad.IsOnCopperLayer() and pad.GetNetCode() != exclude_netcode
                     and distance <= pad_radius_mm + keepout_radius_mm):
-                return True
+                yield _key(pad)
     for track in board.GetTracks():
         if not track.IsOnCopperLayer():
             continue
         if exclude_keys and _key(track) in exclude_keys:
             continue
+        distance = _point_to_segment_distance_mm(center, track.GetStart(), track.GetEnd())
+        # A via's drilled hole binds hole-to-hole spacing against every other
+        # via regardless of net -- two plated holes physically overlapping is
+        # a fab/structural problem even on the same net (unlike ordinary
+        # copper clearance, where same-net touching is the point). Checked
+        # before the same-net skip below, so a same-net via that already
+        # bonds into the plane's own copper still gets its own drill spacing
+        # enforced against a neighbour.
+        if isinstance(track, pcbnew.PCB_VIA):
+            drill_radius_mm = track.GetDrillValue() / 1e6 / 2
+            if distance <= drill_radius_mm + hole_keepout_radius_mm:
+                yield _key(track)
+                continue
         if track.GetNetCode() == exclude_netcode:
             continue
         # PCB_VIA.GetWidth() with no layer argument asserts in KiCad 10 (a via's
@@ -258,13 +341,15 @@ def _collides(board, center, keepout_radius, hole_keepout_radius, exclude_netcod
         # diameter on every layer, so F_Cu is as good a layer as any to ask.
         width = track.GetWidth(pcbnew.F_Cu) if isinstance(track, pcbnew.PCB_VIA) else track.GetWidth()
         half_width_mm = width / 1e6 / 2
-        distance = _point_to_segment_distance_mm(center, track.GetStart(), track.GetEnd())
         if distance <= half_width_mm + keepout_radius_mm:
-            return True
-        if isinstance(track, pcbnew.PCB_VIA):
-            drill_radius_mm = track.GetDrillValue() / 1e6 / 2
-            if distance <= drill_radius_mm + hole_keepout_radius_mm:
-                return True
+            yield _key(track)
+
+
+def _collides(board, center, keepout_radius, hole_keepout_radius, exclude_netcode, exclude_keys=None):
+    """True when any item collides with a via centered at `center` -- see
+    `_colliders` for the exact conditions checked. Stops at the first hit."""
+    for _ in _colliders(board, center, keepout_radius, hole_keepout_radius, exclude_netcode, exclude_keys):
+        return True
     return False
 
 
@@ -285,21 +370,24 @@ def _path_collides(board, start, end, keepout_radius, hole_keepout_radius, exclu
 
 def _path_collides_from_anchor(board, start, end, keepout_radius, hole_keepout_radius,
                                 exclude_netcode, exclude_keys=None, sample_count=12,
-                                track_keepout_radius=None):
+                                track_keepout_radius=None, track_layer=None):
     """Same as `_path_collides`, with `exclude_keys` (see `_collides`)
     threaded through every sample except the last, and a separate, smaller
     `track_keepout_radius` for every sample except the last.
 
     `_place_via_near_point` below anchors directly on a real pad or via it
-    intends to extend a track from (an SMD GND pad, a Power-class via), or on
-    the centroid of a differential pair's own pads (which, for a pair with
-    only one pad per net, *is* that exact pad) -- unlike `_place_via`'s
-    anchors above (a stub-track kink point, never itself a pad). Without
-    `exclude_keys`, the unconditional via-in-pad check in `_collides`
-    (`distance <= pad radius`, checked regardless of net) trips on that exact
-    anchor at every sample near it, since the whole near-anchor stretch of a
-    short connecting track sits inside the anchor's own pad radius -- not
-    just the literal start point.
+    intends to extend a track from (an SMD GND pad, a Power-class via, or a
+    bare-pad GND island with no routed copper of its own -- the island walk
+    in `main` falls back to exactly this case), or on the centroid of a
+    differential pair's own pads (which, for a pair with only one pad per
+    net, *is* that exact pad). Without `exclude_keys`, the unconditional
+    via-in-pad check in `_collides` (`distance <= pad radius`, checked
+    regardless of net) trips on that exact anchor at every sample near it,
+    since the whole near-anchor stretch of a short connecting track sits
+    inside the anchor's own pad radius -- not just the literal start point.
+    (A stub-track kink point never has this problem on its own account, but
+    `_keys_touching_point` excludes it too, at no cost, so one code path
+    covers both anchor shapes.)
 
     Every sample before the last represents the *connecting track*'s own
     route, not the via -- checking it with `keepout_radius` (sized for the
@@ -321,7 +409,40 @@ def _path_collides_from_anchor(board, start, end, keepout_radius, hole_keepout_r
     binding just because a track will connect to it), not only from
     unrelated copper. Excluding the anchor there let a via land drilled
     straight against its own anchor pad's hole -- the exact `hole_to_hole`
-    violation (actual 0.0 mm) this split fixes."""
+    violation (actual 0.0 mm) this split fixes.
+
+    `start` itself is a second, distinct pre-existing-condition case:
+    whatever foreign copper already sits within a track's own clearance of
+    the anchor (a differential-pair track routed close by a fine-pitch
+    chip's own GND pin, say) was already that close before this search ever
+    ran -- it is a fact about the board's existing geometry, not something
+    the new via or connecting track introduces. Checking `start` itself (and
+    the handful of samples nearest it, for a short candidate offset) against
+    that condition rejects every candidate direction outright, regardless of
+    how far the via and the bulk of the new track actually land, because
+    every path shares the same first few millimetres. A one-time collision
+    scan at `start` (at the same relaxed `track_keepout_radius` every other
+    non-final sample uses) folds whatever already collides there into the
+    per-path exclusion set, so a pre-existing near-anchor condition is
+    tolerated for however long the new track happens to run close to it
+    without weakening the genuinely new-copper check everywhere else,
+    including the final via position, which is never widened by this.
+
+    That per-path exemption is deliberately clearance-only. `track_layer`,
+    when given, additionally runs an unconditional, exemption-proof check
+    (`_crosses_foreign_track`) for a genuine geometric crossing between the
+    whole straight `start`-`end` connecting track and any foreign-net track
+    on that layer: two tracks physically overlapping is always a short, and
+    nothing about a pre-existing near-anchor clearance condition licenses
+    forgiving an outright intersection anywhere along the new copper, near
+    the anchor or not."""
+    near_anchor_radius = keepout_radius if track_keepout_radius is None else track_keepout_radius
+    near_anchor_keys = set(exclude_keys or ())
+    near_anchor_keys.update(_colliders(board, start, near_anchor_radius, hole_keepout_radius,
+                                        exclude_netcode, exclude_keys))
+    if track_layer is not None and _crosses_foreign_track(board, start, end, track_layer,
+                                                            exclude_netcode, exclude_keys):
+        return True
     for step in range(sample_count + 1):
         t = step / sample_count
         point = pcbnew.VECTOR2I(
@@ -329,45 +450,11 @@ def _path_collides_from_anchor(board, start, end, keepout_radius, hole_keepout_r
             int(start.y + t * (end.y - start.y)),
         )
         is_last = step == sample_count
-        keys = None if is_last else exclude_keys
+        keys = None if is_last else near_anchor_keys
         radius = keepout_radius if is_last or track_keepout_radius is None else track_keepout_radius
         if _collides(board, point, radius, hole_keepout_radius, exclude_netcode, keys):
             return True
     return False
-
-
-def _place_via(board, anchor_point, anchor_layer, keepout_radius, hole_keepout_radius,
-                via_diameter, via_drill, track_width, netcode):
-    """Search CANDIDATE_OFFSETS_MM around the anchor for a collision-free via
-    center whose connecting track back to the anchor (when the chosen offset
-    isn't the anchor itself) also clears every other net along its whole
-    length. Returns (via, track|None) or (None, None) if every candidate
-    collided."""
-    for offset_x_mm, offset_y_mm in CANDIDATE_OFFSETS_MM:
-        candidate = pcbnew.VECTOR2I(
-            anchor_point.x + pcbnew.FromMM(offset_x_mm),
-            anchor_point.y + pcbnew.FromMM(offset_y_mm),
-        )
-        if _path_collides(board, anchor_point, candidate, keepout_radius, hole_keepout_radius, netcode):
-            continue
-        via = pcbnew.PCB_VIA(board)
-        via.SetPosition(candidate)
-        via.SetWidth(via_diameter)
-        via.SetDrill(via_drill)
-        via.SetNetCode(netcode)
-        via.SetViaType(pcbnew.VIATYPE_THROUGH)
-        board.Add(via)
-        track = None
-        if (offset_x_mm, offset_y_mm) != (0.0, 0.0):
-            track = pcbnew.PCB_TRACK(board)
-            track.SetStart(anchor_point)
-            track.SetEnd(candidate)
-            track.SetWidth(track_width)
-            track.SetLayer(anchor_layer)
-            track.SetNetCode(netcode)
-            board.Add(track)
-        return via, track
-    return None, None
 
 
 # ---------------------------------------------------------------------------
@@ -385,8 +472,8 @@ def _place_via(board, anchor_point, anchor_layer, keepout_radius, hole_keepout_r
 #     beside the pair rather than between its two pads;
 #   - any Power-class (>=0.5 mm) net riding a single 0.3 mm-drill via gets a
 #     parallel same-net via, so no supply path depends on one plated hole.
-# All three reuse `_collides`/`_place_via`-style exact-geometry collision
-# checks, never axis-aligned bounding boxes.
+# All three reuse `_collides`/`_place_via_near_point`-style exact-geometry
+# collision checks, never axis-aligned bounding boxes.
 
 SMD_GAP_RADII_MM = (0.3, 0.5, 0.7, 0.85, 1.0)
 SMD_GAP_OFFSETS_MM = [(0.0, 0.0)] + [
@@ -456,9 +543,12 @@ def _nearest_via_distance_mm(point, vias):
 def _place_via_near_point(board, anchor_point, anchor_layer, offsets_mm, keepout_radius,
                            hole_keepout_radius, via_diameter, via_drill, netcode, track_width=None,
                            anchor_keys=None, track_keepout_radius=None):
-    """Same collision search as `_place_via`. The anchor is a bare point (a
-    pad or an existing via, or the centroid of a small group of them) that
-    already has copper of its own, not a stub end to extend.
+    """Search `offsets_mm` around the anchor for a collision-free via center
+    whose connecting track back to the anchor (when the chosen offset isn't
+    the anchor itself) also clears every other net along its whole length.
+    The anchor is a bare point (a pad or an existing via, a stub-track kink
+    point, or the centroid of a small group of pads) that already has copper
+    of its own, not a stub end to extend.
 
     When `track_width` is given, also adds a connecting track from
     `anchor_point` to the placed via on `anchor_layer` -- needed whenever the
@@ -467,22 +557,33 @@ def _place_via_near_point(board, anchor_point, anchor_layer, offsets_mm, keepout
     new via; a via with the right net code but no copper path to anything is
     a DRC `via_dangling` violation, not a real connection. When
     `track_width` is None, no track is added: the new via is meant to bond
-    directly into a filled zone at its own location (e.g. a GND stitching
-    via), matching `_place_via`'s "kink point" case above, which also reuses
-    existing copper without adding a new track.
+    directly into a filled zone at its own location (e.g. the island walk's
+    own stub-track kink-point case in `main`, which reuses existing copper
+    without adding a new track).
 
     `anchor_keys` (a set of `_key()` values for the specific pad(s)/via(s)
     `anchor_point` was derived from) excludes those items from every
     collision check along the path, since they are the deliberate connection
     point (or, for a centroid anchor, the group it summarizes), not an
     obstacle -- without it, every candidate near a real pad/via anchor
-    collides with that anchor's own copper (unlike `_place_via`'s anchors
-    above, always a bare stub-track kink point, never itself a pad).
+    collides with that anchor's own copper. A stub-track kink point never
+    trips this on its own account (no pad sits exactly there), but
+    `_keys_touching_point` covers it too, so the island walk in `main` can
+    call this function uniformly for both a kink-point anchor and a bare-pad
+    anchor (a GND island with no routed copper at all, e.g. an isolated SMD
+    pad) -- the earlier dedicated `_place_via` helper handled only the
+    kink-point shape and silently failed every candidate for a bare-pad
+    anchor, since its unexclusion-aware path check always sampled the
+    anchor's own pad as its first point.
 
     `track_keepout_radius`, when given, is the connecting track's own
     clearance radius (`track_width / 2 + net clearance`) -- see
     `_path_collides_from_anchor` for why the path leading up to the via needs
-    a smaller radius than the via itself.
+    a smaller radius than the via itself. The connecting track's layer is
+    passed through as `track_layer` only when a track will actually be
+    added (`track_width is not None`), so `_path_collides_from_anchor` runs
+    its unconditional foreign-track-crossing check exactly when there is a
+    real track to check.
 
     Returns (via, track); `track` is None when `track_width` is None or the
     winning offset is exactly (0, 0) (anchor and via would coincide)."""
@@ -493,7 +594,8 @@ def _place_via_near_point(board, anchor_point, anchor_layer, offsets_mm, keepout
         )
         if _path_collides_from_anchor(board, anchor_point, candidate, keepout_radius,
                                        hole_keepout_radius, netcode, exclude_keys=anchor_keys,
-                                       track_keepout_radius=track_keepout_radius):
+                                       track_keepout_radius=track_keepout_radius,
+                                       track_layer=anchor_layer if track_width is not None else None):
             continue
         via = pcbnew.PCB_VIA(board)
         via.SetPosition(candidate)
@@ -784,8 +886,11 @@ def main() -> int:
     for members in isolated:
         via, track = None, None
         for anchor_point, anchor_layer in _anchors(members):
-            via, track = _place_via(board, anchor_point, anchor_layer, keepout_radius, hole_keepout_radius,
-                                     via_diameter, via_drill, track_width, netcode)
+            via, track = _place_via_near_point(
+                board, anchor_point, anchor_layer, CANDIDATE_OFFSETS_MM, keepout_radius, hole_keepout_radius,
+                via_diameter, via_drill, netcode, track_width=track_width,
+                anchor_keys=_keys_touching_point(board, anchor_point),
+                track_keepout_radius=track_keepout_radius)
             if via is not None:
                 break
         if via is None:

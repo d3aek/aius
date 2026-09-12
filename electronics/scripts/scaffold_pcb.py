@@ -366,20 +366,22 @@ def _usb_cable_envelope_polygon() -> list[tuple[float, float]]:
     return _convex_hull(plug_corners + corridor_corners)
 
 
-def _add_rule_area(board, layer_set, outline_mm: list[tuple[float, float]]) -> None:
-    """Add a no-copper/no-footprint rule area (KiCad keepout zone) on
-    `layer_set` with the given outline. Every rule area this script emits
-    forbids tracks, vias, pads, footprints and zone fills alike -- the owner
-    rulings this implements ("no copper, no footprints") never mean to allow
-    a subset of those."""
+def _add_rule_area(board, layer_set, outline_mm: list[tuple[float, float]],
+                   copper: bool = True) -> None:
+    """Add a rule area (KiCad keepout zone) on `layer_set` with the given
+    outline. Footprints are always forbidden; with `copper=True` (the slot edge
+    bands: nothing may be routed near the Hammond slots) tracks, vias, pads and
+    zone fills are forbidden too. The USB cable envelope uses `copper=False`:
+    the cable rests on solder mask, so only parts must stay out of it and the
+    corridor stays routable."""
     zone = pcbnew.ZONE(board)
     zone.SetLayerSet(layer_set)
     zone.SetIsRuleArea(True)
-    zone.SetDoNotAllowTracks(True)
-    zone.SetDoNotAllowVias(True)
-    zone.SetDoNotAllowPads(True)
     zone.SetDoNotAllowFootprints(True)
-    zone.SetDoNotAllowZoneFills(True)
+    zone.SetDoNotAllowTracks(copper)
+    zone.SetDoNotAllowVias(copper)
+    zone.SetDoNotAllowPads(copper)
+    zone.SetDoNotAllowZoneFills(copper)
     poly = zone.Outline()
     poly.NewOutline()
     for x, y in outline_mm:
@@ -563,8 +565,9 @@ def main():
         print(f"added {len(board.Zones())} GND zones (unfilled)", flush=True)
 
     # H3e owner-ruled keepouts: both Hammond-slot edge bands (copper + parts,
-    # every copper layer) and the internal USB cable envelope (parts + F.Cu
-    # copper only -- the cable runs above the board's top side).
+    # every copper layer) and the internal USB cable envelope (parts only, on
+    # F.Cu -- the cable rests on the top-side solder mask, so tracks may pass
+    # underneath; a copper ban here cut the only I2S corridor to U10).
     all_cu = pcbnew.LSET.AllCuMask(board.GetCopperLayerCount())
     _add_rule_area(board, all_cu, [
         (0.0, 0.0), (EDGE_KEEPOUT_WIDTH_MM, 0.0),
@@ -576,7 +579,7 @@ def main():
     ])
     front_only = pcbnew.LSET()
     front_only.AddLayer(pcbnew.F_Cu)
-    _add_rule_area(board, front_only, _usb_cable_envelope_polygon())
+    _add_rule_area(board, front_only, _usb_cable_envelope_polygon(), copper=False)
     print("added 3 rule areas (2 edge keepouts + 1 USB cable envelope)", flush=True)
 
     board.BuildListOfNets()
