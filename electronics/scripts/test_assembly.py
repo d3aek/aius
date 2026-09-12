@@ -22,7 +22,7 @@ class Assembly(unittest.TestCase):
         xml = ET.Element("export")
         comps = ET.SubElement(xml, "components")
         nets = ET.SubElement(xml, "nets")
-        for name in ("teensy-expansion", "ethernet"):
+        for name in ("power-usb", "teensy-expansion", "ethernet"):
             spec = json.loads((ROOT / f"electronics/connectivity/{name}.json").read_text())
             for c in spec["components"]:
                 comp = ET.SubElement(comps, "comp", ref=c["ref"])

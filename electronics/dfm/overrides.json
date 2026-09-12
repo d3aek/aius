@@ -1,0 +1,6 @@
+{
+  "U11": {
+    "solder_mask_margin_mm": -0.03,
+    "why": "TCA9517ADGKR VSSOP-8 0.65 mm pitch: pad_to_mask_clearance 0 gives a 0.15 mm mask web against JLCPCB's 0.2 mm floor; -0.03 mm local margin gives 0.21 mm"
+  }
+}

@@ -2401,6 +2401,86 @@
 		)
 	)
 	(symbol
+		(lib_id "Device:R")
+		(at 66.04 60.96 0)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp yes)
+		(uuid "9b7b7305-7f41-5b89-b908-bd9953711c57")
+		(property "Reference" "R6"
+			(at 55.88 48.26 0)
+			(effects (font (size 1.27 1.27)) (justify left))
+		)
+		(property "Value" "1M"
+			(at 55.88 73.66 0)
+			(effects (font (size 1.27 1.27)) (justify left))
+		)
+		(property "Footprint" "Resistor_SMD:R_0603_1608Metric"
+			(at 66.04 60.96 0)
+			(effects (font (size 1.27 1.27)) (hide yes))
+		)
+		(property "MPN" "1M 0603 1%"
+			(at 66.04 60.96 0)
+			(effects (font (size 1.27 1.27)) (hide yes))
+		)
+		(pin "1"
+			(uuid "6c29c3ce-204f-5f44-b307-55bf21349a91")
+		)
+		(pin "2"
+			(uuid "dc2f10ab-23c4-51e2-867e-c225a7fa87ab")
+		)
+		(instances
+			(project "aius-carrier"
+				(path "/68a9aac5-3712-532f-bce8-e090c97e9611/47b625ad-ec1f-5fcc-aa9b-eddaab8de077"
+					(reference "R6")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "Device:C")
+		(at 81.28 60.96 0)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp yes)
+		(uuid "aa85d379-4aa1-50b5-8a72-b73f644f30b8")
+		(property "Reference" "C5"
+			(at 71.12 48.26 0)
+			(effects (font (size 1.27 1.27)) (justify left))
+		)
+		(property "Value" "1nF 2kV"
+			(at 71.12 73.66 0)
+			(effects (font (size 1.27 1.27)) (justify left))
+		)
+		(property "Footprint" "Capacitor_SMD:C_0603_1608Metric"
+			(at 81.28 60.96 0)
+			(effects (font (size 1.27 1.27)) (hide yes))
+		)
+		(property "MPN" "1nF 2kV 0603 (placeholder)"
+			(at 81.28 60.96 0)
+			(effects (font (size 1.27 1.27)) (hide yes))
+		)
+		(pin "1"
+			(uuid "d5ed4eac-4437-51c2-9100-5cfaddf5f388")
+		)
+		(pin "2"
+			(uuid "179c5be9-a0a5-57c7-b6d8-26c8fc166623")
+		)
+		(instances
+			(project "aius-carrier"
+				(path "/68a9aac5-3712-532f-bce8-e090c97e9611/47b625ad-ec1f-5fcc-aa9b-eddaab8de077"
+					(reference "C5")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
 		(lib_id "power:PWR_FLAG")
 		(at 55.88 187.96 0)
 		(unit 1)
@@ -2777,6 +2857,36 @@
 		)
 	)
 	(wire
+		(pts (xy 66.04 64.77) (xy 66.04 69.85))
+		(stroke (width 0) (type default))
+		(uuid "2a088ba5-c878-5650-9773-ae242614e947")
+	)
+	(global_label "GND"
+		(shape bidirectional)
+		(at 66.04 69.85 270)
+		(effects (font (size 1.27 1.27)) (justify left))
+		(uuid "331ac1f8-48d2-5ad7-b30a-c9676b579fc8")
+		(property "Intersheetrefs" "${INTERSHEET_REFS}"
+			(at 66.04 69.85 270)
+			(effects (font (size 1.27 1.27)) (hide yes))
+		)
+	)
+	(wire
+		(pts (xy 81.28 64.77) (xy 81.28 69.85))
+		(stroke (width 0) (type default))
+		(uuid "8efc6290-38de-514a-b599-51ba0f0bc6a1")
+	)
+	(global_label "GND"
+		(shape bidirectional)
+		(at 81.28 69.85 270)
+		(effects (font (size 1.27 1.27)) (justify left))
+		(uuid "0714441a-87d3-591f-aa70-2080583dd92a")
+		(property "Intersheetrefs" "${INTERSHEET_REFS}"
+			(at 81.28 69.85 270)
+			(effects (font (size 1.27 1.27)) (hide yes))
+		)
+	)
+	(wire
 		(pts (xy 81.28 120.65) (xy 86.36 120.65))
 		(stroke (width 0) (type default))
 		(uuid "ef16e4a5-b599-5ef2-ab58-bdd840810ec6")
@@ -2983,6 +3093,36 @@
 		(uuid "8aee84cf-fc95-50c2-8cd0-5e51f74d93be")
 		(property "Intersheetrefs" "${INTERSHEET_REFS}"
 			(at 259.08 132.08 270)
+			(effects (font (size 1.27 1.27)) (hide yes))
+		)
+	)
+	(wire
+		(pts (xy 66.04 57.15) (xy 66.04 52.07))
+		(stroke (width 0) (type default))
+		(uuid "6944d20c-17a3-51b6-8c85-e93525e0ddf0")
+	)
+	(global_label "CHASSIS"
+		(shape bidirectional)
+		(at 66.04 52.07 90)
+		(effects (font (size 1.27 1.27)) (justify left))
+		(uuid "1c754d6f-02a9-5fae-bb95-aad5cbdf31dc")
+		(property "Intersheetrefs" "${INTERSHEET_REFS}"
+			(at 66.04 52.07 90)
+			(effects (font (size 1.27 1.27)) (hide yes))
+		)
+	)
+	(wire
+		(pts (xy 81.28 57.15) (xy 81.28 52.07))
+		(stroke (width 0) (type default))
+		(uuid "228e7535-ca26-5c4e-a7e6-84d66802fd34")
+	)
+	(global_label "CHASSIS"
+		(shape bidirectional)
+		(at 81.28 52.07 90)
+		(effects (font (size 1.27 1.27)) (justify left))
+		(uuid "ca24deae-de52-5e33-9679-d0430755987b")
+		(property "Intersheetrefs" "${INTERSHEET_REFS}"
+			(at 81.28 52.07 90)
 			(effects (font (size 1.27 1.27)) (hide yes))
 		)
 	)

@@ -353,31 +353,92 @@ violations, 0 unconnected items.
 
 [`scripts/route_diff_pairs.py`](scripts/route_diff_pairs.py) is the H3e
 diff-pair fix: it rips all eight USB/Ethernet pair nets' existing copper and
-re-routes each pair as two genuinely coupled 45-degree polylines at the
-netclass width and a 0.15 mm edge gap (not the independent single-ended
-traces Freerouting produces), length-matched to <=0.5 mm skew and locked
-(`SetLocked(True)`) so a later Freerouting pass treats them as fixed —
-confirmed by inspecting the DSN `route_export_dsn.py` exports afterward,
-where a locked track or via prints `(type fix)` instead of `(type route)`.
-It reads every pad position from the board itself (never hardcoded mm
-coordinates) and rips any foreign F.Cu copper its planned corridor would
-otherwise violate clearance against. Two of the four pairs' fixed connector
-pinout forces an actual planar crossing no 45-degree bend choice on one
-copper layer can avoid (J1's USB-C mirror pins and the USB_DP/USB_DM
-J1-to-U1-to-J2 hookup); those get a disclosed, narrowly-scoped via pair each
-rather than silently producing overlapping copper, printed as a
-`DISCLOSED EXCEPTION` line per pair. USB host and Ethernet TX route at the
-specified 0 vias. Residual `kicad-cli pcb drc` findings concentrated in the
-dense J1 USB-C fan-out (four 0.3 x 1.15 mm pads within ~1.5 mm) and the
-shared ETH_RXN/ETH_TXN corridor near J18/J20 are reported rather than
-chased through further constant-tuning, the same "bounded iterations, stop
-at diminishing returns" stopping point as the GND punch-list above.
+re-routes each pair as two genuinely coupled polylines at the netclass width
+and a 0.15 mm edge gap (not the independent single-ended traces Freerouting
+produces), length-matched to <=0.5 mm skew and locked (`SetLocked(True)`) so
+a later Freerouting pass treats them as fixed — confirmed by inspecting the
+DSN `route_export_dsn.py` exports afterward, where a locked track or via
+prints `(type fix)` instead of `(type route)`. Every segment is straight
+with every bend a multiple of 45 degrees; a real `kicad-cli`-visible
+geometry check (not just this script's own sampling) against both this
+script's own output and the full pipeline's Freerouting-produced output
+found 0 tracks off that grid and 0 arcs. It reads every pad position from
+the board itself (never hardcoded mm coordinates), rips any foreign F.Cu
+copper its planned corridor would otherwise violate clearance against, and
+avoids every other foreign pad it would otherwise clip (a growing lateral
+detour into the nearest corridor segment, per-side so P also dodges N's own
+destination pad and vice versa).
+
+Rotating U1 (the device-USB ESD shunt, a symmetric chip with no directional
+meaning) 180 degrees in `scaffold_pcb.py`'s `PLACEMENT` lines its D+/D- pad
+order up with both J1's A6/A7 mirror pins and J2's fixed pad order, so the
+whole USB_DP/USB_DM J1-to-U1-to-J2 chain now routes at 0 vias — down from
+the two disclosed via pairs this pair needed before. Two crossings remain
+genuinely forced by fixed connector/cable-pin topology, not by placement:
+J1's own B6/A7/A6/B7 USB-C mirror-pin interleaving (inherent to the
+connector's reversible design), and ETH_RXP/ETH_RXN's corridor to J18 (the
+"1 RX+, 2 RX-, ... 6 TX+" cable-pin contract fixes ETH_TX and ETH_RX to
+*opposite* handedness conventions at J18's own pin field — measured
+directly off pad positions — so no J18 rotation clears RX without breaking
+TX's own already-0-via route). Both print a `DISCLOSED EXCEPTION` line.
+USB host and Ethernet TX route at the specified 0 vias. J2 (the USB-A jack)
+may be relocated/rotated freely per an design decision, but the U1 rotation
+above already clears the order reversal without touching it. Residual
+`kicad-cli pcb drc` findings on the full pipeline (35 violations / 7
+unconnected) concentrate in the same small set of genuinely congested
+footprints this script's own retry loops report as bounded — U1's GND pin
+within ~1 mm of its own D+/D- pins, J1's and J2's dense multi-pin rows,
+U10's UHDM lead, C30's centre-tap pad near the ETH_RX crossing, and the
+ETH_RXN via/pad hole-to-hole at J18 — reported rather than chased through
+further constant-tuning, the same "bounded iterations, stop at diminishing
+returns" stopping point as the GND punch-list above.
+
+### Routing-geometry gate (H3f)
+
+[`scripts/check_routing_geometry.py`](scripts/check_routing_geometry.py) enforces
+the Owner ruling in
+[aius-h2-h3-manufacturing.md](../docs/plans/aius-h2-h3-manufacturing.md)
+§Owner rulings (2026-09-12): every track is straight segments only, no curves
+or arcs, with bends at multiples of 15 degrees and straight sections between.
+It inspects `board.GetTracks()` only -- zone fills and footprint graphics are
+separate board containers, never visited -- and reports any `PCB_ARC` and any
+segment or bend angle off the 15-degree grid (exit 1 on either), plus
+sub-0.2 mm straight runs between bends and off-grid bend pairs as report-only
+findings that never affect the exit code.
+
+```bash
+scripts/kicad.sh --python electronics/scripts/check_routing_geometry.py [--board <candidate.kicad_pcb>]
+scripts/kicad.sh --python electronics/scripts/check_routing_geometry.py --board <candidate.kicad_pcb> --fix
+```
+
+Run against the routed canonical board (`f1b4168`): 0 arcs, 0 off-grid-angle,
+0 off-grid-bend (Freerouting's own 45/90-degree mitred output already sits on
+the 15-degree grid), 33 sub-0.2 mm report-only short segments. Run against the
+H3e diff-pair rework scratch candidate
+(`.scratch/diffpair/aius-carrier.kicad_pcb`, `route_diff_pairs.py`'s coupled-pair
+output layered on the Freerouting base): 8 off-grid-angle findings (all
+~7.0-7.5 degrees off the nearest 15-degree axis, on `USBH_DP`/`USBH_DM`/
+`ETH_TXP`/`ETH_TXN`/`USB_DP`) plus 13 derived off-grid-bend findings and 39
+short-segment notes -- confirming `route_diff_pairs.py`'s true-mitre offset
+joins do not stay on the 15-degree grid the Owner ruling requires.
+
+`--fix` tried all 8 off-grid-angle findings on the diff-pair candidate and
+snapped none: 4 sit at a junction shared with another track (both endpoints
+occupied, no free point to rotate), and the other 4 would need 1.3-1.4 mm of
+endpoint movement to correct a several-degree deviation over an 11+ mm run,
+far past the 0.05 mm move budget -- both classes are reported, not silently
+dropped, and neither the canonical board's own `kicad-cli pcb drc
+--severity-all` violation count nor the geometry findings changed as a result
+(0 endpoints moved). `--fix` is a bounded snap, not a re-router: closing these
+findings needs `route_diff_pairs.py`'s own centerline construction to bend on
+the 15-degree grid from the start, not a post-hoc nudge.
 
 ## Fabrication export (H3d)
 
 [`scripts/export_fab.sh`](scripts/export_fab.sh) runs a DRC report, then a DFM
-report against the JLCPCB 4-layer capability rule set (both non-fatal here —
-both gates are enforced separately before order), then exports the full
+report against the JLCPCB 4-layer capability rule set, then the
+routing-geometry gate (§Routing-geometry gate above — all three non-fatal
+here, every gate is enforced separately before order), then exports the full
 manufacturing package — Gerbers, drill, CPL, STEP, BOM — via `kicad-cli`.
 Takes the same `--board <path>` argument as the routing scripts, defaulting to
 the canonical board; the output directory (`<board-dir>/manufacturing/`) and
@@ -390,9 +451,10 @@ electronics/scripts/export_fab.sh [--board <candidate.kicad_pcb>]
 ```
 
 An unrouted candidate (e.g. straight out of `scaffold_pcb.py`, before
-`route_import_ses.py`) still exports cleanly: DRC and DFM report their
-violation/unconnected-item counts without failing the script (`|| true` on
-both steps), and every other export stage runs unconditionally against the
+`route_import_ses.py`) still exports cleanly: DRC, DFM, and the
+routing-geometry gate report their violation/finding counts without failing
+the script (`|| true` on all three steps), and every other export stage runs
+unconditionally against the
 board as given.
 
 ### DFM gate (JLCPCB 4-layer)
@@ -419,32 +481,56 @@ electronics/scripts/check_dfm.sh [--board <path>] [--fab jlcpcb-4l] [--fix]
 electronics/scripts/check_dfm.sh --apply-fix [--board <path>]
 ```
 
-`--fix` applies the one safe, non-judgment fix (silkscreen reference/value
-text stroke width raised to the fab's minimum line width — a text-property
-edit only, no zone refill, no copper geometry change) to the scratch copy
-before running DRC. `--apply-fix` applies the same fix directly, in place,
-to the board named by `--board`, with no DRC run.
+`--fix` applies the safe DFM fixes to the scratch copy before running DRC:
+silkscreen reference/value text stroke width raised to the fab's minimum
+line width; per-footprint solder-mask-margin overrides from the data table
+[`electronics/dfm/overrides.json`](dfm/overrides.json) (`{"<ref>":
+{"solder_mask_margin_mm": <mm>, "why": "<one-line rationale>"}}` — e.g. U11's
+fine-pitch mask-bridge margin, without touching the board-global
+`pad_to_mask_clearance` every other pad relies on); then a zone refill
+(`ZONE_FILLER`, as `route_import_ses.py` does) against the freshly loaded
+board, so a `.kicad_dru` hole-clearance rule (parsed at board load, e.g. the
+canonical board's `npth-plane` rule) is honoured by the filler — KiCad's
+zone filler consults custom design rules directly when computing the
+keep-out around a pad or hole, not just the board's global design-settings
+floor. `--apply-fix` applies the same three fixes directly, in place, to the
+board named by `--board`, with no DRC run. Both are idempotent: re-running
+against an already-fixed board bumps 0 silk texts and applies 0 overrides
+(the refill always runs, but against unchanged geometry and settings it
+produces the same fill).
 
 **2026-09-11 JLCPCB 4L run against the routed board: 90 violations before the
 silk fix, 31 after** (59 `text_thickness`, 26 `hole_clearance`, 5
 `solder_mask_bridge`; the silk fix clears all 59 `text_thickness`). The
-remaining 31 need an owner decision, not a mechanical fix:
+remaining 31 needed an owner decision, not a mechanical fix, at the time:
 
 - **26 `hole_clearance`** — the NPTH mounting holes of J1, U20, U24, J17, J20
   sit 0.2505 mm from the In1.Cu/In2.Cu GND plane fill, 0.0035 mm short of
   JLCPCB's 0.254 mm minimum. Raising the board's global hole-clearance design
-  floor and re-filling zones does not move this specific gap (verified by
-  hand: identical 0.2505 mm actual before and after a floor bump to 0.26 mm)
-  and a full-board zone refill was found to alter unrelated GND-net copper
-  connectivity elsewhere — an out-of-scope side effect, not a safe mechanical
-  fix. A real fix needs a targeted, reviewed keepout/placement change at the
-  four connector mounting holes (`route_gnd_stitch.py`-style scoped
-  intervention), not a global rule change.
+  *floor* and re-filling zones did not move this specific gap (verified by
+  hand: identical 0.2505 mm actual before and after a floor bump to 0.26 mm).
+  The fix that did work: a scoped `.kicad_dru` rule (`npth-plane`,
+  `hole_clearance (min 0.3mm)`, condition `A.Pad_Type == 'NPTH, mechanical'`,
+  ordered before the existing J1 exception so J1's own narrower relaxation
+  still wins inside J1) plus a zone refill against the freshly loaded board —
+  the custom rule is what the filler actually consults, not the
+  design-settings floor. `check_dfm.sh --apply-fix` / `--fix` now performs
+  that refill as its third step.
 - **5 `solder_mask_bridge`** — U11's fine-pitch adjacent pads (0.65 mm pitch)
   leave less than JLCPCB's 0.2 mm minimum solder-mask web at
-  `pad_to_mask_clearance = 0`. Clearing it needs either a global negative
-  mask-expansion trade-off (affects every pad on the board) or a different
-  U11 footprint/package — an owner call, not a script fix.
+  `pad_to_mask_clearance = 0`. Fixed via the `overrides.json` per-footprint
+  table: a `-0.03 mm` local solder-mask margin on U11 (TI TCA9517ADGKR,
+  `Package_SO:VSSOP-8_3x3mm_P0.65mm`) widens the web to 0.21 mm without
+  touching the board-global mask-expansion setting (`-0.02 mm` was tried and
+  does not clear it).
+
+**2026-09-12 proof, scratch copy of `f1b4168` + the current working-tree
+`aius-carrier.kicad_dru` (carrying the `npth-plane` rule) + the U11
+`overrides.json` entry:** `check_dfm.sh --apply-fix` then `check_dfm.sh` →
+**DFM 0 violations**; base `kicad-cli pcb drc --severity-all` → **0
+violations, 0 unconnected items**; `check_footprints.py --board` →
+**158/158**; a second `--apply-fix` run reports **0 silk texts bumped, 0
+overrides applied** (zone refill still runs, unchanged geometry).
 
 ## Board (H3 recovery — regenerated and routed, 2026-09-11)
 

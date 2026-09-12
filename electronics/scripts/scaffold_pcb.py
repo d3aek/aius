@@ -51,7 +51,12 @@ PLACEMENT = {
     "J1": (45.0, 3.675, 180.0),   # USB-C port faces rear -Y
     "J20": (81.555, 19.685, 0.0), # RJ45 axis x86, housing face y0
     "J2": (43.0, 42.0, 0.0),      # USB-A faces front; cable returns to Teensy USB
-    "U1": (45.0, 10.0, 0.0),      # device USB shunt ESD near entry
+    "U1": (45.0, 10.0, 180.0),    # device USB shunt ESD near entry; rotated 180 deg
+                                   # (no directional/mechanical meaning for this chip)
+                                   # so its own D+/D- pad order flips to DM-left/DP-right,
+                                   # matching both J1's A6/A7 mirror pins and J2's fixed
+                                   # DM-left/DP-right pads -- see route_diff_pairs.py's
+                                   # PAIR_SPECS "USB device" entry, which pairs with this.
     "U2": (53.0, 18.0, 0.0),      # upstream power limiter
     "U21": (18.0, 20.0, 0.0),
     "U23": (28.0, 17.0, 0.0),
@@ -60,6 +65,9 @@ PLACEMENT = {
     "J18": (84.0, 29.0, 0.0),     # Ethernet ribbon terminates beside magnetics
     "J19": (84.0, 44.0, 0.0),     # top-service cable, clear of SD/USB
     "R1": (49.5, 9.0, 0.0), "R2": (40.5, 9.0, 0.0),
+    # DNP CHASSIS-GND RC tie (design decision 2026-09-12), left of J1's courtyard
+    # (x >= 39.68) and clear of U24's housing.
+    "R6": (37.0, 3.0, 0.0), "C5": (37.0, 6.5, 0.0),
     "R3": (49.5, 20.0, 0.0), "R4": (55.5, 20.0, 0.0),
     "R5": (53.0, 22.5, 0.0),
     "C1": (49.5, 16.75, 0.0), "C2": (49.0, 13.5, 90.0),

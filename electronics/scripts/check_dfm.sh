@@ -9,27 +9,28 @@
 # fab's minimum solder-mask bridge (sliver) width to the scratch board's own
 # setup block -- KiCad has no `.kicad_dru` constraint for mask-web geometry.
 #
-# --fix applies the safe, non-judgment DFM fix (silkscreen reference/value
-# text stroke width raised to the fab's minimum line width -- a text
-# property edit only, no zone refill, no copper geometry change) to the
-# scratch copy before running DRC, to prove that violation type reaches
-# zero. --apply-fix applies the same fix directly, in place, to the board
-# named by --board (intended for the canonical board once the scratch run
-# above has proven it clean) and does not run DRC.
+# --fix applies the safe DFM fixes (silkscreen reference/value text stroke
+# width raised to the fab's minimum line width; per-footprint solder-mask
+# overrides from the data table electronics/dfm/overrides.json, e.g. U11's
+# fine-pitch mask-bridge margin; then a zone refill against the freshly
+# loaded board so the .kicad_dru NPTH hole_clearance rule is honoured by the
+# filler) to the scratch copy before running DRC, to prove that each
+# violation type reaches zero. --apply-fix applies the same fixes directly,
+# in place, to the board named by --board (intended for the canonical board
+# once the scratch run above has proven it clean) and does not run DRC.
 #
-# Deliberately NOT auto-fixed: the NPTH-mounting-hole-to-GND-plane
-# hole_clearance shortfall (a board-wide design-rule-floor bump forces a
-# full zone refill, which was found by hand to silently change unrelated
-# GND-net copper connectivity elsewhere on the board -- an out-of-scope
-# side effect, not a safe mechanical fix) and the U11 fine-pitch
-# solder-mask-bridge slivers (needs a package or global mask-expansion
-# trade-off review). Both are reported by the DRC run below, not fixed.
+# Deliberately NOT auto-fixed: any footprint's solder-mask margin not
+# listed in electronics/dfm/overrides.json, and the NPTH-mounting-hole
+# hole_clearance design-rule floor itself (owned by aius-carrier.kicad_dru,
+# not this script) -- both are design decisions recorded where they're
+# owned, not mechanical text/zone edits.
 #
 # Usage: electronics/scripts/check_dfm.sh [--board <path>] [--fab jlcpcb-4l] [--fix]
 #        electronics/scripts/check_dfm.sh --apply-fix [--board <path>]
 # Env:   AIUS_DOCKER_BIN (passed through to ../../scripts/kicad.sh)
 # Exit:  0 no DFM violations (or --apply-fix succeeded); 2 DFM violations
-#        found; 3 missing fab rule file or a required tool; 4 bad argument.
+#        found; 3 missing fab rule file, missing overrides file, or a
+#        required tool; 4 bad argument.
 set -euo pipefail
 
 electronics_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -77,23 +78,31 @@ fi
 # whole DFM workflow per the subtree CLAUDE.md.
 write_fix_script() {
   cat > "$1" << 'PYEOF'
-"""Apply the one safe, non-judgment JLCPCB 4L DFM fix to a board in place:
-raise silkscreen reference/value text stroke width to the fab's minimum
-line width. A text-property edit only -- no zone refill, no copper geometry
-touched. Deliberately does not touch anything requiring a design decision:
-not the NPTH-mounting-hole-to-GND-plane hole_clearance shortfall (raising
-the board-wide hole-clearance floor forces a full zone refill, which was
-found by hand to silently change unrelated GND-net copper connectivity
-elsewhere on the board) and not the U11 fine-pitch solder-mask-bridge
-slivers (needs a package or global mask-expansion trade-off review).
+"""Apply the safe DFM fixes to a board in place, on a freshly loaded pcbnew
+board: (1) raise silkscreen reference/value text stroke width to the fab's
+minimum line width -- a text-property edit only; (2) apply per-footprint
+solder-mask-margin overrides from the data table (electronics/dfm/
+overrides.json) -- e.g. U11's fine-pitch mask-bridge margin -- without
+touching the board-global pad_to_mask_clearance every other pad relies on;
+(3) refill every copper zone (ZONE_FILLER, as route_import_ses.py does) so
+the .kicad_dru NPTH hole_clearance rule (parsed at board load) is honoured
+by the filler. Idempotent: re-running against an already-fixed board bumps
+zero silk texts and applies zero overrides (the refill always runs, but
+against unchanged geometry and settings it produces the same fill).
+Deliberately does not touch any footprint's solder-mask margin absent from
+the overrides table, or the NPTH hole_clearance design-rule floor itself
+(owned by aius-carrier.kicad_dru, not this script) -- both are design
+decisions recorded where they're owned.
 """
 import argparse
+import json
 
 import pcbnew
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--board", required=True)
 parser.add_argument("--min-silk-thickness-mm", type=float, required=True)
+parser.add_argument("--overrides", required=True)
 args = parser.parse_args()
 
 board = pcbnew.LoadBoard(args.board)
@@ -114,6 +123,31 @@ for drawing in board.GetDrawings():
             bumped_texts += 1
 print(f"bumped {bumped_texts} silk text items to >= {args.min_silk_thickness_mm} mm thickness", flush=True)
 
+with open(args.overrides, encoding="utf-8") as overrides_file:
+    overrides = json.load(overrides_file)
+
+footprints_by_ref = {footprint.GetReference(): footprint for footprint in board.GetFootprints()}
+applied_overrides = 0
+for ref, override in overrides.items():
+    footprint = footprints_by_ref.get(ref)
+    if footprint is None:
+        continue
+    margin_mm = override.get("solder_mask_margin_mm")
+    if margin_mm is None:
+        continue
+    target_margin = pcbnew.FromMM(margin_mm)
+    if footprint.GetLocalSolderMaskMargin() == target_margin:
+        continue
+    footprint.SetLocalSolderMaskMargin(target_margin)
+    applied_overrides += 1
+    why = override.get("why", "")
+    print(f"set {ref} local solder mask margin to {margin_mm} mm ({why})", flush=True)
+print(f"applied {applied_overrides} footprint DFM override(s) from {args.overrides}", flush=True)
+
+filler = pcbnew.ZONE_FILLER(board)
+filler.Fill(board.Zones())
+print(f"refilled {len(board.Zones())} zones", flush=True)
+
 pcbnew.SaveBoard(args.board, board)
 print(f"saved {args.board}", flush=True)
 PYEOF
@@ -122,6 +156,12 @@ PYEOF
 fab_dru_rel="electronics/dfm/$fab.kicad_dru"
 if [[ ! -f "$aius_dir/$fab_dru_rel" ]]; then
   echo "no fab rule file: $fab_dru_rel" >&2
+  exit 3
+fi
+
+overrides_rel="electronics/dfm/overrides.json"
+if [[ ! -f "$aius_dir/$overrides_rel" ]]; then
+  echo "no DFM overrides file: $overrides_rel" >&2
   exit 3
 fi
 
@@ -135,9 +175,10 @@ if [[ "$apply_fix" -eq 1 ]]; then
   fix_script_rel=".scratch/dfm/apply-fixes.py"
   mkdir -p -- "$aius_dir/.scratch/dfm"
   write_fix_script "$aius_dir/$fix_script_rel"
-  echo "==> Applying safe DFM fix in place to $board"
+  echo "==> Applying safe DFM fixes in place to $board"
   "$kicad" --python "$fix_script_rel" --board "$board" \
-    --min-silk-thickness-mm "$min_silk_thickness_mm"
+    --min-silk-thickness-mm "$min_silk_thickness_mm" \
+    --overrides "$overrides_rel"
   exit 0
 fi
 
@@ -191,9 +232,10 @@ fi
 if [[ "$fix" -eq 1 ]]; then
   fix_script_rel="$scratch_rel/apply-fixes.py"
   write_fix_script "$aius_dir/$fix_script_rel"
-  echo "==> Applying safe DFM fix to the scratch copy"
+  echo "==> Applying safe DFM fixes to the scratch copy"
   "$kicad" --python "$fix_script_rel" --board "$scratch_rel/$board_stem.kicad_pcb" \
-    --min-silk-thickness-mm "$min_silk_thickness_mm"
+    --min-silk-thickness-mm "$min_silk_thickness_mm" \
+    --overrides "$overrides_rel"
 fi
 
 echo "==> DFM DRC ($fab) against $board"

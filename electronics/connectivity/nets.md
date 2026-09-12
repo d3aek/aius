@@ -16,7 +16,7 @@ the Teensy and the power tree by matching text.
 | `GND` | power-usb (`PWR_FLAG` on the USB-C ground) | every sheet | single digital ground; declared external at power entry |
 | `VBUS_5V` | power-usb (`TPS2553` protected 5 V out) | internal USB-A, then Teensy through its cable | protected-5V domain; no second carrier feed to the Teensy or host output |
 | `+3V3` | teensy-expansion (Teensy 3.3V pin, `power_out`) | optical, ethernet, expansion | `teensy-3v3`; the Teensy sources it, so no `PWR_FLAG` is needed |
-| `CHASSIS` | enclosure (USB-C/USB-A shells) | power-usb shells, ethernet magjack shield | chassis-shield domain, isolated from `GND`; passive-only (no `PWR_FLAG`) |
+| `CHASSIS` | enclosure (USB-C/USB-A shells) | power-usb shells, ethernet magjack shield | chassis-shield domain, isolated from `GND` by default; a DNP RC tie (`R6`/`C5`) beside `J1` stands ready for later termination; passive-only (no `PWR_FLAG`) |
 
 `GND` and `VBUS_5V` originate on the power-usb sheet and are promoted to global
 there (`power-usb.json` `global_nets`); `+3V3` originates on teensy-expansion.
@@ -77,8 +77,14 @@ The BOM already matches this reality (magjack + centre-tap cap, no PHY line item
 `J0011D21BNL` magjack MDI pairs wire to J18 through the local `ETH_*` nets, its two
 PHY-side centre taps join through the 100 nF `C30` to `GND`. Pin8, the internal
 termination-capacitor return, connects to PCB `GND` per Pulse J403.L p5; the
-physical shield tabs alone join `CHASSIS`. CHASSIS is deliberately isolated from
-digital GND, with no implicit layout-only tie. See
+physical shield tabs alone join `CHASSIS`. `CHASSIS` is isolated from digital
+`GND` by default, with no implicit layout-only tie. A DNP RC tie — `R6` (1M) and
+`C5` (1nF, 2kV-rated placeholder) in parallel, beside `J1` on the power-usb
+sheet — sits between `CHASSIS` and `GND`, unpopulated, so the documented
+isolation stays the populated default while leaving a path to terminate the
+shield later without a board respin (design decision,
+[`aius-h2-h3-manufacturing.md` Owner rulings (2026-09-12)](../../docs/plans/aius-h2-h3-manufacturing.md#owner-rulings-2026-09-12)).
+See
 [`carrier-footprint-review.md`](../../docs/reference/carrier-footprint-review.md).
 
 ### Native Teensy switch → USB-host VBUS (corrected 2026-09-10)

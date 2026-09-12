@@ -64,8 +64,9 @@ class Scaffold(unittest.TestCase):
         xml = ET.parse(self.netlist)
         expected_refs = {c.get("ref") for c in xml.findall("components/comp") if c.findtext("footprint")}
         self.assertEqual(set(fps), expected_refs)
+        # Expansion headers plus the DNP CHASSIS-GND RC tie (R6/C5).
         self.assertEqual({r for r, fp in fps.items() if fp.IsDNP()},
-                         {"J10", "J11", "J12", "J13", "J14", "J15"})
+                         {"J10", "J11", "J12", "J13", "J14", "J15", "R6", "C5"})
         self.assertEqual(board.GetCopperLayerCount(), 4)
         self.assertEqual(len(list(board.GetTracks())), 0)
         for layer in (pcbnew.In1_Cu, pcbnew.In2_Cu):

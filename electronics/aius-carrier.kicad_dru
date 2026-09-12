@@ -1,4 +1,12 @@
 (version 1)
+# JLCPCB published hole-to-copper minimum is 0.254 mm; the zone filler resolves
+# this constraint at load/fill time, so the rule must exist before the refill.
+# Scoped to mechanical NPTH pads (no net) so PTH pads and vias are untouched.
+# Ordered before the J1 exception below: last matching rule wins, and J1's own
+# internal NPTH-to-pad relaxation must still take precedence inside J1.
+(rule "npth-plane"
+  (condition "A.Pad_Type == 'NPTH, mechanical'")
+  (constraint hole_clearance (min 0.3mm)))
 # PCBWay published NP-hole/copper minimum. Applies only within J1, whose
 # adapted GCT lands provide 0.2138mm nominal clearance; no global waiver.
 (rule "J1 manufacturer land pattern NPTH clearance"

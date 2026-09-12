@@ -11,7 +11,7 @@ from pathlib import Path
 import xml.etree.ElementTree as ET
 
 ELEC = Path(__file__).resolve().parents[1]
-DNP = {"J10", "J11", "J12", "J13", "J14", "J15"}
+DNP = {"J10", "J11", "J12", "J13", "J14", "J15", "R6", "C5"}
 CABLES = {
     ("J18", "1"): "ETH_RXP", ("J18", "2"): "ETH_RXN",
     ("J18", "3"): "ETH_LED", ("J18", "4"): "GND",
@@ -40,7 +40,7 @@ def main():
     connections = {}
     components = {}
     errors = []
-    for filename in ("teensy-expansion.json", "ethernet.json"):
+    for filename in ("power-usb.json", "teensy-expansion.json", "ethernet.json"):
         spec = json.loads((ELEC / "connectivity" / filename).read_text())
         components.update((c["ref"], c) for c in spec["components"])
         for net, nodes in spec["nets"].items():

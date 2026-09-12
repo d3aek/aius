@@ -47,6 +47,28 @@ inputs:
   + STEP/PDF, obtain an independent design review, and reach order-ready. The
   physical order (account, upload, payment) stays with the operator.
 
+## Owner rulings (2026-09-12)
+
+Answers to the H3e second-pass questions (R4/R5), recorded verbatim in intent:
+
+- **Internal USB cable: place J2 wherever is sensible, clear of every pad.** Any
+  USB-A cable length and orientation (straight or right-angle) can be sourced;
+  only the Teensy micro-B end is fixed. Draw the chosen cable envelope as a
+  keepout on the board rather than leaving it implicit.
+- **Hammond slot width vs 1.5862 mm stackup: not material.** A tight slot is
+  forced; the constraint is that nothing is routed near the slot edges. Both
+  long edges carry a copper/part keepout band.
+- **CHASSIS shield tie: the layout's decision.** Decision: add a DNP RC tie
+  (0603 R and 0603 C footprints in parallel, unpopulated) between `CHASSIS` and
+  `GND` beside J1, so the shield can be terminated later without a respin; the
+  documented isolation stays the populated default.
+- **Finish every layout task before any human footprint verification.** The bench
+  XY fit (M4) and the register's footprint gate run once, at the end, not between
+  layout iterations.
+- **Track geometry: straight segments only, no curves or arcs; bends at multiples
+  of 15° with straight sections between.** Enforced by a routing-geometry check
+  in the pipeline, not by convention.
+
 ## Gate ladder
 
 H2 and H3 sit between H1 (done) and EVT (H4). This plan owns H2 + H3.
@@ -487,7 +509,20 @@ reviewed keepout or placement change at those four mounting holes
 than JLCPCB's 0.2 mm minimum mask web at `pad_to_mask_clearance = 0`; clearing
 it needs either a global negative mask-expansion trade-off (affects every pad
 on the board) or a different U11 footprint/package. `export_fab.sh` now runs
-the DFM report (non-fatal) alongside its existing DRC report.
+the DFM report (non-fatal) alongside its existing DRC report. Both residuals
+gained mechanical fixes: a scoped `npth-plane` `.kicad_dru` rule (0.3 mm
+`hole_clearance`, NPTH pads only, ordered before the J1 exception) plus a
+zone refill closes the `hole_clearance` gap, and a `-0.03 mm` local
+solder-mask-margin override on U11 (data table
+[`electronics/dfm/overrides.json`](../../electronics/dfm/overrides.json))
+closes the `solder_mask_bridge` gap; `check_dfm.sh --apply-fix`/`--fix` now
+applies both alongside the silk fix (see
+[README §DFM gate](../../electronics/README.md#dfm-gate-jlcpcb-4-layer)).
+Proven 2026-09-12 on a scratch copy of `f1b4168` carrying the current
+working-tree `aius-carrier.kicad_dru`: DFM 0 violations, base
+`kicad-cli pcb drc --severity-all` 0 violations / 0 unconnected items,
+`check_footprints.py --board` 158/158, and a second `--apply-fix` run
+reports 0 silk texts bumped and 0 overrides applied.
 
 ### Phase H3e — independent review, quote, order-ready
 

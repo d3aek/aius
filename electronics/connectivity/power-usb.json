@@ -17,6 +17,7 @@
     "fault": "FAULT is active-low open-drain. R5 (100k) pulls it up to VBUS_RAW so it reads deasserted when healthy; it is a monitor-only output on this sheet (no consumer).",
     "decoupling": "C1 100nF + C2 10uF bulk on VBUS_RAW at the switch input; C3 100nF + C4 10uF on the protected VBUS_5V output feeding the USB-A port.",
     "shield": "USB-C and USB-A shells share the CHASSIS net (chassis-shield domain), kept separate from GND per the interfaces-and-states backfeed rule.",
+    "chassis_tie": "R6 (1M) + C5 (1nF, 2kV-rated placeholder) form a DNP RC tie in parallel between CHASSIS and GND beside J1, per the H3e design decision (aius-h2-h3-manufacturing.md Owner rulings 2026-09-12): unpopulated by default so the documented CHASSIS/GND isolation stays in force, present so the shield can be terminated later without a board respin.",
     "usb_c_part": "USB-C receptacle candidate GCT USB4105-GF-A (16-pin USB2.0); D+/D- A- and B-side pins are tied for reversibility. SBU1/SBU2 unused (no-connect)."
   },
   "components": [
@@ -138,6 +139,26 @@
       "desc": "VBUS_5V bulk at USB-A port"
     },
     {
+      "ref": "R6",
+      "dnp": true,
+      "lib_id": "Device:R",
+      "value": "1M",
+      "mpn": "1M 0603 1%",
+      "footprint": "Resistor_SMD:R_0603_1608Metric",
+      "at": [66.04, 60.96],
+      "desc": "DNP shield-tie resistor, CHASSIS to GND beside J1 (unpopulated by default)"
+    },
+    {
+      "ref": "C5",
+      "dnp": true,
+      "lib_id": "Device:C",
+      "value": "1nF 2kV",
+      "mpn": "1nF 2kV 0603 (placeholder)",
+      "footprint": "Capacitor_SMD:C_0603_1608Metric",
+      "at": [81.28, 60.96],
+      "desc": "DNP shield-tie capacitor, CHASSIS to GND beside J1, in parallel with R6 (unpopulated by default)"
+    },
+    {
       "ref": "#FLG01",
       "lib_id": "power:PWR_FLAG",
       "value": "PWR_FLAG",
@@ -182,7 +203,9 @@
       ["C2", "2"],
       ["C3", "2"],
       ["C4", "2"],
-      ["#FLG02", "1"]
+      ["#FLG02", "1"],
+      ["R6", "2"],
+      ["C5", "2"]
     ],
     "USB_DP": [
       ["J1", "A6"],
@@ -218,7 +241,9 @@
     ],
     "CHASSIS": [
       ["J1", "SH"],
-      ["J2", "SH"]
+      ["J2", "SH"],
+      ["R6", "1"],
+      ["C5", "1"]
     ]
   },
   "no_connects": [
