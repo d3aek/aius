@@ -6,7 +6,7 @@ component: aius
 subtype: backlog
 status: in-progress
 tags: [aius, backlog, debt, defects]
-updated: 2026-09-07
+updated: 2026-09-24
 toc: true
 ---
 
@@ -2345,3 +2345,25 @@ where the only prior record was a plan aside.
   Recommendation: strike as superseded unless the owner names a consumer for a
   44.1 kHz latency figure. **D8 ruled 2026-09-04: no consumer — 48 kHz is the
   only target, so the entry is struck and the harness work is not done.**
+
+## Deferred from the 2026-09-24 host-USB-topology session
+
+- **Re-evaluate the U24 sysfs de-auth path and Teensy hidraw permissions once
+  the host's Renesas uPD720201 controller is removed.** Host-side USB topology
+  work (upstream repository session, not an aius change) established that neither bench
+  operation needs a whole forwarded controller: the U24 carrier drop is a
+  sysfs de-auth by device path (`/sys/bus/usb/devices/3-1.1/authorized`,
+  [`../../CLAUDE.md`](../../CLAUDE.md) §Bench-loop gotchas) and the Teensy
+  reset/reflash is a HID command by VID:PID (`16c0:0486` RawHID app,
+  `16c0:0478` HalfKay bootloader; `firmware/scripts/flash_and_run.sh`,
+  `firmware/scripts/flash_optical.sh`) — both device-identity-scoped, not
+  controller-scoped. The uPD720201 (previously VFIO-forwarded whole to a KVM
+  guest for exactly these two operations) is being physically removed to free
+  its PCIe slot; devices land wherever they're plugged in next. Next time work
+  touches this repo's bench/flash path: confirm the U24's bus path is still
+  `3-1.1` (a controller change renumbers it) and update `CLAUDE.md` if not;
+  confirm `plugdev` (or the deauth-performing user/process) still has write
+  access to that device's `authorized` sysfs attribute wherever it now
+  enumerates; and if the Teensy or U24 is reached from inside a guest rather
+  than the host, confirm the per-device hostdev passthrough (by vendor/product,
+  not controller) resolves both PIDs the Teensy presents across its own reset.
