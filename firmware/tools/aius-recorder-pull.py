@@ -12,6 +12,7 @@ bits, LSB-aligned).
 
 Usage:
   aius-recorder-pull.py --device http://192.0.2.66 --auth <token> out.wav
+  aius-recorder-pull.py --device http://192.0.2.66 --auth-file .secrets/aius-sd-auth out.wav
   AIUS_SD_AUTH=<token> aius-recorder-pull.py --device http://192.0.2.66 out.wav
   aius-recorder-pull.py --device http://192.0.2.66 --slot 2 out.wav
 
@@ -198,14 +199,20 @@ def run(argv: list[str] | None = None) -> int:
                         help="device base URL, e.g. http://192.0.2.66")
     parser.add_argument("--auth", default=os.environ.get("AIUS_SD_AUTH"),
                         help="X-Aius-SD-Auth token (default: $AIUS_SD_AUTH)")
+    parser.add_argument("--auth-file", default=None,
+                        help="read the X-Aius-SD-Auth token from this file "
+                             "(keeps it off the command line)")
     parser.add_argument("--header-json", default=None,
                         help="also write the header document to this path")
     parser.add_argument("--slot", type=int, default=None,
                         help="bank slot to pull (default: newest frozen slot)")
     parser.add_argument("output", help="output WAV path")
     args = parser.parse_args(argv)
+    if args.auth_file:
+        with open(args.auth_file, encoding="utf-8") as handle:
+            args.auth = handle.read().strip()
     if not args.auth:
-        print("no auth token: pass --auth or set AIUS_SD_AUTH",
+        print("no auth token: pass --auth, --auth-file or set AIUS_SD_AUTH",
               file=sys.stderr)
         return 4
     base = args.device.rstrip("/")
