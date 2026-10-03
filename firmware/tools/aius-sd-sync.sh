@@ -9,8 +9,10 @@
 set -euo pipefail
 
 usage() {
-    printf '%s\n' "Usage: $0 --device URL --www DIRECTORY (--token TOKEN | --token-file PATH)"
+    printf '%s\n' "Usage: $0 --device URL --www DIRECTORY (--token TOKEN | --token-file PATH) [--file RELATIVE]..."
     printf '%s\n' "Uploads a web tree to the Aius device over HTTP PUT."
+    printf '%s\n' "--file uploads only the named file, given relative to --www (repeatable);"
+    printf '%s\n' "without it every file under --www is uploaded."
     printf '%s\n' "The token may also come from AIUS_SD_AUTH. --token-file is the form an"
     printf '%s\n' "agent session uses: the token never appears on a command line."
 }
@@ -18,6 +20,7 @@ usage() {
 device_url=''
 www_dir=''
 auth_token="${AIUS_SD_AUTH:-}"
+selected_files=()
 
 while (($# > 0)); do
     case "$1" in
@@ -42,6 +45,11 @@ while (($# > 0)); do
             # First line only, trailing whitespace stripped: one secret per file.
             IFS= read -r auth_token < "$2" || true
             auth_token=${auth_token%%[[:space:]]*}
+            shift 2
+            ;;
+        --file)
+            (($# >= 2)) || { usage >&2; exit 2; }
+            selected_files+=("$2")
             shift 2
             ;;
         -h|--help)
@@ -112,6 +120,19 @@ upload_file() {
     printf 'upload failed after 4 attempts: %s\n' "$relative" >&2
     exit 1
 }
+
+if ((${#selected_files[@]} > 0)); then
+    # The relative name is checked by upload_file's path rules once joined, so a
+    # --file cannot reach outside --www.
+    for relative in "${selected_files[@]}"; do
+        [[ -f "$www_dir/$relative" ]] || {
+            printf 'file not found under %s: %s\n' "$www_dir" "$relative" >&2
+            exit 1
+        }
+        upload_file "$www_dir/$relative"
+    done
+    exit 0
+fi
 
 while IFS= read -r -d '' file; do
     upload_file "$file"

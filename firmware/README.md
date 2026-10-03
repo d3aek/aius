@@ -275,8 +275,12 @@ is lost, reattaching USB and reading it again is the only recovery. Full contrac
 Upload the web tree with:
 
 ```bash
-tools/aius-sd-sync.sh --device http://<address> --www sd/www --token <token>
+tools/aius-sd-sync.sh --device http://<address> --www sd/www --token-file <path>
 ```
+
+Add `--file <name>` (repeatable, relative to `--www`) to upload only the named
+files, e.g. `--file openapi.json`; each upload during playback costs dropouts, so
+send only what changed.
 
 The tool retries each file. That is not decoration: the device serves one HTTP
 client at a time and drops a connection arriving before the previous one is
