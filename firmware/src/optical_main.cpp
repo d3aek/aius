@@ -3331,7 +3331,7 @@ static FLASHMEM bool http_clock_json(char *output, size_t capacity,
 	 * framework script copies into DTCM .data, for the reason
 	 * http_input_diag_json states: this object's literals are ~900 B and
 	 * DTCM's free-for-locals zone is the scarce bank on this build. The
-	 * swagger extractor (test/swagger.test.js) resolves a
+	 * OpenAPI extractor (test/sd-editor/openapi.test.js) resolves a
 	 * `static const char <name>[] PROGMEM = "..."` format by name. */
 	static const char format_clock[] PROGMEM =
 		",\"clock\":{"
@@ -3528,7 +3528,7 @@ static FLASHMEM bool http_input_diag_json(char *output, size_t capacity,
 	 * serializer grew ~1 KB of literals for the dark-interval instrument and
 	 * DTCM's free-for-locals zone is the scarce bank on this build. Flash is
 	 * memory-mapped on the i.MX RT, so vsnprintf reads them directly. The
-	 * swagger extractor (test/swagger.test.js) resolves a
+	 * OpenAPI extractor (test/sd-editor/openapi.test.js) resolves a
 	 * `static const char <name>[] PROGMEM = "..."` format by name. */
 	static const char format_head[] PROGMEM =
 		",\"input_diag\":{"

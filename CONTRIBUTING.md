@@ -68,9 +68,12 @@ inspects the linked objects of an optical image; without a current cross-build i
 exits 3 and prints the build command to run.
 
 The SD-hosted web pages (status, DSP editor, replay manager, upgrade) are host JS
-covered by vitest in [`test/sd-editor/`](test/sd-editor/). This repository is its
-own vitest root (the root `vitest.config.js`); the suite runner resolves the
-superproject for `pnpm` when this repo is a submodule:
+covered by vitest in [`test/sd-editor/`](test/sd-editor/). The same suite holds
+the OpenAPI drift gate, which checks
+[`firmware/sd/www/openapi.json`](firmware/sd/www/openapi.json) against the
+firmware's own serializers. This repository is its own vitest root (the root
+`vitest.config.js`); the suite runner resolves the superproject for `pnpm` when
+this repo is a submodule:
 
 ```bash
 firmware/scripts/test.sh --environment native --suite sd-editor

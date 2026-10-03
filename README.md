@@ -110,9 +110,9 @@ board and the enclosure engineering around it.
 - [Signal path](docs/reference/signal-path.md): the audio chain stage by stage,
   with the buffers, budgets and rounding behaviour of each.
 - [USB control protocol](docs/reference/usb-control-protocol.md) and the HTTP
-  API as a committed OpenAPI document: the
-  control surfaces. HTTP is plain on port 80 with auth-gated control routes; a
-  UDP control socket listens on 4242.
+  API's [OpenAPI document](firmware/sd/www/openapi.json), which the device
+  serves at `/sd/www/openapi.json`: the control surfaces. HTTP is plain on port
+  80 with auth-gated control routes; a UDP control socket listens on 4242.
 - [Open work register](docs/plans/aius-open-work-register.md): the live backlog
   and defect log. Each defect records how it was proven, and several record
   retractions where the first verdict was wrong.
