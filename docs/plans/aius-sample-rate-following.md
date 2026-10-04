@@ -588,20 +588,23 @@ The prebuild review attacks:
 phase: 3
 title: Close the output-rate loop on transmit-ring fill
 status: planned
+prebuild-review: hold # round 1 2026-10-04: 4 blocking, 8 should-fix; design revised below, round 2 pending
 outcome: >-
   A live source offset inside the 500 mHz target deadband no longer drains
   (or fills) the transmit ring: the output rate converges on the source's
-  true rate, so a steady-state session shows no periodic 128-frame underrun.
+  true rate, so a steady-state session shows no periodic 128-frame underrun,
+  at unchanged standing latency.
 unit: component-behind-interface
 seams:
-  - AiusRateTracker (gains a ring-fill observation; owns the composed target)
-  - transmit-ring floor sample at the governor tap (optical_main.cpp)
+  - AiusRateTracker (centre and fill integral as separate state; returns one composed request)
+  - TX fill ISR period stamp (aius_spdif_sources.cpp) feeding a phase-corrected level read
+  - transmit-ring level sample at the governor tap (optical_main.cpp)
   - same-nominal NUM trim request (aius_audio_clock_request_trim)
-  - GET /api/status clock (fill-trim observability)
+  - GET /api/status clock and firmware/sd/www/openapi.json
 targeted-proof:
-  - host: clock suite drift-loop cases (below), zero underruns, bounded floor
-  - target: clock-target, tx-gate, itcm-placement, registry green
-  - device: one listening-room AC-3 session polled at 1 Hz, underrun delta 0
+  - host: clock suite plant model (below), zero underruns, fill error bounded, writes bounded
+  - target: clock-target, tx-gate, tx-governor, itcm-placement, registry green
+  - device: one listening-room AC-3 session polled at 1 Hz, underrun delta 0; bench gate 1
 contract-artifact: spec-only
 fan-out:
   - name: fill-loop-core
@@ -610,7 +613,7 @@ fan-out:
       - firmware/test/clock/**
 review-intensity: active
 commit-checkpoint:
-  green: [clock, clock-target, tx-gate, rate-runner, itcm-placement, registry]
+  green: [clock, clock-target, tx-gate, tx-governor, rate-runner, itcm-placement, registry, sd-editor]
   buildable: [teensy41-optical, teensy41-optical-slot-a]
   parent-commit: "feat(aius): trim the output rate on transmit-ring fill"
 ```
@@ -629,77 +632,144 @@ stepped 256, 128, 0, and 128-frame underruns followed every 489 to 567 s
 the residual risk below ("`SRFM` jitter may require ingress-slope feedback")
 arriving from production evidence, on the transmit side.
 
-**Mechanism.** The ring level is the integral of the rate error, so steering
-on it removes whatever bias the carrier estimate carries.
+**Prebuild review, round 1 (2026-10-04): HOLD.** The first design (window
+minimum of the pre-commit level, proportional 500 mHz per 128 frames, 256-frame
+setpoint) was refuted on four blocking counts, all verified against the code:
 
-- **Floor estimator.** The same pre-commit level sample the governor reads
-  (`firmware/src/optical_main.cpp:2059`), reduced to a window minimum over the
-  governor's 192,000-frame window, phase-immune to the 1,536-frame AC-3 burst
-  sawtooth. Unlike the governor, an underrun inside a window reads as floor 0
-  (the strongest low-fill evidence), not a void.
-- **Control law.** The composed target is the tracker's centre (the applied
-  carrier-estimate target, unchanged) plus a fill offset. The offset is
-  proportional to `floor - setpoint`. A higher floor means the output is
-  falling behind the source, so the output speeds up; a lower floor slows it
-  down. The setpoint is 256 frames, midway between the 128-frame gate-open
-  target and the governor's 384-frame trim threshold. Gain: 500 mHz (about
-  10 ppm) per 128 frames of floor error, so a worst-case in-band offset of
-  500 mHz parks the floor within ±128 frames of the setpoint, never reaching
-  the underrun or governor thresholds. Loop time constant about 260 s
-  (128 frames / 0.5 frames/s), so the correction tracks oscillator drift, not
-  programme content.
-- **Bounds.** Offset clamped to ±600 mHz (the deadband plus margin; a larger
-  error is the centre's job). The offset is applied through the existing
-  same-nominal NUM trim, which has been carrier-continuous with no validity
-  window since the 2026-09-07 correction (§Correction 2026-09-07), so the
-  deadband's original cost argument does not apply to it. Requests are
-  emitted at most once per window, and only when the offset moves by at least
-  25 mHz (about 0.5 ppm), to bound NUM writes and events.
-- **Scope.** Live input only, gate open. A closed gate, a carrier loss, a
-  nominal change or a replay (48 kHz, output is graph master) resets the
-  offset to 0 and the estimator to empty. A centre retarget keeps the offset;
-  it is relative to the centre.
+- the ring level only moves in 128-frame TX periods
+  (`firmware/lib/aius_audio/src/aius_spdif_tx24.h:293-320`), so a
+  proportional law at that gain is a ±500 mHz relay that limit-cycles and
+  never converges;
+- it had no authority past ±500 mHz, where the governor (reading 512 > 384)
+  or an underrun takes over;
+- the tracker's `applied_target_millihz` and cadence timer are refreshed from
+  the applied PLL target (`firmware/src/optical_main.cpp:8556-8564`,
+  `firmware/lib/aius_clock/src/aius_clock.c:344-345`), so a composed target
+  would trip the 500 mHz hysteresis every 10 s and starve centre retargets;
+- the -500 mHz opening transient from a 128-frame gate-open floor breaches
+  gate 1's 1,000 mHz follow-error bound.
+
+The should-fix findings (event flood through the `target_update` branch,
+unhandled trim refusals, a reset leaving the offset on the wire, replay
+emission dropping `g_clock_replay_ready`, a composed target outside the plan
+band faulting, a host proof blind to all of these, an incomplete green list,
+the 256 setpoint's +2.67 ms latency) are folded in below.
+
+**Mechanism.** The ring level is the integral of the rate error, so steering
+on it removes whatever bias the carrier estimate carries. Plant: a rate error
+of `u` mHz moves the ring by `u / 1000` frames/s.
+
+- **Sensor: phase-corrected level.** The TX fill ISR stamps `ARM_DWT_CYCCNT`
+  at each 128-frame period (one store in the hot path). At the governor tap
+  (`firmware/src/optical_main.cpp:2059`) the level read is corrected by the
+  fraction of the current period already played out, giving about one-frame
+  resolution instead of 128. The window statistic is the mean of the
+  corrected pre-commit samples over the governor's 192,000-frame window; its
+  constant offset against the floor is absorbed because the setpoint is
+  defined on the same statistic.
+- **Setpoint: learned at gate open.** The first full window after a gate open
+  sets the setpoint, so the loop holds the ring where the gate-open trim put
+  it (the e2e-latency R1 128-frame floor). Standing latency is unchanged and
+  the loop starts with zero error, so there is no opening transient.
+- **Control law: PI.** Per window, `I += Ki * e` and
+  `offset = clamp(Kp * e + I)`, with `e` the window statistic minus the
+  setpoint. A positive error (ring filling) speeds the output up. Gains are
+  derived in the host plant model to these targets: damping about 0.7; a
+  ±700 mHz step against the centre settled within 10 min with peak fill
+  excursion ≤ 64 frames; sensor and production jitter not modulating the
+  output by more than ±50 mHz. Anti-windup: `I` holds while the clamp is
+  active.
+- **Authority.** Clamp ±800 mHz: hysteresis 500, plus the observed estimate
+  bias and wander (about 55 mHz bias and 280 mHz wander in the 2026-10-04
+  session), plus margin. The composed target is also clamped into the clock
+  plan band; a plan failure on a fill request is a no-op, never a fault.
+- **Centre and integral are separate state.** The tracker keeps `centre`
+  (the carrier-estimate target; hysteresis and the 10 s cadence judged
+  against it alone, logic unchanged) and `I`. Only centre applies refresh
+  the centre's applied value and cadence timer; the tracker API carries this
+  rather than leaving it to `optical_main` wiring. A centre retarget is
+  bumpless: `I -= centre_new - centre_old`, so the composed target does not
+  jump.
+- **Emission.** One composed request per `sample_rate_service` pass. A
+  fill-only change takes its own result flag (`fill_update`) and branch:
+  counts `fill_trims`, stamps `fill_trim_last_at_ms`, records no event and
+  leaves `trim_updates` alone. At most once per window, and only when the
+  composed target moves by at least 5 mHz (three NUM LSBs of about 1.67 mHz):
+  ≤ 900 NUM writes per hour, no event ring pressure. Tracker state commits
+  only when `aius_audio_clock_request_trim` returns true; a refusal retries
+  on the next pass.
+- **Scope and reset.** Emission only for a live source with
+  `g_clock_plan_applied`; any replay block resets the estimator and emits
+  nothing, so `g_clock_replay_ready`'s exact-48,000,000 check is untouched.
+  The window resets on gate close, governor trim and carrier loss. `I` is
+  kept across a same-nominal gate blip (the source oscillator has not
+  changed) and zeroed on a nominal change, a replay, or a dark full apply.
+  The last-applied composed value is read back from the applied plan, never
+  assumed, so a gate close that leaves the PLL alone cannot hide a stale
+  offset. An underrun needs no special case: the corrected mean already
+  carries the low level.
+- **Governor.** Unchanged; with the ring held at the gate-open floor it only
+  sees stall backlogs, its intended job.
 - **Cleanup.** The `AIUS_CLOCK_TARGET_HYSTERESIS_MILLIHZ` comment
   (`firmware/lib/aius_clock/src/aius_clock.c:18-34`) loses its drift-bound
   claim and points here.
 
-**Observability.** `clock` gains `fill_floor_frames` (last window floor),
-`fill_offset_millihz` (signed, current), `fill_trims` and
-`fill_trim_last_at_ms`. Fill trims are counted apart from `trim_updates`, so
-gate 1's trim-cadence metric keeps its meaning. The swagger drift gate takes
-the new keys. No new event kind: `fill_trim_last_at_ms` is the stamp, so the
-ring's 2026-10-03 overflow pressure is not added to.
+**Observability.** `clock` gains `fill_level_frames` (last window
+statistic), `fill_setpoint_frames`, `fill_offset_millihz` (signed, composed
+minus centre), `fill_trims` and `fill_trim_last_at_ms`. Fill trims are counted
+apart from `trim_updates`, so gate 1's trim-cadence metric keeps its meaning.
+The keys land in `firmware/sd/www/openapi.json` (the `sd-editor` drift gate),
+and the status document's size is checked against `AIUS_HTTP_MAX_RESPONSE`
+(8,192, `firmware/lib/aius_http/include/aius_http.h:22`). No new event kind.
 
-**Host proof (clock suite).** A ring model driven by the tracker over two
-simulated hours, with the carrier estimate quantised to 140 mHz bins and
-1.2 Hz settled spread:
+**Host proof (clock suite).** The tracker API owns the centre/integral
+wiring, so the host model exercises it end to end. Plant: TX consumes in
+128-frame periods at the output rate; the producer commits 512-frame PCM
+blocks and 6 × 256-frame AC-3 bursts at the source rate with service jitter;
+the carrier estimate is quantised to 140 mHz bins with 1.2 Hz spread and slow
+wander (280 mHz over 8 min). Cases, two simulated hours each unless noted:
 
-- true offsets of -10, -5, 0, +5 and +10 ppm: zero underruns after
-  settle, floor within [128, 384], and the governor never fires;
-- a 2,048-frame stall backlog: the governor trims, and the fill loop neither
+- offsets against the centre of 0, ±225, ±480, ±550, ±650 and ±800 mHz,
+  starting at the 128-frame gate-open floor: zero underruns, fill error
+  ≤ 64 frames after settle, no governor trim, output modulation within
+  ±50 mHz, NUM writes ≤ 900/h;
+- a centre retarget with non-zero `I`: composed target continuous;
+- a 2,048-frame stall backlog: the governor trims once, the loop neither
   fights it nor overshoots into an underrun;
-- an underrun mid-window: reads as floor 0, so the offset moves to slow the
-  output;
-- gate close, carrier loss, nominal change and replay each zero the offset;
-- NUM-write count bounded (offset quantum and once-per-window limit).
+- replay with the gate open: no emission, replay readiness kept;
+- a same-nominal gate blip keeps `I`; a nominal change, replay or full apply
+  zeroes it;
+- a trim refusal: state uncommitted, retried next pass;
+- a composed target outside the plan band: clamped, no fault.
 
 **Device proof.** One listening-room AC-3 session of 45 min or more polled with
-`firmware/tools/device/aius_status_poll.py`: `underrun_episode_count` delta 0
-after the first window, `fill_offset_millihz` settling near the source's true
-offset, and `governor_trims` delta 0. Gate 1's rebased criterion must stay
-green on the bench: the loop moves the output from the carrier estimate onto
-the true rate, so `max_follow_error_millihz` (≤ 1,000) should read about the
-estimate's own spread, and the run confirms it.
+`firmware/tools/device/aius_status_poll.py`: `underrun_episode_count` delta 0,
+`fill_offset_millihz` settling near the source's true offset,
+`governor_trims` delta 0, `fill_trims` within the write bound. Bench: gate 1's
+rebased criterion re-run. The loop moves the output from the raw estimate onto
+the true rate, so `max_follow_error_millihz` should stay about the estimate's
+own spread (798 of 1,000 on 2026-09-04); if it breaches, the owner rules on
+the criterion before acceptance.
 
-The prebuild review attacks:
+**Outside this phase (from review round 1, unverified).** The governor is
+passed the live 128-frame target during replay
+(`firmware/src/optical_main.cpp:2060`), so a clean replay window at the
+768-frame floor may be trimmed to 128. To be checked and, if real, filed in
+the register.
+
+The prebuild review attacks (round 2):
 
 - the loop sign inverted, so it accelerates the drain;
-- an underrun voiding the window as the governor does, hiding the fault the
-  loop exists for;
-- the fill loop and the governor fighting across the 384-frame threshold;
-- the offset surviving a nominal change, a replay or a carrier loss;
-- a NUM write per producer block instead of per window;
-- the clamp letting a stall backlog drive the output far off the carrier;
+- the phase correction wrong at a period boundary, across a cycle-counter
+  wrap, or while the gate is closed, and the ISR stamp's cost in the hot path;
+- PI windup at the clamp, or a damping too low for the 4 s sample period;
+- the setpoint learned from a window that contains a stall or a gate-open
+  transient;
+- the bumpless transfer with the wrong sign, or double-counting the offset;
+- the fill loop and the governor fighting;
+- `I` surviving a nominal change, replay or full apply, or lost on a
+  same-nominal blip;
+- a refusal retry storm, or tracker state committed before the request lands;
 - signed millihertz overflow or rounding in the composed target; and
 - the new code leaking into ITCM.
 
