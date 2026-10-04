@@ -352,7 +352,7 @@ ends left open:
   than something off-board. Next: an owner call-out of an audible event, to
   read against the underrun stamps. Fix, independent of audibility: planned
   as [`aius-sample-rate-following.md`](aius-sample-rate-following.md) Phase 3
-  (fill-referenced rate trim).
+  (fill sensor and noise capture) and Phase 4 (fill-referenced rate trim).
 
 - ~~**OPEN — `optical-app` suite is red at HEAD on its `test_bitstream_ui.py`
   arm (seen 2026-09-07, both Phase H and Phase I runs).**~~ **FIXED
