@@ -350,9 +350,9 @@ ends left open:
   trigger placed by the 188-block post-roll), so masking fits but does not
   prove that the 2026-10-03 pop was an underrun on exposed material rather
   than something off-board. Next: an owner call-out of an audible event, to
-  read against the underrun stamps. Fix shape, independent of audibility:
-  correct on ring fill, not on rate error alone, so a sub-deadband offset
-  cannot drain the ring.
+  read against the underrun stamps. Fix, independent of audibility: planned
+  as [`aius-sample-rate-following.md`](aius-sample-rate-following.md) Phase 3
+  (fill-referenced rate trim).
 
 - ~~**OPEN — `optical-app` suite is red at HEAD on its `test_bitstream_ui.py`
   arm (seen 2026-09-07, both Phase H and Phase I runs).**~~ **FIXED

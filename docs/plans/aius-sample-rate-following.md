@@ -6,7 +6,7 @@ component: aius
 status: in-progress
 subtype: implementation
 tags: [aius, firmware, teensy, audio, clocking, spdif]
-updated: 2026-09-03
+updated: 2026-10-04
 toc: true
 ---
 
@@ -581,6 +581,127 @@ The prebuild review attacks:
   transition hold;
 - millihertz overflow/rounding; and
 - calling the full PLL path for every one-second trim.
+
+### Phase 3 Fill-referenced rate trim
+
+```yaml
+phase: 3
+title: Close the output-rate loop on transmit-ring fill
+status: planned
+outcome: >-
+  A live source offset inside the 500 mHz target deadband no longer drains
+  (or fills) the transmit ring: the output rate converges on the source's
+  true rate, so a steady-state session shows no periodic 128-frame underrun.
+unit: component-behind-interface
+seams:
+  - AiusRateTracker (gains a ring-fill observation; owns the composed target)
+  - transmit-ring floor sample at the governor tap (optical_main.cpp)
+  - same-nominal NUM trim request (aius_audio_clock_request_trim)
+  - GET /api/status clock (fill-trim observability)
+targeted-proof:
+  - host: clock suite drift-loop cases (below), zero underruns, bounded floor
+  - target: clock-target, tx-gate, itcm-placement, registry green
+  - device: one listening-room AC-3 session polled at 1 Hz, underrun delta 0
+contract-artifact: spec-only
+fan-out:
+  - name: fill-loop-core
+    owned-paths:
+      - firmware/lib/aius_clock/**
+      - firmware/test/clock/**
+review-intensity: active
+commit-checkpoint:
+  green: [clock, clock-target, tx-gate, rate-runner, itcm-placement, registry]
+  buildable: [teensy41-optical, teensy41-optical-slot-a]
+  parent-commit: "feat(aius): trim the output rate on transmit-ring fill"
+```
+
+**Defect.** The tracker retargets the output only when the one-second carrier
+estimate leaves a 500 mHz band around the applied target
+(`firmware/lib/aius_clock/src/aius_clock.c:258`). A true source offset inside
+the band is never corrected, and the ring integrates it without bound: the
+deadband comment's "bounded by the 10 s cadence" holds only while trims
+happen. The governor cannot help; it trims an elevated floor down
+(`firmware/lib/aius_audio/src/aius_tx_governor.h`) and an underrun merely
+voids its window. listening-room evidence, 2026-10-04 on `cd7ad191ac77`: carrier
+settled 280 mHz below the output, `trim_updates` 0 for 49 min, the ring floor
+stepped 256, 128, 0, and 128-frame underruns followed every 489 to 567 s
+([register entry](aius-open-work-register.md#open-defects--runtime)). This is
+the residual risk below ("`SRFM` jitter may require ingress-slope feedback")
+arriving from production evidence, on the transmit side.
+
+**Mechanism.** The ring level is the integral of the rate error, so steering
+on it removes whatever bias the carrier estimate carries.
+
+- **Floor estimator.** The same pre-commit level sample the governor reads
+  (`firmware/src/optical_main.cpp:2059`), reduced to a window minimum over the
+  governor's 192,000-frame window, phase-immune to the 1,536-frame AC-3 burst
+  sawtooth. Unlike the governor, an underrun inside a window reads as floor 0
+  (the strongest low-fill evidence), not a void.
+- **Control law.** The composed target is the tracker's centre (the applied
+  carrier-estimate target, unchanged) plus a fill offset. The offset is
+  proportional to `floor - setpoint`. A higher floor means the output is
+  falling behind the source, so the output speeds up; a lower floor slows it
+  down. The setpoint is 256 frames, midway between the 128-frame gate-open
+  target and the governor's 384-frame trim threshold. Gain: 500 mHz (about
+  10 ppm) per 128 frames of floor error, so a worst-case in-band offset of
+  500 mHz parks the floor within ±128 frames of the setpoint, never reaching
+  the underrun or governor thresholds. Loop time constant about 260 s
+  (128 frames / 0.5 frames/s), so the correction tracks oscillator drift, not
+  programme content.
+- **Bounds.** Offset clamped to ±600 mHz (the deadband plus margin; a larger
+  error is the centre's job). The offset is applied through the existing
+  same-nominal NUM trim, which has been carrier-continuous with no validity
+  window since the 2026-09-07 correction (§Correction 2026-09-07), so the
+  deadband's original cost argument does not apply to it. Requests are
+  emitted at most once per window, and only when the offset moves by at least
+  25 mHz (about 0.5 ppm), to bound NUM writes and events.
+- **Scope.** Live input only, gate open. A closed gate, a carrier loss, a
+  nominal change or a replay (48 kHz, output is graph master) resets the
+  offset to 0 and the estimator to empty. A centre retarget keeps the offset;
+  it is relative to the centre.
+- **Cleanup.** The `AIUS_CLOCK_TARGET_HYSTERESIS_MILLIHZ` comment
+  (`firmware/lib/aius_clock/src/aius_clock.c:18-34`) loses its drift-bound
+  claim and points here.
+
+**Observability.** `clock` gains `fill_floor_frames` (last window floor),
+`fill_offset_millihz` (signed, current), `fill_trims` and
+`fill_trim_last_at_ms`. Fill trims are counted apart from `trim_updates`, so
+gate 1's trim-cadence metric keeps its meaning. The swagger drift gate takes
+the new keys. No new event kind: `fill_trim_last_at_ms` is the stamp, so the
+ring's 2026-10-03 overflow pressure is not added to.
+
+**Host proof (clock suite).** A ring model driven by the tracker over two
+simulated hours, with the carrier estimate quantised to 140 mHz bins and
+1.2 Hz settled spread:
+
+- true offsets of -10, -5, 0, +5 and +10 ppm: zero underruns after
+  settle, floor within [128, 384], and the governor never fires;
+- a 2,048-frame stall backlog: the governor trims, and the fill loop neither
+  fights it nor overshoots into an underrun;
+- an underrun mid-window: reads as floor 0, so the offset moves to slow the
+  output;
+- gate close, carrier loss, nominal change and replay each zero the offset;
+- NUM-write count bounded (offset quantum and once-per-window limit).
+
+**Device proof.** One listening-room AC-3 session of 45 min or more polled with
+`firmware/tools/device/aius_status_poll.py`: `underrun_episode_count` delta 0
+after the first window, `fill_offset_millihz` settling near the source's true
+offset, and `governor_trims` delta 0. Gate 1's rebased criterion must stay
+green on the bench: the loop moves the output from the carrier estimate onto
+the true rate, so `max_follow_error_millihz` (≤ 1,000) should read about the
+estimate's own spread, and the run confirms it.
+
+The prebuild review attacks:
+
+- the loop sign inverted, so it accelerates the drain;
+- an underrun voiding the window as the governor does, hiding the fault the
+  loop exists for;
+- the fill loop and the governor fighting across the 384-frame threshold;
+- the offset surviving a nominal change, a replay or a carrier loss;
+- a NUM write per producer block instead of per window;
+- the clamp letting a stall backlog drive the output far off the carrier;
+- signed millihertz overflow or rounding in the composed target; and
+- the new code leaking into ITCM.
 
 ## Acceptance
 
@@ -1373,7 +1494,9 @@ required component-wide disposition is recorded manually:
 - Live NUM writes preserved carrier in the 1,857-second experiment but the
   exact boundary waveform remains unobserved; one-block invalid marking stays.
 - `SRFM` jitter may require ingress-slope feedback. The 0.25 words/s gate decides
-  this from production evidence.
+  this from production evidence. **Realised 2026-10-04 on the transmit side:**
+  an in-deadband offset drains the TX ring to periodic underruns; Phase 3 adds
+  the fill feedback.
 - AC-3 widening is pinned by deterministic 32/44.1 kHz decode fixtures plus a
   44.1 kHz low-bitrate CRC-boundary oracle.
 - The replay file format still has no rate metadata and remains 48 kHz only.
