@@ -6,7 +6,7 @@ component: aius
 subtype: backlog
 status: in-progress
 tags: [aius, backlog, debt, defects]
-updated: 2026-09-24
+updated: 2026-10-04
 toc: true
 ---
 
@@ -311,6 +311,38 @@ ends left open:
   register that as a runtime defect.
 
 ## Open defects — runtime
+
+- **OPEN: periodic 128-frame TX underrun every ~530 s during steady AC-3
+  playback (owner heard a pop then a crackle, 2026-10-03 evening).** On
+  `cd7ad191ac77`, one listening-room session (carrier lock 19:45 UTC, source off
+  21:17:42 UTC) logged eight kind-14 events, each `detail 128` (2.7 ms), at
+  20:07:34, 20:16:05, 20:24:59, 20:33:50, 20:43:38, 20:52:18, 21:01:11 and
+  21:10:04 UTC (uptime mapped to wall time from one bracketed `/api/status`).
+  Mean spacing 530 s; nothing else moved in the window (`crc_rejects`,
+  governor and gate trims, missed fills and stalls all flat). Events 393 to 396
+  show the same cadence in an earlier session, so it recurs. The owner's
+  21:14 call-out lands within minutes of one of them in either UTC or BST.
+  **Hypothesis: sub-deadband drift with no fill-level correction.**
+  `clock.trim_updates` read 0 for the whole 90 min session while
+  `output_rate_millihz` sat at 48,001,903. 128 frames per 530 s is
+  0.24 frames/s, a source about 240 mHz (5 ppm) slower than the output: inside
+  `AIUS_CLOCK_TARGET_HYSTERESIS_MILLIHZ` (500 mHz,
+  `firmware/lib/aius_clock/src/aius_clock.c:35`), so the tracker never
+  retargets and the ring integrates the rate error until it underruns one
+  block. That constant's comment bounds the drift "by the 10 s cadence", which
+  holds only while trims happen; with none, nothing bounds the accumulated
+  fill error. Unconfirmed: the source was off by the time it was read, and a
+  single 128-frame gap explains the pop but not the crackle. **The recorder
+  captures are lost:** at source power-off three zero-frame `carrier_loss`
+  freezes evicted the underrun captures from all four slots (not yet filed
+  separately). **Next: monitor the next viewing session.** Poll `/api/status`
+  at 1 Hz; confirmation is a settled `carrier_rate_millihz` about 240 mHz below
+  `output_rate_millihz`, `trim_updates` flat, `tx_level_frames` falling about
+  0.24 frames/s to an underrun, and the cycle repeating. Pull the newest frozen
+  capture (`firmware/tools/aius-recorder-pull.py --auth-file
+  .secrets/aius-sd-auth`) before the source is switched off. Fix shape, once
+  confirmed: correct on ring fill, not on rate error alone, so a sub-deadband
+  offset cannot drain the ring.
 
 - ~~**OPEN — `optical-app` suite is red at HEAD on its `test_bitstream_ui.py`
   arm (seen 2026-09-07, both Phase H and Phase I runs).**~~ **FIXED
