@@ -335,14 +335,24 @@ ends left open:
   single 128-frame gap explains the pop but not the crackle. **The recorder
   captures are lost:** at source power-off three zero-frame `carrier_loss`
   freezes evicted the underrun captures from all four slots (not yet filed
-  separately). **Next: monitor the next viewing session.** Poll `/api/status`
-  at 1 Hz; confirmation is a settled `carrier_rate_millihz` about 240 mHz below
-  `output_rate_millihz`, `trim_updates` flat, `tx_level_frames` falling about
-  0.24 frames/s to an underrun, and the cycle repeating. Pull the newest frozen
-  capture (`firmware/tools/aius-recorder-pull.py --auth-file
-  .secrets/aius-sd-auth`) before the source is switched off. Fix shape, once
-  confirmed: correct on ring fill, not on rate error alone, so a sub-deadband
-  offset cannot drain the ring.
+  separately).
+  **2026-10-04 session: mechanism confirmed, audibility not.** Polled at 1 Hz
+  with `firmware/tools/device/aius_status_poll.py` from carrier lock
+  (20:43:53 UTC) to source off (21:32:28 UTC), AC-3 at 48 kHz. The carrier
+  estimate read 48,001,902 mHz at lock against an output of 48,001,903, then
+  settled at 48,001,623 by 20:52 (280 mHz low, one estimate bin either side of
+  the true offset); `trim_updates` stayed 0 throughout. The per-minute
+  `tx_level_frames` floor stepped 256, 128 (20:53), 0 (21:04), and 128-frame
+  underruns followed at 21:05:11, 21:14:38 and 21:22:47 UTC (567 s and 489 s
+  apart, about 225 mHz of true offset). **The owner heard none of the three.**
+  All three captures were pulled before source off; around each trigger the
+  programme was quiet (left channel, ±50 ms: -47, -41 and -67 dBFS RMS,
+  trigger placed by the 188-block post-roll), so masking fits but does not
+  prove that the 2026-10-03 pop was an underrun on exposed material rather
+  than something off-board. Next: an owner call-out of an audible event, to
+  read against the underrun stamps. Fix shape, independent of audibility:
+  correct on ring fill, not on rate error alone, so a sub-deadband offset
+  cannot drain the ring.
 
 - ~~**OPEN — `optical-app` suite is red at HEAD on its `test_bitstream_ui.py`
   arm (seen 2026-09-07, both Phase H and Phase I runs).**~~ **FIXED
