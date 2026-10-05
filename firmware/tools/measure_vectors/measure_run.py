@@ -9,6 +9,8 @@ Usage:
   measure_run.py upload [names...]      # PUT the corpus to /sd/replays/<id>
   measure_run.py measure <id> [f0_l f0_r [probe ...]]
   measure_run.py isr-cost               # armed-vs-not dsp_cycles_max gate
+  measure_run.py replay <id> <seconds>  # looped replay held, then stopped
+  --auth-file <path> (any position) reads the token from a file instead of env
 
 Env:
   AIUS_DEVICE    board base URL         (default: http://192.0.2.66)
@@ -136,7 +138,28 @@ def isr_cost():
     return 0 if abs(delta) <= ISR_GATE_CYCLES else 1
 
 
+def replay(vector, seconds):
+    """Start a looped replay, hold it for `seconds`, stop it."""
+    status, reply = call_json("POST", "/api/replays/start",
+                              {"id": vector, "loop": True})
+    if status != 200:
+        print(f"replay start refused: {status} {reply}")
+        return 1
+    print(f"replay {vector} started", flush=True)
+    try:
+        time.sleep(seconds)
+    finally:
+        status, reply = call_json("POST", "/api/replays/stop")
+        print(f"replay stopped: {status} {reply}")
+    return 0
+
+
 def main():
+    global TOKEN
+    if "--auth-file" in sys.argv:
+        at = sys.argv.index("--auth-file")
+        TOKEN = Path(sys.argv[at + 1]).read_text().strip()
+        del sys.argv[at:at + 2]
     if len(sys.argv) < 2:
         print(__doc__, file=sys.stderr)
         return 2
@@ -149,6 +172,8 @@ def main():
         f0_r = int(sys.argv[4]) if len(sys.argv) > 4 else 440
         probes = [int(p) for p in sys.argv[5:]]
         return measure(sys.argv[2], f0_l, f0_r, probes)
+    if command == "replay" and len(sys.argv) >= 4:
+        return replay(sys.argv[2], float(sys.argv[3]))
     if command == "isr-cost":
         return isr_cost()
     print(__doc__, file=sys.stderr)

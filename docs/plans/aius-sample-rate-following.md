@@ -58,7 +58,15 @@ Updated 2026-10-05 after the Phase 3 deploy; replace wholesale on the next.
   the image Phase 4 builds on. Deployed 2026-10-05: `0af7a8244081`, slot 1
   to 2, `ab.sequence` 15 after the self-commit, `rollback_observed` false,
   `status_render_failures` 0, `status_body_peak_bytes` 8,592 idle. The
-  capture runs on this image; Phase J's bench replay proof is still owed.
+  capture runs on this image. Phase J shipped on three 10 s replays; longer
+  replays hit false carrier stops from dark-input lock blips (output-jitter
+  Phases K and L).
+- **Capture in progress, 2026-10-05.** Polled segment from about 16:5x UTC,
+  1 Hz for 2,100 s, to
+  `.scratch/2682a96a-3760-4d00-b9e0-f71f66b336ba/capture-polled.jsonl`; then
+  a 720 s unpolled segment at 30 s to `capture-unpolled.jsonl` alongside.
+  Pull the recorder bank (`aius-recorder-pull.py --auth-file`) before the
+  source is switched off.
 - **Editor diagnostics.** clangd reports missing `Arduino.h` and the
   library headers on `firmware/src/` and `firmware/test/` files: an include
   path gap in the editor only; `firmware/scripts/test.sh` and the PlatformIO

@@ -805,9 +805,16 @@ is substituted with zeros.
   `pipeline_diag.crc_rejects` static across a clean session.
 - unit: parent-only
 
-### Phase J Governor target follows the replay floor IN-PROGRESS
+### Phase J Governor target follows the replay floor ✓ SHIPPED 2026-10-05
 
-**Built 2026-10-05; the device replay proof is owed.** During replay the tap
+**Device proof, accepted by the owner (2026-10-05):** three 10 s replays
+of `cinematic_program_51` on `0af7a8244081` (16:15 to 16:18 UTC), 60
+gate-open samples at 2 Hz: `governor_trims` 0, `tx_underrun_frames` 0, ring
+768 to 1,280 frames. Each run passed the ~4 s point where the old code
+always trimmed. One continuous 30 s run was not possible: false carrier
+stops (Phase K) ended longer replays.
+
+**Built 2026-10-05.** During replay the tap
 passes `AIUS_TX_GATE_OPEN_REPLAY_TARGET_FRAMES`. A live/replay source edge
 resets the governor window (`g_tx_governor_replay_prev`,
 `firmware/src/optical_main.cpp` governor tap), so one source's window never
@@ -839,6 +846,58 @@ the SD-refill margin that floor exists for. Not yet observed on device.
   of 30 s or more on the bench with `governor_trims` and `tx_underrun_frames`
   flat, read before and after.
 - unit: parent-only
+
+### Phase K Replays survive dark-input lock blips
+
+Found 2026-10-05 while proving Phase J. With no light at the optical input,
+the receiver sits in one of three hidden states (every clock register reads
+the same in all three, so the clock plan is not the cause). In one of them,
+its DPLL locks briefly about 10 times a second (`input_diag.sis_lockloss_events`
+climbing). The state lasts minutes, changes on its own, and a replay start
+flips it about 1 time in 4. A replay ends on one raw read of `SPDIF_SRPC`
+LOCK (`firmware/src/optical_main.cpp:8502-8510`) with no debounce, so a blip
+ends it as `REPLAY_STOP_CARRIER` after 3 to 7 s. Mid-replay blips also close
+and re-open the gate with a pipeline reset (an audible splice). A later
+stop request then overwrites the stop reason with `request`
+(`app_replay_stop`, `:6411-6416`), which hid the cause. Owner decision
+(2026-10-05): debounce and keep the stop reason.
+
+- outcome: a replay with a dark input runs to its end or to a stop request,
+  however long, in any receiver state; a real source still displaces it
+  within a few epochs; `/api/replays/status` keeps `carrier` as the stop
+  reason after a later stop request.
+- seams: one latched `pllLocked()` read per epoch shared by
+  `replay_source_service` (`:8502-8510`), the gate service (`:8917`) and the
+  other same-epoch readers (`:8521`, `:8731`); displacement and gate close
+  only after `AIUS_CARRIER_RESET_DEBOUNCE_EPOCHS` (3) consecutive locked
+  epochs; `app_replay_stop` sets `REPLAY_STOP_REQUEST` only while the replay
+  is still running or prebuffering.
+- targeted-proof: host case for the debounce (2 locked epochs then unlocked
+  keeps the replay; 3 displaces it) and for the stop-reason latch; device:
+  a 35 s replay while `sis_lockloss_events` is climbing runs to its stop
+  request with no gate re-open (`gate_open_padded_frames` steps once).
+- unit: parent-only
+
+### Phase L Instrument the dark-input receiver state
+
+Owner decision (2026-10-05): plan a firmware instrument rather than a scope
+first. The three receiver states (SIS SYMERR only; SYMERR and BITERR;
+SYMERR, BITERR and LOCKLOSS) are visible today only as counter rates, and
+nothing resets the SPDIF block at runtime (`spdif_engine_reacquire()`,
+`:334-370`, runs only at boot), which fits a state that persists.
+
+- outcome: `/api/status` names the receiver's current dark-input state and
+  stamps each state change in milliseconds, with a count of SRPC LOCK true
+  reads per second, so a flip can be caught and correlated without a scope.
+- seams: `input_fault_service` (`:8968-8987`) and `input_diag` in the status
+  JSON and `firmware/sd/www/openapi.json`.
+- targeted-proof: host case for the state classifier; device: one replay
+  that flips the state shows the stamp within one epoch of the counter
+  onset.
+- unit: parent-only
+
+If the instrument shows the input toggling, the next step is a scope on pin
+15 (the ORJ-5 output, `docs/guides/proto-optical-wiring.md`) across a flip.
 
 ## Acceptance
 

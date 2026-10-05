@@ -356,11 +356,20 @@ ends left open:
   as [`aius-sample-rate-following.md`](aius-sample-rate-following.md) Phase 3
   (fill sensor and noise capture) and Phase 4 (fill-referenced rate trim).
 
-- **FIX BUILT, device proof owed: the TX governor trims a clean replay from
-  its 768-frame floor to the live 128-frame target (filed 2026-10-05, from a
-  code read; not yet observed on device).** Fixed by
-  [`aius-output-jitter.md`](aius-output-jitter.md) Phase J; close this entry
-  after its bench replay reads `governor_trims` and `tx_underrun_frames` flat. Replay shares `enqueue()` with live input, and the
+- **OPEN: dark-input lock blips end replays as false carrier stops (filed
+  2026-10-05).** With no light at the input, the receiver can sit in a state
+  where its DPLL locks briefly about 10 times a second
+  (`input_diag.sis_lockloss_events` climbing). One raw lock read ends a
+  replay after 3 to 7 s, and a later stop request overwrites the `carrier`
+  stop reason with `request`. Fix planned as
+  [`aius-output-jitter.md`](aius-output-jitter.md) Phase K; the hidden
+  receiver state is instrumented in Phase L.
+
+- **FIXED 2026-10-05: the TX governor trimmed a clean replay from its
+  768-frame floor to the live 128-frame target.** Fixed by
+  [`aius-output-jitter.md`](aius-output-jitter.md) Phase J on
+  `0af7a8244081`. Proved by three 10 s replays with `governor_trims` 0 and
+  the ring at or above 768. Replay shares `enqueue()` with live input, and the
   governor block (`firmware/src/optical_main.cpp:2048-2108`) has no replay
   condition. It is passed the constant `AIUS_TX_GATE_OPEN_TARGET_FRAMES` (128
   on the optical envs, `firmware/platformio.ini:313`) at `:2060`, not the
