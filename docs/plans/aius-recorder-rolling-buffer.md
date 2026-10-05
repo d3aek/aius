@@ -3,9 +3,9 @@ title: Aius flight recorder — debounce + rolling multi-slot buffer
 type: plans
 scope: component
 component: aius
-status: shipped
+status: in-progress
 tags: [aius, firmware, audio, recorder, psram, ota]
-updated: 2026-09-03
+updated: 2026-10-05
 ---
 
 # Aius flight recorder — debounce + rolling multi-slot buffer
@@ -918,6 +918,34 @@ agents).
   - End state: recorder recording on slot 0, OTA `idle`, board on
     `25109fca3f97+teensy41-optical-slot-a` slot 2, `tx_underrun_frames 0`,
     U24 not touched.
+
+### Phase E Interrogate the user: zero-frame carrier-loss freezes evict real captures
+
+**Observed 2026-10-03 on `cd7ad191ac77`.** When the listening-room source was
+switched off, the `carrier_loss` trigger froze three slots with
+`valid_frames 0` in quick succession and auto-advance recycled the slots
+holding that evening's `underrun` captures, so the audio around the owner's
+call-out was lost (bank read `freeze_generation` 8431, every slot frozen or
+recording with zero frames). The 2026-10-04 session avoided it only by
+pulling all three underrun captures before switch-off
+([register entry](aius-open-work-register.md#open-defects--runtime)). This
+phase is a question, not yet work.
+
+- **Ask:** "At source power-off the recorder freezes empty `carrier_loss`
+  captures that push out the real underrun captures. Should I file that as
+  a defect and plan a fix?"
+- **Options:**
+  - *File and fix* (recommended): a freeze with zero valid frames does not
+    consume a slot or advance the bank (or is not armed until the slot
+    holds audio). Small recorder change, host-testable in the recorder
+    suite, one OTA; afterwards a capture survives source power-off without
+    an operator pull.
+  - *File only*: register entry, no plan; operators keep pulling before
+    switch-off (the workaround already in the register entry).
+  - *Leave it*: accepted trade like the eviction-after-N-wraps residual risk
+    below; nothing recorded beyond this phase's text, which is then deleted.
+- **Blocks:** nothing else in this plan; a fix would become Phase F here.
+  Independent of `aius-sample-rate-following.md` Phases 3 and 4.
 
 ## Residual risks / non-goals
 

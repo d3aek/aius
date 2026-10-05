@@ -25,6 +25,53 @@ Replay remains explicitly 48 kHz. The selected production mechanism is:
 This is literal clock following. It adds no resampler, no persistent audio
 buffer and no intermediate DSP quantisation.
 
+## Current state
+
+Updated 2026-10-05 at a session handover; replace wholesale on the next.
+
+- **Status.** Phases 1 and 2 DONE (shipped). Phase 3 (fill sensor, observed
+  only) planned and prebuild-reviewed ready; BLOCKED on its Step 0 owner
+  question. Phase 4 (fill-referenced trim) planned, ready after Phase 3's
+  capture. Nothing implemented.
+- **Next action.** Execute Phase 3 Step 0: ask the owner whether to build
+  Phase 3 now and when to deploy. On "build", Phase 3 Step 1 and the build
+  start together.
+- **What landed** (aius commits, each followed by a upstream pointer bump):
+
+| Commit | Contents | Proof |
+| --- | --- | --- |
+| `21a298b` | `firmware/tools/aius-recorder-pull.py --auth-file` | used live: bank reads and three capture pulls, 2026-10-04 |
+| `51c8538` | `firmware/tools/device/aius_status_poll.py`, 1 Hz session poller | ran the 2026-10-04 session end to end |
+| `33c8976`, `1b615b2` | register entry for the periodic underrun, then the 2026-10-04 session evidence | docs only |
+| `639a868`, `16cad94`, `55234cb`, `203300d`, `e02a8cc` | Phase 3/4 plan and its four prebuild review rounds | docs only; reviews read-only against code |
+
+- **Uncommitted tree.** None owned. `CLAUDE.md` is dirty
+  and foreign; leave it.
+- **Evidence outside the repo** (7-day scratch GC):
+  `.scratch/a2a9bb23-23dd-4b7a-beb4-02ddc24fabff/session-2026-10-04.jsonl`
+  (1 Hz status, 20:42 to 21:32 UTC) and `recorder-underrun-2105.wav`,
+  `recorder-underrun-2114.wav`, `recorder-underrun.wav` (21:22). The numbers
+  that matter are already in the register entry and Phase 3's defect text.
+- **Traps.**
+  - The host clock is UTC; the owner speaks UK local time (BST in
+    October). Map board `millis()` stamps to wall time from one bracketed
+    `/api/status` read (`dark_open_start_ms + dark_open_ms` is "now" while
+    the carrier is down).
+  - Switching the source off freezes zero-frame `carrier_loss` captures that
+    evict real ones. Pull with `aius-recorder-pull.py --auth-file
+    .secrets/aius-sd-auth` before switch-off; `--slot 99` writes the bank
+    header (`--header-json`) and exits without pulling audio.
+  - The SD token never goes on a command line, nor through `$(cat …)` (the
+    bash guard denies command substitution); use the tools' `--auth-file`.
+  - A streaming follow (`tail -f`) is hook-denied; a Monitor over the
+    poller's change log uses a `wc -l` polling loop.
+  - `clock.trim_updates` 0 through a whole session is expected inside the
+    500 mHz deadband, not a dead tracker; that is the defect Phase 4 fixes.
+  - The recorder taps the stream before the TX ring, so a capture does not
+    contain a TX underrun's gap, only the programme around it.
+  - Phase 4's commit edits `CLAUDE.md` (the fill stamps),
+    a protected file: write it via `the release-promotion step`.
+
 ## Why this plan was rebased
 
 The first draft selected a fixed 48 kHz carrier plus an approximately 88 KiB
@@ -617,6 +664,34 @@ commit-checkpoint:
   parent-commit: "feat(aius): phase-corrected transmit-ring fill statistic"
 ```
 
+**Step 0, Interrogate the user: build Phase 3 now, and when to deploy.**
+Asked 2026-10-05, unanswered.
+
+- **Ask:** "Should I build Phase 3 (the fill sensor, observed only) now? The
+  OTA deploy reboots the board, so audio drops briefly; I would deploy only
+  when the board is idle or when you say."
+- **Options:**
+  - *Build now, deploy when idle* (recommended): sensor, host suite, status
+    keys and analysis script land and are committed; the OTA waits for an
+    idle board or the owner's go; then the capture session. Fastest path to
+    Phase 4's inputs, no audio cost until the deploy.
+  - *Build now, deploy on my word only*: same, but the deploy waits for an
+    explicit go even if the board is idle.
+  - *Not now*: nothing built; the periodic underrun stays (inaudible in the
+    2026-10-04 session).
+- **Blocks:** every later step of Phase 3, and Phase 4 through its capture.
+- **Recommendation:** build now, deploy when idle. Phase 3 changes no audio
+  behaviour (no ISR change; reads only), so the only cost is the reboot.
+
+**Step 1, alongside the build: verify the governor's replay target.**
+Review round 1 flagged, unverified, that the governor is passed the live
+128-frame target during replay (`firmware/src/optical_main.cpp:2060`), so a
+clean replay window at the 768-frame replay floor may be trimmed to 128.
+Phase 3 works at the same tap, so check it there: read the replay path, and
+if real, add a register entry under §Open defects — runtime (it belongs to
+`aius-output-jitter.md`'s governor, Phase E) in the Phase 3 commit. Not
+fixed in Phase 3.
+
 **Defect.** The tracker retargets the output only when the one-second carrier
 estimate leaves a 500 mHz band around the applied target
 (`firmware/lib/aius_clock/src/aius_clock.c:258`). A true source offset inside
@@ -985,12 +1060,6 @@ whose stable-phase labelling uses the same bound
 (`firmware/tools/net/aius_rate_bench.py:410-424`), and gate 7's
 carrier-continuity check at fill-write cadence, since the existing evidence
 covers isolated NUM writes only.
-
-**Outside these phases (from review round 1, unverified).** The governor is
-passed the live 128-frame target during replay
-(`firmware/src/optical_main.cpp:2060`), so a clean replay window at the
-768-frame floor may be trimmed to 128. To be checked and, if real, filed in
-the register.
 
 Prebuild review: rounds 1 to 3 and the clean-room confirmation are done
 (records in Phase 3). Phase 4's delivery audit re-attacks, after the capture

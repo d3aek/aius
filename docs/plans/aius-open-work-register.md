@@ -334,8 +334,9 @@ ends left open:
   fill error. Unconfirmed: the source was off by the time it was read, and a
   single 128-frame gap explains the pop but not the crackle. **The recorder
   captures are lost:** at source power-off three zero-frame `carrier_loss`
-  freezes evicted the underrun captures from all four slots (not yet filed
-  separately).
+  freezes evicted the underrun captures from all four slots (whether to file
+  and fix: [`aius-recorder-rolling-buffer.md`](aius-recorder-rolling-buffer.md)
+  Phase E, an owner question).
   **2026-10-04 session: mechanism confirmed, audibility not.** Polled at 1 Hz
   with `firmware/tools/device/aius_status_poll.py` from carrier lock
   (20:43:53 UTC) to source off (21:32:28 UTC), AC-3 at 48 kHz. The carrier
