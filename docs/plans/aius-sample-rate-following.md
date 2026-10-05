@@ -27,45 +27,51 @@ buffer and no intermediate DSP quantisation.
 
 ## Current state
 
-Updated 2026-10-05 at the Phase 3 ship; replace wholesale on the next.
+Updated 2026-10-05 at a session handover; replace wholesale on the next.
 
 - **Orchestration posture: checkpoint** (owner, 2026-10-05): surface each
-  decision and human-review gate as it arises.
-- **Status.** Phases 1, 2 and 3 shipped (Phase 3's capture recorded in its
-  §Measured). Phase 4's entry gate is open: setpoint, class bias and gains
-  are to be fixed from the capture, then a prebuild review, then build.
-- **Next action.** Phase 4 entry gate: an `opus` design pass that turns
-  Phase 3 §Measured into the setpoint, class-bias and gain decisions
-  (including the status-render margin and the unexplained PCM rise), then
-  its prebuild review. Phase 4's OCRAM/status-size slice is independent and
-  can go first.
-- **What landed earlier** (aius commits, each followed by a upstream pointer bump):
+  decision and human-review gate as it arises. A new orchestration run may
+  re-ask.
+- **Status.** Phases 1, 2 and 3 DONE (Phase 3's capture is in its
+  §Measured). Phase 4 not started: its entry gate is open, and the owner
+  chose to start with the design pass (2026-10-05). The board runs
+  `0af7a8244081` (slot 2).
+- **Next action.** Phase 4 §Mechanism "Entry gate": one `opus` design pass
+  (`Plan` agent). It reads Phase 3 §Measured and the Phase 4 contract and
+  writes the setpoint, class-bias and gain decisions into the Entry gate
+  bullet, each with its why. It must cover the status-render margin
+  (troughs of 134 to 174 frames underran on a poll), the +128 underrun
+  disturbance, and the PCM top-up's +0.38 frames/s rise. For that rise,
+  read `output_rate_millihz`, `carrier_rate_millihz`, `trim_*` and
+  `clock.state` across the 21:27:59 PCM relock in
+  `.scratch/2682a96a-3760-4d00-b9e0-f71f66b336ba/capture-pcm-topup.jsonl`.
+  Present each design decision to the owner (checkpoint), then run the
+  prebuild review (`reviewer`, `opus`) and lift `prebuild-review` to
+  `ready`. Only then build. The OCRAM/status-size slice (Phase 4 "Status
+  body size") is independent and comes after the design pass.
+- **What landed this session** (aius commits; upstream pointer bumps
+  follow each):
 
 | Commit | Contents | Proof |
 | --- | --- | --- |
-| `21a298b` | `firmware/tools/aius-recorder-pull.py --auth-file` | used live: bank reads and three capture pulls, 2026-10-04 |
-| `51c8538` | `firmware/tools/device/aius_status_poll.py`, 1 Hz session poller | ran the 2026-10-04 session end to end |
-| `33c8976`, `1b615b2` | register entry for the periodic underrun, then the 2026-10-04 session evidence | docs only |
-| `639a868`, `16cad94`, `55234cb`, `203300d`, `e02a8cc` | Phase 3/4 plan and its four prebuild review rounds | docs only; reviews read-only against code |
+| `443a0ae` | Phase 3 fill sensor, status keys, `optical-cutover` refresh, capture reducer, register entry for the replay trim | tx-fill-sensor, tx-gate, tx-governor, clock-target, registry, sd-editor, optical-cutover, itcm-placement green; adversarial and clean-room reviews PASS |
+| `9a145b7`, `0f03beb` | deploy records (`443a0ae5cb26`, then `0af7a8244081`) | healthy-boot self-commit, `rollback_observed` false |
+| `0af7a82` | output-jitter Phase J (governor replay target), `status_render_failures` | tx-governor and the green list above; ITCM unchanged |
+| `a10e2ff` | Phase J shipped; output-jitter Phases K and L planned; `measure_run.py --auth-file`, `replay` | three 10 s device replays, `governor_trims` 0 |
+| `c4c6200` | Phase 3 shipped on the capture; reducer underrun fixes; register update | reducer `--self-test` ok; capture reduced end to end |
 
 - **Uncommitted tree.** Owned and held on purpose:
   `firmware/test/status-body-bound/`, its `firmware/scripts/test.sh` arm and
-  its `firmware/README.md` row (red until Phase 4's OCRAM slice; see Phase 4
-  "Status body size"). `CLAUDE.md` is dirty and foreign;
-  leave it.
-- **Pre-capture redeploy.** Output-jitter Phase J (governor replay target)
-  and `status_render_failures` were built before the capture so it runs on
-  the image Phase 4 builds on. Deployed 2026-10-05: `0af7a8244081`, slot 1
-  to 2, `ab.sequence` 15 after the self-commit, `rollback_observed` false,
-  `status_render_failures` 0, `status_body_peak_bytes` 8,592 idle. The
-  capture runs on this image. Phase J shipped on three 10 s replays; longer
-  replays hit false carrier stops from dark-input lock blips (output-jitter
-  Phases K and L).
-- **Capture data** (7-day scratch GC):
+  its `firmware/README.md` row. The suite runs and is red by design (worst
+  case 14,723 B against 12,288 B) until Phase 4's OCRAM slice; do not commit
+  it before then. `registry` is green with it present.
+  `CLAUDE.md` is dirty and foreign; leave it.
+- **Capture data** (scratch, reaped about 2026-10-12, so the design pass
+  must read it before then):
   `.scratch/2682a96a-3760-4d00-b9e0-f71f66b336ba/capture-polled.jsonl`,
   `capture-unpolled.jsonl`, `capture-pcm-topup.jsonl`, the reducer reports
   `fill-analysis-final.*`, and the recorder pulls in `recorder-2026-10-05/`.
-  The numbers that matter are in Phase 3 §Measured.
+  Everything durable is in Phase 3 §Measured.
 - **Editor diagnostics.** clangd reports missing `Arduino.h` and the
   library headers on `firmware/src/` and `firmware/test/` files: an include
   path gap in the editor only; `firmware/scripts/test.sh` and the PlatformIO
@@ -97,8 +103,15 @@ Updated 2026-10-05 at the Phase 3 ship; replace wholesale on the next.
   - `aius_ota_sign.py sign` also needs `--image`, `--output` and
     `--build-revision` (the 12-char HEAD, at most 32 chars, e.g.
     `443a0ae5cb26`); `CLAUDE.md` shows only `--secret`.
-    Fold the full line into that file in Phase 4's promote (it is dirty with
-    foreign work today).
+    The fix is planned in Phase 4 (CLAUDE.md promote).
+  - Polling `/api/status` is not neutral: a render delays the AC-3
+    producer and can trigger the underrun being measured. Note each poll
+    instant against `underrun_episodes[].start_ms` when reading a capture.
+  - A fill window that contains an underrun blends pre- and post-step
+    minima (+8.5 instead of +127). Read the step across the next window.
+  - An AV-chain wake or CEC hypothesis does not apply: the owner confirms
+    no HDMI-CEC link and no optical carrier when idle. False replay carrier
+    stops are on-board (output-jitter Phase K).
 
 ## Why this plan was rebased
 
@@ -1049,6 +1062,12 @@ commit-checkpoint:
      12,288.
   3. Commit the held suite; prove it fails at a limit at or below the worst
      case and passes at 16,384.
+- **`CLAUDE.md` promote.** The commit that writes the fill
+  stamps into CLAUDE.md (`the release-promotion step`) also corrects §Device access and
+  OTA's signing line: `aius_ota_sign.py sign` needs `--image`, `--output`
+  and `--build-revision` (12-char HEAD, at most 32 chars). Today the line
+  shows only `--secret`; both 2026-10-05 deploys needed the full form. If
+  the file still carries foreign uncommitted edits, wait for their owner.
 - **Gate open sets occupancy, not level.** Today `tx_gate_execute_open`
   (`firmware/src/optical_main.cpp:2524-2536`) sets the ring level to 128 at
   an instant unrelated to the TX DMA, so occupancy opens anywhere in 256 to
