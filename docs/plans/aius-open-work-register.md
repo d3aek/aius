@@ -355,6 +355,14 @@ ends left open:
   read against the underrun stamps. Fix, independent of audibility: planned
   as [`aius-sample-rate-following.md`](aius-sample-rate-following.md) Phase 3
   (fill sensor and noise capture) and Phase 4 (fill-referenced rate trim).
+  **2026-10-05 capture (Phase 3 §Measured): mechanism measured, and the
+  trigger found.** The new fill statistic shows the drain directly (−0.16
+  to −0.28 frames/s, output 279 mHz above the carrier). Each underrun
+  starts 29 ms after the producer's last commit before an `/api/status`
+  render: the ~10 KB render delays the next AC-3 burst, so polling (the
+  dashboard or a session poller) chooses when a thin margin empties. Each
+  underrun then lifts the occupancy by +128 frames, which is why they recur
+  rather than persist. Phase 4's setpoint must clear the render delay.
 
 - **OPEN: dark-input lock blips end replays as false carrier stops (filed
   2026-10-05).** With no light at the input, the receiver can sit in a state

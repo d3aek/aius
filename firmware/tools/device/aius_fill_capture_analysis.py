@@ -132,6 +132,13 @@ def load(paths):
     for a, b in zip(records, records[1:]):
         b.reset = any(x is not None and y is not None and x != y for x, y in zip(a.trims, b.trims)) \
             or (a.windows is not None and b.windows is not None and b.windows < a.windows)
+        b.underrun = a.open and b.open and (
+            (a.ep is not None and b.ep is not None and b.ep > a.ep)
+            or (a.under_frames is not None and b.under_frames is not None and b.under_frames > a.under_frames))
+    for u in (r for r in records if r.underrun):
+        for r in records:
+            if abs(r.t - u.t) <= 3:
+                r.near_underrun = True
     return records
 
 
@@ -161,6 +168,10 @@ class Rec:
         # Counters whose change resets the fill window/level (governor and gate-open trims, missed fills).
         self.trims = tuple(num(clock.get(k)) for k in ("governor_trims", "gate_open_trims", "tx_missed_fills"))
         self.reset = False  # set by load(): discontinuity between the previous record and this one
+        self.ep = num(clock.get("underrun_episode_count"))
+        self.under_frames = num(clock.get("tx_underrun_frames"))
+        self.underrun = False  # set by load(): an underrun landed since the previous (open) record
+        self.near_underrun = False  # set by load(): within 3 s of an underrun (blended window)
 
 
 def hms(t):
@@ -267,15 +278,89 @@ def continuity_bounds(records, t0, gap):
     trim/reset records and polling gaps, where the fill level is discontinuous."""
     gaps = [q.t - 1e-6 for p, q in zip(records, records[1:]) if q.t - p.t > gap]
     lo = max([r.t for r in records if r.t <= t0 and not r.open]
-             + [r.t - 1e-6 for r in records if r.t <= t0 and r.reset]
+             + [r.t - 1e-6 for r in records if r.t <= t0 and (r.reset or r.underrun)]
              + [g for g in gaps if g <= t0], default=-math.inf)
-    hi = min([r.t for r in records if r.t > t0 and (not r.open or r.reset)]
+    hi = min([r.t for r in records if r.t > t0 and (not r.open or r.reset or r.underrun)]
              + [g + 1e-6 for g in gaps if g > t0], default=math.inf)
     return lo, hi
 
 
-def step_report(records, steps, args, have_fill):
+def underrun_jumps(records, n=3):
+    """Fill jump at each underrun: mean of up to n valid fills just after minus just before.
+
+    An underrun plays 128 frames of silence while the producer keeps writing, so the
+    occupancy genuinely jumps (about +120 frames); that is not a sensor discontinuity."""
     out = []
+    for i, u in enumerate(records):
+        if not u.underrun:
+            continue
+        row = {"utc": hms(u.t), "t": u.t}
+        # Window-aware: the window holding the episode is blended (pre- and post-underrun
+        # sub-window minima), so compare the last window published before it with the first after.
+        k = next((k for k in range(max(i - 1, 1), len(records))
+                  if records[k].t - u.t > 10 or not records[k].open or records[k].reset
+                  or (records[k].excluded is not None and records[k - 1].excluded is not None
+                      and records[k].excluded > records[k - 1].excluded
+                      and records[k].t >= u.t - 5)
+                  ), None)
+        if k is not None and records[k].t - u.t <= 10 and records[k].open and not records[k].reset \
+                and records[k].windows is not None and records[k].fill is not None:
+            wb = records[k].windows
+            prior = next((records[m] for m in range(k - 1, -1, -1)
+                          if records[m].open and not records[m].reset and records[m].windows is not None
+                          and records[m].windows < wb and records[m].fill is not None
+                          and u.t - records[m].t <= 30), None)
+            later = next((records[m] for m in range(k + 1, len(records))
+                          if records[m].open and records[m].windows is not None and records[m].windows > wb
+                          and records[m].fill is not None and records[m].t - u.t <= 30), None)
+            if prior is not None and later is not None:
+                row["blended_window_fill"] = rnd(records[k].fill, 2)
+                row["before_window_fill"] = rnd(prior.fill, 2)
+                row["after_window_fill"] = rnd(later.fill, 2)
+                row["fill_jump_frames"] = rnd(later.fill - prior.fill, 2)
+                row["method"] = "windows"
+                out.append(row)
+                continue
+        before, after = [], []
+        j = i - 1
+        while j >= 0 and records[j].open and not records[j].reset and len(before) < n \
+                and u.t - records[j].t <= 10:
+            if records[j].fill is not None:
+                before.append(records[j].fill)
+            j -= 1
+        j = i
+        while j < len(records) and records[j].open and len(after) < n and records[j].t - u.t <= 10 \
+                and not (j > i and (records[j].underrun or records[j].reset)):
+            if records[j].fill is not None:
+                after.append(records[j].fill)
+            j += 1
+        if before and after:
+            row["fill_jump_frames"] = rnd(statistics.fmean(after) - statistics.fmean(before), 2)
+            row["method"] = "records (no window evidence; may include the blended window)"
+        out.append(row)
+    return out
+
+
+def episode_free_slope(win, args):
+    """Pooled fill slope over spans free of underruns, resets, closes and gaps (weighted by points)."""
+    spans, cur, prev = [], [], None
+    for r in win:
+        if prev is not None and (r.underrun or r.reset or r.t - prev.t > args.gap):
+            spans.append(cur)
+            cur = []
+        if r.fill is not None:
+            cur.append((r.t, r.fill))
+        prev = r
+    spans.append(cur)
+    fits = [(f[0], len(s)) for s in spans if len(s) >= 10 for f in [fit(s)] if f]
+    if not fits:
+        return None
+    return sum(sl * n for sl, n in fits) / sum(n for _, n in fits)
+
+
+def step_report(records, steps, args, have_fill, cadence=None):
+    out = []
+    jumps = underrun_jumps(records) if have_fill else []
     for s in steps:
         t0 = s["t"]
         win = [r for r in records if r.open and t0 - args.step_window <= r.t <= t0 + args.step_window]
@@ -283,23 +368,29 @@ def step_report(records, steps, args, have_fill):
         row = {"utc": hms(t0), "floor_from": s["from"], "floor_to": s["to"],
                "underrun": rate}
         if have_fill:
-            lo, hi = continuity_bounds(records, t0, args.gap)  # trims and relocks are not steps
+            episodes = [r.t for r in win if r.underrun]
+            lo, hi = continuity_bounds(records, t0, args.gap)  # trims, relocks, underruns cut the fits
             pts = [(r.t, r.fill) for r in win if r.fill is not None and lo < r.t < hi]
             pre = fit([p for p in pts if p[0] < t0])
             post = fit([p for p in pts if p[0] >= t0])
-            both = fit(pts)
-            if pre and post and both:
+            slope = episode_free_slope(win, args)
+            if episodes:
+                row["straddles_underrun"] = True  # occupancy jumps at an underrun: no continuity verdict
+                row["underrun_utcs"] = [hms(t) for t in episodes]
+                row["underrun_jumps"] = [{k: v for k, v in j.items() if k != "t"}
+                                         for j in jumps if t0 - args.step_window <= j["t"] <= t0 + args.step_window]
+            elif pre and post:
                 at_pre = pre[1] + pre[0] * (t0 - pre[2])
                 at_post = post[1] + post[0] * (t0 - post[2])
                 jump = at_post - at_pre
                 row.update({"fill_jump_frames": rnd(jump, 2),
-                            "fill_slope_frames_per_s": rnd(both[0], 4),
                             "continuous": abs(jump) <= args.continuity_frames})
-                if rate and rate["frames_per_s"] is not None:
-                    gap = abs(abs(both[0]) - rate["frames_per_s"])
-                    row["slope_matches_underrun"] = gap <= max(0.1, 0.5 * rate["frames_per_s"])
             else:
                 row["fill"] = "insufficient valid samples around step"
+            if slope is not None:
+                row["fill_slope_frames_per_s_episode_free"] = rnd(slope, 4)
+                if cadence:
+                    row["slope_matches_underrun"] = abs(abs(slope) - cadence) <= max(0.1, 0.5 * cadence)
         out.append(row)
     return out
 
@@ -315,8 +406,10 @@ def noise(eps, args):
         recs = e["steady"]
         prev = None
         for r in recs:
-            if r.reset or r.fill is None:
-                prev = None  # a trim, missed fill or invalid window breaks the chain
+            if r.reset or r.underrun or r.fill is None or r.near_underrun:
+                prev = None  # a trim, underrun (occupancy jump), missed fill or invalid window breaks the chain
+            if r.near_underrun:
+                continue  # the episode's window is blended; never a chain end
             if r.fill is None or r.windows is None:
                 continue
             if prev is not None and r.windows != prev.windows:
@@ -509,7 +602,10 @@ def analyse(records, args):
                     "valid_fill_samples": sum(1 for r in records if r.fill is not None)},
         "counters": counters(records),
         "underrun_cadence": underrun_rate(records),
-        "tx_level_floor_steps": step_report(records, steps, args, have_fill),
+        "tx_level_floor_steps": step_report(records, steps, args, have_fill,
+                                            (underrun_rate(records) or {}).get("frames_per_s")),
+        "underrun_jumps": [{k: v for k, v in j.items() if k != "t"}
+                           for j in underrun_jumps(records)] if have_fill else [],
         "floors": floors(eps, records, args, have_fill),
         "transitions": transitions(records, args),
     }
@@ -544,17 +640,26 @@ def render_text(r):
         L.append("  none detected")
     for st in r["tx_level_floor_steps"]:
         line = f"  {st['utc']}  floor {st['floor_from']} -> {st['floor_to']}"
-        if "fill_jump_frames" in st:
-            line += (f"  fill jump {st['fill_jump_frames']} fr ({'continuous' if st['continuous'] else 'DISCONTINUOUS'})"
-                     f"  slope {st['fill_slope_frames_per_s']} fr/s"
-                     f" vs underrun {st['underrun']['frames_per_s'] if st['underrun'] else 'n/a'} fr/s"
-                     + (f" ({'match' if st.get('slope_matches_underrun') else 'MISMATCH'})"
+        slope = ""
+        if "fill_slope_frames_per_s_episode_free" in st:
+            slope = (f"  episode-free slope {st['fill_slope_frames_per_s_episode_free']} fr/s"
+                     + (f" ({'match' if st.get('slope_matches_underrun') else 'MISMATCH'} cadence)"
                         if "slope_matches_underrun" in st else ""))
+        if st.get("straddles_underrun"):
+            jumps = ", ".join(f"{j['utc']} {j.get('fill_jump_frames')}" for j in st["underrun_jumps"])
+            line += f"  STRADDLES underrun at {', '.join(st['underrun_utcs'])} (jumps: {jumps}); no continuity verdict" + slope
+        elif "fill_jump_frames" in st:
+            line += (f"  fill jump {st['fill_jump_frames']} fr ({'continuous' if st['continuous'] else 'DISCONTINUOUS'})"
+                     + slope)
         elif "fill" in st:
             line += "  " + st["fill"]
         else:
             line += f"  underrun {st['underrun']['frames_per_s'] if st['underrun'] else 'n/a'} fr/s (fill absent)"
         L.append(line)
+    if r.get("underrun_jumps"):
+        L.append("  fill jump at each underrun (after minus before, frames): "
+                 + ", ".join(f"{j['utc']} {j.get('fill_jump_frames')} (blended {j.get('blended_window_fill')})"
+                             for j in r["underrun_jumps"]))
     L.append("\n== Floors per class (steady, gate open)")
     for k, v in r["floors"].items():
         L.append(f"  {k}: {json.dumps(v)}")
@@ -588,9 +693,10 @@ def synthetic(path):
     rows = []
     state = {"windows": 0, "excl": 0, "torn": 0, "under": 0, "eps": 0, "gov": 0}
 
-    def rec(sec, is_open, cls, fill, level, spread, codec=0, nwin=1):
+    def rec(sec, is_open, cls, fill, level, spread, codec=0, nwin=1, force_excl=None):
         state["windows"] += nwin if is_open else 0
-        state["excl"] += 1 if is_open and rng.random() < 0.02 else 0
+        draw = rng.random() < 0.02
+        state["excl"] += 1 if is_open and (draw if force_excl is None else force_excl) else 0
         state["torn"] += 1 if is_open and rng.random() < 0.01 else 0
         clock = {"tx_level_frames": level, "tx_underrun_frames": state["under"],
                  "underrun_episode_count": state["eps"], "governor_trims": state["gov"],
@@ -609,16 +715,25 @@ def synthetic(path):
     for start, cls, f0, length in opens:
         for s in range(0, length, 1):
             sec = start + s
-            if s == 700:
-                state["gov"] += 1  # trim near the floor step at s=800: +100 frames
-            f = f0 - 0.23 * s + (100 if s >= 700 else 0) + rng.gauss(0, 0.3)
-            floor = 256 if s < 800 else 128
+            # Floor step at 720 (window holds the s=560 underrun: straddles) and at 840
+            # (episode-free window at --step-window 200); a +100 trim sits 60 s before each step.
+            step_s = 720 if start == 0 else 840
+            if s == step_s - 60:
+                state["gov"] += 1
+            # an underrun plays 128 frames of silence: occupancy jumps +120 at each episode
+            f = (f0 - 0.23 * s + (100 if s >= step_s - 60 else 0) + 120 * (s >= 560) + 120 * (s >= 1120)
+                 + rng.gauss(0, 0.3))
+            floor = 256 if s < step_s else 128
             level = floor + 128 * (s % 4)
             if s % 560 == 0:
                 state["under"] += 128
                 state["eps"] += 1
+            # the episode's own window is blended: halfway between pre and post occupancy
+            if s in (560, 1120):
+                f -= 60
+            ex = True if s in (560, 1120) else (False if min(abs(s - 560), abs(s - 1120)) <= 10 else None)
             rec(sec, True, cls, None if s < 5 else f, level, abs(rng.gauss(2, 0.5)),
-                1 if cls == 2 else 0)  # Pc 1 = AC-3
+                1 if cls == 2 else 0, force_excl=ex)  # Pc 1 = AC-3
         rec(start + length, False, 0, None, 0, None)
     # unpolled segment after a third gate open: 30 s interval, compressed
     base = 3100
@@ -634,8 +749,16 @@ def synthetic(path):
             state["gov"] += 1
             rec(base + s, True, 1, None, 256 + 128 * (s % 4), None)
             continue
-        fill = 200 + (100 if s >= 200 else 0) - 0.23 * s + (6 if ac3 else 0) + rng.gauss(0, 0.3)
-        rec(base + s, True, 2 if ac3 else 1, fill, 256 + 128 * (s % 4), abs(rng.gauss(2, 0.5)), 1 if ac3 else 0)
+        if s == 560:
+            state["under"] += 128
+            state["eps"] += 1
+        fill = (200 + (100 if s >= 200 else 0) - 0.23 * s + (6 if ac3 else 0) + (120 if s >= 560 else 0)
+                + rng.gauss(0, 0.3))
+        if s == 560:
+            fill -= 60  # blended window
+        ex = True if s == 560 else (False if abs(s - 560) <= 10 else None)
+        rec(base + s, True, 2 if ac3 else 1, fill, 256 + 128 * (s % 4), abs(rng.gauss(2, 0.5)), 1 if ac3 else 0,
+            force_excl=ex)
     rec(base + 800, False, 0, None, 0, None)
     with open(path, "w", encoding="utf-8") as h:
         for r in rows:
@@ -643,7 +766,7 @@ def synthetic(path):
 
 
 def self_test():
-    ns = build_parser().parse_args(["x"])
+    ns = build_parser().parse_args(["x", "--step-window", "200"])
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "synthetic.jsonl")
         synthetic(path)
@@ -653,9 +776,21 @@ def self_test():
         assert set(report["session"]["classes_seen"]) == {"pcm", "ac3", "dts"}, report["session"]
         steps = report["tx_level_floor_steps"]
         assert any(s["floor_from"] == 256 and s["floor_to"] == 128 for s in steps), steps
-        hit = next(s for s in steps if s["floor_from"] == 256)
-        assert hit["continuous"], hit
-        assert hit["slope_matches_underrun"], hit
+        by_utc = {s["utc"]: s for s in steps if s["floor_from"] == 256}
+        assert len(by_utc) == 2, steps
+        straddle, clean = [by_utc[k] for k in sorted(by_utc)]
+        # underrun inside the window: no continuity verdict, reported with its jump (about +120)
+        assert straddle.get("straddles_underrun") and "continuous" not in straddle, straddle
+        sj = straddle["underrun_jumps"][0]
+        assert 100 < sj["fill_jump_frames"] < 140 and sj["method"] == "windows", straddle
+        # a +120 step with one blended window: jump taken across it, blended value reported apart
+        assert abs(sj["fill_jump_frames"] - 120) < 3, sj
+        assert 40 < sj["blended_window_fill"] - sj["before_window_fill"] < 80, sj
+        # clean step (trim 60 s before it is cut, not read as a jump) stays continuous
+        assert clean["continuous"] and not clean.get("straddles_underrun"), clean
+        assert clean["slope_matches_underrun"] and straddle["slope_matches_underrun"], (clean, straddle)
+        assert report["underrun_jumps"] and all(90 < j["fill_jump_frames"] < 150
+                                                for j in report["underrun_jumps"]), report["underrun_jumps"]
         assert len(report["steady_fill"]["per_gate_open"]) == 4
         assert {"dts/unpolled", "ac3/polled", "pcm/polled"} <= set(report["noise"]), report["noise"]
         # a mid-run trim (+100 frames, invalid window) must not inflate sigma

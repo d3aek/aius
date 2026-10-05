@@ -27,18 +27,18 @@ buffer and no intermediate DSP quantisation.
 
 ## Current state
 
-Updated 2026-10-05 after the Phase 3 deploy; replace wholesale on the next.
+Updated 2026-10-05 at the Phase 3 ship; replace wholesale on the next.
 
 - **Orchestration posture: checkpoint** (owner, 2026-10-05): surface each
   decision and human-review gate as it arises.
-- **Status.** Phases 1 and 2 shipped. Phase 3 built and committed with host
-  and target proof green. Adversarial review and clean-room confirmation
-  PASS after fixes (the clean-room held the capture reducer until drift in
-  the class difference and sigma across resets were fixed). Deployed over
-  OTA 2026-10-05 (`443a0ae5cb26`); the device capture is owed. Phase 4
-  planned, ready after Phase 3's capture.
-- **Next action.** Phase 3 §Remaining steps 2 and 3: the capture session at
-  the owner's next viewing, then reduce it and ship Phase 3.
+- **Status.** Phases 1, 2 and 3 shipped (Phase 3's capture recorded in its
+  §Measured). Phase 4's entry gate is open: setpoint, class bias and gains
+  are to be fixed from the capture, then a prebuild review, then build.
+- **Next action.** Phase 4 entry gate: an `opus` design pass that turns
+  Phase 3 §Measured into the setpoint, class-bias and gain decisions
+  (including the status-render margin and the unexplained PCM rise), then
+  its prebuild review. Phase 4's OCRAM/status-size slice is independent and
+  can go first.
 - **What landed earlier** (aius commits, each followed by a upstream pointer bump):
 
 | Commit | Contents | Proof |
@@ -61,12 +61,11 @@ Updated 2026-10-05 after the Phase 3 deploy; replace wholesale on the next.
   capture runs on this image. Phase J shipped on three 10 s replays; longer
   replays hit false carrier stops from dark-input lock blips (output-jitter
   Phases K and L).
-- **Capture in progress, 2026-10-05.** Polled segment from about 16:5x UTC,
-  1 Hz for 2,100 s, to
-  `.scratch/2682a96a-3760-4d00-b9e0-f71f66b336ba/capture-polled.jsonl`; then
-  a 720 s unpolled segment at 30 s to `capture-unpolled.jsonl` alongside.
-  Pull the recorder bank (`aius-recorder-pull.py --auth-file`) before the
-  source is switched off.
+- **Capture data** (7-day scratch GC):
+  `.scratch/2682a96a-3760-4d00-b9e0-f71f66b336ba/capture-polled.jsonl`,
+  `capture-unpolled.jsonl`, `capture-pcm-topup.jsonl`, the reducer reports
+  `fill-analysis-final.*`, and the recorder pulls in `recorder-2026-10-05/`.
+  The numbers that matter are in Phase 3 §Measured.
 - **Editor diagnostics.** clangd reports missing `Arduino.h` and the
   library headers on `firmware/src/` and `firmware/test/` files: an include
   path gap in the editor only; `firmware/scripts/test.sh` and the PlatformIO
@@ -658,12 +657,12 @@ The prebuild review attacks:
 - millihertz overflow/rounding; and
 - calling the full PLL path for every one-second trim.
 
-### Phase 3 Phase-corrected fill sensor and noise capture IN-PROGRESS
+### Phase 3 Phase-corrected fill sensor and noise capture ✓ SHIPPED 2026-10-05
 
 ```yaml
 phase: 3
 title: Phase-corrected transmit-ring fill statistic, observed only
-status: in-progress # 2026-10-05: built, host and target proof green; OTA deploy and device capture owed
+status: shipped # 2026-10-05: deployed 443a0ae then 0af7a82; capture recorded in §Measured below
 prebuild-review: ready # clean-room 2026-10-05: text-only findings folded (DMA-position sensor, statistic spec, status limit, device criteria)
 outcome: >-
   GET /api/status serves a transmit-ring fill statistic with about one-frame
@@ -704,12 +703,10 @@ then the capture session at the owner's next viewing.
    13 after the healthy-boot self-commit, `rollback_observed` false. Idle
    first read: fill keys present, `fill_level_q4` null and `fill_windows` 0
    (gate closed, as designed), `status_body_peak_bytes` 8,592 with no carrier.
-2. At the owner's next viewing, run the capture session (criteria below) and
-   reduce it with `firmware/tools/device/aius_fill_capture_analysis.py`
-   (`--self-test` proves the reducer; `--step-persist 2` is the default,
-   which keeps the 2026-10-04 21:04 step).
-3. Record the inputs below, flip this phase to shipped, and lift Phase 4's
-   `prebuild-review` from ready-after-capture.
+2. ~~Run the capture session and reduce it.~~ Done 2026-10-05 on
+   `0af7a8244081`: 20:20:45 to 21:07:21 UTC (35 min at 1 Hz, 11.6 min at
+   30 s) plus an 8 min 1 Hz PCM top-up (21:25:04 to 21:33:03).
+3. ~~Record the inputs and ship.~~ See §Measured below.
 
 **Delivery decisions (2026-10-05).**
 
@@ -836,8 +833,12 @@ error of `u` mHz moves the ring by `u / 1000` frames/s.
   128 in the next half and `(1 - phi) * 128` still being read: occupancy is
   `level + 256 - phi * 128`. `fill()` pads an underrun with silence and
   advances `consumed` only by what it took (`aius_spdif_tx24.h:296-320`), so
-  an empty ring reads `256 - phi * 128` (128 to 256), below the healthy band;
-  the arithmetic is signed as a defence only.
+  an empty ring reads `256 - phi * 128` (128 to 256); the arithmetic is
+  signed as a defence only. Measured 2026-10-05: healthy AC-3 troughs read
+  134 to 174, inside that band, so an empty ring at a pre-commit sample is
+  normal for AC-3 and not a fault. The padded silence was played from no
+  input, so once the producer resumes the occupancy stands **128 higher and
+  stays there**: each underrun is a +128-frame step, not a low reading.
 - **Statistic.** Its own 192,000-frame window of committed frames, with its
   own boundaries (not the governor's, which voids a whole window on an
   underrun, `aius_tx_governor.h:73-75`), split into 16 sub-windows of 12,000
@@ -919,6 +920,49 @@ Recorded here, as Phase 4's inputs (by the committed analysis script):
   it);
 - the exclusion and torn-read rates per class.
 
+**Measured, 2026-10-05** (`0af7a8244081`; reduced by
+`firmware/tools/device/aius_fill_capture_analysis.py`; raw JSONL and reports
+in `.scratch/2682a96a-3760-4d00-b9e0-f71f66b336ba/`, 7-day GC; owner-accepted
+plan: main session plus a PCM top-up).
+
+- **Resolution: pass.** Floor steps clear of an underrun read continuous
+  within window noise: 20:37 −2.2 frames, 20:32 +4.06 (the reducer's 4-frame
+  tolerance is tighter than the AC-3 σ of 4.3). Steps that straddle an
+  underrun carry the real +128 step and get no verdict. Every episode-free
+  drain slope matches the underrun cadence. No 128-frame sawtooth.
+- **No audio change: pass.** `governor_trims`, `tx_missed_fills`,
+  `clock_faults`, CRC rejects, overruns and torn reads all 0. Five 128-frame
+  underruns (20:47:16, 20:58:51, 21:04:51, one between 21:07 and 21:25
+  outside the captures, and 21:25:16) are the pre-existing drain defect this
+  plan fixes; the first three were pulled from the recorder.
+- **Underrun step:** +126.9 and +126.8 frames at window resolution (the
+  window containing the episode blends to +8.5; ignore it). 30 s samples
+  read +119 and +122 (the step less 30 s of drain).
+- **Status polls trigger the underruns** (measured): every episode starts 29
+  ms after the producer's last commit before a status render
+  (`input_diag.dark_open_start_ms`). The ~10 KB render delays the next AC-3
+  burst; once the drift has thinned the margin, a poll empties the ring.
+  Polling therefore brings each underrun forward and is not neutral.
+- **Drain:** AC-3 programme −0.157 to −0.275 frames/s between underruns
+  (mean −0.186), steepening; output 48,001,902 against carrier 48,001,623
+  mHz at the end (279 mHz, 5.8 ppm), matching the late slope. The plant
+  model (u mHz moves u/1000 frames/s) holds to about 10 percent. In the PCM
+  top-up the fill **rose** +0.38 frames/s after the relock: unexplained.
+- **Steady fill after a gate open:** 310.3 (PCM, 3 samples), 328.3 (AC-3),
+  382.2 (PCM) frames over three observed relocks: range 72 frames, inside
+  the predicted 256 to 384.
+- **Noise (lag-1 window-to-window σ, polled):** AC-3 4.33 frames (380
+  pairs), PCM 1.42 (61 pairs). Sub-window spread median and p95: AC-3 7 and
+  47, PCM 13.5 and 54 frames. Unpolled AC-3 (lag 7 to 8): white-model σ
+  0.88, random-walk-model σ 0.29.
+- **Exclusions and tears:** AC-3 4 of 625 windows (0.0016 per s), PCM 0 of
+  91; torn reads 0.
+- **Class floors and difference:** every PCM and AC-3 change on this source
+  closed the gate and relocked, so the gate-open trim reset the fill at each
+  switch; no in-lock class switch occurred and no drift-free class
+  difference is derivable. Cross-time medians (PCM 384.8, AC-3 255.8) are
+  drift-confounded and not a class bias.
+
 ### Phase 4 Fill-referenced rate trim
 
 ```yaml
@@ -926,7 +970,7 @@ phase: 4
 title: Close the output-rate loop on transmit-ring fill
 status: planned
 depends-on: phase 3 noise capture (setpoint spread across gate opens, PCM-versus-AC-3 floor bias)
-prebuild-review: ready-after-capture # clean-room 2026-10-05: gate-open occupancy pad and controller/emission state split folded; setpoint, class bias and gains fixed from the capture before build
+prebuild-review: entry-gate-open # capture recorded 2026-10-05 (Phase 3 §Measured); fix setpoint, class bias and gains from it, then a prebuild review, before build
 outcome: >-
   A live source offset inside the 500 mHz target deadband no longer drains
   (or fills) the transmit ring: the output rate converges on the source's
@@ -965,6 +1009,15 @@ commit-checkpoint:
   owner. (2) Class bias: if the PCM and AC-3 floors differ by more than the
   modulation budget allows, sub-windows are redefined by a fixed count of
   production units, or the setpoint becomes per class. (3) Gains, below.
+  Capture findings the entry gate must absorb (Phase 3 §Measured): the
+  setpoint must clear the status-render production delay as well as the
+  256-frame empty-ring top (AC-3 troughs at 134 to 174 underran on a poll,
+  so at least about 50 frames above 256, inferred); each underrun is a
+  +128-frame disturbance to reject, not a reset; class switches relock on
+  this source, so the class bias may reduce to the gate-open reset; and the
+  PCM top-up's rising fill (+0.38 frames/s) must be explained (a tracker
+  retarget at the relock, or a different source clock) before gains are
+  set.
 - **Status body size, checked at build.** Moved here from Phase 3 (owner,
   2026-10-05). No build or test today bounds `/api/status` against
   `AIUS_RUNTIME_TEENSY_APP_BODY` (12,288 B); the only `static_assert`s cover
