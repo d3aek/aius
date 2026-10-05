@@ -27,18 +27,18 @@ buffer and no intermediate DSP quantisation.
 
 ## Current state
 
-Updated 2026-10-05 at the Phase 3 build commit; replace wholesale on the next.
+Updated 2026-10-05 after the Phase 3 deploy; replace wholesale on the next.
 
 - **Orchestration posture: checkpoint** (owner, 2026-10-05): surface each
   decision and human-review gate as it arises.
 - **Status.** Phases 1 and 2 shipped. Phase 3 built and committed with host
   and target proof green. Adversarial review and clean-room confirmation
   PASS after fixes (the clean-room held the capture reducer until drift in
-  the class difference and sigma across resets were fixed). OTA and device
-  capture owed. Phase 4 planned, ready after
-  Phase 3's capture.
-- **Next action.** Phase 3 §Remaining steps: OTA when idle, then the capture
-  session at the owner's next viewing.
+  the class difference and sigma across resets were fixed). Deployed over
+  OTA 2026-10-05 (`443a0ae5cb26`); the device capture is owed. Phase 4
+  planned, ready after Phase 3's capture.
+- **Next action.** Phase 3 §Remaining steps 2 and 3: the capture session at
+  the owner's next viewing, then reduce it and ship Phase 3.
 - **What landed earlier** (aius commits, each followed by a upstream pointer bump):
 
 | Commit | Contents | Proof |
@@ -78,6 +78,11 @@ Updated 2026-10-05 at the Phase 3 build commit; replace wholesale on the next.
     contain a TX underrun's gap, only the programme around it.
   - Phase 4's commit edits `CLAUDE.md` (the fill stamps),
     a protected file: write it via `the release-promotion step`.
+  - `aius_ota_sign.py sign` also needs `--image`, `--output` and
+    `--build-revision` (the 12-char HEAD, at most 32 chars, e.g.
+    `443a0ae5cb26`); `CLAUDE.md` shows only `--secret`.
+    Fold the full line into that file in Phase 4's promote (it is dirty with
+    foreign work today).
 
 ## Why this plan was rebased
 
@@ -677,8 +682,11 @@ then the capture session at the owner's next viewing.
 
 **Remaining steps, in order:**
 
-1. OTA the committed image when the board is idle (`/api/status` `carrier`
-   0, nothing playing).
+1. ~~OTA the committed image when the board is idle.~~ Done 2026-10-05
+   08:19 UTC: `443a0ae5cb26+teensy41-optical-slot-a`, slot 2 to 1, `ab.sequence`
+   13 after the healthy-boot self-commit, `rollback_observed` false. Idle
+   first read: fill keys present, `fill_level_q4` null and `fill_windows` 0
+   (gate closed, as designed), `status_body_peak_bytes` 8,592 with no carrier.
 2. At the owner's next viewing, run the capture session (criteria below) and
    reduce it with `firmware/tools/device/aius_fill_capture_analysis.py`
    (`--self-test` proves the reducer; `--step-persist 2` is the default,
