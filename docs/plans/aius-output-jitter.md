@@ -805,7 +805,16 @@ is substituted with zeros.
   `pipeline_diag.crc_rejects` static across a clean session.
 - unit: parent-only
 
-### Phase J Governor target follows the replay floor
+### Phase J Governor target follows the replay floor IN-PROGRESS
+
+**Built 2026-10-05; the device replay proof is owed.** During replay the tap
+passes `AIUS_TX_GATE_OPEN_REPLAY_TARGET_FRAMES`. A live/replay source edge
+resets the governor window (`g_tx_governor_replay_prev`,
+`firmware/src/optical_main.cpp` governor tap), so one source's window never
+decides for the other. Host: `tx-governor` cases (a 768 window with a 768
+target never trims; with the live 128 target it trims 640; a reset voids a
+half window). The edge branch in `optical_main.cpp` has no host test. Slot-A
+ITCM free unchanged at 4,468 B.
 
 Found 2026-10-05 by a code read while preparing
 [`aius-sample-rate-following.md`](aius-sample-rate-following.md) Phase 3, and

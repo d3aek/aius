@@ -356,9 +356,11 @@ ends left open:
   as [`aius-sample-rate-following.md`](aius-sample-rate-following.md) Phase 3
   (fill sensor and noise capture) and Phase 4 (fill-referenced rate trim).
 
-- **OPEN: the TX governor trims a clean replay from its 768-frame floor to
-  the live 128-frame target (filed 2026-10-05, from a code read; not yet
-  observed on device).** Replay shares `enqueue()` with live input, and the
+- **FIX BUILT, device proof owed: the TX governor trims a clean replay from
+  its 768-frame floor to the live 128-frame target (filed 2026-10-05, from a
+  code read; not yet observed on device).** Fixed by
+  [`aius-output-jitter.md`](aius-output-jitter.md) Phase J; close this entry
+  after its bench replay reads `governor_trims` and `tx_underrun_frames` flat. Replay shares `enqueue()` with live input, and the
   governor block (`firmware/src/optical_main.cpp:2048-2108`) has no replay
   condition. It is passed the constant `AIUS_TX_GATE_OPEN_TARGET_FRAMES` (128
   on the optical envs, `firmware/platformio.ini:313`) at `:2060`, not the

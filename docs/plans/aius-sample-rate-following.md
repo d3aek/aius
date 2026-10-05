@@ -48,8 +48,14 @@ Updated 2026-10-05 after the Phase 3 deploy; replace wholesale on the next.
 | `33c8976`, `1b615b2` | register entry for the periodic underrun, then the 2026-10-04 session evidence | docs only |
 | `639a868`, `16cad94`, `55234cb`, `203300d`, `e02a8cc` | Phase 3/4 plan and its four prebuild review rounds | docs only; reviews read-only against code |
 
-- **Uncommitted tree.** None owned. `CLAUDE.md` is dirty
-  and foreign; leave it.
+- **Uncommitted tree.** Owned and held on purpose:
+  `firmware/test/status-body-bound/`, its `firmware/scripts/test.sh` arm and
+  its `firmware/README.md` row (red until Phase 4's OCRAM slice; see Phase 4
+  "Status body size"). `CLAUDE.md` is dirty and foreign;
+  leave it.
+- **Pre-capture redeploy.** Output-jitter Phase J (governor replay target)
+  and `status_render_failures` were built before the capture so it runs on
+  the image Phase 4 builds on.
 - **Editor diagnostics.** clangd reports missing `Arduino.h` and the
   library headers on `firmware/src/` and `firmware/test/` files: an include
   path gap in the editor only; `firmware/scripts/test.sh` and the PlatformIO
@@ -955,9 +961,30 @@ commit-checkpoint:
   (the largest earlier body this boot) so the capture measures real headroom. This
   phase adds the worst-case bound with a `static_assert` (or a host render of
   the worst case) before it spends that headroom on its own keys, and adds its
-  keys to the `optical-cutover` expected set. The peak counts successful
-  renders only, so an overflow (a 500 on `/api/status`) never shows in it;
-  count failed renders here too.
+  keys to the `optical-cutover` expected set.
+  **Pre-capture slice, 2026-10-05.** `status_render_failures` (top level,
+  counted in `app_write_status()`) shipped in the Phase J redeploy, so an
+  overflow is visible after the next successful render. The bound is built
+  but red: `firmware/test/status-body-bound/` (a host extractor that walks
+  every function `http_status_json()` writes through and sums worst-case
+  widths, refusing what it cannot bound) puts the worst case at 14,723 B
+  against 12,288 B, mostly counters at full 10-digit width (`input_diag`
+  3,337 B, `clock` 2,160 B). The suite and its `test.sh` arm and README row
+  are **held uncommitted in the tree** until the slice below lands.
+  A 16 KiB buffer does not link: `app_body` lives in
+  `g_runtime_storage` (`DMAMEM`, OCRAM), and OCRAM free is 131,360 B
+  against the 131,040 B NativeEthernet heap floor (defect 26,
+  `link/aius_teensy41.ld`; `memory` ratchet
+  `firmware/test/memory/verify_target.py:63`). **Owner decision
+  (2026-10-05): fund the OCRAM in this phase**, then raise the buffer:
+  1. Move about 4 KiB of OCRAM residents to DTCM or flash (RAM1 locals
+     then about 21 KB by the linker's count). Do not lower the floor.
+  2. Give the status body its own constant (`AIUS_RUNTIME_TEENSY_STATUS_BODY`,
+     16,384 B) apart from `AIUS_DSP_MODEL_MAX_JSON_BYTES`
+     (`lib/aius_dsp_config/include/aius_dsp_config.h:18`), which stays at
+     12,288.
+  3. Commit the held suite; prove it fails at a limit at or below the worst
+     case and passes at 16,384.
 - **Gate open sets occupancy, not level.** Today `tx_gate_execute_open`
   (`firmware/src/optical_main.cpp:2524-2536`) sets the ring level to 128 at
   an instant unrelated to the TX DMA, so occupancy opens anywhere in 256 to

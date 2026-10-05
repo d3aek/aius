@@ -3744,6 +3744,11 @@
             "minimum": 0,
             "description": "Largest finished GET /api/status body this boot in bytes, the peak of the renders before this one (a body cannot state its own length). Compare against the 12,288-byte app body buffer; 0 on the first render."
           },
+          "status_render_failures": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "GET /api/status renders this boot that did not finish because the body outgrew the 12,288-byte app body buffer, each answered 500. Visible only in a later render that did finish; status_body_peak_bytes counts finished renders only."
+          },
           "network_state": {
             "type": "integer",
             "minimum": 0,

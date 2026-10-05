@@ -102,5 +102,45 @@ int main(void)
 	assert(aius_tx_governor_step(&governor, TARGET, DEADBAND, WINDOW,
 	                             TARGET + 512u, BLOCK, 0u, 1) == 512u);
 
+	/* Phase J: a clean replay rides its 768-frame floor. With the replay
+	 * floor as target it never trims; with the live 128 target the same
+	 * window is trimmed (the defect, proving the case can fail). */
+	{
+		const uint32_t replay_floor = 768u;
+		aius_tx_governor_reset(&governor, 0u);
+		uint32_t decision = 0u;
+		for (uint32_t frames = 0u; frames < WINDOW; frames += BLOCK)
+			decision = aius_tx_governor_step(&governor,
+			                                 replay_floor, DEADBAND,
+			                                 WINDOW, replay_floor,
+			                                 BLOCK, 0u, 1);
+		assert(decision == 0u);
+
+		aius_tx_governor_reset(&governor, 0u);
+		decision = 0u;
+		for (uint32_t frames = 0u; frames < WINDOW; frames += BLOCK)
+			decision = aius_tx_governor_step(&governor, TARGET,
+			                                 DEADBAND, WINDOW,
+			                                 replay_floor, BLOCK,
+			                                 0u, 1);
+		assert(decision == replay_floor - TARGET);
+	}
+
+	/* Source edge: the caller's reset (existing entry point) voids a half
+	 * window so one source's samples never complete the other's. */
+	aius_tx_governor_reset(&governor, 3u);
+	for (uint32_t frames = 0u; frames < WINDOW / 2u; frames += BLOCK)
+		assert(aius_tx_governor_step(&governor, TARGET, DEADBAND,
+		                             WINDOW, TARGET + 1024u, BLOCK,
+		                             3u, 1) == 0u);
+	aius_tx_governor_reset(&governor, 3u);
+	assert(governor.window_frames_seen == 0u);
+	assert(governor.window_min_level == UINT32_MAX);
+	assert(governor.underruns_latch == 3u);
+	for (uint32_t frames = 0u; frames < WINDOW / 2u; frames += BLOCK)
+		assert(aius_tx_governor_step(&governor, TARGET, DEADBAND,
+		                             WINDOW, TARGET + 1024u, BLOCK,
+		                             3u, 1) == 0u);
+
 	return 0;
 }

@@ -1413,6 +1413,7 @@ static volatile uint32_t g_audio_update_max_cycles;
 #ifndef AIUS_TX_GOVERNOR_DEADBAND_FRAMES
 #define AIUS_TX_GOVERNOR_DEADBAND_FRAMES 256u
 #endif
+static bool g_tx_governor_replay_prev;       /* source of the last governed block */
 static AiusTxGovernor g_tx_governor;         /* .bss; the zero window_min can
                                               * only make the FIRST window
                                               * decide "no trim" -- harmless,
@@ -2132,8 +2133,19 @@ private:
 		 * step's few compares. The skip is audible by contract (one splice,
 		 * accepted over a standing multi-tens-of-ms lag); the counters on
 		 * the clock document are the acceptance instruments. */
+		/* The target follows the source: a replay's floor is the replay
+		 * gate-open target (the SD-refill margin), so a clean replay is
+		 * never trimmed toward the live 128. A source edge voids the
+		 * window so neither source's samples judge the other. */
+		if (replay != g_tx_governor_replay_prev) {
+			g_tx_governor_replay_prev = replay;
+			aius_tx_governor_reset(&g_tx_governor,
+			                       g_aius_spdif_tx24.underruns);
+		}
 		const uint32_t governor_excess = aius_tx_governor_step(
-			&g_tx_governor, AIUS_TX_GATE_OPEN_TARGET_FRAMES,
+			&g_tx_governor,
+			replay ? AIUS_TX_GATE_OPEN_REPLAY_TARGET_FRAMES
+			       : AIUS_TX_GATE_OPEN_TARGET_FRAMES,
 			AIUS_TX_GOVERNOR_DEADBAND_FRAMES,
 			AIUS_TX_GOVERNOR_WINDOW_FRAMES,
 			aius_spdif_tx24_level(&g_aius_spdif_tx24),
@@ -5761,6 +5773,7 @@ static FLASHMEM void ota_compose(void)
  * THIS route: its existing config_valid / config_error / config_error_count
  * keys describe the public aius.json config, not the DSP model. */
 static uint32_t g_status_body_peak_bytes; /* zero-init .bss, cold path only */
+static uint32_t g_status_render_failures; /* zero-init .bss, cold path only */
 
 static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
 {
@@ -5964,10 +5977,14 @@ static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
 	/* Largest finished status body this boot, in bytes, against the
 	 * AIUS_RUNTIME_TEENSY_APP_BODY buffer. Served as the peak of the renders
 	 * BEFORE this one (a body cannot state its own length); the update is a
-	 * compare and a store on this cold path. */
+	 * compare and a store on this cold path. status_render_failures beside it
+	 * counts the renders that never finished (app_write_status), which the
+	 * peak cannot show: one that ran out of buffer was a 500, not a body. */
 	if (!http_json_append((char *)body, capacity, &length,
-	                      ",\"status_body_peak_bytes\":%lu",
-	                      (unsigned long)g_status_body_peak_bytes))
+	                      ",\"status_body_peak_bytes\":%lu"
+	                      ",\"status_render_failures\":%lu",
+	                      (unsigned long)g_status_body_peak_bytes,
+	                      (unsigned long)g_status_render_failures))
 		return 0;
 	if (!http_json_append((char *)body, capacity, &length, "}"))
 		return 0;
@@ -6207,9 +6224,17 @@ static FLASHMEM size_t app_write_home(void *, uint8_t *body, size_t capacity)
 	return http_home_page(body, capacity);
 }
 
+/* Every 0 from http_status_json() is the dispatcher's 500, and past the fixed
+ * 71-byte put_status() header every such 0 is the response buffer running out
+ * (test/status-body-bound bounds the worst case against it). Counted here, so
+ * the one count covers every early return without a new emitter in the walk
+ * the OpenAPI and bound extractors make. */
 static FLASHMEM size_t app_write_status(void *, uint8_t *body, size_t capacity)
 {
-	return http_status_json(body, capacity);
+	const size_t length = http_status_json(body, capacity);
+	if (length == 0u)
+		g_status_render_failures++;
+	return length;
 }
 
 static FLASHMEM size_t app_write_events(void *, uint32_t cursor, uint8_t *body,
