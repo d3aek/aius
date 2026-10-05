@@ -588,21 +588,22 @@ The prebuild review attacks:
 phase: 3
 title: Phase-corrected transmit-ring fill statistic, observed only
 status: planned
-prebuild-review: ready # round 3 2026-10-04: no blocking, should-fix folded; clean-room confirmation pending
+prebuild-review: ready # clean-room 2026-10-05: text-only findings folded (DMA-position sensor, statistic spec, status limit, device criteria)
 outcome: >-
   GET /api/status serves a transmit-ring fill statistic with about one-frame
-  resolution that reads the same floor for PCM, AC-3 and DTS, and one
-  listening-room session has measured its window-to-window noise and drift, the
-  inputs Phase 4 derives its gains from. No audio behaviour changes.
+  resolution that reads the same floor for PCM and AC-3 (DTS by host proof
+  only), and one listening-room session has measured its window-to-window noise
+  and drift, the inputs Phase 4 derives its gains from. No audio behaviour
+  changes and no ISR change.
 unit: component-behind-interface
 seams:
-  - TX fill ISR period stamp (aius_spdif_sources.cpp; DTCM .bss)
+  - TX DMA read position (AiusSpdifTx24Hook accessor, aius_spdif_sources.cpp)
   - fill statistic at the governor tap (optical_main.cpp)
   - GET /api/status clock and firmware/sd/www/openapi.json
 targeted-proof:
   - host: tx-fill-sensor suite (cases below)
-  - target: tx-gate, tx-governor, clock-target, itcm-placement, registry, sd-editor green; ITCM byte cost recorded
-  - device: one listening-room session of 45 min or more spanning a PCM to AC-3 change, polled at 1 Hz
+  - target: tx-gate, tx-governor, clock-target, itcm-placement, registry, sd-editor green
+  - device: one listening-room session of 45 min or more spanning a PCM to AC-3 change, polled and unpolled segments, criteria below
 contract-artifact: spec-only
 fan-out:
   - name: fill-sensor
@@ -656,8 +657,9 @@ the 256 setpoint's +2.67 ms latency) are folded in below.
 **Prebuild review, round 2 (2026-10-04): HOLD on one count.** The round-1
 revision used a window MEAN of phase-corrected samples against a setpoint
 learned at gate open. The mean depends on decoder class and scheduling: an
-AC-3 access unit commits six 256-frame blocks within about one epoch
-(`firmware/lib/aius_pipeline/src/aius_pipeline.c:725-726`), so its samples
+AC-3 access unit yields six 256-frame blocks, one per service call
+(`firmware/lib/aius_pipeline/src/aius_pipeline.c:725-726`), committed in quick
+succession (the capture confirms how quick), so its samples
 read F, F+256, ..., F+1280 (mean about F+640), while PCM reads about F. A
 PCM-to-AC-3 change inside one lock does not close the gate, so a PCM-learned
 setpoint would drive the output to the clamp and pull the real floor down by
@@ -667,80 +669,120 @@ a phase-corrected minimum and a constant setpoint. Round 2 also showed the PI
 targets depend on the statistic's noise, which no one has measured; hence
 this phase measures before Phase 4 actuates.
 
+**Prebuild review, round 3 and clean-room (2026-10-04 and 05).** Round 3 found
+no blocking issue; its should-fix items (per-relock occupancy spread,
+class-aware stall test, empty-ring reading, trough-count bias, the ISR's
+non-TRIM-is-HOLD branch) are folded below and into Phase 4. The clean-room
+confirmation held Phase 3 on text only: an ISR stamp needs a period
+measurement that cannot be built as written, the status limit was the wrong
+constant, and the statistic was underspecified in six places. It held Phase 4
+on two counts: a constant setpoint against a random gate-open occupancy pins
+the output at the clamp after every relock, and "commit on request success"
+was ambiguous between controller and emission state. All are resolved below.
+
 **Sensor.** The ring level is the integral of the rate error. Plant: a rate
 error of `u` mHz moves the ring by `u / 1000` frames/s.
 
-- **Stamp.** The TX fill ISR stores `ARM_DWT_CYCCNT` at each 128-frame period
-  in DTCM `.bss` beside `g_aius_tx_fill_witness`, never in the DMAMEM ring
-  (the OCRAM heap floor has no margin, `aius_spdif_tx24.h:343-346`). The ISR
-  sits in ITCM, which the verifier does not police; the byte cost is recorded
-  against ITCM headroom (FlexRAM allocates ITCM in 32 KiB banks, so crossing
-  a bank resizes DTCM), and the map file is checked so the reduction helper
-  is not emitted out of line into `optical_main`'s default `.text` (ITCM).
+- **Played fraction from the DMA position, no ISR change.** The TX DMA's
+  current source address (`dma.TCD->SADDR`) says exactly how far it has read
+  into the half it is playing; the ISR already uses it to pick the half to
+  fill (`aius_spdif_sources.cpp:234-239`). A static accessor on the existing
+  access shim (`AiusSpdifTx24Hook`, `:209-214`) returns that offset; `phi` is
+  the offset within the current half over the half's 128 frames. No stamp,
+  no period measurement, no ITCM bytes. The accessor is `FLASHMEM` (it runs
+  per producer block from the flash-resident `enqueue`); the map file is
+  checked so neither it nor the reduction is emitted into `optical_main`'s
+  default `.text` (ITCM).
 - **Read.** At the governor tap (`firmware/src/optical_main.cpp:2059`) read
-  `ring->fills`, the level, the stamp, then `ring->fills` again; retry (at most
-  three times) if it moved, so level and stamp are one consistent pair.
-- **Correction.** `phi` = cycles since the stamp over the period, the period
-  measured as the cycle difference over N fills inside the same consistent
-  read (it is rate-dependent: 8.8 % longer at 44.1 kHz, 50 % at 32 kHz, and
-  one late ISR makes a single interval long and the next short), clamped to
-  [0, 1] because a late ISR (missed-fill path,
-  `aius_spdif_sources.cpp:241-267`) or a masked section can run past one
-  period. `fill()` hands each DMA half one period ahead
+  `ring->fills`, the level, the DMA offset, then `ring->fills` again; retry if
+  it moved, at most three times. A sample whose three retries all tear is
+  dropped and counted (`fill_torn_reads`).
+- **Correction.** `fill()` hands each DMA half one period ahead
   (`aius_spdif_sources.cpp:230-269`), so the unsent frames are the ring level,
   128 in the next half and `(1 - phi) * 128` still being read: occupancy is
   `level + 256 - phi * 128`. `fill()` pads an underrun with silence and
   advances `consumed` only by what it took (`aius_spdif_tx24.h:296-320`), so
   an empty ring reads `256 - phi * 128` (128 to 256), below the healthy band;
   the arithmetic is signed as a defence only.
-- **Statistic.** The minimum occupancy over the pre-commit samples of each
-  12,000-frame sub-window, then the mean of the 16 sub-window minima per
-  192,000-frame window (the governor's). A minimum reads the floor for PCM,
-  AC-3 and DTS alike; averaging minima recovers resolution. A sub-window
-  containing an underrun, a governor trim, a missed fill or a production stall
-  is excluded and counted. The stall test is class-aware: a gap between
-  accepted blocks longer than the class's own production-unit period plus one
-  epoch. Not the 40 ms `AIUS_INPUT_GAP_ALERT_US` alert
-  (`firmware/src/optical_main.cpp:1539-1540`), which normal DTS-2048 and
-  long-burst E-AC-3 cadence exceeds every unit and AC-3 (32 ms plus service
-  lag) exceeds intermittently. A fixed frame count holds different numbers of
-  troughs per class (about 23 for PCM, 7.8 for AC-3, 2 to 8 for E-AC-3), and
-  the minimum of fewer troughs sits slightly higher; the capture measures
-  that bias. The
-  window resets on gate close, governor trim, carrier loss and any replay
-  block. The reduction is a pure header (`aius_tx_fill_sensor.h`, in the
-  governor's style) and `FLASHMEM` where compiled into a cold object.
-- **Observability.** `clock` gains `fill_level_frames` (signed, last window
-  statistic), `fill_subwindow_spread_frames` (max minus min of its 16
-  minima), `fill_windows` and `fill_windows_excluded`. The keys land in
-  `firmware/sd/www/openapi.json` (the `sd-editor` drift gate) and the status
-  size is checked against `AIUS_HTTP_MAX_RESPONSE` (8,192,
-  `firmware/lib/aius_http/include/aius_http.h:22`).
+- **Statistic.** Its own 192,000-frame window of committed frames, with its
+  own boundaries (not the governor's, which voids a whole window on an
+  underrun, `aius_tx_governor.h:73-75`), split into 16 sub-windows of 12,000
+  frames. Each sub-window's value is the minimum occupancy over its pre-commit
+  samples. The window statistic is the mean of the non-excluded sub-window
+  minima, exact in 1/16 frame; a window with fewer than 8 valid sub-windows
+  is invalid (served as such, and Phase 4 treats it per its all-excluded
+  rule). A minimum reads the floor for every class; averaging minima recovers
+  resolution.
+- **Exclusion** (per sub-window, counted): an underrun, a missed fill, or a
+  production stall. The stall test: a gap between accepted blocks longer than
+  the duration of the last accepted block's frames at the stream rate (PCM's
+  512-frame block, an AC-3 burst's 1,536, the pipeline's unit for E-AC-3 and
+  DTS) plus a fixed 10 ms allowance. Not the 40 ms `AIUS_INPUT_GAP_ALERT_US`
+  alert (`firmware/src/optical_main.cpp:1539-1540`), which normal DTS-2048
+  and long-burst E-AC-3 cadence exceeds every unit and AC-3 (32 ms plus
+  service lag) exceeds intermittently.
+- **Reset** (window emptied, statistic invalid until the next full window):
+  gate close, governor trim (the level jumps, so it is a reset, not an
+  exclusion), carrier loss and any replay block.
+- **Bias to measure.** A fixed frame count holds different numbers of troughs
+  per class (about 23 for PCM, 7.8 for AC-3, 2 to 8 for E-AC-3), and the
+  minimum of fewer troughs sits slightly higher; the capture measures it.
+- **Placement.** The reduction is a pure header (`aius_tx_fill_sensor.h`, in
+  the governor's style), `FLASHMEM` where compiled into a cold object.
+- **Observability.** `clock` gains `fill_level_q4` (signed, the last valid
+  window statistic in 1/16 frame; `null` before the first valid window and
+  after a reset), `fill_subwindow_spread_frames` (max minus min of its
+  minima), `fill_windows`, `fill_subwindows_excluded` and `fill_torn_reads`.
+  The keys land in `firmware/sd/www/openapi.json` (the `sd-editor` drift
+  gate). The live status is already about 10.5 KB, past the 8,192-byte
+  `AIUS_HTTP_MAX_RESPONSE` and streamed; the binding limit is
+  `AIUS_RUNTIME_TEENSY_APP_BODY`, 12,288 bytes
+  (`firmware/src/aius_runtime_teensy.h:48`), about 1.8 KB of headroom for
+  Phases 3 and 4 together, checked at build.
+- **Tooling.** The capture's derived numbers come from a committed analysis
+  script over the poller's JSONL (`firmware/tools/device/`, parent-owned), not
+  ad-hoc queries. The parent also owns registering the `tx-fill-sensor` suite
+  (`firmware/scripts/test.sh` header list and case arm, the README suites
+  table), which the `registry` suite checks.
 
-**Host proof (tx-fill-sensor suite).** A torn read retries; `phi` clamps for
-a late ISR; the period follows 48, 44.1 and 32 kHz and survives one late ISR;
-an empty ring reads `256 - phi * 128`, never wrapped; PCM 512-frame commits
-and AC-3 6 × 256 bursts at the same true floor, with trough-timing jitter
-injected, give statistics whose difference matches the trough-count bias; a
-PCM-to-AC-3 switch with the gate open is continuous up to that bias; normal
-AC-3, DTS-2048 and long-burst E-AC-3 cadence excludes nothing, a real stall
-is excluded; every reset path empties the window.
+**Host proof (tx-fill-sensor suite).** A torn read retries, and three tears
+drop and count the sample; the DMA offset maps to `phi` at both half
+boundaries and mid-half; an empty ring reads `256 - phi * 128`, never wrapped;
+PCM 512-frame commits and AC-3 6 × 256 bursts at the same true floor, with
+trough-timing jitter injected, give statistics whose difference matches the
+trough-count bias; normal AC-3, DTS-2048 and long-burst E-AC-3 cadence
+excludes nothing, a real stall is excluded; fewer than 8 valid sub-windows
+make the window invalid; every reset path empties the window and serves
+`null`.
 
 **Device proof and noise capture.** One listening-room session of 45 min or more
 that spans a PCM-to-AC-3 change (menus then programme) and several gate opens
-(relocks), polled at 1 Hz with `firmware/tools/device/aius_status_poll.py`.
-Recorded here, as Phase 4's inputs:
+(relocks), polled at 1 Hz with `firmware/tools/device/aius_status_poll.py`,
+plus an unpolled segment of 10 min or more (`--interval 30`), because the
+~10.5 KB status serialisation lengthens epochs and may bias the trough
+samples. Pass criteria:
 
-- the steady `fill_level_frames` after each gate open, and their spread: the
-  gate-open trim sets the level at an instant unrelated to the TX ISR, so
+- **Resolution is real:** across each 128-frame step of the `tx_level_frames`
+  floor (the slow precession; on 2026-10-04 it stepped at 20:53 and 21:04 UTC),
+  `fill_level_q4` stays continuous within a few frames, and its slope matches
+  the underrun cadence (about 0.23 frames/s on this source). A `phi`
+  inversion or half-period error shows here as a 128-frame sawtooth.
+- **No audio change:** `underrun_episode_count`, `governor_trims` and every
+  harmful counter behave as on the previous image.
+
+Recorded here, as Phase 4's inputs (by the committed analysis script):
+
+- the steady `fill_level_q4` after each gate open, and their spread: the
+  gate-open trim sets the level at an instant unrelated to the TX DMA, so
   occupancy opens anywhere in 256 to 384 and differs per relock
   (`firmware/src/optical_main.cpp:2524-2536`);
-- its window-to-window standard deviation in steady state, and the
-  sub-window spread (the trough-timing jitter);
-- its drift slope, which should match the underrun cadence (about
-  0.23 frames/s on this source);
-- the PCM and AC-3 floors, and their difference;
-- the exclusion rate per class.
+- its window-to-window standard deviation in steady state (de-duplicated by
+  `fill_windows`), polled and unpolled, and the sub-window spread (the
+  trough-timing jitter);
+- the PCM and AC-3 floors and their difference, and the shape of the
+  PCM-to-AC-3 transition (Phase 4's host model of that switch is built from
+  it);
+- the exclusion and torn-read rates per class.
 
 ### Phase 4 Fill-referenced rate trim
 
@@ -749,7 +791,7 @@ phase: 4
 title: Close the output-rate loop on transmit-ring fill
 status: planned
 depends-on: phase 3 noise capture (setpoint spread across gate opens, PCM-versus-AC-3 floor bias)
-prebuild-review: ready-after-capture # round 3 2026-10-04: setpoint and statistic amended from the capture before build
+prebuild-review: ready-after-capture # clean-room 2026-10-05: gate-open occupancy pad and controller/emission state split folded; setpoint, class bias and gains fixed from the capture before build
 outcome: >-
   A live source offset inside the 500 mHz target deadband no longer drains
   (or fills) the transmit ring: the output rate converges on the source's
@@ -758,12 +800,13 @@ outcome: >-
 unit: component-behind-interface
 seams:
   - AiusRateTracker (centre and fill integral as separate state; returns one composed request)
-  - same-nominal NUM trim request, tagged by kind (aius_audio_clock_request_trim)
+  - same-nominal NUM trim request with a stamp-kind field (aius_audio_clock_request_trim)
+  - TX gate open sets occupancy, not level (tx_gate_execute_open, optical_main.cpp)
   - GET /api/status clock and firmware/sd/www/openapi.json
 targeted-proof:
   - host: clock suite plant model (cases below)
-  - target: clock-target, tx-gate, tx-governor, tx-fill-sensor, itcm-placement, registry, sd-editor green
-  - device: one listening-room AC-3 session, underrun delta 0; bench gates 1 and 7
+  - target: clock-target, tx-gate, tx-governor, tx-fill-sensor, itcm-placement, registry, sd-editor green; ISR ITCM bytes recorded
+  - device: one listening-room AC-3 session with criteria below; bench gates 1 and 7 and the stable-phase transition gates
 contract-artifact: spec-only
 fan-out:
   - name: fill-loop-core
@@ -779,16 +822,26 @@ commit-checkpoint:
 
 **Mechanism.**
 
-- **Entry gate.** Before build, the Phase 3 capture fixes two things. (1) The
-  setpoint: occupancy after a gate open already lands anywhere in 256 to 384
-  per relock, so the default is the centre of that band, raised only if the
+- **Entry gate.** Before build, the Phase 3 capture fixes three things:
+  the setpoint, the class bias and the gains. (1) Setpoint: the centre of
+  the 256 to 384 gate-open occupancy band by default, raised only if the
   measured jitter needs more margin above the empty-ring reading
   (`256 - phi * 128`); above the band top it adds latency and goes to the
-  owner. A phase-aware gate-open pad (set occupancy, not level) would remove
-  the per-relock spread, but it changes audio behaviour and is this phase's
-  call. (2) The class bias: if the PCM and AC-3 floors differ by more than
-  the modulation budget allows, sub-windows are redefined by a fixed count
-  of production units, or the setpoint becomes per class.
+  owner. (2) Class bias: if the PCM and AC-3 floors differ by more than the
+  modulation budget allows, sub-windows are redefined by a fixed count of
+  production units, or the setpoint becomes per class. (3) Gains, below.
+- **Gate open sets occupancy, not level.** Today `tx_gate_execute_open`
+  (`firmware/src/optical_main.cpp:2524-2536`) sets the ring level to 128 at
+  an instant unrelated to the TX DMA, so occupancy opens anywhere in 256 to
+  384. Against a constant setpoint that is a ±64-frame opening error, which
+  at the reference `Kp` asks for about ±830 mHz and pins the output at the
+  clamp for 80 s or more after every relock, breaking gate 1 and the
+  stable-phase labelling the transition gates use
+  (`firmware/tools/net/aius_rate_bench.py:397-424`, `:642-664`). The open
+  instead uses the Phase 3 read to pad the ring so occupancy equals the
+  setpoint. The pad is still dark at that instant, so nothing is audible;
+  standing latency becomes the setpoint every session instead of a random
+  point in the band.
 - **Setpoint: constant.** As fixed by the entry gate, in frames, valid
   across 48, 44.1 and 32 kHz because the gate-open target is in frames too
   (the capture covers 48 kHz; 44.1 kHz stays unproven until a 44.1 source is
@@ -801,7 +854,7 @@ commit-checkpoint:
   setpoint. A positive error (ring filling) speeds the output up. `I` is held
   in fixed point (µHz), because `Ki` is below 1 mHz per frame and would
   truncate to a P-only loop in integer mHz. Anti-windup: `I` holds while the
-  clamp is active, and is itself clamped to ±800 mHz.
+  clamp is active, and is itself clamped to ±900 mHz.
 - **Gains.** Derived in the host plant model with the Phase 3 noise. Targets,
   in the order they give way: output modulation from sensor noise within
   ±50 mHz and peak fill excursion ≤ 64 frames for a ±700 mHz step hold;
@@ -810,42 +863,53 @@ commit-checkpoint:
   `Ki` about 0.36 mHz per frame per window and a 34-frame peak, which needs
   statistic noise of about 4 frames or less to meet ±50 mHz; a noisier
   statistic means a slower loop.
-- **Authority.** Clamp ±800 mHz: hysteresis 500, plus the observed estimate
-  bias and wander (about 55 mHz and 280 mHz on 2026-10-04), plus margin. The
-  composed target is also clamped into the clock plan band; a plan failure on
-  a fill request is a no-op, never a fault.
-- **Centre and integral are separate state.** The tracker keeps `centre`
-  (the carrier-estimate target; hysteresis and the 10 s cadence judged
-  against it alone, logic unchanged) and `I`. Only centre applies refresh the
-  centre's applied value and cadence timer; the tracker API carries this
-  rather than `optical_main` wiring. A centre retarget is bumpless,
-  `I -= centre_new - centre_old`, then `I` is re-clamped; any residual
-  self-heals at the next retarget because the centre follows the estimate. A
-  retarget that leaves the composed target within the emit threshold writes
-  nothing and records no event. The fault-retry full apply
-  (`firmware/src/optical_main.cpp:8572`) applies the centre plan with `I`
-  zeroed.
-- **Emission.** One composed request per `sample_rate_service` pass. A
-  fill-only change takes its own result flag (`fill_update`) and branch:
-  counts `fill_trims`, stamps `fill_trim_last_at_ms`, records no event,
-  leaves `trim_updates` alone. The boundary request carries its kind, so a
-  fill write stamps `fill_applied_at_ms` and `trim_applied_at_ms`
-  (`aius_spdif_sources.cpp:184`) keeps meaning a centre trim, preserving the
-  glitch-reading pair `CLAUDE.md` relies on. **The boundary
-  ISR treats every request other than `NONE` and `TRIM` as a HOLD**
+- **Authority.** Clamp ±900 mHz: hysteresis 500, plus the observed estimate
+  bias and wander (about 55 mHz and 280 mHz on 2026-10-04, 835 together),
+  plus margin; well inside the plan band (±2 %). The composed target is also
+  clamped into the plan band and into the centre's structural cell:
+  `request_trim` refuses a plan that differs structurally from the applied
+  one (`firmware/lib/aius_audio/src/aius_audio_clock.cpp:573-579`), so a
+  target across an integer-divider crossing would be refused forever (at
+  48 kHz the crossing is at 48,549 Hz, so this is a guard, not a case). A plan
+  failure on a fill request is a no-op, never a fault.
+- **Controller state and emission state are separate.**
+  - *Controller state* is `centre` (the carrier-estimate target; hysteresis
+    and the 10 s cadence judged against it alone, logic unchanged) and `I`.
+    It updates every window (`I`) and every centre retarget, whether or not
+    anything is written. A retarget is bumpless, `I -= centre_new -
+    centre_old`, then `I` is re-clamped (any residual self-heals at the next
+    retarget, because the centre follows the estimate). A committed centre
+    also updates `g_clock_desired_plan`, so the fault-retry full apply
+    (`firmware/src/optical_main.cpp:8572`) uses the current centre, with `I`
+    zeroed.
+  - *Emission state* is the last composed value actually written, read back
+    from the applied plan. It commits only when
+    `aius_audio_clock_request_trim` returns true; a refusal leaves it, and
+    the next pass retries. The tracker API carries both, rather than
+    `optical_main` wiring.
+- **Emission.** One composed request per `sample_rate_service` pass, at most
+  once per window, and only when the composed target differs from the
+  emission state by more than an emit threshold sized from the measured noise
+  (at least 5 mHz, three NUM LSBs), so steady state writes rarely.
+- **Kinds and diagnostics.** A write is CENTRE if a centre retarget committed
+  since the last write, else FILL. A centre retarget counts `trim_updates`
+  and records `AIUS_EVENT_CLOCK_TRIM` when it commits, whether or not a write
+  follows, so centre activity stays visible. A CENTRE write stamps
+  `trim_last_at_ms` and `trim_applied_at_ms`
+  (`aius_spdif_sources.cpp:184`); a FILL write counts `fill_trims` and stamps
+  `fill_trim_last_at_ms` and `fill_applied_at_ms`, with no event. The
+  glitch-reading stamp list in `CLAUDE.md` gains the two
+  fill stamps in the Phase 4 commit (a protected file: `the release-promotion step`).
+- **The kind is a separate field, not a new request value.** The boundary
+  ISR treats every request other than `NONE` and `TRIM` as a HOLD
   (`aius_spdif_sources.cpp:162-197`, enum at
   `aius_audio_clock_internal.h:8-12`): it marks validity invalid and arms
-  the four-period hold without writing the numerator. A new fill kind must
-  widen the `TRIM` test, or every fill write becomes the 2026-09-07 mute.
-  `clock-target` asserts a fill request writes NUM, leaves `VALCTRL` and
-  `invalid_periods_remaining` untouched, and stamps only
-  `fill_applied_at_ms`; `request_trim`'s refusal checks treat both kinds
-  alike. Cost: one compare and one DTCM store. At most once
-  per window, and only when the composed target moves by more than an emit
-  threshold sized from the measured noise (at least 5 mHz, three NUM LSBs),
-  so steady state writes rarely. Tracker state commits only when
-  `aius_audio_clock_request_trim` returns true; a refusal retries on the
-  next pass.
+  the four-period hold without writing the numerator, the 2026-09-07 mute.
+  So the request stays `TRIM` and a separate stamp-kind field picks only
+  which stamp the ISR writes. `clock-target` asserts a FILL write writes
+  NUM, leaves `VALCTRL` and `invalid_periods_remaining` untouched, and
+  stamps only the fill fields. Cost: one load, one compare, one DTCM store
+  in the ITCM-resident ISR, recorded against ITCM headroom.
 - **Scope and reset.** Emission only for a live source with
   `g_clock_plan_applied`; replay blocks emit nothing, so
   `g_clock_replay_ready`'s exact-48,000,000 check is untouched. `I` is kept
@@ -861,7 +925,8 @@ commit-checkpoint:
 
 **Observability.** `clock` gains `fill_offset_millihz` (signed, composed
 minus centre), `fill_trims`, `fill_trim_last_at_ms` and `fill_applied_at_ms`,
-with the same openapi and size checks as Phase 3. No new event kind.
+with the same openapi check and the shared 12,288-byte body limit from
+Phase 3. No new event kind.
 
 **Host proof (clock suite).** The tracker API owns the centre/integral
 wiring, so the model exercises it end to end. Plant: TX consumes in 128-frame
@@ -871,37 +936,55 @@ is the Phase 3 header with the Phase 3 noise; the carrier estimate is
 quantised to 140 mHz bins with 1.2 Hz spread and slow wander (280 mHz over
 8 min). Cases, two simulated hours each unless noted:
 
-- offsets against the centre of 0, ±225, ±480, ±550, ±650 and ±750 mHz,
-  starting at the gate-open floor: zero underruns, fill error ≤ 64 frames
-  after settle, no governor trim, modulation within ±50 mHz, writes within
-  the threshold's bound;
-- ±850 mHz past the clamp, with an injected estimate bias of at least
-  350 mHz so the centre stays 850 off (without it the centre retargets within
+- offsets against the centre of 0, ±225, ±480, ±550, ±650 and ±800 mHz,
+  each with the gate opening at `phi` 0 and at `phi` 1: zero underruns, the
+  occupancy pad lands on the setpoint, fill error ≤ 64 frames throughout,
+  no governor trim, modulation within ±50 mHz, writes within the
+  threshold's bound;
+- ±950 mHz past the clamp, with an injected estimate bias of at least
+  450 mHz so the centre stays 950 off (without it the centre retargets within
   10 s): offset pinned at the clamp, and the 50 mHz residual either drains
   the ring to an underrun or fills it to a governor splice about every
   85 min ((384 - 128) / 0.05 s); both signs stated, neither worse than today;
+- a mid-lock same-nominal gate blip: the re-open pads to the setpoint, `I`
+  kept, no transient beyond the modulation bound;
 - the trough-timing jitter measured in Phase 3, injected into the sensor
   model for every case;
-- a PCM-to-AC-3 switch with the gate open: no offset excursion beyond the
-  modulation bound;
+- a PCM-to-AC-3 switch with the gate open, modelled from the transition the
+  capture recorded (the gate stays open through a class change,
+  `firmware/src/optical_main.cpp:8778-8780`, and the real gap may re-base the
+  floor): its assertion is set from that capture, not assumed;
 - a centre retarget with non-zero `I`: composed target continuous;
 - a 2,048-frame stall backlog: the governor trims once, the loop neither
   fights it nor overshoots into an underrun;
 - replay with the gate open: no emission, replay readiness kept;
 - a same-nominal gate blip keeps `I`; a nominal change, replay or full apply
   zeroes it;
-- a trim refusal: state uncommitted, retried next pass;
-- a composed target outside the plan band: clamped, no fault.
+- a trim refusal: emission state uncommitted and retried next pass, while
+  controller state keeps advancing; a sub-threshold window still integrates;
+- a bumpless centre retarget that writes nothing: committed once, not
+  re-fired every 10 s, and the desired plan follows it;
+- a composed target outside the plan band or the structural cell: clamped,
+  no fault, no permanent refusal.
 
 **Device proof.** One listening-room AC-3 session of 45 min or more polled with
-`firmware/tools/device/aius_status_poll.py`: `underrun_episode_count` delta 0,
-`fill_offset_millihz` settling near the source's true offset,
-`governor_trims` delta 0, `fill_trims` within the write bound. Bench: gate 1's
-rebased criterion re-run (`max_follow_error_millihz` should stay about the
-estimate's own spread, 798 of 1,000 on 2026-09-04; if it breaches, the owner
-rules on the criterion before acceptance), and gate 7's carrier-continuity
-check re-run at fill-write cadence, since the existing evidence covers
-isolated NUM writes only.
+`firmware/tools/device/aius_status_poll.py`, plus an unpolled segment of
+10 min or more (`--interval 30`). Pass criteria:
+
+- `underrun_episode_count` delta 0 and `governor_trims` delta 0;
+- settled |`fill_offset_millihz`| of at least 100 mHz, or the session is
+  marked inconclusive (a source near zero offset proves nothing);
+- settled `fill_level_q4` within ±16 frames of the setpoint (the "unchanged
+  standing latency" outcome);
+- `fill_trims` within the write bound.
+
+Bench: gate 1's rebased criterion (`max_follow_error_millihz` should stay
+about the estimate's own spread, 798 of 1,000 on 2026-09-04; if it breaches,
+the owner rules on the criterion before acceptance), the transition gates
+whose stable-phase labelling uses the same bound
+(`firmware/tools/net/aius_rate_bench.py:410-424`), and gate 7's
+carrier-continuity check at fill-write cadence, since the existing evidence
+covers isolated NUM writes only.
 
 **Outside these phases (from review round 1, unverified).** The governor is
 passed the live 128-frame target during replay
@@ -909,21 +992,11 @@ passed the live 128-frame target during replay
 768-frame floor may be trimmed to 128. To be checked and, if real, filed in
 the register.
 
-The prebuild review attacks (rounds 1 to 3 done; clean-room confirmation
-pending, both phases):
-
-- the sub-window minimum's resolution or bias under real commit timing, and
-  the exclusion rule hiding a real drain;
-- the stamp/level pair, `phi` at a period boundary or across a counter wrap,
-  and the ISR's ITCM cost;
-- the constant setpoint wrong for a class or rate;
-- the loop sign inverted, PI windup, or `I` truncating in fixed point;
-- the bumpless transfer double-counting, or the re-clamp leaving a jump;
-- the request-kind tag missing a path, so `trim_applied_at_ms` is still
-  overwritten;
-- the fill loop and the governor fighting;
-- `I` surviving a nominal change, replay or full apply; and
-- the new code leaking into ITCM.
+Prebuild review: rounds 1 to 3 and the clean-room confirmation are done
+(records in Phase 3). Phase 4's delivery audit re-attacks, after the capture
+fixes its inputs: the occupancy pad at gate open; the controller and emission
+state split under refusal and sub-threshold windows; the stamp-kind field on
+every write path; and the fill loop against the governor.
 
 ## Acceptance
 
