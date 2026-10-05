@@ -334,9 +334,10 @@ ends left open:
   fill error. Unconfirmed: the source was off by the time it was read, and a
   single 128-frame gap explains the pop but not the crackle. **The recorder
   captures are lost:** at source power-off three zero-frame `carrier_loss`
-  freezes evicted the underrun captures from all four slots (whether to file
-  and fix: [`aius-recorder-rolling-buffer.md`](aius-recorder-rolling-buffer.md)
-  Phase E, an owner question).
+  freezes evicted the underrun captures from all four slots (filed below;
+  fix planned as
+  [`aius-recorder-rolling-buffer.md`](aius-recorder-rolling-buffer.md)
+  Phase E).
   **2026-10-04 session: mechanism confirmed, audibility not.** Polled at 1 Hz
   with `firmware/tools/device/aius_status_poll.py` from carrier lock
   (20:43:53 UTC) to source off (21:32:28 UTC), AC-3 at 48 kHz. The carrier
@@ -354,6 +355,16 @@ ends left open:
   read against the underrun stamps. Fix, independent of audibility: planned
   as [`aius-sample-rate-following.md`](aius-sample-rate-following.md) Phase 3
   (fill sensor and noise capture) and Phase 4 (fill-referenced rate trim).
+
+- **OPEN: zero-frame freezes at source power-off evict real captures (filed
+  2026-10-05).** The carrier-loss trigger fires on every lock falling edge
+  in whichever slot is recording, and after a freeze the bank advances to an
+  empty slot, so the lock flaps of a TV switching off freeze empty slots and
+  recycle the session's real captures (2026-10-03: the underrun captures
+  around the owner's call-out were lost). Workaround: pull before switch-off.
+  Fix planned as
+  [`aius-recorder-rolling-buffer.md`](aius-recorder-rolling-buffer.md)
+  Phase E.
 
 - ~~**OPEN — `optical-app` suite is red at HEAD on its `test_bitstream_ui.py`
   arm (seen 2026-09-07, both Phase H and Phase I runs).**~~ **FIXED

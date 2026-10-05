@@ -30,12 +30,14 @@ buffer and no intermediate DSP quantisation.
 Updated 2026-10-05 at a session handover; replace wholesale on the next.
 
 - **Status.** Phases 1 and 2 DONE (shipped). Phase 3 (fill sensor, observed
-  only) planned and prebuild-reviewed ready; BLOCKED on its Step 0 owner
-  question. Phase 4 (fill-referenced trim) planned, ready after Phase 3's
-  capture. Nothing implemented.
-- **Next action.** Execute Phase 3 Step 0: ask the owner whether to build
-  Phase 3 now and when to deploy. On "build", Phase 3 Step 1 and the build
-  start together.
+  only) prebuild-reviewed ready and owner-approved (build now, deploy when
+  idle); not started. Phase 4 (fill-referenced trim) planned, ready after
+  Phase 3's capture. Nothing implemented.
+- **Next action.** Start Phase 3: fan out the `fill-sensor` worker
+  (`firmware/lib/aius_audio/src/aius_tx_fill_sensor.h`,
+  `firmware/test/tx-fill-sensor/**`) while the parent does the DMA-position
+  accessor, the tap, status keys, openapi, suite registration and the
+  governor replay-target check.
 - **What landed** (aius commits, each followed by a upstream pointer bump):
 
 | Commit | Contents | Proof |
@@ -664,26 +666,11 @@ commit-checkpoint:
   parent-commit: "feat(aius): phase-corrected transmit-ring fill statistic"
 ```
 
-**Step 0, Interrogate the user: build Phase 3 now, and when to deploy.**
-Asked 2026-10-05, unanswered.
+**Owner decision (2026-10-05): build now, deploy over OTA when the board is
+idle** (no carrier, nothing playing; check `/api/status` `carrier` 0 first),
+then the capture session at the owner's next viewing.
 
-- **Ask:** "Should I build Phase 3 (the fill sensor, observed only) now? The
-  OTA deploy reboots the board, so audio drops briefly; I would deploy only
-  when the board is idle or when you say."
-- **Options:**
-  - *Build now, deploy when idle* (recommended): sensor, host suite, status
-    keys and analysis script land and are committed; the OTA waits for an
-    idle board or the owner's go; then the capture session. Fastest path to
-    Phase 4's inputs, no audio cost until the deploy.
-  - *Build now, deploy on my word only*: same, but the deploy waits for an
-    explicit go even if the board is idle.
-  - *Not now*: nothing built; the periodic underrun stays (inaudible in the
-    2026-10-04 session).
-- **Blocks:** every later step of Phase 3, and Phase 4 through its capture.
-- **Recommendation:** build now, deploy when idle. Phase 3 changes no audio
-  behaviour (no ISR change; reads only), so the only cost is the reboot.
-
-**Step 1, alongside the build: verify the governor's replay target.**
+**Alongside the build: verify the governor's replay target.**
 Review round 1 flagged, unverified, that the governor is passed the live
 128-frame target during replay (`firmware/src/optical_main.cpp:2060`), so a
 clean replay window at the 768-frame replay floor may be trimmed to 128.

@@ -919,33 +919,61 @@ agents).
     `25109fca3f97+teensy41-optical-slot-a` slot 2, `tx_underrun_frames 0`,
     U24 not touched.
 
-### Phase E Interrogate the user: zero-frame carrier-loss freezes evict real captures
+### Phase E Zero-frame freezes do not evict captures
 
-**Observed 2026-10-03 on `cd7ad191ac77`.** When the listening-room source was
-switched off, the `carrier_loss` trigger froze three slots with
-`valid_frames 0` in quick succession and auto-advance recycled the slots
-holding that evening's `underrun` captures, so the audio around the owner's
-call-out was lost (bank read `freeze_generation` 8431, every slot frozen or
-recording with zero frames). The 2026-10-04 session avoided it only by
-pulling all three underrun captures before switch-off
-([register entry](aius-open-work-register.md#open-defects--runtime)). This
-phase is a question, not yet work.
+```yaml
+phase: E
+title: A trigger on an empty slot never freezes it
+status: planned
+outcome: >-
+  Switching the listening-room source off no longer recycles real captures:
+  a trigger whose recording slot holds zero valid frames is dropped and
+  counted, so the bank does not advance and earlier frozen captures survive
+  until pulled.
+unit: component-behind-interface
+seams:
+  - aius_recorder trigger evaluation (firmware/lib/aius_recorder/src/aius_recorder.c)
+  - GET /api/recorder bank header (new drop counter) and firmware/sd/www/openapi.json
+targeted-proof:
+  - host: recorder suite cases (below)
+  - target: registry, sd-editor green
+  - device: a source power-off after a session leaves the session's frozen captures intact
+contract-artifact: spec-only
+review-intensity: active
+commit-checkpoint:
+  green: [recorder, registry, sd-editor]
+  buildable: [teensy41-optical, teensy41-optical-slot-a]
+  parent-commit: "fix(aius): an empty slot never freezes"
+```
 
-- **Ask:** "At source power-off the recorder freezes empty `carrier_loss`
-  captures that push out the real underrun captures. Should I file that as
-  a defect and plan a fix?"
-- **Options:**
-  - *File and fix* (recommended): a freeze with zero valid frames does not
-    consume a slot or advance the bank (or is not armed until the slot
-    holds audio). Small recorder change, host-testable in the recorder
-    suite, one OTA; afterwards a capture survives source power-off without
-    an operator pull.
-  - *File only*: register entry, no plan; operators keep pulling before
-    switch-off (the workaround already in the register entry).
-  - *Leave it*: accepted trade like the eviction-after-N-wraps residual risk
-    below; nothing recorded beyond this phase's text, which is then deleted.
-- **Blocks:** nothing else in this plan; a fix would become Phase F here.
-  Independent of `aius-sample-rate-following.md` Phases 3 and 4.
+**Defect, observed 2026-10-03 on `cd7ad191ac77`.** When the listening-room
+source was switched off, three `carrier_loss` freezes with `valid_frames 0`
+landed in quick succession and auto-advance recycled the slots holding that
+evening's `underrun` captures, losing the audio around the owner's call-out
+([register entry](aius-open-work-register.md#open-defects--runtime)). Cause:
+the carrier-loss trigger fires on any lock falling edge in whichever slot is
+recording (`firmware/lib/aius_recorder/src/aius_recorder.c:372-374`); after a
+freeze the bank advances to a fresh, empty slot, so each further lock flap
+during power-off freezes another empty slot and recycles a real capture.
+Owner decision 2026-10-05: file and fix.
+
+**Fix.** At trigger evaluation, a slot with no valid frames (not wrapped
+and nothing drained, the same test `valid_frames` is computed from,
+`aius_recorder.c:587`) does not take the freeze token; the trigger is
+counted in a new bank-header counter (`empty_triggers_dropped`) and the
+slot keeps recording. Applies to every trigger kind, not only carrier loss:
+an empty capture is never worth a slot. To decide in the prebuild review:
+whether "empty" should be a small floor (for example under one post-roll's
+worth of frames) rather than exactly zero.
+
+**Host proof (recorder suite).** A carrier-loss edge on an empty recording
+slot drops and counts, with no advance; three such edges in a row leave
+earlier frozen slots untouched; a carrier loss on a slot holding audio
+still freezes as today; the counter appears in the header and openapi.
+
+**Device proof.** After a session with at least one frozen capture, switch
+the source off: the bank still holds that capture (pullable) and
+`empty_triggers_dropped` advanced.
 
 ## Residual risks / non-goals
 
