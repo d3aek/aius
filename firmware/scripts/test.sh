@@ -12,7 +12,7 @@
 #         capability, pipeline, dsp, dsp-vectors, downmix-identity, measure, net, net-runner,
 #         rate-runner, rate-gate-capture, latency-runner,
 #         recovery-runner, flash, http,
-#         usb-control, replay, replay-samples, tx-gate, tx-governor, tx-fill-witness, underrun-episodes, input-liveness, input-dark, event-ring, recorder, boot, boot-target, fault-target, ota,
+#         usb-control, replay, replay-samples, tx-gate, tx-governor, tx-fill-sensor, tx-fill-witness, underrun-episodes, input-liveness, input-dark, event-ring, recorder, boot, boot-target, fault-target, ota,
 #         build-metadata, runtime, network-transport, sd, sd-target, optical-app,
 #         optical-cutover, runtime-target, memory, itcm-placement, fake-fidelity,
 #         registry, sd-editor.
@@ -829,6 +829,16 @@ tx-governor)
 		"$fw_root/test/tx-governor/test_tx_governor.c" \
 		-o "$tx_governor_out"
 	"$tx_governor_out"
+	;;
+tx-fill-sensor)
+	# Header-only statistic: the phase-corrected transmit-ring fill sensor
+	# (aius-sample-rate-following Phase 3). Pure stdint header, no
+	# implementation linked.
+	tx_fill_sensor_out="$build_dir/tx-fill-sensor"
+	"$cc" "${cflags[@]}" "-I$fw_root/lib/aius_audio/src" \
+		"$fw_root/test/tx-fill-sensor/test_tx_fill_sensor.c" \
+		-o "$tx_fill_sensor_out"
+	"$tx_fill_sensor_out"
 	;;
 tx-fill-witness)
 	# The transmit ISR's missed-fill detector and the ring rebase that keeps

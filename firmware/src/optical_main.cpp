@@ -124,6 +124,11 @@ extern "C" const uint8_t _flashimagelen;
 #include "../lib/aius_audio/src/aius_spdif_tx24.h"
 #include "../lib/aius_audio/src/aius_spdif_rx.h"
 #include "../lib/aius_audio/src/aius_tx_governor.h"
+/* Phase-corrected ring-fill sensor (aius-sample-rate-following Phase 3). Its
+ * non-trivial entry points are cold; the tap below reaches it only through
+ * FLASHMEM, noinline wrappers so no inlined copy lands in default .text. */
+#define AIUS_TX_FILL_SENSOR_COLD FLASHMEM
+#include "../lib/aius_audio/src/aius_tx_fill_sensor.h"
 #include "../lib/aius_audio/src/aius_underrun_episodes.h"
 #include "../lib/aius_audio/src/aius_input_dark.h"
 #include "aius_event_ring.h"
@@ -1425,6 +1430,72 @@ static uint32_t g_tx_governor_trimmed_frames; /* .bss = 0 */
 static uint32_t g_tx_governor_last_trim_at_ms;  /* .bss = 0 */
 static uint32_t g_tx_governor_last_trim_frames; /* .bss = 0 */
 
+/* Ring-fill sensor (aius-sample-rate-following Phase 3), observed only. State
+ * is DTCM .bss but NOT valid at zero (the sub-window minima's sentinel is
+ * INT32_MAX): begin_pipeline() inits it. Every function is FLASHMEM and
+ * noinline so the header's static inlines are compiled into flash, never into
+ * optical_main's default .text (ITCM). Called only from enqueue() and the gate
+ * close edge, both serial with the AUDIO checkpoint. */
+extern "C" uint32_t aius_spdif_tx24_dma_offset_frames(void);
+static AiusTxFillSensor g_tx_fill_sensor;
+
+static FLASHMEM uint32_t tx_fill_reader_fills(void *)
+{
+	return g_aius_spdif_tx24.fills;
+}
+static FLASHMEM uint32_t tx_fill_reader_level(void *)
+{
+	return aius_spdif_tx24_level(&g_aius_spdif_tx24);
+}
+static FLASHMEM uint32_t tx_fill_reader_offset(void *)
+{
+	return aius_spdif_tx24_dma_offset_frames();
+}
+
+static FLASHMEM __attribute__((noinline)) void tx_fill_sensor_init(void)
+{
+	aius_tx_fill_sensor_init(&g_tx_fill_sensor);
+}
+
+static FLASHMEM __attribute__((noinline)) void tx_fill_sensor_reset(void)
+{
+	aius_tx_fill_sensor_reset(&g_tx_fill_sensor);
+}
+
+/* Trim path: window emptied, fault latches kept (observe_faults already ran
+ * for this block). */
+static FLASHMEM __attribute__((noinline)) void tx_fill_sensor_reset_trim(void)
+{
+	aius_tx_fill_sensor_reset_keep_latches(&g_tx_fill_sensor);
+}
+
+/* Pre-commit tap: faults, hold, sample. Returns true when the block was held
+ * (gate closed, carrier lost or replay) so the post-commit call is skipped. */
+static FLASHMEM __attribute__((noinline)) bool
+tx_fill_sensor_pre(bool carrier_present, bool replay)
+{
+	static const AiusTxFillReader reader PROGMEM = {
+		nullptr, tx_fill_reader_fills, tx_fill_reader_level,
+		tx_fill_reader_offset,
+	};
+	aius_tx_fill_sensor_observe_faults(
+		&g_tx_fill_sensor, g_aius_spdif_tx24.underruns,
+		g_aius_tx_fill_witness.missed_fills);
+	if (aius_tx_fill_sensor_hold(&g_tx_fill_sensor,
+	                             g_aius_spdif_tx24.gate_open != 0u,
+	                             carrier_present, replay))
+		return true;
+	(void)aius_tx_fill_sensor_sample(&g_tx_fill_sensor, &reader);
+	return false;
+}
+
+static FLASHMEM __attribute__((noinline)) void
+tx_fill_sensor_post(uint32_t frames, uint32_t unit_frames, uint32_t rate_hz)
+{
+	aius_tx_fill_sensor_commit(&g_tx_fill_sensor, frames, unit_frames,
+	                           micros(), rate_hz);
+}
+
 /* The gate-open underrun episode record (glitch-timestamping 2026-09-07). The
  * decision-free state machine is lib/aius_audio/src/aius_underrun_episodes.h;
  * this file only steps it. Plain DTCM .bss like the event ring and the
@@ -2045,6 +2116,11 @@ private:
 		 * pre-open residue. The source picks the floor: a replay's is
 		 * sized to the SD primitive its producer blocks on. */
 		tx_gate_execute_open(replay);
+		/* Ring-fill sensor, pre-commit sample (same instant as the governor's
+		 * level read). Held blocks (gate closed, carrier lost, replay) reset
+		 * it and skip the post-commit call below. */
+		const bool fill_held =
+			tx_fill_sensor_pre(g_clock_carrier_ready, replay);
 #if AIUS_TX_GOVERNOR_ENABLED
 		/* Latency-governor tap (aius-output-jitter Phase E): the ring level
 		 * BEFORE this block is staged is the standing floor sample the
@@ -2075,6 +2151,8 @@ private:
 			if (dropped != 0u) {
 				g_tx_governor_trims++;
 				g_tx_governor_trimmed_frames += dropped;
+				/* The level jumped: a reset, not an exclusion. */
+				tx_fill_sensor_reset_trim();
 				/* Place the splice in time and state its size:
 				 * the two lifetime totals cannot say WHEN a
 				 * skip the owner heard happened, and the mean
@@ -2156,6 +2234,20 @@ private:
 			                   ring_left, ring_right, block->frames - first);
 		}
 		aius_spdif_tx24_commit(&g_aius_spdif_tx24, block->frames);
+		if (!fill_held) {
+			/* The production unit the sensor's stall test measures a gap
+			 * against: PCM = the block, a compressed burst = its IEC 61937
+			 * repetition period by Pc (aius_tx_fill_unit_frames). */
+			const bool compressed =
+				g_pipeline != nullptr &&
+				aius_pipeline_classification(g_pipeline) ==
+				        AIUS_PIPELINE_DTS;
+			const uint32_t unit_frames = aius_tx_fill_unit_frames(
+				compressed ? aius_pipeline_codec_pc(g_pipeline) : 0u,
+				block->frames, compressed ? 0 : 1);
+			tx_fill_sensor_post(block->frames, unit_frames,
+			                    block->sample_rate_hz);
+		}
 		const uint32_t tx_level =
 			aius_spdif_tx24_level(&g_aius_spdif_tx24);
 		if (tx_level > g_tx_high_water_frames)
@@ -2266,6 +2358,7 @@ static FLASHMEM void audio_exit_reset_critical(void *)
 FLASHMEM void AiusAudioProcessor::begin_pipeline(void)
 {
 	apply_config(AIUS_OPTICAL_CONFIG, AIUS_OPTICAL_SAMPLE_RATE_HZ);
+	tx_fill_sensor_init();
 	aius_out16_init(&g_out16, AIUS_DSP_DITHER_SEED_DEFAULT, 1);
 	/* Bind the capture planes; memory only. The machine starts idle, and
 	 * an idle capture costs the tap one volatile load per block. */
@@ -2505,6 +2598,7 @@ static FLASHMEM void tx_gate_actuate(bool open)
 	 * cancelled. */
 	g_tx_gate_open_pending = false;
 	g_aius_spdif_tx24.gate_open = 0u;
+	tx_fill_sensor_reset(); /* gate close empties the fill window */
 	/* End any open underrun episode at the closing edge, with the gate
 	 * already down: the producer's per-block tap is the only other observer
 	 * and a session that stops mid-stall would otherwise leave its episode
@@ -3376,6 +3470,14 @@ static FLASHMEM bool http_clock_json(char *output, size_t capacity,
 		"\"ingress_level_words\":%lu,"
 		"\"ingress_high_water_words\":%lu,"
 		"\"underrun_episode_count\":%lu,"
+		"\"fill_level_q4\":";
+	/* The rest of the Phase 3 fill-sensor keys; fill_level_q4 above is int or
+	 * null (the net-diag ternary idiom the OpenAPI extractor models). */
+	static const char format_fill[] PROGMEM =
+		",\"fill_subwindow_spread_frames\":%lu,"
+		"\"fill_windows\":%lu,"
+		"\"fill_subwindows_excluded\":%lu,"
+		"\"fill_torn_reads\":%lu,"
 		"\"underrun_episodes\":[";
 	static const char format_episode[] PROGMEM =
 		"%s{\"start_ms\":%lu,\"ms\":%lu,\"frames\":%lu,"
@@ -3427,6 +3529,19 @@ static FLASHMEM bool http_clock_json(char *output, size_t capacity,
 		(unsigned long)ingress.level_words,
 		(unsigned long)ingress.high_water_words,
 		(unsigned long)g_underrun_episodes.count))
+		return false;
+	const AiusTxFillSnapshot fill = aius_tx_fill_sensor_snapshot(&g_tx_fill_sensor);
+	if (!(fill.fill_level_valid
+		      ? http_json_append(output, capacity, length, "%ld",
+		                         (long)fill.fill_level_q4)
+		      : http_json_append(output, capacity, length, "null")))
+		return false;
+	if (!http_json_append(
+		output, capacity, length, format_fill,
+		(unsigned long)fill.fill_subwindow_spread_frames,
+		(unsigned long)fill.fill_windows,
+		(unsigned long)fill.fill_subwindows_excluded,
+		(unsigned long)fill.fill_torn_reads))
 		return false;
 	/* The underrun-episode record (glitch-timestamping 2026-09-07), oldest
 	 * first so a reader appending pages reads forward in time -- the same
@@ -5645,6 +5760,8 @@ static FLASHMEM void ota_compose(void)
  * config_generation deliberately is not. The `dsp_` prefix is load-bearing on
  * THIS route: its existing config_valid / config_error / config_error_count
  * keys describe the public aius.json config, not the DSP model. */
+static uint32_t g_status_body_peak_bytes; /* zero-init .bss, cold path only */
+
 static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
 {
 	uint8_t status[71];
@@ -5844,7 +5961,19 @@ static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
 	if (!http_ab_json((char *)body, capacity, &length))
 		return 0;
 #endif
-	return http_json_append((char *)body, capacity, &length, "}") ? length : 0;
+	/* Largest finished status body this boot, in bytes, against the
+	 * AIUS_RUNTIME_TEENSY_APP_BODY buffer. Served as the peak of the renders
+	 * BEFORE this one (a body cannot state its own length); the update is a
+	 * compare and a store on this cold path. */
+	if (!http_json_append((char *)body, capacity, &length,
+	                      ",\"status_body_peak_bytes\":%lu",
+	                      (unsigned long)g_status_body_peak_bytes))
+		return 0;
+	if (!http_json_append((char *)body, capacity, &length, "}"))
+		return 0;
+	if (length > g_status_body_peak_bytes)
+		g_status_body_peak_bytes = (uint32_t)length;
+	return length;
 }
 
 /* One page of the ring after `cursor`: at most AIUS_EVENT_RING_HTTP_PAGE

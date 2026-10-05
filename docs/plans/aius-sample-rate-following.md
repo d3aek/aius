@@ -6,7 +6,7 @@ component: aius
 status: in-progress
 subtype: implementation
 tags: [aius, firmware, teensy, audio, clocking, spdif]
-updated: 2026-10-04
+updated: 2026-10-05
 toc: true
 ---
 
@@ -27,18 +27,19 @@ buffer and no intermediate DSP quantisation.
 
 ## Current state
 
-Updated 2026-10-05 at a session handover; replace wholesale on the next.
+Updated 2026-10-05 at the Phase 3 build commit; replace wholesale on the next.
 
-- **Status.** Phases 1 and 2 DONE (shipped). Phase 3 (fill sensor, observed
-  only) prebuild-reviewed ready and owner-approved (build now, deploy when
-  idle); not started. Phase 4 (fill-referenced trim) planned, ready after
-  Phase 3's capture. Nothing implemented.
-- **Next action.** Start Phase 3: fan out the `fill-sensor` worker
-  (`firmware/lib/aius_audio/src/aius_tx_fill_sensor.h`,
-  `firmware/test/tx-fill-sensor/**`) while the parent does the DMA-position
-  accessor, the tap, status keys, openapi, suite registration and the
-  governor replay-target check.
-- **What landed** (aius commits, each followed by a upstream pointer bump):
+- **Orchestration posture: checkpoint** (owner, 2026-10-05): surface each
+  decision and human-review gate as it arises.
+- **Status.** Phases 1 and 2 shipped. Phase 3 built and committed with host
+  and target proof green. Adversarial review and clean-room confirmation
+  PASS after fixes (the clean-room held the capture reducer until drift in
+  the class difference and sigma across resets were fixed). OTA and device
+  capture owed. Phase 4 planned, ready after
+  Phase 3's capture.
+- **Next action.** Phase 3 §Remaining steps: OTA when idle, then the capture
+  session at the owner's next viewing.
+- **What landed earlier** (aius commits, each followed by a upstream pointer bump):
 
 | Commit | Contents | Proof |
 | --- | --- | --- |
@@ -49,6 +50,10 @@ Updated 2026-10-05 at a session handover; replace wholesale on the next.
 
 - **Uncommitted tree.** None owned. `CLAUDE.md` is dirty
   and foreign; leave it.
+- **Editor diagnostics.** clangd reports missing `Arduino.h` and the
+  library headers on `firmware/src/` and `firmware/test/` files: an include
+  path gap in the editor only; `firmware/scripts/test.sh` and the PlatformIO
+  builds are the truth.
 - **Evidence outside the repo** (7-day scratch GC):
   `.scratch/a2a9bb23-23dd-4b7a-beb4-02ddc24fabff/session-2026-10-04.jsonl`
   (1 Hz status, 20:42 to 21:32 UTC) and `recorder-underrun-2105.wav`,
@@ -631,12 +636,12 @@ The prebuild review attacks:
 - millihertz overflow/rounding; and
 - calling the full PLL path for every one-second trim.
 
-### Phase 3 Phase-corrected fill sensor and noise capture
+### Phase 3 Phase-corrected fill sensor and noise capture IN-PROGRESS
 
 ```yaml
 phase: 3
 title: Phase-corrected transmit-ring fill statistic, observed only
-status: planned
+status: in-progress # 2026-10-05: built, host and target proof green; OTA deploy and device capture owed
 prebuild-review: ready # clean-room 2026-10-05: text-only findings folded (DMA-position sensor, statistic spec, status limit, device criteria)
 outcome: >-
   GET /api/status serves a transmit-ring fill statistic with about one-frame
@@ -661,7 +666,7 @@ fan-out:
       - firmware/test/tx-fill-sensor/**
 review-intensity: active
 commit-checkpoint:
-  green: [tx-fill-sensor, tx-gate, tx-governor, clock-target, itcm-placement, registry, sd-editor]
+  green: [tx-fill-sensor, tx-gate, tx-governor, clock-target, itcm-placement, registry, sd-editor, optical-cutover]
   buildable: [teensy41-optical, teensy41-optical-slot-a]
   parent-commit: "feat(aius): phase-corrected transmit-ring fill statistic"
 ```
@@ -670,14 +675,54 @@ commit-checkpoint:
 idle** (no carrier, nothing playing; check `/api/status` `carrier` 0 first),
 then the capture session at the owner's next viewing.
 
-**Alongside the build: verify the governor's replay target.**
-Review round 1 flagged, unverified, that the governor is passed the live
-128-frame target during replay (`firmware/src/optical_main.cpp:2060`), so a
-clean replay window at the 768-frame replay floor may be trimmed to 128.
-Phase 3 works at the same tap, so check it there: read the replay path, and
-if real, add a register entry under §Open defects — runtime (it belongs to
-`aius-output-jitter.md`'s governor, Phase E) in the Phase 3 commit. Not
-fixed in Phase 3.
+**Remaining steps, in order:**
+
+1. OTA the committed image when the board is idle (`/api/status` `carrier`
+   0, nothing playing).
+2. At the owner's next viewing, run the capture session (criteria below) and
+   reduce it with `firmware/tools/device/aius_fill_capture_analysis.py`
+   (`--self-test` proves the reducer; `--step-persist 2` is the default,
+   which keeps the 2026-10-04 21:04 step).
+3. Record the inputs below, flip this phase to shipped, and lift Phase 4's
+   `prebuild-review` from ready-after-capture.
+
+**Delivery decisions (2026-10-05).**
+
+- **Governor replay target: real.** Code read confirms the governor trims a
+  clean replay from its 768-frame floor toward 128 about 4 s in. Filed in the
+  [register](aius-open-work-register.md#open-defects--runtime), fix planned as
+  [`aius-output-jitter.md`](aius-output-jitter.md) Phase J. Not fixed here.
+- **Invalid window serves `null`** (owner): a window that closes with fewer
+  than 8 valid sub-windows clears `fill_level_q4` until the next valid window,
+  so a 1 Hz reader never records a stale value. "The last valid window
+  statistic" below means the latest window, when valid.
+- **Status size** (owner): top-level `status_body_peak_bytes` serves the
+  largest body of the previous renders this boot (a body cannot state its
+  own length, so the first render reads 0); the build-time bound moved to
+  Phase 4. The fill keys add at most 162 B and the peak key about 35 B, to a
+  live body of 10,488 B (older image).
+- **Stall unit per class** follows the IEC 61937 repetition period from
+  `pipeline_diag.codec_pc`: PCM the block, AC-3 1,536, E-AC-3 6,144, DTS
+  512, 1,024 or 2,048 by Pc. The mapping lives in the pure header so the host
+  suite exercises the firmware's own table. Known limits: E-AC-3 and
+  unknown-compressed units make the stall test lenient (up to 138 ms) for
+  sources sending shorter units. The tap's choice of class (it reads
+  `codec_pc`, which can be stale from an earlier session at AC-3 onset) and the
+  held-block skip of the post-commit call are untested on the host. A wrong
+  exclusion shows in the capture's per-class exclusion rate; check it there.
+- **Gate close resets the sensor** at `tx_gate_actuate(false)` as well as at
+  the next held block, because a closed gate may never deliver one.
+- **A governor trim empties the window but keeps the fault latches**, so a
+  fault between the trim block and the next still excludes.
+- **The plan-apply ring flush needs no sensor reset of its own.**
+  `clock_flush_ring_preserve_diag()` (one caller, `clock_apply_desired_plan`)
+  always runs after `close_stream_rate_gate()`, whose gate close resets the
+  sensor. Sampling resumes only at the next gate open.
+- **The reducer classes by codec**, not just PCM versus compressed: `ac3`,
+  `eac3`, `dts` from `codec_pc`, `compressed-unknown` before the first burst.
+- **`optical-cutover` refreshed:** its clock key set and event table were
+  stale before this phase (25 keys, events 14 to 18); now green and in this
+  phase's green list.
 
 **Defect.** The tracker retargets the output only when the one-second carrier
 estimate leaves a 500 mHz band around the applied target
@@ -757,8 +802,10 @@ error of `u` mHz moves the ring by `u / 1000` frames/s.
   default `.text` (ITCM).
 - **Read.** At the governor tap (`firmware/src/optical_main.cpp:2059`) read
   `ring->fills`, the level, the DMA offset, then `ring->fills` again; retry if
-  it moved, at most three times. A sample whose three retries all tear is
-  dropped and counted (`fill_torn_reads`).
+  it moved, three attempts in all. A sample whose three attempts all tear is
+  dropped and counted (`fill_torn_reads`). The one tear this cannot see (DMA
+  already in the next half, ISR not yet run) reads 128 high, which a
+  minimum ignores.
 - **Correction.** `fill()` hands each DMA half one period ahead
   (`aius_spdif_sources.cpp:230-269`), so the unsent frames are the ring level,
   128 in the next half and `(1 - phi) * 128` still being read: occupancy is
@@ -800,7 +847,8 @@ error of `u` mHz moves the ring by `u / 1000` frames/s.
   `AIUS_HTTP_MAX_RESPONSE` and streamed; the binding limit is
   `AIUS_RUNTIME_TEENSY_APP_BODY`, 12,288 bytes
   (`firmware/src/aius_runtime_teensy.h:48`), about 1.8 KB of headroom for
-  Phases 3 and 4 together, checked at build.
+  Phases 3 and 4 together. Phase 3 serves the boot's peak body size; the
+  build-time check is Phase 4's (see Delivery decisions).
 - **Tooling.** The capture's derived numbers come from a committed analysis
   script over the poller's JSONL (`firmware/tools/device/`, parent-owned), not
   ad-hoc queries. The parent also owns registering the `tx-fill-sensor` suite
@@ -877,7 +925,7 @@ fan-out:
       - firmware/test/clock/**
 review-intensity: active
 commit-checkpoint:
-  green: [clock, clock-target, tx-gate, tx-governor, tx-fill-sensor, rate-runner, itcm-placement, registry, sd-editor]
+  green: [clock, clock-target, tx-gate, tx-governor, tx-fill-sensor, rate-runner, itcm-placement, registry, sd-editor, optical-cutover]
   buildable: [teensy41-optical, teensy41-optical-slot-a]
   parent-commit: "feat(aius): trim the output rate on transmit-ring fill"
 ```
@@ -892,6 +940,16 @@ commit-checkpoint:
   owner. (2) Class bias: if the PCM and AC-3 floors differ by more than the
   modulation budget allows, sub-windows are redefined by a fixed count of
   production units, or the setpoint becomes per class. (3) Gains, below.
+- **Status body size, checked at build.** Moved here from Phase 3 (owner,
+  2026-10-05). No build or test today bounds `/api/status` against
+  `AIUS_RUNTIME_TEENSY_APP_BODY` (12,288 B); the only `static_assert`s cover
+  the meters and recorder documents. Phase 3 serves `status_body_peak_bytes`
+  (the largest earlier body this boot) so the capture measures real headroom. This
+  phase adds the worst-case bound with a `static_assert` (or a host render of
+  the worst case) before it spends that headroom on its own keys, and adds its
+  keys to the `optical-cutover` expected set. The peak counts successful
+  renders only, so an overflow (a 500 on `/api/status`) never shows in it;
+  count failed renders here too.
 - **Gate open sets occupancy, not level.** Today `tx_gate_execute_open`
   (`firmware/src/optical_main.cpp:2524-2536`) sets the ring level to 128 at
   an instant unrelated to the TX DMA, so occupancy opens anywhere in 256 to

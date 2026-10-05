@@ -356,6 +356,28 @@ ends left open:
   as [`aius-sample-rate-following.md`](aius-sample-rate-following.md) Phase 3
   (fill sensor and noise capture) and Phase 4 (fill-referenced rate trim).
 
+- **OPEN: the TX governor trims a clean replay from its 768-frame floor to
+  the live 128-frame target (filed 2026-10-05, from a code read; not yet
+  observed on device).** Replay shares `enqueue()` with live input, and the
+  governor block (`firmware/src/optical_main.cpp:2048-2108`) has no replay
+  condition. It is passed the constant `AIUS_TX_GATE_OPEN_TARGET_FRAMES` (128
+  on the optical envs, `firmware/platformio.ini:313`) at `:2060`, not the
+  replay floor the gate pads to (`:2528-2530`). A replay stays gate-open with
+  no underrun, so nothing voids the governor window
+  (`firmware/lib/aius_audio/src/aius_tx_governor.h:73-76`). A minimum of 768
+  exceeds 128 + 256, so about 4 s in the governor trims about 640 frames
+  (`aius_tx_governor.h:84-86`, `optical_main.cpp:2070-2073`). That leaves
+  2.7 ms of ring against SD primitives of 6.3 to 8.3 ms
+  (`optical_main.cpp:1386-1395`), the margin the 768 floor exists for.
+  **Expected on device:** about 4 s into a clean replay, `governor_trims` +1,
+  `governor_trimmed_frames` up about 640, a kind `AIUS_EVENT_GOVERNOR_TRIM`
+  event and a `governor_trim` recorder freeze. The likely follow-on, unread,
+  is a `tx_underrun_frames` step at the next OPEN_READ. **Fix planned as**
+  [`aius-output-jitter.md`](aius-output-jitter.md) Phase J (the governor
+  targets the replay floor during replay). Found while verifying the tap for
+  [`aius-sample-rate-following.md`](aius-sample-rate-following.md) Phase 3,
+  which only logs it and does not fix it.
+
 - **OPEN: zero-frame freezes at source power-off evict real captures (filed
   2026-10-05).** The carrier-loss trigger fires on every lock falling edge
   in whichever slot is recording, and after a freeze the bank advances to an

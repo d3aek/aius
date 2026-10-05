@@ -805,6 +805,32 @@ is substituted with zeros.
   `pipeline_diag.crc_rejects` static across a clean session.
 - unit: parent-only
 
+### Phase J Governor target follows the replay floor
+
+Found 2026-10-05 by a code read while preparing
+[`aius-sample-rate-following.md`](aius-sample-rate-following.md) Phase 3, and
+filed in the [register](aius-open-work-register.md#open-defects--runtime).
+The governor Phase G enabled is passed the live 128-frame gate-open target
+during replay (`firmware/src/optical_main.cpp:2060`), so about 4 s into a
+clean replay it trims the 768-frame replay floor down to about 128 and removes
+the SD-refill margin that floor exists for. Not yet observed on device.
+
+- outcome: during a replay the governor's target is the replay floor
+  (`gate_open_replay_target_frames`), so a clean replay at that floor is never
+  trimmed; live behaviour is unchanged, and a live/replay transition does
+  not carry one source's window into the other.
+- seams: the governor tap in `firmware/src/optical_main.cpp` (target
+  selection and a reset on the live/replay edge);
+  `firmware/lib/aius_audio/src/aius_tx_governor.h` only if the reset needs a
+  new entry point. If the Phase 3 fill sensor has landed at the same tap,
+  coordinate with its reset-on-replay path.
+- targeted-proof: `tx-governor` host case (a replay window at 768 with a
+  768 target never trims; the same window with the live target does, proving
+  the case can fail); `tx-gate`, `itcm-placement` green; device: one SD replay
+  of 30 s or more on the bench with `governor_trims` and `tx_underrun_frames`
+  flat, read before and after.
+- unit: parent-only
+
 ## Acceptance
 
 One evening of live 5.1 with the dashboard open on the new image:

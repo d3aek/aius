@@ -1337,6 +1337,11 @@ EVENT_TYPE_VALUES = {
     "AIUS_EVENT_RATE_CHANGE": 11,
     "AIUS_EVENT_RATE_UNSUPPORTED": 12,
     "AIUS_EVENT_CLOCK_FAULT": 13,
+    "AIUS_EVENT_UNDERRUN": 14,
+    "AIUS_EVENT_GOVERNOR_TRIM": 15,
+    "AIUS_EVENT_CLOCK_TRIM": 16,
+    "AIUS_EVENT_TX_MISSED_FILL": 17,
+    "AIUS_EVENT_AC3_CRC_REJECT": 18,
 }
 # Values 4..10 are the fixed counter-edge range; later episode events are not.
 COUNTER_EDGE_TYPES = tuple(
@@ -2079,6 +2084,8 @@ CLOCK_JSON_KEYS = (
     "state",
     "rate_changes",
     "trim_updates",
+    "trim_last_at_ms",
+    "trim_applied_at_ms",
     "structural_replans",
     "invalid_windows",
     "clock_faults",
@@ -2088,6 +2095,12 @@ CLOCK_JSON_KEYS = (
     "unsupported_episodes",
     "tx_level_frames",
     "tx_underrun_frames",
+    "tx_missed_fills",
+    "tx_missed_fill_frames",
+    "tx_missed_fill_at_ms",
+    "tx_missed_fill_flexspi_intr",
+    "tx_missed_fill_flexspi2_intr",
+    "tx_missed_fill_flexspi2_sts1",
     # Output-jitter phases D/E/F: gate-open TX-ring trim (cec2dfa), the
     # latency governor (fecd2e6), and the relock ring pad.
     "gate_open_target_frames",
@@ -2095,11 +2108,27 @@ CLOCK_JSON_KEYS = (
     "gate_open_replay_target_frames",
     "gate_open_trims",
     "gate_open_trimmed_frames",
+    "gate_open_last_trim_at_ms",
     "gate_open_padded_frames",
     "governor_trims",
     "governor_trimmed_frames",
+    "governor_last_trim_at_ms",
+    "governor_last_trim_frames",
     "ingress_level_words",
     "ingress_high_water_words",
+    "underrun_episode_count",
+    # Phase 3 fill sensor.
+    "fill_level_q4",
+    "fill_subwindow_spread_frames",
+    "fill_windows",
+    "fill_subwindows_excluded",
+    "fill_torn_reads",
+    "underrun_episodes",
+    # Episode record entries.
+    "start_ms",
+    "ms",
+    "frames",
+    "gate_open",
 )
 CLOCK_COUNTERS = (
     "g_clock_rate_changes",
@@ -2176,7 +2205,7 @@ def assert_clock_status_clear_and_episode_contract(text):
     clock_json = without_comments(
         function_body(text, "static FLASHMEM bool http_clock_json(")
     )
-    keys = tuple(re.findall(r'\\"([a-z_]+)\\":', clock_json))
+    keys = tuple(re.findall(r'\\"([a-z0-9_]+)\\":', clock_json))
     assert keys == CLOCK_JSON_KEYS, (
         "the clock status object field set or order changed. Expected "
         f"{CLOCK_JSON_KEYS}, found {keys}"
@@ -3680,6 +3709,11 @@ def _synthetic_counter_edges():
           "\trecord_event(AIUS_EVENT_RATE_CHANGE, current_state(), 48000u);\n"
           "\trecord_event(AIUS_EVENT_RATE_UNSUPPORTED, current_state(), 0u);\n"
           "\trecord_event(AIUS_EVENT_CLOCK_FAULT, current_state(), 1u);\n"
+          "\trecord_event(AIUS_EVENT_UNDERRUN, current_state(), 1u);\n"
+          "\trecord_event(AIUS_EVENT_GOVERNOR_TRIM, current_state(), 1u);\n"
+          "\trecord_event(AIUS_EVENT_CLOCK_TRIM, current_state(), 1u);\n"
+          "\trecord_event(AIUS_EVENT_TX_MISSED_FILL, current_state(), 1u);\n"
+          "\trecord_event(AIUS_EVENT_AC3_CRC_REJECT, current_state(), 1u);\n"
           "}\n"
           "static FLASHMEM uint16_t counter_edge(uint32_t current, uint32_t *previous)\n"
           "{\n"

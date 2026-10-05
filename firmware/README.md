@@ -407,6 +407,7 @@ Suites (all build with `-Wall -Wextra -Werror` + ASan/UBSan):
 | `replay` | Replay service over a fake reader. |
 | `tx-gate` | The transmit-gate predicate's whole truth table (no carrier and no replay → no output carrier). |
 | `tx-governor` | The latency governor's window-minimum floor estimator and one-skip trim decision (aius-output-jitter Phase E). |
+| `tx-fill-sensor` | The phase-corrected transmit-ring fill statistic: DMA-position occupancy, 16 sub-window minima, exclusions, torn-read retry and reset (aius-sample-rate-following Phase 3). |
 | `tx-fill-witness` | The transmit ISR's missed-fill detector (same DMA half filled twice = an interrupt a whole period late, so the DMA repeated a stale half) and the ring rebase that stops the miss from standing as permanent latency. |
 | `underrun-episodes` | The gate-open underrun episode record served in `clock.underrun_episodes`: episode boundaries at the accepted-block cadence, the eight-deep ring, closed-gate truncation, and the millisecond and counter wraps. |
 | `input-liveness` | Why nothing is reaching the transmit sink and for how long, over the gate-closed region the production-gap watermark discards (aius-input-recovery Phase 1). |

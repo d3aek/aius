@@ -2520,6 +2520,11 @@
           "ingress_level_words",
           "ingress_high_water_words",
           "underrun_episode_count",
+          "fill_level_q4",
+          "fill_subwindow_spread_frames",
+          "fill_windows",
+          "fill_subwindows_excluded",
+          "fill_torn_reads",
           "underrun_episodes"
         ],
         "properties": {
@@ -2724,6 +2729,31 @@
             "type": "integer",
             "minimum": 0,
             "description": "Lifetime gate-open underrun EPISODES that have ended. underrun_episodes holds the newest 8; anything above 8 here has been overwritten. An episode still open is in neither number until it ends."
+          },
+          "fill_level_q4": {
+            "type": "integer",
+            "nullable": true,
+            "description": "Phase-corrected transmit-ring occupancy, the last valid 192,000-frame window statistic, in 1/16 frame (level + 256 minus the DMA read offset in frames, minimum per 12,000-frame sub-window, mean of the non-excluded minima). Signed. null before the first valid window, after a reset (gate close, governor trim, carrier loss, replay block) and after a closed window with fewer than 8 valid sub-windows, until the next valid window closes. Observed only; nothing acts on it."
+          },
+          "fill_subwindow_spread_frames": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Max minus min of the sub-window minima behind the last valid fill_level_q4, in frames. 0 whenever fill_level_q4 is null (before the first valid window, after a reset, after an invalid window)."
+          },
+          "fill_windows": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Valid fill windows published (at least 8 of 16 sub-windows valid). Lifetime."
+          },
+          "fill_subwindows_excluded": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Sub-windows excluded from the fill statistic (an underrun, a missed fill, a production stall, or no sample). Lifetime."
+          },
+          "fill_torn_reads": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Fill samples dropped after three torn reads of the ring's fills counter. Lifetime."
           },
           "underrun_episodes": {
             "type": "array",
@@ -3708,6 +3738,11 @@
             "type": "integer",
             "minimum": 0,
             "description": "Longest single audio update ISR run in microseconds (normally sub-millisecond); a huge value convicts a stall inside the callback rather than a storm of invocations."
+          },
+          "status_body_peak_bytes": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Largest finished GET /api/status body this boot in bytes, the peak of the renders before this one (a body cannot state its own length). Compare against the 12,288-byte app body buffer; 0 on the first render."
           },
           "network_state": {
             "type": "integer",

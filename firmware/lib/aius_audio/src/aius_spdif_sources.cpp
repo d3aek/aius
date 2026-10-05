@@ -20,6 +20,10 @@
  * decision and the concurrency contract are in aius_spdif_tx24.h. */
 #if !defined(AIUS_AUDIO_CLOCK_FAKE_TARGET)
 #include "aius_spdif_tx24.h"
+#ifndef AIUS_TX_FILL_SENSOR_COLD
+#define AIUS_TX_FILL_SENSOR_COLD FLASHMEM
+#endif
+#include "aius_tx_fill_sensor.h"
 #endif
 /* The receive staging is pure and host-built (the clock-target suite pins
  * it); only its hook below is target-only. */
@@ -211,6 +215,10 @@ public:
 	AiusSpdifTx24Hook(void) = delete;
 	static void install(void);
 	static void isr(void);
+	/* The TX DMA's read offset into the half it is playing, in frames
+	 * 0..AUDIO_BLOCK_SAMPLES-1 (aius-sample-rate-following Phase 3 sensor).
+	 * FLASHMEM: called per producer block from the flash-resident enqueue. */
+	static uint32_t dma_offset_frames(void);
 };
 
 /* THE TRANSMIT DMA INTERRUPT, once per AUDIO_BLOCK_SAMPLES frames (375 Hz at
@@ -223,7 +231,7 @@ public:
  * lib/aius_audio/src/aius_spdif_sources.cpp.o, which is neither a declared cold
  * object nor the pinned hot object, so test/itcm-placement/verify_target.py
  * does not police it -- and the audio-block set of optical_main.cpp stays
- * exactly the three sections it pins. */
+ * exactly the five sections it pins (HOT_SECTIONS in verify_target.py). */
 void AiusSpdifTx24Hook::isr(void)
 {
 	/* This is the period boundary, before any work on the inactive half. */
@@ -287,6 +295,28 @@ void AiusSpdifTx24Hook::isr(void)
 	 * plain count. */
 	if (update_responsibility)
 		update_all();
+}
+
+/* The pure header hard-codes the TX buffer geometry; tie it to the real buffer. */
+static_assert(sizeof(SPDIF_tx_buffer) == AIUS_TX_FILL_BUFFER_BYTES &&
+		      AUDIO_BLOCK_SAMPLES == AIUS_TX_FILL_HALF_FRAMES &&
+		      AUDIO_BLOCK_SAMPLES * AIUS_TX_FILL_FRAME_BYTES ==
+			      AIUS_TX_FILL_BUFFER_BYTES / 2u,
+	      "aius_tx_fill_sensor.h TX buffer geometry diverged from SPDIF_tx_buffer");
+
+/* Same half test as isr() (saddr against the buffer's midpoint), reduced to the
+ * offset inside that half by the pure, host-tested mapping in
+ * aius_tx_fill_sensor.h. */
+FLASHMEM uint32_t AiusSpdifTx24Hook::dma_offset_frames(void)
+{
+	const uint32_t base = (uint32_t)SPDIF_tx_buffer;
+	return aius_tx_fill_saddr_offset_frames((uint32_t)(dma.TCD->SADDR), base);
+}
+
+/* C-linkage entry for optical_main.cpp, which cannot name the shim class. */
+extern "C" FLASHMEM uint32_t aius_spdif_tx24_dma_offset_frames(void)
+{
+	return AiusSpdifTx24Hook::dma_offset_frames();
 }
 
 FLASHMEM void AiusSpdifTx24Hook::install(void)
