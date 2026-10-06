@@ -45,9 +45,9 @@ next handover.
   same reviewer re-checks the folded text, then one clean-room
   confirmation; lift `prebuild-review` to `ready`, then build the five
   fan-out slices in the YAML (four concurrent host-only, then the parent
-  wiring), against §Slice interfaces. Round 5 found three more blockers,
-  folded with the interface draft (2026-10-06); the same reviewer
-  re-checks again.
+  wiring), against §Slice interfaces. Rounds 5 and 6 found more blockers, each
+  folded (2026-10-06); the same reviewer re-checks until its findings run
+  dry. The parent lands the `test.sh` clock include before spawning.
 - **What landed this session** (aius commits; upstream pointer bumps
   follow each):
 
@@ -992,7 +992,7 @@ phase: 4
 title: Close the output-rate loop on transmit-ring fill
 status: planned
 depends-on: phase 3 noise capture (setpoint spread across gate opens, PCM-versus-AC-3 floor bias)
-prebuild-review: round-5-folded # 2026-10-06: rounds 4 and 5 NOT READY, findings and slice interfaces folded; same-reviewer re-check, then clean-room, then build
+prebuild-review: round-6-folded # 2026-10-06: rounds 4 to 6 NOT READY, findings and slice interfaces folded; same-reviewer re-check, then clean-room, then build
 outcome: >-
   A live source offset inside the 500 mHz target deadband no longer drains
   (or fills) the transmit ring: the output rate converges on the source's
@@ -1036,6 +1036,7 @@ fan-out: # four concurrent host-only slices against §Slice interfaces; parent-w
       - firmware/test/pipeline/**
       - firmware/test/codec-api/**
       - firmware/test/capability/**
+      - firmware/test/dsp/test_dsp.c
   - name: parent-wiring # coordinator: gate open, sample_rate_service, status keys, openapi, test.sh, reducer fix
     owned-paths:
       - firmware/src/optical_main.cpp
@@ -1046,7 +1047,7 @@ fan-out: # four concurrent host-only slices against §Slice interfaces; parent-w
       - firmware/tools/device/aius_fill_capture_analysis.py
 review-intensity: active
 commit-checkpoint:
-  green: [clock, clock-target, tx-gate, tx-governor, tx-fill-sensor, rate-runner, itcm-placement, registry, sd-editor, optical-cutover, status-body-bound, memory]
+  green: [clock, clock-target, tx-gate, tx-governor, tx-fill-sensor, rate-runner, itcm-placement, registry, sd-editor, optical-cutover, status-body-bound, memory, pipeline, codec-api-contract, capability, dsp, a52, eac3, dts]
   buildable: [teensy41-optical, teensy41-optical-slot-a]
   parent-commit: "feat(aius): trim the output rate on transmit-ring fill"
 ```
@@ -1082,8 +1083,10 @@ commit-checkpoint:
      of sessions, so Phase 4b, not the setpoint, is the real mitigation for
      a deeper dip (round 5 N8). After one underrun the trough level is 256,
      under the governor's 384 trigger (`firmware/lib/aius_audio/src/aius_tx_governor.h:84`), and a
-     governor trim (which lands at level 128) lands on the setpoint. The
-     constant alternative (about 368 frames, about 1 ms more latency)
+     governor trim (which lands at level 128) lands on the setpoint, except
+     in a session whose open saw a pending boundary (trough level 0): there
+     it lands 128 above, a step the loop drains like an underrun's (round 6
+     R8). The constant alternative (about 368 frames, about 1 ms more latency)
      declined.
   2. **Class bias: none.** All three class changes closed the gate and
      relocked, so the occupancy pad resets the floor. The budget allows
@@ -1207,13 +1210,17 @@ commit-checkpoint:
     (`a52_blocks_decoded == 1`); E-AC-3 the first block of each decoded
     access unit (`retained_offset == 0`; the pipeline's unit is one access
     unit of at most 1,536 frames, `aius_eac3.h:20`, so nothing counts a
-    6,144-frame unit); DTS, PCM and replay every block; a CRC silence
-    substitution marks its first substituted block of each unit
-    (`aius_pipeline.c:1275,1331`). Slice fill-sensor-window checks the
-    sensor's 6,144-frame E-AC-3 unit (`aius_tx_fill_sensor.h:182`) against
-    that 1,536 and reports which is right. The deferral is capped at one
-    unit duration (`aius_tx_fill_unit_frames(pc)` from the sensor tap,
-    `firmware/src/optical_main.cpp:1496`), then the open takes any block, so a class or a stale
+    6,144-frame unit); DTS the first 512-frame slice of each access unit
+    (`retained_offset == 0`; a DTS-2048 unit arrives as four slices,
+    `aius_pipeline.c:1277-1294,1334-1340`, so marking every slice would
+    reopen k × 512 low, round 6 R1); PCM and replay every block; a CRC
+    silence substitution marks its first substituted block of each unit
+    (`aius_pipeline.c:1275,1331`). The sensor's 6,144-frame E-AC-3 figure
+    (`aius_tx_fill_sensor.h:182`) only makes the cap lenient (128 ms); a
+    type-21 burst is one access unit (`aius_eac3.h:17-23`), so the marker is
+    right (round 6 R8). The deferral is capped at one unit of committed
+    frames since the arm (`aius_tx_fill_unit_frames(pc, block_frames,
+    is_pcm)`, `aius_tx_fill_sensor.h:173`), then the open takes any block, so a class or a stale
     `codec_pc` that never marks a start cannot hold the room silent. No
     interaction with the 512-frame invalid hold: the open arms only after
     `transition_complete`.
@@ -1281,22 +1288,40 @@ commit-checkpoint:
     is capped at 120 windows (8 min, the worst recovery), then commits.
     Deferring every retarget was declined: a source wandering past the
     clamp during an underrun recovery would keep the loop saturated forever
-    with the retarget that would end it deferred (N2). Slew-limiting the
+    with the retarget that would end it deferred (N2). The cap counts from
+    the first proposal of a deferral episode; `_step` re-proposes every
+    10 s while the reference is the old centre (`aius_clock.c:258-267`), and
+    a re-proposal refreshes the pending value only, never the count (R5). Slew-limiting the
     composed step was declined: every legitimate retarget would take 25
-    windows. A same-nominal dark full apply, a replay or a fault retry
-    first commits a pending centre into `g_clock_desired_plan` and clears
-    it; the full apply is dark, so the bump is inaudible (N6). A
-    nominal-change accept discards the pending centre, because it replaces
-    the desired plan with a fresh estimate
-    (`firmware/src/optical_main.cpp:8842-8849`).
+    windows. `fill_reset(discard_pending = false)` commits a pending centre
+    into `g_clock_desired_plan`, and is called **before**
+    `aius_audio_clock_apply` at exactly two sites: the same-nominal
+    structural full apply (`firmware/src/optical_main.cpp:8903`) and the
+    fault retry (`:8767`); the apply is dark, so the bump is inaudible (N6).
+    Every other `I`-zeroing event discards it (`discard_pending = true`):
+    an accept (`:8848`, which replaces the desired plan with a fresh
+    estimate), a replay (its desired plan must stay exactly 48,000,000 mHz,
+    `:8744-8749`, `:8924-8937`, or `g_clock_replay_ready` stays false) and
+    carrier loss (round 6 R3). Parent-wiring lists all five
+    `clock_apply_desired_plan` call sites with their value in its return.
+  - *Existing centre-path behaviour survives* (round 6 R7). The trim branch
+    at `:8851-8900` keeps its invalid-plan fault for a centre target
+    (`:8854-8857`), and a committed centre whose plan differs structurally
+    takes the structural full apply (`:8900-8905`) with `I` zeroed, never a
+    composed target in a cell `request_trim` refuses forever.
   - *The tracker is told the centre only.* `clock_refresh_applied`
     (`firmware/src/optical_main.cpp:8751-8759`) passes the applied target to
     `aius_rate_tracker_note_target_applied`, which sets
     `applied_target_millihz` and resets `last_target_request_ms`
-    (`firmware/lib/aius_clock/src/aius_clock.c:344-345`). **The tracker sets
-    its own hysteresis reference when a centre commits**, and the parent
-    calls the note only on a full apply's readback (applied equals
-    `g_clock_desired_plan` exactly there, `I` being zero). "Note iff applied
+    (`firmware/lib/aius_clock/src/aius_clock.c:344-345`). **The centre and
+    the hysteresis reference are one field** (`applied_target_millihz`,
+    round 6 R2: two fields left the new centre uninitialised after a
+    relock, so the first FILL write was composed on the pre-relock centre,
+    and at a nominal change every request was refused at
+    `aius_audio_clock.cpp:575`). Accept sets it to the accept target; a
+    centre commit sets it; the parent's note sets it once, on the pass
+    where `g_clock_dark_transition_pending` goes from true to false (not on
+    "applied differs from noted", which would fire on every FILL write). "Note iff applied
     equals desired" was declined: after a bumpless retarget the composed
     target almost never equals the centre, so it would never fire
     (interface draft, 2026-10-06). A FILL readback never notes, or every fill write restarts
@@ -1317,11 +1342,13 @@ commit-checkpoint:
   emission state by more than the emit threshold (20 mHz, entry gate item
   5). At the measured noise writes are not rare: the bound is one FILL write
   per window.
-- **Kinds and diagnostics.** A write is CENTRE only in the pass whose centre
-  retarget committed; otherwise FILL, and the flag clears at the end of that
-  pass whether or not anything was written (a sub-threshold bumpless
-  retarget must not label a noise write minutes later as CENTRE and plant a
-  false `trim_last_at_ms`). A centre retarget counts `trim_updates`
+- **Kinds and diagnostics.** A centre commit raises the CENTRE flag. If the
+  commit pass needs no write (sub-threshold, bumpless), the flag clears at
+  the end of that pass, so a noise write minutes later is not labelled
+  CENTRE with a false `trim_last_at_ms`. If it needs a write, CENTRE
+  persists until that write is accepted, through refusals and spent
+  windows, and a CENTRE write bypasses the one-FILL-per-window budget
+  (round 6 R4). Every other write is FILL. A centre retarget counts `trim_updates`
   and records `AIUS_EVENT_CLOCK_TRIM` when it commits, whether or not a write
   follows, so centre activity stays visible. A CENTRE write stamps
   `trim_last_at_ms` and `trim_applied_at_ms`
@@ -1413,10 +1440,12 @@ typedef struct {
 	uint8_t retarget_pending_windows;   /* 0..120 */
 	bool saturated;
 } AiusRateTrackerFillResult;
-/* AiusRateTracker gains: centre_millihz, pending_centre_millihz,
- * pending_centre_windows, fill_integral_microhz, fill_offset_millihz,
- * fill_setpoint_frames, fill_last_seq, fill_spent_seq, fill_have_seq,
- * fill_spent, fill_saturated, centre_committed_pass. */
+/* AiusRateTracker gains: pending_centre_millihz, pending_centre_windows
+ * (counts from the episode's first proposal), fill_integral_microhz,
+ * fill_offset_millihz, fill_last_seq, fill_spent_seq, fill_have_seq,
+ * fill_spent, fill_saturated, centre_flag (persists until a CENTRE write
+ * is accepted). The centre IS applied_target_millihz (one field). The
+ * setpoint is input only (in->setpoint_frames governs; no tracker copy). */
 AiusRateTrackerFillResult aius_rate_tracker_fill_step(
 	AiusRateTracker *tracker, const AiusRateTrackerFillInput *in); /* every pass, after _step */
 void aius_rate_tracker_note_emit(AiusRateTracker *tracker, bool accepted); /* true spends the window */
@@ -1425,8 +1454,10 @@ bool aius_rate_tracker_fill_reset(AiusRateTracker *tracker, bool discard_pending
 uint32_t aius_rate_tracker_open_setpoint_frames(uint32_t level_frames,
 	uint32_t offset_frames, bool boundary_pending); /* level+256-offset, minus 128 if pending */
 /* _step: a proposal goes to pending_centre (target_update still reported);
- * a committed centre sets the hysteresis reference itself;
- * accept_candidate zeroes I. note_target_applied: unchanged, full apply only. */
+ * a committed centre sets applied_target_millihz itself; accept_candidate
+ * sets it to the accept target and zeroes I. note_target_applied:
+ * signature unchanged, called once when g_clock_dark_transition_pending
+ * goes true -> false. */
 
 /* aius_audio_clock.h (clock-kind) */
 typedef enum { AIUS_AUDIO_CLOCK_TRIM_CENTRE = 1, AIUS_AUDIO_CLOCK_TRIM_FILL = 2 }
@@ -1465,6 +1496,9 @@ typedef struct { int32_t *planes[AIUS_MAX_CHANNELS]; uint16_t channels;
 	uint8_t first_in_unit; /* 1: a gate open may land here */ } AiusPcmBlock;
 ```
 
+- **Before spawning**, the parent lands `-I$fw_root/lib/aius_audio/src`
+  (and `-lm` if used) on the clock line at `firmware/scripts/test.sh:514-518`,
+  so fill-loop-core compiles its own suite while it works (round 6 R6).
 - **fill-loop-core** consumes nothing new. The `test/clock` plant includes
   the Phase 3 sensor header read-only for its arithmetic and derives
   `window_seq` and `exclusions` from its own injected faults (a window
@@ -1481,14 +1515,16 @@ typedef struct { int32_t *planes[AIUS_MAX_CHANNELS]; uint16_t channels;
   `fill_pcm_descriptor` (`aius_pipeline.c:1124-1133,1281-1294`; a retried
   block keeps its `sink_block`, so the flag survives a retry), and bumps
   `AIUS_CODEC_ABI_VERSION` to 2 (a layout change; orchestrator call) with
-  `test_codec_api_contract.c:10` and `test_capability.c:330`.
+  `test_codec_api_contract.c:10` and `test_capability.c:330`. It converts
+  the nine positional `AiusPcmBlock` initialisers in
+  `firmware/test/dsp/test_dsp.c` (`:594`, `:1304`, … `:3215`) to designated
+  initialisers, since the appended field trips
+  `-Wmissing-field-initializers` under `-Werror` (`test.sh:77`).
 - **parent-wiring** consumes everything: local `extern "C"` declarations
   (the `optical_main.cpp:1440` pattern), the enum and exclusion-bit
   `static_assert`s, the trim branch at `:8851-8900` replaced by `fill_step`,
   plan, `request_trim(kind)`, `note_emit`; `first_in_unit` ignored on replay
-  blocks (`:2119`). It adds `-I$fw_root/lib/aius_audio/src` (and `-lm` if
-  used) to the clock line at `firmware/scripts/test.sh:514-518`, bounds the
-  new keys in `status-body-bound`, and runs every target build itself, one
+  blocks (`:2119`). It bounds the new keys in `status-body-bound`, and runs every target build itself, one
   at a time; slices run host suites only.
 
 **Host proof (clock suite).** The tracker API owns the centre/integral
@@ -1517,8 +1553,20 @@ quantised to 140 mHz bins with 1.2 Hz spread and slow wander (280 mHz over
   same-sign retarget commits at once, no deadlock, no governor splice; an
   opposite-sign retarget defers and commits by 120 windows;
 - a full apply (relock or fault retry) during a deferral: the pending centre
-  lands in the desired plan, `I` zeroed, the readback notes (applied equals
-  desired), and retargets resume after the relock;
+  lands in the desired plan, `I` zeroed, the readback notes once (dark
+  transition ends), and retargets resume after the relock;
+- a relock at a different rate (same nominal and across a nominal change):
+  the first FILL write is composed on the new centre, never the old;
+- a replay or carrier loss during a deferral: the pending centre is
+  discarded, the replay plan stays exactly 48,000,000 mHz, replay ready;
+- a deferral with re-proposals every 10 s: the retarget commits by window
+  120;
+- a CENTRE-needing commit whose write is refused, then lands in a spent
+  window: the eventual write is CENTRE and stamps the centre pair;
+- a committed centre whose plan is invalid faults as today; one that is
+  structurally different takes the structural full apply with `I` zeroed;
+- a gate open armed at DTS-2048 slice k = 1 to 3: deferred to the next
+  access unit's first slice, no underrun at the open;
 - one injected underrun at the setpoint with `I` at −670, 0 and +670 mHz:
   no second underrun, no governor trim, worst recovery within 16 frames
   stated (about 8 min expected);
@@ -1607,7 +1655,9 @@ burst-start open, and accepted the orchestrator's recommendations for the
 rest of the phase. Round 5 (same reviewer, 2026-10-06): NOT READY, three
 blockers the round 4 fixes opened (pending-boundary sign, deferral
 deadlock, an unobservable burst start) and four contract-text holes, folded
-above with §Slice interfaces. The same reviewer re-checks, then one
+above with §Slice interfaces. Round 6 (2026-10-06): NOT READY, two
+blockers (DTS slices all marked; two centre references after a relock) and
+five contract-text holes, folded. The same reviewer re-checks, then one
 clean-room confirmation. Phase 4's delivery audit re-attacks: the opening
 read and setpoint; the controller and emission state split under refusal,
 saturation and sub-threshold windows; the stamp-kind field on every write
