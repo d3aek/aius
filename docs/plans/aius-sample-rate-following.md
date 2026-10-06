@@ -39,7 +39,10 @@ next handover.
   audio-interruption cost statements for that session.
 - **Status.** Phases 1, 2 and 3 DONE. Phase 4 BUILT; Phase 4a SHIPPED
   (2026-10-06) on host proof, with delivery review, closure and clean-room
-  all passing. Not deployed: the board still runs `0af7a8244081` (slot 2).
+  all passing. Deployed 2026-10-06: `df966f17b370` by OTA (container
+  sha256 `bb3e090a8e8b…`), slot 1, healthy-boot self-commit,
+  `rollback_observed` false; `clock.centre_writes` and
+  `clock.gate_open_pending_padded_frames` present.
 - **Next action.** Build, sign and OTA the Phase 4a image in the living
   room and run the Phase 4 device session, including gate 7 at
   fill-write cadence (4a's moved bench proof); that needs the owner.
@@ -1722,7 +1725,10 @@ Before reading the session, fix the reducer
 (`firmware/tools/device/aius_fill_capture_analysis.py:344-366`): split
 `episode_free_slope` spans at a gate close, so a relock's re-base is not
 fitted as drift (the 2026-10-05 +0.38 frames/s artefact). Proof: its
-`--self-test` gains a case with a gate close inside a span.
+`--self-test` gains a case with a gate close inside a span. Done: the
+split and its case landed with the Phase 4 build (`e019dc0`); 2026-10-06
+added a split on `gate_open_pending_padded_frames` (F3) as well
+(`PAD_KEYS`), `--self-test` ok.
 
 Bench: gate 1's rebased criterion (`max_follow_error_millihz` should stay
 about the estimate's own spread, 798 of 1,000 on 2026-09-04; if it breaches,

@@ -342,6 +342,11 @@ def underrun_jumps(records, n=3):
     return out
 
 
+# A relock pads the ring open: immediately (gate_open_padded_frames) or later, as a pending
+# open's extra pad (gate_open_pending_padded_frames). Either moving re-bases the floor.
+PAD_KEYS = ("gate_open_padded_frames", "gate_open_pending_padded_frames")
+
+
 def episode_free_slope(win, args):
     """Pooled fill slope over spans free of underruns, resets, closes and gaps (weighted by points).
 
@@ -352,8 +357,7 @@ def episode_free_slope(win, args):
     for r in win:
         if prev is not None and (not r.open or not prev.open or r.underrun or r.reset
                                  or r.t - prev.t > args.gap
-                                 or r.clock.get("gate_open_padded_frames")
-                                 != prev.clock.get("gate_open_padded_frames")):
+                                 or any(r.clock.get(k) != prev.clock.get(k) for k in PAD_KEYS)):
             spans.append(cur)
             cur = []
         if r.open and r.fill is not None:
@@ -867,6 +871,18 @@ def self_test():
     assert fit([(r.t, r.fill) for r in flat_a + flat_b])[0] > 0.5, "the fixture does not re-base"
     slope = episode_free_slope(flat_a + flat_b, ns)
     assert slope is not None and abs(slope) < 0.01, ("unpolled close not split", slope)
+    # A pending open's extra pad (split counter) splits too; centre_writes alone does not.
+    def pend_rec(t, fill, pending, writes):
+        return types.SimpleNamespace(t=float(t), open=True, fill=fill, underrun=False, reset=False,
+                                     clock={"gate_open_padded_frames": 128,
+                                            "gate_open_pending_padded_frames": pending,
+                                            "centre_writes": writes})
+    pa = [pend_rec(t, 300.0 + 0.01 * (t % 2), 0, 5) for t in range(0, 60)]
+    pb = [pend_rec(t, 380.0 + 0.01 * (t % 2), 128, 6) for t in range(60, 120)]
+    slope = episode_free_slope(pa + pb, ns)
+    assert slope is not None and abs(slope) < 0.01, ("pending pad not split", slope)
+    slope = episode_free_slope(pa + [pend_rec(t, 300.0 + 0.01 * (t % 2), 0, 9) for t in range(60, 120)], ns)
+    assert slope is not None and abs(slope) < 0.01, ("centre_writes split a flat span", slope)
     print("self-test ok")
     return 0
 
