@@ -343,7 +343,7 @@ extern "C" FLASHMEM uint32_t aius_spdif_tx24_dma_offset_frames(void)
  * PRIMASK access (an unconditional interrupts() would reopen the caller's
  * section), ONE SADDR read (a second read, or the DMA interrupt flag, can
  * straddle a crossing), and the offset computed inline rather than through
- * dma_offset_frames(), which is FLASHMEM. Same half test and clamp as
+ * dma_offset_frames(), which is FLASHMEM, through the always-inline
  * aius_tx_fill_saddr_offset_frames. Returns nonzero when a period boundary is
  * pending: SADDR lies in the half the ISR last filled, decided by the shared
  * always-inline predicate aius_tx_fill_boundary_pending (aius_tx_fill_sensor.h;
@@ -355,12 +355,9 @@ FASTRUN uint32_t AiusSpdifTx24Hook::dma_read_position(uint32_t *half,
 	const uint32_t base = (uint32_t)SPDIF_tx_buffer;
 	const uint32_t half_bytes = AIUS_TX_FILL_BUFFER_BYTES / 2u;
 	const uint32_t second = saddr >= base + half_bytes ? 1u : 0u;
-	const uint32_t frames =
-		(saddr - base - second * half_bytes) / AIUS_TX_FILL_FRAME_BYTES;
 
 	*half = second;
-	*offset_frames = frames < (uint32_t)AIUS_TX_FILL_HALF_FRAMES
-		? frames : (uint32_t)AIUS_TX_FILL_HALF_FRAMES - 1u;
+	*offset_frames = aius_tx_fill_saddr_offset_frames(saddr, base);
 	return aius_tx_fill_boundary_pending(
 		saddr, base, g_aius_tx_fill_witness.last_half) ? 1u : 0u;
 }

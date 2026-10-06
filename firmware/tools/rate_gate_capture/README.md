@@ -67,11 +67,28 @@ dedicated S/PDIF protocol analyzer; that is why the field is named
 ## Gate 7 — two time origins and an amplitude-derived detector
 
 **Capture↔status correlation uses bounded local alignment.** Each status
-counter increment (`trim_updates`, `invalid_windows`) is matched to the
-nearest capture event inside a drift-padded wall-time window around the poll
-interval, not a global frame→wall-time map (which accumulates
-output-vs-capture clock-drift error over a 600 s run). `ALIGNMENT_MARGIN_S`
-bounds the padding at 1.5 s.
+`invalid_windows` increment (a full apply) is matched to the nearest capture
+event inside a drift-padded wall-time window around the poll interval, not a
+global frame→wall-time map (which accumulates output-vs-capture clock-drift
+error over a 600 s run). `ALIGNMENT_MARGIN_S` bounds the padding at 1.5 s.
+
+**Only full applies open match windows.** Trim and fill writes are
+carrier-continuous numerator steps and never excuse a jump: at fill cadence
+their windows would cover the whole capture. `correlated_trim_updates` keeps
+its name but counts jumps matched to a full apply. The bench still sees every
+write through the `trim_applied_at_ms` / `fill_applied_at_ms` stamp changes
+(`trim-not-observed`; a sample lacking a stamp is skipped, and the stamp
+fallback to `trim_updates` applies only when no sample carries it), checks
+`invalid_windows` delta at least `structural_replans` delta (`invalid_windows`
+rises on every successful apply: nominal accept, fault retry, replay apply;
+`structural_replans` only on a replan), and asserts `fill_trims` delta at most
+`fill_window_seq` delta plus 1 (`fill-cadence`). Gate 1's trim-cadence is
+advisory per design decision D4 (b): the receiver's ~140 mHz estimate quantum
+makes at most 2 post-settle commits unmeetable (about 52 are expected on a
+healthy 10 min run). The bench records `centre_commits_after_settle`
+(`trim_updates` delta minus `structural_replans` delta, else `trim_updates`),
+`centre_writes_after_settle` and `trim_cadence_advisory` as metrics and never
+fails on them.
 
 **Two origins separate the status domain from the capture domain and both are
 subtracted.** For the board→U24 loop, `aplay` must start and the board must

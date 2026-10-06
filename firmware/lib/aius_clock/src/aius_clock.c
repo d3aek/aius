@@ -682,8 +682,11 @@ FLASHMEM AiusRateTrackerFillResult aius_rate_tracker_fill_step(
 		}
 	}
 
-	if (tracker->pending_centre_millihz != 0u &&
+	/* N6: no commit without an applied-plan readback, so a failing accept's
+	 * apply never spawns full applies outside the 1 s retry throttle. */
+	if (in->have_applied && tracker->pending_centre_millihz != 0u &&
 	    tracker->applied_target_millihz != 0u) {
+		AiusSpdifClockPlan centre_plan;
 		const int64_t delta = (int64_t)tracker->pending_centre_millihz -
 		                      (int64_t)tracker->applied_target_millihz;
 		const bool same_sign =
@@ -691,11 +694,17 @@ FLASHMEM AiusRateTrackerFillResult aius_rate_tracker_fill_step(
 			(delta < 0 && tracker->fill_offset_millihz < 0) ||
 			delta == 0;
 
-		/* Saturated, an opposite-sign retarget defers (that saturation
-		 * resolves itself) up to the cap; anything else commits now. */
-		if (!tracker->fill_saturated || same_sign ||
-		    tracker->pending_centre_windows >=
-			    AIUS_CLOCK_FILL_RETARGET_DEFER_MAX_WINDOWS) {
+		/* N7/R9: an invalid centre neither counts nor stays, and is
+		 * dropped at once, never deferred. */
+		if (!aius_spdif_clock_plan(tracker->accepted_nominal_hz,
+		                           tracker->pending_centre_millihz,
+		                           &centre_plan)) {
+			fill_drop_pending(tracker);
+		} else if (!tracker->fill_saturated || same_sign ||
+		           tracker->pending_centre_windows >=
+			           AIUS_CLOCK_FILL_RETARGET_DEFER_MAX_WINDOWS) {
+			/* Saturated, an opposite-sign retarget defers (that saturation
+			 * resolves itself) up to the cap; anything else commits now. */
 			fill_commit_centre(tracker, tracker->pending_centre_millihz);
 			result.centre_committed = true;
 		}
@@ -706,7 +715,7 @@ FLASHMEM AiusRateTrackerFillResult aius_rate_tracker_fill_step(
 	if (!composed_ok)
 		composed = tracker->applied_target_millihz;
 
-	if (in->emit_allowed && in->have_applied && composed_ok) {
+	if (in->have_applied && composed_ok) {
 		if (absolute_difference(composed, in->emission_readback_millihz) >
 		    AIUS_CLOCK_FILL_EMIT_THRESHOLD_MILLIHZ) {
 			const bool spent = tracker->fill_spent &&
@@ -714,13 +723,16 @@ FLASHMEM AiusRateTrackerFillResult aius_rate_tracker_fill_step(
 
 			/* CENTRE persists until accepted and bypasses the one
 			 * FILL write per window. */
-			if (tracker->centre_flag)
-				result.emit_kind = AIUS_RATE_TRACKER_TRIM_CENTRE;
-			else if (!spent)
-				result.emit_kind = AIUS_RATE_TRACKER_TRIM_FILL;
+			if (in->emit_allowed) {
+				if (tracker->centre_flag)
+					result.emit_kind = AIUS_RATE_TRACKER_TRIM_CENTRE;
+				else if (!spent)
+					result.emit_kind = AIUS_RATE_TRACKER_TRIM_FILL;
+			}
 		} else {
-			/* A pass that needs no write clears the flag, so a noise
-			 * write later is never labelled CENTRE. */
+			/* A pass that needs no write clears the flag, emission
+			 * allowed or not (N8), so a noise write later is never
+			 * labelled CENTRE. */
 			tracker->centre_flag = false;
 		}
 	}
@@ -762,8 +774,16 @@ FLASHMEM bool aius_rate_tracker_fill_reset(
 	fill_zero_controller(tracker);
 	tracker->centre_flag = false;
 	if (!discard_pending && tracker->pending_centre_millihz != 0u) {
-		tracker->applied_target_millihz = tracker->pending_centre_millihz;
-		committed = true;
+		AiusSpdifClockPlan centre_plan;
+
+		/* N7: an invalid pending centre is dropped, never committed. */
+		if (aius_spdif_clock_plan(tracker->accepted_nominal_hz,
+		                          tracker->pending_centre_millihz,
+		                          &centre_plan)) {
+			tracker->applied_target_millihz =
+				tracker->pending_centre_millihz;
+			committed = true;
+		}
 	}
 	fill_drop_pending(tracker);
 	if (committed_centre_millihz != NULL)

@@ -417,13 +417,29 @@ int main(void)
 		assert(!aius_tx_fill_boundary_pending(h0, rb, h1));
 		assert(!aius_tx_fill_boundary_pending(h1 - 1u, rb, h1));
 		assert(!aius_tx_fill_boundary_pending(rb + 2048u, rb, h1));
-		/* Setpoint at level 128: 384 - phi*128, or 256 - phi'*128 pending. */
+		/* Open level (F3): the target, plus the late ISR's half when pending. */
+		assert(aius_tx_fill_open_level_frames(128u, false) == 128u);
+		assert(aius_tx_fill_open_level_frames(128u, true) == 256u);
+		assert(aius_tx_fill_open_level_frames(768u, false) == 768u);
+		/* Pad split (R3): only frames actually padded above the target. */
+		assert(aius_tx_fill_open_pending_pad_frames(256u, true) == 128u); /* from empty */
+		assert(aius_tx_fill_open_pending_pad_frames(128u, true) == 128u); /* level 128 */
+		assert(aius_tx_fill_open_pending_pad_frames(56u, true) == 56u);   /* level 200 */
+		assert(aius_tx_fill_open_pending_pad_frames(0u, true) == 0u);     /* trimmed */
+		assert(aius_tx_fill_open_pending_pad_frames(128u, false) == 0u);
+		/* Setpoint at the normal open, level 128: 384 - phi*128. */
 		assert(aius_tx_fill_open_setpoint_frames(128u, 0u, false) == 384u);
 		assert(aius_tx_fill_open_setpoint_frames(128u, 64u, false) == 320u);
 		assert(aius_tx_fill_open_setpoint_frames(128u, 127u, false) == 257u);
+		/* Pending open, padded to level 256: 384 - phi'*128, as normal. */
+		{
+			const uint32_t lv = aius_tx_fill_open_level_frames(128u, true);
+			assert(aius_tx_fill_open_setpoint_frames(lv, 0u, true) == 384u);
+			assert(aius_tx_fill_open_setpoint_frames(lv, 64u, true) == 320u);
+			assert(aius_tx_fill_open_setpoint_frames(lv, 127u, true) == 257u);
+		}
+		/* The rule itself: the late ISR takes one half from the level. */
 		assert(aius_tx_fill_open_setpoint_frames(128u, 0u, true) == 256u);
-		assert(aius_tx_fill_open_setpoint_frames(128u, 64u, true) == 192u);
-		/* A level other than 128. */
 		assert(aius_tx_fill_open_setpoint_frames(256u, 32u, false) == 480u);
 		assert(aius_tx_fill_open_setpoint_frames(256u, 32u, true) == 352u);
 		/* Open decision: unit start, mid-unit below the cap, at the cap. */

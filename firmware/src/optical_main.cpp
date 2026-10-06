@@ -278,6 +278,9 @@ static uint32_t g_clock_unsupported_episodes;
  * lifetime like trim_last_at_ms. The setpoint and its formula are this lock's,
  * published by the gate open; 0 = none yet. */
 static uint32_t g_clock_fill_trims;
+/* centre_writes counts accepted CENTRE writes (zeroed with fill_trims). A FILL
+ * and a CENTRE write may share a window, so it carries no per-window bound. */
+static uint32_t g_clock_centre_writes;
 static uint32_t g_clock_fill_trim_last_at_ms;
 static int32_t g_clock_fill_offset_millihz;
 static uint32_t g_clock_fill_setpoint_frames;
@@ -1777,6 +1780,7 @@ public:
 		g_clock_rate_changes = 0u;
 		g_clock_trim_updates = 0u;
 		g_clock_fill_trims = 0u;
+		g_clock_centre_writes = 0u;
 		g_clock_structural_replans = 0u;
 		g_clock_invalid_windows = 0u;
 		g_clock_faults = 0u;
@@ -2616,6 +2620,10 @@ static uint32_t g_tx_gate_open_trimmed_frames; /* .bss = 0 */
  * gate_open_trimmed_frames. 0 = no trimming edge yet this boot. */
 static uint32_t g_tx_gate_open_last_trim_at_ms; /* .bss = 0 */
 static uint32_t g_tx_gate_open_padded_frames;  /* .bss = 0 */
+/* aius-sample-rate-following Phase 4a F3: the extra half a live open pads when
+ * a period boundary is pending (the masked ISR takes it on the unmask). Kept
+ * apart so gate_open_padded_frames still advances by one target per relock. */
+static uint32_t g_tx_gate_open_pending_padded_frames; /* .bss = 0 */
 static bool g_tx_gate_open_pending;            /* .bss = false */
 /* Frames committed while an armed live open waited for a unit start; the
  * open takes any block once this reaches one unit (aius_tx_fill_open_decide's
@@ -2661,10 +2669,28 @@ static FLASHMEM void tx_gate_actuate(bool open)
  * commits into the dark ring and counts toward the cap). Inside the masked
  * section the level-128 pad stays, and ONE call to the FASTRUN accessor reads
  * the TX DMA position from one SADDR read (no second read here): with the
- * ISR masked the half it reports is exact, and its pending result picks the
- * setpoint formula (aius_tx_fill_open_setpoint_frames, 384 - phi*128, or
- * 256 - phi'*128 when a period boundary is pending). Both are always-inline,
- * so nothing here runs from flash with interrupts masked. */
+ * ISR masked the half it reports is exact. When it reports a pending period
+ * boundary (Phase 4a F3), a live open pads one more half
+ * (aius_tx_fill_open_level_frames), which the masked ISR takes on the unmask,
+ * so the level after it is 128 and the setpoint is 384 - phi'*128 as in the
+ * normal case (aius_tx_fill_open_setpoint_frames). The read comes first and
+ * ONE set_level goes to the final level (R3); of what it actually pads, the
+ * part above the target counts in gate_open_pending_padded_frames, the rest
+ * in gate_open_padded_frames, and frames it drops in gate_open_trimmed_frames.
+ * A boundary crossed during the pad after a not-pending read leaves the
+ * pre-F3 shape (setpoint about 257, true about 256), the straddle the single
+ * SADDR read already accepts.
+ *
+ * Placement (Phase 4a N4): this function is inlined into enqueue(), which is
+ * FLASHMEM, so the masked section runs from .flashmem.audio_enqueue, as
+ * set_level always has; only the SADDR accessor is FASTRUN (ITCM). The pure
+ * rules are always-inline and set_level inlines. Duration, derived from the
+ * teensy41-optical disassembly (2026-10-06, not measured on the board): the
+ * pad loop is 7 Thumb-2 instructions per frame, so the section is about 7
+ * cycles per padded frame plus the 96-byte ITCM accessor call and a few
+ * flash cache-line fills: about 3 to 5 us for a live open's worst 256 frames
+ * (target 128 from empty plus the pending half), about 9 to 11 us for a
+ * replay's 768, at 600 MHz. A trimming open runs no loop. */
 static inline void tx_gate_execute_open(bool replay, bool first_in_unit,
                                         uint32_t unit_frames,
                                         uint32_t block_frames)
@@ -2678,7 +2704,7 @@ static inline void tx_gate_execute_open(bool replay, bool first_in_unit,
 		g_tx_gate_open_committed_since_arm += block_frames;
 		return;
 	}
-	const uint32_t target_frames =
+	const uint32_t floor_frames =
 		replay ? AIUS_TX_GATE_OPEN_REPLAY_TARGET_FRAMES
 		       : AIUS_TX_GATE_OPEN_TARGET_FRAMES;
 	uint32_t dropped;
@@ -2686,17 +2712,29 @@ static inline void tx_gate_execute_open(bool replay, bool first_in_unit,
 	uint32_t dma_half;
 	uint32_t dma_offset_frames;
 	noInterrupts();
-	aius_spdif_tx24_set_level(&g_aius_spdif_tx24, target_frames,
-	                          &dropped, &padded);
 	const bool boundary_pending =
 		aius_spdif_tx24_dma_read_position(&dma_half,
 		                                  &dma_offset_frames) != 0u;
+	/* A replay has no setpoint to protect: only a live open pads the half. */
+	const bool pad_pending = !replay && boundary_pending;
+	/* The selected floor, plus the late ISR's half when pending; the level
+	 * after the unmask is the floor either way. */
+	const uint32_t target_frames =
+		aius_tx_fill_open_level_frames(floor_frames, pad_pending);
+	/* ONE set_level to the final level (R3): trimming to the floor and then
+	 * padding the half would put zeros between kept audio and this block. */
+	aius_spdif_tx24_set_level(&g_aius_spdif_tx24, target_frames,
+	                          &dropped, &padded);
 	const uint32_t setpoint_frames = aius_tx_fill_open_setpoint_frames(
 		target_frames, dma_offset_frames, boundary_pending);
 	g_aius_spdif_tx24.gate_open = 1u;
 	interrupts();
 	(void)dma_half;
+	const uint32_t pending_padded =
+		aius_tx_fill_open_pending_pad_frames(padded, pad_pending);
+	padded -= pending_padded;
 	g_tx_gate_open_pending = false;
+	g_tx_gate_open_pending_padded_frames += pending_padded;
 	/* A replay has no live setpoint: the fill loop never emits for it. */
 	g_clock_fill_setpoint_frames = replay ? 0u : setpoint_frames;
 	g_clock_fill_open_boundary_pending = !replay && boundary_pending;
@@ -3520,6 +3558,7 @@ static FLASHMEM bool http_clock_json(char *output, size_t capacity,
 		"\"fill_setpoint_frames\":%lu,"
 		"\"fill_open_boundary_pending\":%s,"
 		"\"fill_trims\":%lu,"
+		"\"centre_writes\":%lu,"
 		"\"fill_trim_last_at_ms\":%lu,"
 		"\"fill_applied_at_ms\":%lu,"
 		"\"structural_replans\":%lu,"
@@ -3543,6 +3582,7 @@ static FLASHMEM bool http_clock_json(char *output, size_t capacity,
 		"\"gate_open_trimmed_frames\":%lu,"
 		"\"gate_open_last_trim_at_ms\":%lu,"
 		"\"gate_open_padded_frames\":%lu,"
+		"\"gate_open_pending_padded_frames\":%lu,"
 		"\"governor_trims\":%lu,"
 		"\"governor_trimmed_frames\":%lu,"
 		"\"governor_last_trim_at_ms\":%lu,"
@@ -3587,6 +3627,7 @@ static FLASHMEM bool http_clock_json(char *output, size_t capacity,
 		(unsigned long)g_clock_fill_setpoint_frames,
 		g_clock_fill_open_boundary_pending ? "true" : "false",
 		(unsigned long)g_clock_fill_trims,
+		(unsigned long)g_clock_centre_writes,
 		(unsigned long)g_clock_fill_trim_last_at_ms,
 		(unsigned long)g_aius_tx_fill_applied_at_ms,
 		(unsigned long)g_clock_structural_replans,
@@ -3610,6 +3651,7 @@ static FLASHMEM bool http_clock_json(char *output, size_t capacity,
 		(unsigned long)g_tx_gate_open_trimmed_frames,
 		(unsigned long)g_tx_gate_open_last_trim_at_ms,
 		(unsigned long)g_tx_gate_open_padded_frames,
+		(unsigned long)g_tx_gate_open_pending_padded_frames,
 		(unsigned long)g_tx_governor_trims,
 		(unsigned long)g_tx_governor_trimmed_frames,
 		(unsigned long)g_tx_governor_last_trim_at_ms,
@@ -8801,8 +8843,14 @@ static FLASHMEM bool clock_apply_desired_plan(
  * any legitimate correction. The DIRECTION is not carried: clock.trim_ppm on
  * the next status read states it, while the SIZE is what says whether this
  * retarget was a nudge or a jump. */
+/* R4: set by any centre commit in this sample_rate_service pass; the end-of-pass
+ * refresh then skips the dark-end note, which would overwrite the new centre
+ * with the old applied readback. Cleared at the top of each pass. */
+static bool g_clock_centre_committed_in_pass;
+
 static FLASHMEM void clock_note_centre_commit(uint32_t centre_millihz)
 {
+	g_clock_centre_committed_in_pass = true;
 	g_clock_trim_updates++;
 	const uint32_t nominal_millihz =
 		g_clock_nominal_rate_hz * UINT32_C(1000);
@@ -8827,13 +8875,13 @@ static FLASHMEM void clock_fill_reset(bool discard_pending)
 	if (!aius_rate_tracker_fill_reset(&g_rate_tracker, discard_pending,
 	                                  &centre_millihz))
 		return;
-	clock_note_centre_commit(centre_millihz);
 	AiusSpdifClockPlan plan = {};
 	if (!aius_spdif_clock_plan(g_clock_nominal_rate_hz, centre_millihz,
 	                           &plan)) {
 		clock_record_fault(AIUS_CLOCK_APPLY_INVALID_PLAN, false);
 		return;
 	}
+	clock_note_centre_commit(centre_millihz);
 	g_clock_desired_plan = plan;
 	g_clock_desired_plan_valid = true;
 }
@@ -8881,7 +8929,7 @@ static FLASHMEM void clock_refresh_applied(
 	 * for a FILL readback, which would restart the 10 s cadence and move the
 	 * hysteresis reference onto the composed value. Idempotent. */
 	if (dark_ended && g_clock_dark_started_by_apply && !replay_selected &&
-	    have_applied &&
+	    !g_clock_centre_committed_in_pass && have_applied &&
 	    applied.nominal_rate_hz == g_clock_nominal_rate_hz)
 		(void)aius_rate_tracker_note_target_applied(
 			&g_rate_tracker, applied.target_rate_millihz, now_ms);
@@ -8960,24 +9008,28 @@ static FLASHMEM void clock_fill_service(AiusReplaySource source,
 	g_clock_fill_offset_millihz = fill.fill_offset_millihz;
 
 	if (fill.centre_committed) {
-		clock_note_centre_commit(fill.centre_millihz);
 		AiusSpdifClockPlan plan = {};
 		if (replay) {
 			/* The replay plan stays exactly 48,000,000 mHz; the next
 			 * accept re-plans the live centre. */
+			clock_note_centre_commit(fill.centre_millihz);
 		} else if (!aius_spdif_clock_plan(g_clock_nominal_rate_hz,
 		                                  fill.centre_millihz, &plan)) {
+			/* The tracker validates before committing; defensive. */
 			clock_record_fault(AIUS_CLOCK_APPLY_INVALID_PLAN, false);
 			return;
-		} else if (!have_applied ||
-		           !aius_spdif_clock_plan_structurally_equal(&applied,
-		                                                     &plan)) {
-			clock_select_desired_plan(plan);
-			g_clock_structural_replans++;
-			clock_fill_reset(false);
-			(void)clock_apply_desired_plan(now_ms, false, false, false);
-			return;
 		} else {
+			clock_note_centre_commit(fill.centre_millihz);
+			if (!have_applied ||
+			    !aius_spdif_clock_plan_structurally_equal(&applied,
+			                                              &plan)) {
+				clock_select_desired_plan(plan);
+				g_clock_structural_replans++;
+				clock_fill_reset(false);
+				(void)clock_apply_desired_plan(now_ms, false, false,
+				                               false);
+				return;
+			}
 			g_clock_desired_plan = plan;
 			g_clock_desired_plan_valid = true;
 		}
@@ -8998,6 +9050,7 @@ static FLASHMEM void clock_fill_service(AiusReplaySource source,
 	if (!accepted)
 		return;
 	if (centre) {
+		g_clock_centre_writes++;
 		g_clock_trim_last_at_ms = now_ms;
 	} else {
 		g_clock_fill_trims++;
@@ -9007,6 +9060,7 @@ static FLASHMEM void clock_fill_service(AiusReplaySource source,
 
 static FLASHMEM void sample_rate_service(uint32_t now_ms)
 {
+	g_clock_centre_committed_in_pass = false;
 	const bool carrier = AudioInputSPDIF3::pllLocked();
 	const AiusReplaySource source = g_replay_service.source;
 	uint32_t measured_millihz = 0u;
@@ -9046,6 +9100,7 @@ static FLASHMEM void sample_rate_service(uint32_t now_ms)
 		if (carrier_was_ready) {
 			clock_fill_reset(true);
 			g_clock_fill_setpoint_frames = 0u;
+			g_clock_fill_open_boundary_pending = false;
 		}
 	}
 	if (result.quiesce_requested && carrier &&
@@ -9062,6 +9117,7 @@ static FLASHMEM void sample_rate_service(uint32_t now_ms)
 		/* A rate change zeroes I and drops a pending centre. */
 		clock_fill_reset(true);
 		g_clock_fill_setpoint_frames = 0u;
+		g_clock_fill_open_boundary_pending = false;
 	}
 
 	if (result.nominal_accepted) {
@@ -9102,7 +9158,10 @@ static FLASHMEM void sample_rate_service(uint32_t now_ms)
 	/* A centre proposal (result.target_update) now goes to the tracker's
 	 * pending centre; clock_fill_service() commits it, every pass after
 	 * _step. It emits nothing for a replay, and the replay apply below
-	 * discards any pending centre before it lands the exact 48 kHz plan. */
+	 * discards any pending centre before it lands the exact 48 kHz plan.
+	 * The refresh runs first (N5), as in the host plant, so the dark-end
+	 * note never resets a centre committed in this same pass. */
+	clock_refresh_applied(source, now_ms);
 	clock_fill_service(source, now_ms);
 
 	if (result.unsupported_accepted) {

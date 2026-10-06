@@ -418,6 +418,29 @@ def counter_increment_intervals(status_series: list[dict], key: str
     return intervals
 
 
+APPLIED_STAMP_KEYS = ("trim_applied_at_ms", "fill_applied_at_ms")
+
+
+def applied_write_intervals(status_series: list[dict]) -> list[dict]:
+    """Intervals over which a trim or fill write was applied, read from the
+    two millis() applied-at stamps (a stamp change is one write; trim_updates
+    counts commits, including no-write ones, and cannot see fill writes).
+    A series without either stamp falls back to trim_updates."""
+    if not any(key in entry for entry in status_series
+               for key in APPLIED_STAMP_KEYS):
+        return counter_increment_intervals(status_series, "trim_updates")
+    intervals: list[dict] = []
+    for previous, current in zip(status_series, status_series[1:]):
+        for key in APPLIED_STAMP_KEYS:
+            if key in previous and key in current and (
+                    int(current[key]) != int(previous[key])):
+                intervals.append({
+                    "t_prev": float(previous["elapsed_s"]),
+                    "t_curr": float(current["elapsed_s"]),
+                })
+    return intervals
+
+
 def status_time_to_frame(elapsed_s: float, capture_rate: int,
                          capture_start_offset_s: float = 0.0,
                          active_start_frame: int = 0) -> float:
@@ -551,15 +574,20 @@ def reduce_waveform(active: np.ndarray, capture_rate: int,
                     capture_start_offset_s: float = 0.0,
                     active_start_frame: int = 0) -> dict:
     """Gate 7 (waveform) fields via bounded local alignment of capture
-    events against status trim_updates / invalid_windows increments."""
+    events against status invalid_windows (full apply) increments. Trim and
+    fill writes never open a match window. correlated_trim_updates keeps its
+    contract name but counts jumps matched to a full apply; the stamp-derived
+    write count is evidence only (status_trim_increments)."""
     total = len(active)
     runs = zero_runs(active)
     run_starts = [start for start, _ in runs]
 
     invalid_intervals = counter_increment_intervals(
         status_series, "invalid_windows")
-    trim_intervals = counter_increment_intervals(
-        status_series, "trim_updates")
+    # Only full applies (invalid_windows) open jump-match windows. Trim and
+    # fill writes are carrier-continuous numerator steps: at fill cadence
+    # their windows would cover the whole capture and excuse real glitches.
+    write_intervals = applied_write_intervals(status_series)
 
     correlated_invalid, matched_runs = correlate_counter_events(
         invalid_intervals, run_starts, capture_rate, total,
@@ -572,7 +600,7 @@ def reduce_waveform(active: np.ndarray, capture_rate: int,
 
     jumps, detector_evidence = discontinuities(active, capture_rate, runs)
     correlated_trim, matched_jumps = correlate_counter_events(
-        trim_intervals, jumps, capture_rate, total,
+        invalid_intervals, jumps, capture_rate, total,
         capture_start_offset_s, active_start_frame)
     discontinuities_outside = len(jumps) - len(matched_jumps)
 
@@ -581,7 +609,7 @@ def reduce_waveform(active: np.ndarray, capture_rate: int,
         "zero_run_lengths": [end - start for start, end in runs],
         "discontinuity_frames": jumps,
         "status_invalid_increments": len(invalid_intervals),
-        "status_trim_increments": len(trim_intervals),
+        "status_trim_increments": len(write_intervals),
         "correlation": "bounded-local-alignment",
         "alignment_margin_s": ALIGNMENT_MARGIN_S,
         "capture_start_offset_s": float(capture_start_offset_s),
@@ -670,6 +698,8 @@ def build_status_series(polls: list[dict]) -> list[dict]:
         series.append({
             "elapsed_s": float(poll["elapsed_s"]),
             "trim_updates": int(clock["trim_updates"]),
+            **{key: int(clock[key]) for key in APPLIED_STAMP_KEYS
+               + ("centre_writes", "fill_window_seq") if key in clock},
             "invalid_windows": int(clock["invalid_windows"]),
             "stream_rate_hz": int(clock["stream_rate_hz"]),
         })

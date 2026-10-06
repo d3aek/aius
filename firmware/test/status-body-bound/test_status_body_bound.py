@@ -668,10 +668,13 @@ PINNED_KEYS = {
         "fill_setpoint_frames",
         "fill_open_boundary_pending",
         "fill_trims",
+        "centre_writes",
         "fill_trim_last_at_ms",
         "fill_applied_at_ms",
         "fill_window_seq",
         "fill_window_exclusions",
+        # Phase 4a F3: the pending-boundary open's extra pad.
+        "gate_open_pending_padded_frames",
     ),
 }
 

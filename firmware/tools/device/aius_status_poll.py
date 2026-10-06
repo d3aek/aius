@@ -34,6 +34,7 @@ WATCHED = (
     ("underrun_episodes", ("clock", "underrun_episode_count")),
     ("tx_underrun_frames", ("clock", "tx_underrun_frames")),
     ("trim_updates", ("clock", "trim_updates")),
+    ("centre_writes", ("clock", "centre_writes")),
     ("governor_trims", ("clock", "governor_trims")),
     ("crc_rejects", ("pipeline_diag", "crc_rejects")),
     ("au_abandons", ("audio_diag", "au_abandons")),

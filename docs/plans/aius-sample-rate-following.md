@@ -6,7 +6,7 @@ component: aius
 status: in-progress
 subtype: implementation
 tags: [aius, firmware, teensy, audio, clocking, spdif]
-updated: 2026-10-05
+updated: 2026-10-06
 toc: true
 ---
 
@@ -30,29 +30,25 @@ buffer and no intermediate DSP quantisation.
 Updated 2026-10-06 during an orchestration run; replace wholesale on the
 next handover.
 
-- **Orchestration posture: checkpoint** (owner, re-confirmed 2026-10-06): surface each
-  decision and human-review gate as it arises. **For the rest of Phase 4
-  the owner accepts the orchestrator's recommendations** (2026-10-06):
-  resolve each Phase 4 call on its recommendation and record it with its
-  why; device sessions and anything destructive still go to the owner.
-  A new orchestration run may re-ask.
-- **Status.** Phases 1, 2 and 3 DONE. Phase 4 BUILT (2026-10-06): prebuild
-  review rounds 4 to 7 and a clean-room passed; five slices landed; verifier
-  green (20 host suites, both images); delivery audit FAIL on B1 only. Not
-  deployed: the board still runs `0af7a8244081` (slot 2).
-- **Next action.** Phase 4a (delivery-audit fixes, each already decided):
-  dispatch implementers for F3 and N5 to N11 (aius_clock, tx-fill-sensor,
-  optical_main), F2 and N12 (bench tools); verifier; same-reviewer
-  closure. B1 waits for `CLAUDE.md`'s foreign edits to be
-  committed (re-check the diff, never from memory). Then build, sign and
-  OTA the image (bench or listening-room per the owner) and run the Phase 4
-  device session; that needs the owner.
-- **Owner open item.** A proposed hook (`stop-guard.action-reverify`)
-  that makes every `▶ ACTION` carry a `verify:` check re-run at turn end,
-  after this session asserted a stale index lock from memory. Ask the
-  owner whether to build it (src/tools/hook, independent of aius). Rounds 5 and 6 found more blockers, each
-  folded (2026-10-06); the same reviewer re-checks until its findings run
-  dry. The parent lands the `test.sh` clock include before spawning.
+- **Orchestration posture: autonomous** (owner, 2026-10-06, second run):
+  resolve every call on its recommendation, record it with its why in the
+  phase it settles, and collect calls wanting confirmation in the closing
+  `Interrogate the user: confirm autonomous calls` phase. Device sessions
+  and anything destructive still go to the owner. The Phase 4 device
+  session runs in the listening-room, and the owner waives the
+  audio-interruption cost statements for that session.
+- **Status.** Phases 1, 2 and 3 DONE. Phase 4 BUILT; Phase 4a SHIPPED
+  (2026-10-06) on host proof, with delivery review, closure and clean-room
+  all passing. Not deployed: the board still runs `0af7a8244081` (slot 2).
+- **Next action.** Build, sign and OTA the Phase 4a image in the living
+  room and run the Phase 4 device session, including gate 7 at
+  fill-write cadence (4a's moved bench proof); that needs the owner.
+  Independent meanwhile: Phase 4c (`test.sh` multi-suite). Phase 4d (B1)
+  waits for `CLAUDE.md`'s foreign edits to be committed
+  (re-check the diff, never from memory).
+- **Hook item moved.** `stop-guard.action-reverify` is item 11 of
+  `src/tools/hook/docs/plans/hook-daemon-feature-backlog.md` (owner:
+  plan, do not dispatch).
 - **What landed this session** (aius commits; upstream pointer bumps
   follow each):
 
@@ -1088,10 +1084,9 @@ commit-checkpoint:
      of sessions, so Phase 4b, not the setpoint, is the real mitigation for
      a deeper dip (round 5 N8). After one underrun the trough level is 256,
      under the governor's 384 trigger (`firmware/lib/aius_audio/src/aius_tx_governor.h:84`), and a
-     governor trim (which lands at level 128) lands on the setpoint, except
-     in a session whose open saw a pending boundary (trough level 0): there
-     it lands 128 above, a step the loop drains like an underrun's (round 6
-     R8). The constant alternative (about 368 frames, about 1 ms more latency)
+     governor trim (which lands at level 128) lands on the setpoint, also in
+     a session whose open saw a pending boundary (F3 pads that open to level
+     128 after the late ISR, so its trough is 256 as well). The constant alternative (about 368 frames, about 1 ms more latency)
      declined.
   2. **Class bias: none.** All three class changes closed the gate and
      relocked, so the occupancy pad resets the floor. The budget allows
@@ -1199,8 +1194,14 @@ commit-checkpoint:
     period boundary from ONE TX DMA SADDR read returning `{half, offset}`:
     pending means SADDR lies in `g_aius_tx_fill_witness.last_half` (the DMA
     already reads the half the ISR last filled, and the half it just played
-    is stale). Then `phi_eff = phi' + 1`, so the setpoint is
-    `256 - phi' * 128`; otherwise `384 - phi * 128`. (Round 5 N1: the round
+    is stale). The late ISR takes one half on the unmask, so a pending open
+    padded only to level 128 would be left 1 to 128 frames. A pending live
+    open therefore pads one half more, to level 256
+    (`aius_tx_fill_open_level_frames`, Phase 4a F3): after the late ISR the
+    level is 128 and the setpoint is `384 - phi' * 128`, the normal case's
+    `384 - phi * 128` shape. The extra half counts in
+    `gate_open_pending_padded_frames`, so `gate_open_padded_frames` still
+    advances by one target per live relock. (Round 5 N1: the round
     4 "add 128" had the sign wrong and would set the setpoint 256 frames
     high, a repeating governor splice. Reading SADDR and the DMA interrupt
     flag separately can straddle a crossing, so the flag is not used, N4.)
@@ -1528,7 +1529,10 @@ static inline bool aius_tx_fill_boundary_pending(uint32_t saddr,
 	uint32_t ring_base, uint32_t last_half_base);  /* SADDR lies in last_half */
 static inline uint32_t aius_tx_fill_open_setpoint_frames(uint32_t level_frames,
 	uint32_t offset_frames, bool boundary_pending); /* level + 256 - offset,
-	minus 128 if pending (384 - phi*128 or 256 - phi'*128 at level 128) */
+	minus 128 if pending (384 - phi*128, or 384 - phi'*128 pending: the pending
+	open sets level 256) */
+static inline uint32_t aius_tx_fill_open_level_frames(uint32_t target_frames,
+	bool boundary_pending); /* target, plus 128 if pending (F3) */
 typedef enum { AIUS_TX_FILL_OPEN_WAIT = 0, AIUS_TX_FILL_OPEN_NOW = 1 } AiusTxFillOpenDecision;
 static inline AiusTxFillOpenDecision aius_tx_fill_open_decide(bool first_in_unit,
 	uint32_t committed_since_arm_frames, uint32_t unit_frames); /* NOW at a unit
@@ -1565,7 +1569,8 @@ typedef struct { int32_t *planes[AIUS_MAX_CHANNELS]; uint16_t channels;
 - **fill-sensor-window** consumes nothing. It lands the three pure opening
   functions first (the plant depends on them), with tx-fill-sensor cases:
   pending true and false at both halves and at the half edges, setpoint
-  `256 - phi' * 128` pending and `384 - phi * 128` not, one setpoint case
+  `384 - phi' * 128` pending (level 256) and `384 - phi * 128` not, the open
+  level (`aius_tx_fill_open_level_frames`), one setpoint case
   at a level other than 128 (N3), and the open
   decision at a unit start, mid-unit below the cap and at the cap.
 - **unit-start** sets the flag after `aius_pipeline_slice_pcm_block`, in
@@ -1613,7 +1618,8 @@ quantised to 140 mHz bins with 1.2 Hz spread and slow wander (280 mHz over
 - the opening kick: the first windows after an open stay within 16 frames
   of the setpoint and 200 mHz of the centre;
 - a gate open with a pending period boundary (SADDR in `last_half`): the
-  setpoint is `256 - phi' * 128` (not 128 or 256 higher), no underrun at
+  open pads to level 256 (`gate_open_pending_padded_frames` +128), the
+  setpoint is `384 - phi' * 128` (not 128 or 256 higher), no underrun at
   the open, no governor trim over the following hour;
 - a gate open armed at AC-3 block k = 1 to 5 and at an E-AC-3 mid-unit
   block: deferred to the next unit start, no underrun at the open; a class
@@ -1703,12 +1709,13 @@ quantised to 140 mHz bins with 1.2 Hz spread and slow wander (280 mHz over
   marked inconclusive (a source near zero offset proves nothing);
 - settled `fill_level_q4` within ±16 frames of `fill_setpoint_frames`, and
   the setpoint matching the formula for the logged
-  `fill_open_boundary_pending` (129 to 256 pending, 256 to 384 otherwise;
+  `fill_open_boundary_pending` (257 to 384 in both cases;
   the "unchanged standing latency" outcome; clean-room 6);
 - settled mean |fill error| ≤ 4 frames over the last 10 min (noise σ 1.2,
   threshold 1.5): a P-only regression (`Ki` truncated to 0) holds offsets up
   to 208 mHz inside ±16 frames and would otherwise pass;
-- `fill_trims` delta at most the fill-window delta, and at most half of it
+- `fill_trims` delta at most the `fill_window_seq` delta (all closes, N10)
+  plus 1 (R12), and at most half of it
   in a polled session (entry gate item 5).
 
 Before reading the session, fix the reducer
@@ -1792,12 +1799,12 @@ Gate 1's 1,000 mHz follow-error bound was set on a bench with no underruns;
 an underrun's clamp excursion (entry gate item 6) would breach it, so a
 listening-room session reads gate 1 only across underrun-free spans.
 
-### Phase 4a Delivery-audit fixes before the device session
+### Phase 4a Delivery-audit fixes before the device session ✓ SHIPPED 2026-10-06
 
 ```yaml
 phase: 4a
 title: Close the Phase 4 delivery audit before the listening-room session
-status: planned
+status: shipped
 depends-on: phase 4 build (committed 2026-10-06, host suites and both images green)
 outcome: >-
   The Phase 4 build carries no known path to a periodic underrun, its bench
@@ -1808,22 +1815,33 @@ seams:
   - aius_tx_fill_open_setpoint_frames and tx_gate_execute_open pad (F3)
   - clock_fill_service / clock_refresh_applied order, centre commit gating (N5 to N8)
   - gate 1 and gate 7 bench tooling (F2, N12)
-  - CLAUDE.md stamp and signing lines (B1)
 targeted-proof:
   - host: clock (new cases per item), tx-fill-sensor, clock-target, optical-cutover, status-body-bound; both images build
-  - bench: aius_rate_bench gate 7 at fill-write cadence with the fixed matcher
+  - bench: aius_rate_bench gate 7 at fill-write cadence with the fixed matcher (moved to the Phase 4 device session; needs the image deployed)
 review-intensity: active
 ```
+
+Shipped on host proof: clock, tx-fill-sensor, tx-gate, tx-governor,
+clock-target, optical-cutover, status-body-bound, itcm-placement,
+registry and sd-editor green; both images build (ITCM free 4,612 B
+plain, 4,340 B canonical); tool tests rate-gate-capture 93,
+rate-runner 71, latency-runner 119. Delivery review FAIL, then same-reviewer
+closure PASS, then clean-room PASS. B1 moved to Phase 4d.
 
 Delivery audit (2026-10-06, `reviewer` `opus`) of the Phase 4 build:
 FAIL on B1 only; no blocking code defect. Each item decided by the
 orchestrator under the owner's Phase 4 delegation:
 
-- **B1, CLAUDE.md promote.** Add `fill_trim_last_at_ms` and
+- **B1, CLAUDE.md promote.** Moved to Phase 4d. Add `fill_trim_last_at_ms` and
   `fill_applied_at_ms` to the glitch-reading stamp list and the full
   `aius_ota_sign.py sign --image --output --build-revision` form, via
-  `the release-promotion step`. Blocked while the file carries another session's
-  uncommitted edits (re-check `git -C git_modules/aius diff --stat --
+  `the release-promotion step`. Also add `clock.gate_open_pending_padded_frames`
+  (F3 and R3: 0 to 128 per pending live open, 0 when the ring already
+  holds 256 or more; by design) to the counters that read as faults and
+  are not. Name the write counters: `clock.fill_trims` counts FILL writes,
+  `clock.centre_writes` accepted CENTRE writes, and `trim_updates` every
+  centre commit since N12, most of which write nothing (bumpless). Blocked while the file
+  carries another session's uncommitted edits (re-check `git -C git_modules/aius diff --stat --
   CLAUDE.md` before acting; never from memory).
 - **F2, gate 7 cannot see fill writes.** `rate_gate_capture/capture.py:559-576`
   and `net/aius_rate_bench.py:1033-1044` match waveform jumps against
@@ -1862,7 +1880,85 @@ orchestrator under the owner's Phase 4 delegation:
   was already stale; fix it in the same pass.
 - **N4.** Correct the `tx_gate_execute_open` comment: the masked section
   runs inlined in `.flashmem.audio_enqueue` (already true of `set_level`);
-  record its duration.
+  record its duration. Derived from the `teensy41-optical` disassembly,
+  not measured: 7 Thumb-2 instructions per padded frame, about 3 to 5 us
+  for a live open's worst 256 frames and 9 to 11 us for a replay's 768.
+- **Residual risk, recorded (F2).** The bench tools infer writes from
+  changes of `trim_applied_at_ms` / `fill_applied_at_ms` between polls, so
+  two writes inside one poll interval count as one; the fill-cadence
+  assertion therefore bounds from below. `centre_writes` is the exact
+  count where a gate needs one.
+
+Delivery review of the 4a build (2026-10-06, `reviewer` `opus`): FAIL on
+the bench tooling, no firmware underrun path. Decided (autonomous):
+
+- **R1, gate 7 `invalid-window-count`** compared `invalid_windows` with
+  every write, but only a full apply raises it. Compare with full applies
+  only. `invalid_windows` rises on every successful apply (nominal
+  accept, fault retry, replay apply) and `structural_replans` only on a
+  replan, so the bench asserts `invalid_windows` delta at least the
+  `structural_replans` delta; equality is not expected.
+- **R2, match windows.** A FILL or trim write is a carrier-continuous
+  numerator step and must never excuse a waveform jump; only full applies
+  (invalid windows) open match windows. Fill writes stay visible to the
+  trim-observed check. This supersedes F2's "match against the stamps".
+- **R3, F3 zeros.** A pending open with ring level of 256 or more trimmed
+  to 128 and then padded 128 zeros, putting 2.67 ms of silence between
+  kept audio and the first block. One `set_level` to the final open level;
+  `gate_open_pending_padded_frames` and `gate_open_trimmed_frames` count
+  only frames actually padded or dropped.
+- **R4, N5 incomplete.** The end-of-pass `clock_refresh_applied` (kept for
+  the replay apply) can still fire the dark-end note after a same-pass
+  centre commit. The note must not overwrite a centre committed in the
+  same pass; the plant models both refreshes.
+- **R5, openapi text.** Pending setpoint, `fill_trims` and
+  `centre_writes` descriptions to post-F3 and post-N12 truth; drop the
+  unenforced one-per-window claim for `centre_writes` (a FILL and a CENTRE
+  may share a window).
+- **R6, fill cadence.** Assert `fill_trims` delta at most `fill_window_seq`
+  delta (the one-FILL-per-window rule), not only `centre_writes`.
+- **R7, plant ISR order.** The plant ran the late ISR after the block
+  commit, so deleting F3's pad passed every host suite. Run it at the
+  unmask, before the commit, so that deletion fails.
+- **R8, latency tools.** `latency/bench.py` zero-delta also checks
+  `fill_trims`; `linked_probe.py` edge mode no longer requires an
+  `invalid_windows` step for a CENTRE write.
+- **R9, N7 deferral.** An invalid pending centre is dropped at once, never
+  deferred under saturation.
+
+Closure re-review (same reviewer): PASS. The R3 straddle (boundary
+crossed during the pad after a not-pending read, about 0.05 to 0.2% of
+opens) leaves the setpoint correct to one frame; not an underrun path.
+Folded before commit:
+
+- **R10.** The latency bench no longer rejects a bracket on a
+  `fill_trims` delta (a 20 mHz continuous step; FILL writes land in up to
+  half the 4 s windows); it reports it.
+- **R11.** openapi `trim_updates` text says it counts every centre commit
+  since N12.
+- **R12.** Fill cadence bound is `fill_window_seq` delta plus 1: a window
+  closed just before the first poll can be written after it.
+- **Residual risk, recorded.** The plant skips the R4 note only on
+  `centre_committed`, the firmware on every `clock_note_centre_commit`;
+  equivalent in every traced case, the same copy-not-call risk as N11.
+
+Clean-room confirmation: PASS, no firmware underrun path; doc errors in
+this plan, the gate 7 README and one code comment fixed. Decided:
+
+- **R13, gate 1 trim-cadence advisory in code.** N12 moved the bound to
+  `centre_writes`, which is near-vacuous: centre commits are bumpless, so
+  an unsaturated commit writes nothing. Bounding commits instead would
+  fail every healthy run (D4 (b): the estimate quantum makes at most two
+  post-settle commits unmeetable). The check now records post-settle
+  commits and `centre_writes` and never fails, completing D4 (b).
+- **R14.** The stamp-derived write count falls back to `trim_updates`
+  only when no sample carries the stamps, not when one sample lacks one.
+- **R15.** `linked_probe.py` edge mode fires on a centre commit
+  (`trim_updates` +1), not on `centre_writes`.
+- **Coverage gap, recorded.** No host case drives a pre-filled ring
+  through `tx_gate_execute_open`'s pending trim and pad; the order is
+  checked by reading. The Phase 4 device session's
+  `gate_open_pending_padded_frames` readings carry it.
 
 ### Phase 4b Status render must not delay AC-3 production
 
@@ -1891,6 +1987,61 @@ First step after Phase 4's device session: if polled sessions show no
 underrun and the dip margin holds, put to the owner whether 4b is still
 wanted; otherwise write its design (chunked render, or render after the
 producer's commit).
+
+### Phase 4c `test.sh` runs every `--suite` given
+
+```yaml
+phase: 4c
+outcome: firmware/scripts/test.sh runs each --suite given, in order, and fails if any fails
+seams: [firmware/scripts/test.sh argument parsing]
+targeted-proof: test.sh with two suites, one forced to fail, exits non-zero and reports both
+unit: component-behind-interface
+```
+
+Found during Phase 4a (2026-10-06): several `--suite` flags silently run
+only the last, so a multi-suite proof command can report green while
+skipping suites. Independent of the device session.
+
+### Phase 4d CLAUDE.md promote for the fill counters and signing form
+
+```yaml
+phase: 4d
+outcome: CLAUDE.md names the fill stamps, the write counters and the full signing form as Phase 4a's B1 states
+seams: [CLAUDE.md, via the release-promotion step]
+targeted-proof: the promoted diff carries exactly B1's lines; no foreign hunk is reverted
+unit: parent-only
+```
+
+Blocked: the file carries another session's uncommitted edits. Re-check
+`git -C git_modules/aius diff --stat -- CLAUDE.md` before acting, never
+from memory. Content: Phase 4a §B1.
+
+### Phase 5 Interrogate the user: confirm autonomous calls
+
+```yaml
+phase: 5
+outcome: every call taken under the autonomous posture confirmed or overturned; overturned calls are new plan work
+seams: [this plan's phase contracts]
+targeted-proof: no entry below remains; each answer is recorded in the phase it settles
+unit: parent-only
+```
+
+Executed once, at the end of the run or at handover. Each entry: phase,
+call, alternative, cost of reversing.
+
+- **Phase 4a R2.** Gate 7 matches waveform jumps against full applies
+  only; fill and trim writes never excuse a jump. Alternative: F2 as
+  written (match the applied-at stamps), which at fill cadence excuses
+  almost any glitch. Reversing: one function in `capture.py` and its
+  tests.
+- **Phase 4a R3.** A pending live open makes one `set_level` to floor
+  plus 128 after a single early SADDR read. Alternative: pad, read, pad
+  again (the first F3 build), which inserted 128 zeros after kept audio.
+  Reversing: `tx_gate_execute_open` and the plant.
+- **Phase 4a R13.** Gate 1's trim-cadence check is advisory in code (D4
+  (b) had made it advisory in docs only). Alternative: keep N12's
+  `centre_writes` bound, which almost never fires. Reversing: one check in
+  `aius_rate_bench.py`.
 
 ## Acceptance
 
@@ -2637,9 +2788,10 @@ recorded but no longer gates. An offline re-judgment of the saved evidence with
 `aius_rate_bench.py analyze 48k-10m --evidence <file>` confirms `trim-cadence`
 is the **sole** entry in `failures`; every other check passes. The tool still
 emits `verdict: fail` because the `> 2` trim-cadence line is retained in code
-(`firmware/tools/net/aius_rate_bench.py:852`) as an advisory metric — kept
-docs-only per the D4 (b) framing; a later host-tool change could make it
-advisory in code.
+(`firmware/tools/net/aius_rate_bench.py:852`) as an advisory metric, kept
+docs-only per the D4 (b) framing. Phase 4a R13 (2026-10-06) made it
+advisory in code: the check records post-settle centre commits and never
+fails.
 
 **Gate 1 ACCEPTED on the rebased criterion.** With gate 1 accepted and gates 2,
 4, 5, 6 and 7 passing on `92aae16706f5` (2026-09-03), every in-scope device

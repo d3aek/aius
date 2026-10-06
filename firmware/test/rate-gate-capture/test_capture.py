@@ -224,9 +224,9 @@ class WaveformReducerTests(unittest.TestCase):
     def test_clean_correlated_run_and_trim(self):
         active = self._base()
         active[3 * 48000:3 * 48000 + 512] = 0          # invalid window at 3 s
-        active[6 * 48000] = 20000                        # trim spike at 6 s
-        active[6 * 48000 + 1] = -20000
-        series = status_series(9, invalid_at=3, trim_at=6)
+        active[3 * 48000 + 4000] = 20000     # spike by the full apply at 3 s
+        active[3 * 48000 + 4001] = -20000
+        series = status_series(9, invalid_at=3)
         external = CAP.reduce_waveform(active, 48000, series)["external"]
         self.assertEqual(external["capture_frame_gaps"], 0)
         self.assertEqual(external["discontinuities_outside_invalid"], 0)
@@ -267,10 +267,9 @@ class WaveformReducerTests(unittest.TestCase):
         before the capture device can be opened."""
         active = self._base()
         active[3 * 48000:3 * 48000 + 512] = 0      # capture-domain 3 s
-        active[6 * 48000] = 20000
-        active[6 * 48000 + 1] = -20000
-        series = status_series(9, invalid_at=3, trim_at=6,
-                               offset_s=lock_wait_s)
+        active[3 * 48000 + 4000] = 20000
+        active[3 * 48000 + 4001] = -20000
+        series = status_series(9, invalid_at=3, offset_s=lock_wait_s)
         return active, series
 
     def test_lock_wait_offset_correlates_when_the_origin_is_subtracted(self):
@@ -305,6 +304,33 @@ class WaveformReducerTests(unittest.TestCase):
             trimmed, 48000, series, active_start_frame=2 * 48000)["external"]
         self.assertEqual(external["correlated_invalid_windows"], 1)
         self.assertEqual(external["correlated_trim_updates"], 1)
+
+    def test_fill_writes_in_every_poll_never_excuse_a_jump(self):
+        """Fill writes are carrier-continuous: a jump far from any full
+        apply stays outside even when a fill stamp moves in every poll."""
+        active = self._base()
+        active[6 * 48000] = 20000
+        active[6 * 48000 + 1] = -20000
+        series = status_series(9)
+        for index, entry in enumerate(series):
+            entry["trim_applied_at_ms"] = 100
+            entry["fill_applied_at_ms"] = 1000 + index
+        external = CAP.reduce_waveform(active, 48000, series)
+        self.assertEqual(external["external"]["correlated_trim_updates"], 0)
+        self.assertGreaterEqual(
+            external["external"]["discontinuities_outside_invalid"], 1)
+        self.assertEqual(
+            external["evidence"]["status_trim_increments"], 8)
+
+    def test_trim_commit_without_full_apply_does_not_excuse_a_jump(self):
+        active = self._base()
+        active[6 * 48000] = 20000
+        active[6 * 48000 + 1] = -20000
+        series = status_series(9, trim_at=6)
+        external = CAP.reduce_waveform(active, 48000, series)["external"]
+        self.assertEqual(external["correlated_trim_updates"], 0)
+        self.assertGreaterEqual(
+            external["discontinuities_outside_invalid"], 1)
 
 
 class CaptureHealthTests(unittest.TestCase):

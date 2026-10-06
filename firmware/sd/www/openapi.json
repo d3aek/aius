@@ -2496,6 +2496,7 @@
           "fill_setpoint_frames",
           "fill_open_boundary_pending",
           "fill_trims",
+          "centre_writes",
           "fill_trim_last_at_ms",
           "fill_applied_at_ms",
           "structural_replans",
@@ -2519,6 +2520,7 @@
           "gate_open_trimmed_frames",
           "gate_open_last_trim_at_ms",
           "gate_open_padded_frames",
+          "gate_open_pending_padded_frames",
           "governor_trims",
           "governor_trimmed_frames",
           "governor_last_trim_at_ms",
@@ -2586,7 +2588,7 @@
           "trim_updates": {
             "type": "integer",
             "minimum": 0,
-            "description": "Trim requests accepted against a structurally identical plan - a PLL nudge rather than a replan. Since 2026-09-07 a trim opens NO validity window: the numerator step is carrier-continuous, so the four-period V=1 hold it used to raise (a mute on a validity-honouring DAC) is gone and invalid_windows no longer counts trims."
+            "description": "Centre commits: every centre the rate tracker commits, including commits that write nothing and structural replans (clock_note_centre_commit). Use centre_writes for accepted CENTRE writes. Since 2026-09-07 a same-nominal trim opens NO validity window: the numerator step is carrier-continuous, so the four-period V=1 hold it used to raise (a mute on a validity-honouring DAC) is gone and invalid_windows no longer counts trims."
           },
           "trim_last_at_ms": {
             "type": "integer",
@@ -2605,16 +2607,21 @@
           "fill_setpoint_frames": {
             "type": "integer",
             "minimum": 0,
-            "description": "This lock's fill setpoint in frames: the phase-corrected occupancy measured inside the gate open's masked section, 384 - phi*128 (256 to 384) or, when a period boundary was pending, 256 - phi'*128 (129 to 256). Fixed for the lock; a governor trim leaves it valid. 0 = no live open yet, after carrier loss or a rate change, and for a replay open."
+            "description": "This lock's fill setpoint in frames: the phase-corrected occupancy measured inside the gate open's masked section, 384 - phi*128 (257 to 384). When a period boundary was pending the open pads one more half, which the late ISR takes on the unmask, so the setpoint is 384 - phi'*128 in the same range. Fixed for the lock; a governor trim leaves it valid. 0 = no live open yet, after carrier loss or a rate change, and for a replay open."
           },
           "fill_open_boundary_pending": {
             "type": "boolean",
-            "description": "Which setpoint formula the last live gate open used: true when the TX DMA already read the half the ISR last filled (a period boundary pending), so fill_setpoint_frames is 256 - phi'*128; false for 384 - phi*128."
+            "description": "Whether the last live gate open saw a pending period boundary: true when the TX DMA already read the half the ISR last filled, so the open padded one extra half (gate_open_pending_padded_frames) and fill_setpoint_frames is 384 - phi'*128, phi' read in the new half; false for 384 - phi*128. Both give 257 to 384. Carrier loss and a rate change clear it with the setpoint."
           },
           "fill_trims": {
             "type": "integer",
             "minimum": 0,
-            "description": "Accepted FILL trim requests: carrier-continuous numerator writes from the fill loop, at most one per fill window. POST /api/clear zeroes it. A centre retarget counts trim_updates instead."
+            "description": "Accepted FILL trim requests: carrier-continuous numerator writes from the fill loop, at most one per fill window. POST /api/clear zeroes it. A centre retarget's write counts in centre_writes instead."
+          },
+          "centre_writes": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Accepted CENTRE trim requests: carrier-continuous numerator writes that land a committed centre. POST /api/clear zeroes it. Not bounded per fill window: a FILL write and a CENTRE write may share one."
           },
           "fill_trim_last_at_ms": {
             "type": "integer",
@@ -2730,6 +2737,11 @@
             "type": "integer",
             "minimum": 0,
             "description": "Lifetime frames of silence the gate-open edge committed to lift a short ring up to gate_open_target_frames (output-jitter Phase F). Unheard by construction - the pad was still dark. A relock empties the ring, so a relock pads up to a full target's worth (nothing when the producer's first burst happened to leave exactly the target at the open instant); the invariant is the floor, not the pad size."
+          },
+          "gate_open_pending_padded_frames": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Lifetime frames of silence a live gate open padded above gate_open_target_frames because a TX period boundary was pending at the open (aius-sample-rate-following Phase 4a F3): up to one half, 128 frames, per such open, counting only frames actually padded (a ring already above the target pads less, and one at or above target plus 128 trims instead, counted in gate_open_trimmed_frames). The masked boundary ISR takes that half on the unmask, so the level after it is the target and the fill setpoint is 384 - phi'*128 as in the normal case. Counted apart from gate_open_padded_frames, which still advances by at most one target per live relock."
           },
           "governor_trims": {
             "type": "integer",

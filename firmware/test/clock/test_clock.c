@@ -1035,6 +1035,7 @@ typedef struct {
 	uint32_t open_committed;
 	bool open_pending;
 	uint32_t open_offset;
+	uint32_t open_level_unmasked; /* ring level after the unmask's ISR */
 	double open_true_occ;
 	double open_t;
 	/* sensor, governor */
@@ -1046,6 +1047,7 @@ typedef struct {
 	AiusRateTracker tr;
 	bool dark;
 	bool apply_started;
+	bool late_dark_end; /* the transition completes between the two refreshes */
 	double dark_until;
 	uint32_t notes;
 	uint32_t accepts;
@@ -1339,7 +1341,10 @@ static void plant_boundary(Plant *p)
 }
 
 /* tx_gate_execute_open, inside its masked section: ONE SADDR read; the
- * shipped predicate and setpoint rule; the level-128 pad. */
+ * shipped predicate, open level and setpoint rule; the level-128 pad, plus
+ * one half when a boundary is pending (Phase 4a F3), which the late ISR takes.
+ * The masked ISR runs on the unmask, before the caller commits the block, as
+ * on the board (R7); the open's level and true occupancy are read after it. */
 static void plant_open(Plant *p)
 {
 	const uint32_t saddr = plant_saddr(p);
@@ -1349,9 +1354,14 @@ static void plant_open(Plant *p)
 	const uint32_t offset =
 		aius_tx_fill_saddr_offset_frames(saddr, PLANT_RING_BASE);
 	const double frac = (p->t - p->half_start) / p->period;
+	const uint32_t open_level = aius_tx_fill_open_level_frames(128u, pending);
 
-	p->level = 128u;
-	p->setpoint = aius_tx_fill_open_setpoint_frames(128u, offset, pending);
+	p->level = open_level;
+	p->setpoint = aius_tx_fill_open_setpoint_frames(open_level, offset, pending);
+	p->gate_open = true;
+	if (p->isr_pending)
+		plant_isr(p); /* the unmask */
+	p->open_level_unmasked = p->level;
 	p->open_true_occ = (double)p->level + (p->other_fresh ? 128.0 : 0.0) +
 	                   128.0 * (1.0 - frac);
 	p->open_pending = pending;
@@ -1360,7 +1370,6 @@ static void plant_open(Plant *p)
 	p->open_committed = p->committed_since_arm;
 	p->open_t = p->t;
 	p->opens++;
-	p->gate_open = true;
 	p->armed = false;
 	p->arm_wanted = false;
 	aius_tx_fill_sensor_reset(&p->sensor);
@@ -1499,6 +1508,31 @@ static void plant_record_window(Plant *p,
 	w->saturated = fr->saturated;
 }
 
+/* clock_refresh_applied's dark-end edge. The note fires once, only for a
+ * transition the apply started, never for a replay, at the accepted nominal,
+ * and (R4) never after a centre commit in the same pass. */
+static void plant_refresh_dark_end(Plant *p, uint32_t now_ms,
+                                   bool centre_committed_in_pass,
+                                   bool may_end)
+{
+	if (!(p->dark && may_end && p->t >= p->dark_until))
+		return;
+	p->dark = false;
+	if (p->apply_started && !p->replay && !centre_committed_in_pass &&
+	    p->applied.nominal_rate_hz == p->tr.accepted_nominal_hz) {
+		CHECK(aius_rate_tracker_note_target_applied(
+			&p->tr, plant_readback(p), now_ms));
+		p->notes++;
+	}
+	p->apply_started = false;
+	if (p->replay) {
+		p->gate_open = true;
+		p->level = 128u;
+	} else if (p->tr.carrier_ready && !p->gate_open) {
+		plant_arm(p, p->next_arm_block);
+	}
+}
+
 static void plant_pass(Plant *p)
 {
 	const uint32_t now_ms = (uint32_t)(uint64_t)(p->t * 1000.0);
@@ -1540,24 +1574,9 @@ static void plant_pass(Plant *p)
 		p->accepts++;
 		applied_now = true;
 	}
-	if (p->dark && p->t >= p->dark_until) {
-		p->dark = false;
-		/* Note once, on the edge, only for a transition the apply
-		 * started, never for a replay, at the accepted nominal. */
-		if (p->apply_started && !p->replay &&
-		    p->applied.nominal_rate_hz == p->tr.accepted_nominal_hz) {
-			CHECK(aius_rate_tracker_note_target_applied(
-				&p->tr, plant_readback(p), now_ms));
-			p->notes++;
-		}
-		p->apply_started = false;
-		if (p->replay) {
-			p->gate_open = true;
-			p->level = 128u;
-		} else if (p->tr.carrier_ready && !p->gate_open) {
-			plant_arm(p, p->next_arm_block);
-		}
-	}
+	/* First refresh (before the fill step); late_dark_end models the TX ISR
+	 * completing the transition between the two refreshes (R4). */
+	plant_refresh_dark_end(p, now_ms, false, !p->late_dark_end);
 
 	snap = aius_tx_fill_sensor_snapshot(&p->sensor);
 	memset(&in, 0, sizeof(in));
@@ -1603,6 +1622,8 @@ static void plant_pass(Plant *p)
 	} else if (!fr.retarget_pending) {
 		p->pending_seen = false; /* dropped or discarded */
 	}
+	/* End-of-pass refresh: the note skips a centre committed this pass. */
+	plant_refresh_dark_end(p, now_ms, fr.centre_committed, true);
 	if (!p->have_seq || snap.fill_window_seq != p->seq_seen) {
 		if (p->have_seq)
 			plant_record_window(p, &snap, &fr);
@@ -1939,17 +1960,25 @@ static void test_plant_pending_boundary(void)
 	plant_init(p, &cfg);
 	plant_run(p, 3600.0 + 5.0);
 	CHECK(p->opens == 1u && p->open_pending);
-	CHECK(p->setpoint == 256u - p->open_offset);
+	/* F3: the pending open pads one more half, so the setpoint matches the
+	 * normal case's 384 - phi*128 shape (phi' here). */
+	CHECK(p->setpoint == 384u - p->open_offset);
+	/* R7: the late ISR ran on the unmask, before the block: the pad kept the
+	 * level at the 128 floor and the true occupancy at the setpoint. Without
+	 * the pad the level reads 0 and the occupancy 128 below. */
+	CHECK(p->open_level_unmasked == 128u);
 	CHECK(dabs((double)p->setpoint - p->open_true_occ) <= 1.0);
 	CHECK(p->underruns == 0u && p->governor_trims == 0u);
 	printf("plant.pending-boundary: offset %u, setpoint %u (true %.1f), "
-	       "0 underruns, 0 governor trims over 1 h PASS\n",
+	       "level %u after the unmask, 0 underruns, 0 governor trims over "
+	       "1 h PASS\n",
 	       (unsigned)p->open_offset, (unsigned)p->setpoint,
-	       p->open_true_occ);
+	       p->open_true_occ, (unsigned)p->open_level_unmasked);
 	cfg.isr_latency_s = 0.0;
 	plant_init(p, &cfg);
 	plant_run(p, 60.0);
 	CHECK(p->opens == 1u && !p->open_pending);
+	CHECK(p->open_level_unmasked == 128u);
 	non_pending_setpoint = p->setpoint;
 	CHECK(non_pending_setpoint == 384u - p->open_offset);
 }
@@ -2600,6 +2629,110 @@ static void test_plant_bumpless_and_refusal(void)
 	       "follows; refusals retried PASS\n");
 }
 
+/* A pass with explicit emit_allowed / have_applied, same window. */
+static AiusRateTrackerFillResult fill_pass_flags(
+	AiusRateTracker *tracker,
+	bool emit_allowed,
+	bool have_applied,
+	uint32_t readback)
+{
+	AiusRateTrackerFillInput in;
+
+	memset(&in, 0, sizeof(in));
+	in.emit_allowed = emit_allowed;
+	in.have_applied = have_applied;
+	in.emission_readback_millihz = have_applied ? readback : 0u;
+	in.setpoint_frames = FILL_SP;
+	in.window.window_seq = g_fill_seq;
+	return aius_rate_tracker_fill_step(tracker, &in);
+}
+
+/* Phase 4a N6 to N8. */
+static void test_fill_audit_fixes(void)
+{
+	AiusRateTracker t;
+	AiusRateTrackerFillResult r;
+	uint32_t centre = 0u;
+
+	current_key = "fill.n6-no-commit-without-readback";
+	fill_accept(&t, 48000000u);
+	(void)fill_window(&t, Q4(4), 48000000u);
+	aius_rate_tracker_note_emit(&t, true);
+	CHECK(fill_propose(&t, 48001000u, 11000u));
+	r = fill_pass_flags(&t, true, false, 0u);
+	CHECK(!r.centre_committed && r.retarget_pending);
+	CHECK(t.applied_target_millihz == 48000000u && !t.centre_flag);
+	r = fill_pass_flags(&t, true, true, 48000053u);
+	CHECK(r.centre_committed && t.applied_target_millihz == 48001000u);
+
+	current_key = "fill.n7-invalid-centre-dropped";
+	fill_accept(&t, 48000000u);
+	t.pending_centre_millihz = 1u; /* no valid plan at 1 mHz */
+	r = fill_again(&t, 48000000u);
+	CHECK(!r.centre_committed && !r.retarget_pending);
+	CHECK(t.pending_centre_millihz == 0u && !t.centre_flag);
+	CHECK(t.applied_target_millihz == 48000000u);
+	t.pending_centre_millihz = 1u;
+	CHECK(!aius_rate_tracker_fill_reset(&t, false, &centre));
+	CHECK(centre == 48000000u && t.pending_centre_millihz == 0u);
+
+	current_key = "fill.n8-flag-clears-with-emission-disallowed";
+	fill_accept(&t, 48000000u);
+	(void)fill_window(&t, Q4(4), 48000000u);
+	aius_rate_tracker_note_emit(&t, true);
+	CHECK(fill_propose(&t, 48001000u, 11000u));
+	r = fill_again(&t, 48000053u);
+	CHECK(r.emit_kind == AIUS_RATE_TRACKER_TRIM_CENTRE && t.centre_flag);
+	/* Emission off but the readback already sits at the composed target. */
+	r = fill_pass_flags(&t, false, true, r.composed_target_millihz);
+	CHECK(r.emit_kind == AIUS_RATE_TRACKER_TRIM_NONE && !t.centre_flag);
+	/* Emission off with a write still owed keeps the flag. */
+	CHECK(fill_propose(&t, 48002000u, 22000u));
+	r = fill_pass_flags(&t, false, true, 48000000u);
+	CHECK(r.centre_committed && r.emit_kind == AIUS_RATE_TRACKER_TRIM_NONE);
+	CHECK(t.centre_flag);
+
+	current_key = "fill.r9-invalid-centre-never-deferred";
+	fill_accept(&t, 48000000u);
+	r = fill_window(&t, Q4(200), 48000000u); /* saturated, offset > 0 */
+	CHECK(r.saturated);
+	t.pending_centre_millihz = 1u; /* opposite sign, no valid plan */
+	r = fill_again(&t, 48000900u);
+	CHECK(!r.centre_committed && !r.retarget_pending);
+	CHECK(t.pending_centre_millihz == 0u);
+	CHECK(t.applied_target_millihz == 48000000u);
+}
+
+/* R4: a dark-end note between the two refreshes of a pass must not overwrite
+ * a centre committed in the same pass. */
+static void test_plant_same_pass_commit_vs_dark_note(void)
+{
+	Plant *p = &g_plant;
+	PlantCfg cfg = plant_cfg(48000u, CLS_AC3, 225);
+	uint32_t notes;
+
+	current_key = "plant.r4-same-pass-commit-keeps-centre";
+	cfg.trough_noise = false;
+	cfg.estimate_noise = false;
+	plant_init(p, &cfg);
+	plant_run(p, 1800.0);
+	CHECK(p->plan_applied && !p->dark);
+	notes = p->notes;
+	/* A successful apply is dark; a valid centre is pending; the TX ISR
+	 * completes the transition between the pass's two refreshes. */
+	p->desired = p->applied;
+	plant_full_apply(p);
+	p->dark_until = p->t;
+	p->late_dark_end = true;
+	p->tr.pending_centre_millihz = p->tr.applied_target_millihz + 600u;
+	p->tr.pending_centre_windows = 0u;
+	plant_pass(p);
+	CHECK(p->tr.applied_target_millihz == 48000600u);
+	CHECK(p->notes == notes && !p->dark);
+	p->late_dark_end = false;
+	printf("plant.same-pass-commit: dark-end note skipped, centre kept PASS\n");
+}
+
 int main(void)
 {
 	test_snap_boundaries();
@@ -2623,6 +2756,7 @@ int main(void)
 	test_fill_refusal_and_subthreshold();
 	test_fill_bumpless();
 	test_fill_reset_and_accept();
+	test_fill_audit_fixes();
 	puts("fill tracker API cases passed");
 	test_plant_closed_form();
 	test_plant_underrun_recovery();
@@ -2641,6 +2775,7 @@ int main(void)
 	test_plant_bumpless_and_refusal();
 	test_plant_estimate_noise();
 	test_plant_offsets();
+	test_plant_same_pass_commit_vs_dark_note();
 	puts("clock golden tests passed");
 	return 0;
 }

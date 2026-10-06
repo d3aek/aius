@@ -923,6 +923,42 @@ class AnalyzerTests(unittest.TestCase):
 
         self.assertEqual(deltas["clock.trim_updates"], 2)
 
+    def test_counter_delta_reads_centre_writes_when_published(self):
+        initial = self.status()
+        final = self.status()
+        initial["clock"]["centre_writes"] = 4
+        final["clock"]["centre_writes"] = 4
+        final["clock"]["trim_updates"] += 3  # no-write commits
+
+        deltas = BENCH.counter_deltas(initial, final)
+
+        self.assertEqual(deltas["clock.centre_writes"], 0)
+        self.assertNotIn("clock.trim_updates", deltas)
+
+    def _pcm_bracket(self, **clock_final):
+        initial = self.status()
+        final = json.loads(json.dumps(initial))
+        final["audio_diag"]["input_words_consumed"] = 1000
+        final["audio_diag"]["service_steps_committed"] = 50
+        final["audio_diag"]["committed_output_blocks"] = 50
+        for status in (initial, final):
+            status["clock"]["fill_trims"] = 7
+            status["clock"]["centre_writes"] = 4
+        final["clock"].update(clock_final)
+        return BENCH.validate_status_bracket(
+            "pcm", initial, final, {"sample_rate_hz": 48000}, "revision")
+
+    def test_bracket_accepts_a_fill_trim_and_reports_it_as_information(self):
+        result = self._pcm_bracket(fill_trims=8)
+
+        self.assertTrue(result["accepted"])
+        self.assertEqual(result["fill_trims_delta"], 1)
+        self.assertNotIn("clock.fill_trims", result["zero_deltas"])
+
+    def test_bracket_still_rejects_a_centre_write(self):
+        with self.assertRaises(RuntimeError):
+            self._pcm_bracket(centre_writes=5)
+
     def test_status_bracket_accepts_clean_pcm_and_ac3_progress(self):
         for mode in ("pcm", "ac3"):
             with self.subTest(mode=mode):
@@ -2111,7 +2147,21 @@ class ActiveSourceGateTests(unittest.TestCase):
             LINKED.SETTLED_WINDOW_SECONDS,
         )
 
-    def test_straddled_edge_accepts_across_separate_polls(self):
+    def test_commit_fires_the_edge_even_when_centre_writes_is_published(self):
+        # Commits are bumpless: centre_writes stays put, trim_updates moves.
+        gate = self.gate()
+        gate.observe(active_source_status(5, 6, centre_writes=2), 3.0)
+
+        self.assertEqual(
+            gate.observe(active_source_status(6, 6, centre_writes=2), 3.25),
+            LINKED.ACTIVE_SOURCE_CONFIRM,
+        )
+        self.assertTrue(
+            gate.confirm(active_source_status(6, 6, centre_writes=2), 3.5)
+        )
+
+    def test_write_counter_alone_is_the_edge(self):
+        # A same-nominal centre commit raises no invalid_windows.
         gate = self.gate()
 
         self.assertEqual(
@@ -2120,14 +2170,19 @@ class ActiveSourceGateTests(unittest.TestCase):
         )
         self.assertEqual(
             gate.observe(active_source_status(6, 6), 3.25),
-            LINKED.ACTIVE_SOURCE_CONTINUE,
-        )
-        self.assertEqual(
-            gate.observe(active_source_status(6, 7), 3.5),
             LINKED.ACTIVE_SOURCE_CONFIRM,
         )
         self.assertTrue(
-            gate.confirm(active_source_status(6, 7), 3.75)
+            gate.confirm(active_source_status(6, 6), 3.5)
+        )
+
+    def test_invalid_window_step_alone_is_not_an_edge(self):
+        gate = self.gate()
+        gate.observe(active_source_status(5, 6), 3.0)
+
+        self.assertEqual(
+            gate.observe(active_source_status(5, 7), 3.25),
+            LINKED.ACTIVE_SOURCE_CONTINUE,
         )
 
     def test_edge_is_not_accepted_before_the_minimum_hold(self):

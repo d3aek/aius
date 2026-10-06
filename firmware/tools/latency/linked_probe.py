@@ -454,10 +454,11 @@ class ActiveSourceGate:
     seconds rate limit:
 
     * ``edge`` -- cumulative deltas against a healthy counter baseline reach
-      exactly +1 ``trim_updates`` and +1 ``invalid_windows``. The two increments
-      may straddle separate polls, because the device publishes them
-      independently. A cumulative delta above one means a trim burst is still
-      running, so the baseline moves to the current values. A candidate edge is
+      exactly +1 ``trim_updates`` (a centre commit; commits are bumpless and
+      rarely move ``centre_writes``, so that counter is not the edge). A
+      same-nominal commit raises no ``invalid_windows``, so that counter is
+      not part of the edge either. A cumulative delta above one on either
+      counter means a trim burst is still running, so the baseline moves to the current values. A candidate edge is
       accepted only after one fresh confirming snapshot that is healthy, inside
       the follow-error bound and carries no further counter movement.
     * ``settled`` -- a continuous window of at least ``settled_window_seconds``
@@ -525,7 +526,10 @@ class ActiveSourceGate:
             self.baseline = counters
             return ACTIVE_SOURCE_CONTINUE
         if (
-            all(delta == 1 for delta in deltas)
+            # A same-nominal centre commit opens no validity window, so the
+            # edge is the commit counter alone; invalid_windows still guards
+            # bursts and the settled window.
+            deltas[0] == 1
             and healthy
             and elapsed_seconds >= self.minimum_seconds
         ):
@@ -589,6 +593,7 @@ def active_source_projection(
         "output_rate_millihz": clock.get("output_rate_millihz"),
         "follow_error_millihz": active_source_follow_error_millihz(status),
         "trim_updates": clock.get("trim_updates"),
+        "centre_writes": clock.get("centre_writes"),
         "invalid_windows": clock.get("invalid_windows"),
     }
 

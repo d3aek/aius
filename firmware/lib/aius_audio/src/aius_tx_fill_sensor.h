@@ -167,8 +167,10 @@ aius_tx_fill_sensor_hold(AiusTxFillSensor *s, int gate_open,
 /* TX DMA SADDR (byte address) to frame offset within the half being read.
  * Same half test as the ISR: saddr below base + half selects the first half.
  * Result 0..127; an address outside the buffer (never produced by the DMA)
- * clamps to 127 as a defence. */
-AIUS_TX_FILL_SENSOR_COLD static inline uint32_t
+ * clamps to 127 as a defence. Always-inline and not COLD: the FASTRUN accessor
+ * dma_read_position calls it inside the masked gate open (N11). */
+#define AIUS_TX_FILL_INLINE static inline __attribute__((always_inline))
+AIUS_TX_FILL_INLINE uint32_t
 aius_tx_fill_saddr_offset_frames(uint32_t saddr, uint32_t base)
 {
 	const uint32_t half = AIUS_TX_FILL_BUFFER_BYTES / 2u;
@@ -203,8 +205,8 @@ aius_tx_fill_unit_frames(uint32_t pc, uint32_t block_frames, int is_pcm)
 }
 
 /* Opening rules (Phase 4), pure. Always-inline and not COLD: the callers are
- * a FASTRUN accessor and the masked gate open, which must not run from flash. */
-#define AIUS_TX_FILL_INLINE static inline __attribute__((always_inline))
+ * a FASTRUN accessor and the masked gate open, which must not run from flash.
+ * (AIUS_TX_FILL_INLINE is defined above the SADDR mapping.) */
 
 /* A period boundary is pending when SADDR lies in the half the ISR last filled
  * (the DMA already reads it; the half it just played is stale). An address
@@ -219,8 +221,36 @@ aius_tx_fill_boundary_pending(uint32_t saddr, uint32_t ring_base,
 	return saddr >= last_half_base && saddr - last_half_base < half;
 }
 
-/* Setpoint at the open: level + 256 - offset, minus 128 if a boundary is
- * pending (384 - phi*128, or 256 - phi'*128 at level 128). */
+/* Level a live open pads the ring to (Phase 4a F3): the target, plus one half
+ * when a boundary is pending. The masked boundary ISR runs on the unmask and
+ * takes that half, so the level after it is the target, as in the normal
+ * case; padding only the target would leave 1 to 128 frames. */
+AIUS_TX_FILL_INLINE uint32_t
+aius_tx_fill_open_level_frames(uint32_t target_frames, bool boundary_pending)
+{
+	return boundary_pending
+		? target_frames + (uint32_t)AIUS_TX_FILL_HALF_FRAMES
+		: target_frames;
+}
+
+/* Of the frames one set_level to the open level actually padded, the part
+ * above the target (R3): at most one half, and only when pending. A ring
+ * already between the target and the open level pads less; one at or above
+ * the open level pads nothing (it trims, and only the frames dropped count). */
+AIUS_TX_FILL_INLINE uint32_t
+aius_tx_fill_open_pending_pad_frames(uint32_t padded_frames,
+                                     bool boundary_pending)
+{
+	if (!boundary_pending)
+		return 0u;
+	return padded_frames < (uint32_t)AIUS_TX_FILL_HALF_FRAMES
+		? padded_frames : (uint32_t)AIUS_TX_FILL_HALF_FRAMES;
+}
+
+/* Setpoint at the open from the level the open set: level + 256 - offset,
+ * minus 128 if a boundary is pending (the late ISR's half). At the target 128
+ * that is 384 - phi*128, and 384 - phi'*128 when pending, because the pending
+ * open sets level 256 (aius_tx_fill_open_level_frames). */
 AIUS_TX_FILL_INLINE uint32_t
 aius_tx_fill_open_setpoint_frames(uint32_t level_frames, uint32_t offset_frames,
                                   bool boundary_pending)

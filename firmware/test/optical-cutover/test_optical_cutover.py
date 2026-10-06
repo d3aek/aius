@@ -2091,6 +2091,7 @@ CLOCK_JSON_KEYS = (
     "fill_setpoint_frames",
     "fill_open_boundary_pending",
     "fill_trims",
+    "centre_writes",
     "fill_trim_last_at_ms",
     "fill_applied_at_ms",
     "structural_replans",
@@ -2117,6 +2118,8 @@ CLOCK_JSON_KEYS = (
     "gate_open_trimmed_frames",
     "gate_open_last_trim_at_ms",
     "gate_open_padded_frames",
+    # aius-sample-rate-following Phase 4a F3: a pending-boundary open's half.
+    "gate_open_pending_padded_frames",
     "governor_trims",
     "governor_trimmed_frames",
     "governor_last_trim_at_ms",

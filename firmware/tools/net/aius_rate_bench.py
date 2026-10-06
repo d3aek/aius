@@ -351,6 +351,47 @@ def accumulated_delta(samples, path, bits=32):
                for before, after in zip(values, values[1:]))
 
 
+def optional_delta(samples, path, bits=32):
+    """accumulated_delta, or None when any sample lacks the key (evidence
+    from an image that predates it)."""
+    for sample in samples:
+        if dotted_get_optional(sample["status"], path) is None:
+            return None
+    return accumulated_delta(samples, path, bits)
+
+
+def dotted_get_optional(status, path):
+    value = status
+    for part in path.split("."):
+        if not isinstance(value, dict) or part not in value:
+            return None
+        value = value[part]
+    return value
+
+
+def stamp_change_count(samples, path):
+    """Number of poll-to-poll changes of a millis() applied-at stamp, or None
+    when absent. Stamps are device time, so only the change is meaningful."""
+    values = [dotted_get_optional(sample["status"], path) for sample in samples]
+    if all(value is None for value in values):
+        return None
+    # Count over consecutive samples that both carry the stamp; one sample
+    # lacking it must not hide every other change.
+    return sum(1 for before, after in zip(values, values[1:])
+               if before is not None and after is not None
+               and before != after)
+
+
+def applied_write_delta(samples):
+    """Writes seen through the two applied-at stamps (trim and fill), or None
+    when neither stamp is in the evidence."""
+    counts = [stamp_change_count(samples, "clock.trim_applied_at_ms"),
+              stamp_change_count(samples, "clock.fill_applied_at_ms")]
+    if all(count is None for count in counts):
+        return None
+    return sum(count for count in counts if count is not None)
+
+
 def transport_metrics(samples, metrics):
     """Report per-sample transport retries and the board's own drop counter.
 
@@ -732,7 +773,8 @@ def check_waveform(external, trim_delta, invalid_delta, failures, metrics):
                     "every captured invalid interval must be exactly 512 frames")
     if external["correlated_trim_updates"] > trim_delta:
         add_failure(failures, "trim-correlation",
-                    "captured trim count exceeds status trim_updates delta")
+                    "captured full-apply jump count exceeds status "
+                    "invalid_windows delta")
     if external["correlated_invalid_windows"] > invalid_delta:
         add_failure(failures, "invalid-correlation",
                     "captured invalid-window count exceeds status delta")
@@ -846,12 +888,27 @@ def analyze_samples(samples, events, scenario, options=None, external=None):
                                 "words/s exceeds 0.25")
             except ValueError as error:
                 add_failure(failures, "ingress-slope", str(error))
-            trim_after_settle = accumulated_delta(
-                stable, "clock.trim_updates")
+            # trim_updates counts every centre commit, structural replans
+            # included. Commits are bumpless (an unsaturated one writes
+            # nothing), so record commits (trim_updates minus
+            # structural_replans) and centre_writes as metrics.
+            trim_after_settle = accumulated_delta(stable, "clock.trim_updates")
             metrics["trim_updates_after_settle"] = trim_after_settle
-            if trim_after_settle > 2:
-                add_failure(failures, "trim-cadence",
-                            f"{trim_after_settle} trim updates occurred after settling")
+            centre_writes = optional_delta(stable, "clock.centre_writes")
+            replans = optional_delta(stable, "clock.structural_replans")
+            if centre_writes is not None:
+                metrics["centre_writes_after_settle"] = centre_writes
+            if centre_writes is not None and replans is not None:
+                commits_after_settle = max(0, trim_after_settle - replans)
+                metrics["trim_cadence_source"] = "commits"
+            else:
+                commits_after_settle = trim_after_settle
+                metrics["trim_cadence_source"] = "trim_updates"
+            metrics["centre_commits_after_settle"] = commits_after_settle
+            # Advisory per design decision D4 (b), 2026-09-04: the receiver's
+            # ~140 mHz estimate quantum makes <= 2 unmeetable (~52 commits are
+            # expected on a healthy 10 min run), so this never fails the gate.
+            metrics["trim_cadence_advisory"] = commits_after_settle > 2
         if accumulated_delta(settled_samples(samples, settle_s),
                              "clock.rate_changes") != 0:
             add_failure(failures, "rate-stability",
@@ -1033,14 +1090,44 @@ def analyze_samples(samples, events, scenario, options=None, external=None):
     elif scenario == "waveform":
         stable = check_live_rate(samples, 48000, settle_s, follow_bound,
                                  failures, metrics)
-        if trim_delta < 1:
+        # trim_updates counts commits (no-write and structural included), so
+        # writes are read from the two applied-at stamps; the stamps are the
+        # only view of fill writes. Older evidence falls back to trim_updates.
+        write_delta = applied_write_delta(samples)
+        if write_delta is None:
+            write_delta = trim_delta
+            metrics["write_delta_source"] = "trim_updates"
+        else:
+            metrics["write_delta_source"] = "applied_at_stamps"
+        metrics["applied_write_delta"] = write_delta
+        if write_delta < 1:
             add_failure(failures, "trim-not-observed",
-                        "no same-nominal trim update was observed")
-        if invalid_delta < trim_delta:
+                        "no same-nominal trim or fill write was observed")
+        # Only a full apply raises invalid_windows (never a trim or fill
+        # write), and the only independent full-apply signal is
+        # structural_replans: every structural replan is a full apply.
+        replans = accumulated_delta(samples, "clock.structural_replans")
+        metrics["structural_replans_delta"] = replans
+        if invalid_delta < replans:
             add_failure(failures, "invalid-window-count",
-                        "invalid_windows advanced fewer times than trim_updates")
+                        "invalid_windows advanced fewer times than "
+                        "structural replans (full applies)")
+        # Fill cadence: at most one FILL write per fill window (fill_trims
+        # counts every FILL write, fill_window_seq every window close). A
+        # CENTRE write may share a window, so centre_writes is not bounded.
+        window_delta = optional_delta(samples, "clock.fill_window_seq")
+        if window_delta is not None:
+            metrics["fill_window_seq_delta"] = window_delta
+            fill_delta = optional_delta(samples, "clock.fill_trims")
+            if fill_delta is not None:
+                metrics["fill_trims_delta"] = fill_delta
+                # +1: a window closed before s0 can still be written after it.
+                if fill_delta > window_delta + 1:
+                    add_failure(failures, "fill-cadence",
+                                f"{fill_delta} fill_trims in "
+                                f"{window_delta} fill windows")
         if stable:
-            check_waveform(external, trim_delta, invalid_delta,
+            check_waveform(external, invalid_delta, invalid_delta,
                            failures, metrics)
 
     result["verdict"] = "pass" if not failures else "fail"

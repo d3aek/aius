@@ -2207,10 +2207,28 @@ def analyze(
 def counter_deltas(initial: dict, final: dict) -> dict:
     result = {}
     for path in ZERO_DELTA_PATHS:
+        # trim_updates counts every commit (no-write included); the write
+        # counter is centre_writes, which older images do not publish.
+        if path == ("clock", "trim_updates") and all(
+                "centre_writes" in status.get("clock", {})
+                for status in (initial, final)):
+            path = ("clock", "centre_writes")
         before = nested_value(initial, path)
         after = nested_value(final, path)
         result[".".join(path)] = (int(after) - int(before)) & 0xFFFFFFFF
     return result
+
+
+def fill_trims_delta(initial: dict, final: dict) -> int | None:
+    """Information only, never a rejection: a FILL write is a ~20 mHz
+    carrier-continuous step, far below a frame of latency over the bracket,
+    and lands in up to half the 4 s windows. None on images without it."""
+    if not all("fill_trims" in status.get("clock", {})
+               for status in (initial, final)):
+        return None
+    path = ("clock", "fill_trims")
+    return (int(nested_value(final, path))
+            - int(nested_value(initial, path))) & 0xFFFFFFFF
 
 
 def nested_value(value: dict, path: tuple[str, ...]) -> object:
@@ -2343,6 +2361,7 @@ def validate_status_bracket(
         "build_revision": final["build_revision"],
         "build_utc": final["build_utc"],
         "zero_deltas": zero_deltas,
+        "fill_trims_delta": fill_trims_delta(initial, final),
         "progress_deltas": progress,
         "maximum_follow_error_millihz": max(
             abs(

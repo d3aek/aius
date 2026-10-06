@@ -245,8 +245,49 @@ class AnalyzerTests(unittest.TestCase):
         samples[3]["status"]["clock"]["trim_updates"] = 12
         result = analyze_48(samples, settle_s=10)
         self.assertEqual(result["metrics"]["trim_updates_after_settle"], 3)
-        self.assertIn("trim-cadence",
-                      {failure["code"] for failure in result["failures"]})
+        self.assertTrue(result["metrics"]["trim_cadence_advisory"])
+        self.assertNotIn("trim-cadence",
+                         {failure["code"] for failure in result["failures"]})
+
+    def test_trim_cadence_is_advisory_with_52_post_settle_commits(self):
+        # Owner ruling D4 (b): ~52 commits on a healthy 10 min run.
+        samples = [sample(0, output_blocks=1), sample(10, output_blocks=2),
+                   sample(20, output_blocks=3)]
+        for index, item in enumerate(samples):
+            clock = item["status"]["clock"]
+            clock["trim_updates"] = 100 + 52 * index
+            clock["centre_writes"] = 4
+            clock["structural_replans"] = 0
+        result = analyze_48(samples, settle_s=10)
+        self.assertEqual(result["verdict"], "pass", result["failures"])
+        self.assertEqual(result["metrics"]["centre_commits_after_settle"], 52)
+        self.assertEqual(result["metrics"]["centre_writes_after_settle"], 0)
+        self.assertTrue(result["metrics"]["trim_cadence_advisory"])
+
+    def test_trim_cadence_excludes_structural_replans(self):
+        samples = [sample(0, output_blocks=1), sample(10, output_blocks=2),
+                   sample(20, output_blocks=3)]
+        for index, item in enumerate(samples):
+            clock = item["status"]["clock"]
+            clock["trim_updates"] = 100 + 5 * index
+            clock["centre_writes"] = 4
+            clock["structural_replans"] = 5 * index
+        result = analyze_48(samples, settle_s=10)
+        self.assertEqual(result["metrics"]["centre_commits_after_settle"], 0)
+        self.assertNotIn("trim-cadence",
+                         {failure["code"] for failure in result["failures"]})
+
+    def test_stamp_change_count_skips_a_sample_missing_the_stamp(self):
+        samples = [sample(0, output_blocks=1), sample(1, output_blocks=2),
+                   sample(2, output_blocks=3), sample(3, output_blocks=4)]
+        stamps = [100, 200, None, 300]
+        for item, stamp in zip(samples, stamps):
+            if stamp is not None:
+                item["status"]["clock"]["fill_applied_at_ms"] = stamp
+        self.assertEqual(
+            BENCH.stamp_change_count(samples, "clock.fill_applied_at_ms"), 1)
+        self.assertIsNone(
+            BENCH.stamp_change_count(samples, "clock.trim_applied_at_ms"))
 
     def test_rate_state_mismatch_fails(self):
         samples = [
@@ -728,6 +769,58 @@ class AnalyzerTests(unittest.TestCase):
         codes = {failure["code"] for failure in result["failures"]}
         self.assertIn("trim-correlation", codes)
         self.assertIn("invalid-correlation", codes)
+
+    def _fill_write_samples(self, fill_trims, window_seq, replans=None):
+        # A fill write moves fill_trims and its stamp, never invalid_windows.
+        samples = [sample(0, output_blocks=1), sample(1, output_blocks=2),
+                   sample(2, output_blocks=3)]
+        for index, item in enumerate(samples):
+            clock = item["status"]["clock"]
+            clock["trim_applied_at_ms"] = 100
+            clock["fill_applied_at_ms"] = 100 if index == 0 else 900
+            clock["fill_trims"] = fill_trims[index]
+            clock["fill_window_seq"] = window_seq[index]
+            clock["structural_replans"] = (replans or [0, 0, 0])[index]
+            clock["invalid_windows"] = 0
+        return samples
+
+    def _run_waveform(self, samples):
+        external = {
+            "capture_frame_gaps": 0,
+            "discontinuities_outside_invalid": 0,
+            "invalid_intervals_frames": [],
+            "correlated_trim_updates": 0,
+            "correlated_invalid_windows": 0,
+        }
+        return BENCH.analyze_samples(samples, [], "waveform", {
+            "minimum_duration_s": 0, "settle_s": 0,
+            "max_follow_error_millihz": 1000,
+        }, external)
+
+    def test_waveform_sees_a_fill_write_through_the_applied_stamp(self):
+        # trim_updates never moves: only the fill stamp does.
+        result = self._run_waveform(
+            self._fill_write_samples([0, 1, 1], [0, 2, 4]))
+        self.assertEqual(result["verdict"], "pass", result["failures"])
+        self.assertEqual(result["metrics"]["applied_write_delta"], 1)
+
+    def test_waveform_fill_cadence_fails_on_more_fill_trims_than_windows(self):
+        result = self._run_waveform(
+            self._fill_write_samples([0, 3, 5], [0, 1, 2]))
+        codes = {failure["code"] for failure in result["failures"]}
+        self.assertIn("fill-cadence", codes)
+
+    def test_waveform_fill_cadence_allows_one_write_for_a_pre_s0_window(self):
+        result = self._run_waveform(
+            self._fill_write_samples([0, 1, 3], [0, 1, 2]))
+        codes = {failure["code"] for failure in result["failures"]}
+        self.assertNotIn("fill-cadence", codes)
+
+    def test_waveform_full_apply_without_invalid_window_fails(self):
+        result = self._run_waveform(
+            self._fill_write_samples([0, 1, 1], [0, 2, 4], [0, 1, 1]))
+        codes = {failure["code"] for failure in result["failures"]}
+        self.assertIn("invalid-window-count", codes)
 
 
 class ExitSemanticsTests(unittest.TestCase):
