@@ -992,7 +992,7 @@ phase: 4
 title: Close the output-rate loop on transmit-ring fill
 status: planned
 depends-on: phase 3 noise capture (setpoint spread across gate opens, PCM-versus-AC-3 floor bias)
-prebuild-review: round-6-folded # 2026-10-06: rounds 4 to 6 NOT READY, findings and slice interfaces folded; same-reviewer re-check, then clean-room, then build
+prebuild-review: clean-room-pending # 2026-10-06: rounds 4 to 6 NOT READY and folded; round 7 READY with text fixes folded; clean-room next, then build
 outcome: >-
   A live source offset inside the 500 mHz target deadband no longer drains
   (or fills) the transmit ring: the output rate converges on the source's
@@ -1302,8 +1302,11 @@ commit-checkpoint:
     an accept (`:8848`, which replaces the desired plan with a fresh
     estimate), a replay (its desired plan must stay exactly 48,000,000 mHz,
     `:8744-8749`, `:8924-8937`, or `g_clock_replay_ready` stays false) and
-    carrier loss (round 6 R3). Parent-wiring lists all five
-    `clock_apply_desired_plan` call sites with their value in its return.
+    carrier loss (round 6 R3). `clock_apply_desired_plan` has four call
+    sites (`:8767`, `:8848`, `:8903`, `:8936`); carrier loss is a discard
+    event, not an apply site (round 7 F3). A pending centre is also dropped
+    when a 1 s window mean returns inside the hysteresis of the current
+    reference, so a cap or end of saturation never commits a stale value.
   - *Existing centre-path behaviour survives* (round 6 R7). The trim branch
     at `:8851-8900` keeps its invalid-plan fault for a centre target
     (`:8854-8857`), and a committed centre whose plan differs structurally
@@ -1321,16 +1324,21 @@ commit-checkpoint:
     `aius_audio_clock.cpp:575`). Accept sets it to the accept target; a
     centre commit sets it; the parent's note sets it once, on the pass
     where `g_clock_dark_transition_pending` goes from true to false (not on
-    "applied differs from noted", which would fire on every FILL write). "Note iff applied
-    equals desired" was declined: after a bumpless retarget the composed
-    target almost never equals the centre, so it would never fire
-    (interface draft, 2026-10-06). A FILL readback never notes, or every fill write restarts
-    the 10 s cadence and moves the hysteresis reference onto the composed
-    value (the round-1 starvation blocker through unnamed wiring). The note
-    is not removed: `accept_candidate` zeroes `applied_target_millihz`
-    (`aius_clock.c:221`) and `observe_measurement_window` returns early
-    while it is 0 (`:258`), so the full apply's note is what enables
-    retargets after a relock (round 5 N5).
+    "applied differs from noted", which would fire on every FILL write),
+    keeping today's guards `!replay_selected` and applied nominal equal to
+    `g_clock_nominal_rate_hz` (`optical_main.cpp:8751-8753`), so a replay's
+    dark transition never notes 48,000,000 as the live centre. "Note iff
+    applied equals desired" was declined: after a bumpless retarget the
+    composed target almost never equals the centre, so it would never fire
+    (interface draft, 2026-10-06). A FILL readback never notes, or every
+    fill write restarts the 10 s cadence and moves the hysteresis reference
+    onto the composed value (the round-1 starvation blocker through unnamed
+    wiring). `accept_candidate` today zeroes `applied_target_millihz`
+    (`aius_clock.c:221`), and `observe_measurement_window` returns early
+    while it is 0 (`:258`); Phase 4 changes accept to set it to the accept
+    target instead (round 7 F1), and the note becomes idempotent,
+    re-asserting the full apply's readback (including a fault retry that
+    committed a pending centre).
   - *Emission state is the applied-plan readback on every pass*, never a
     value committed on a true return: the applied plan lags a true return by
     up to one 128-frame period, and a queued trim can be superseded by a full
@@ -1348,7 +1356,10 @@ commit-checkpoint:
   CENTRE with a false `trim_last_at_ms`. If it needs a write, CENTRE
   persists until that write is accepted, through refusals and spent
   windows, and a CENTRE write bypasses the one-FILL-per-window budget
-  (round 6 R4). Every other write is FILL. A centre retarget counts `trim_updates`
+  (round 6 R4). The flag also clears on any later pass that needs no write
+  and on `fill_reset`, so a needed write that stops being needed cannot
+  leave it up for a noise write minutes later (round 7 F2). Every other
+  write is FILL. A centre retarget counts `trim_updates`
   and records `AIUS_EVENT_CLOCK_TRIM` when it commits, whether or not a write
   follows, so centre activity stays visible. A CENTRE write stamps
   `trim_last_at_ms` and `trim_applied_at_ms`
@@ -1563,6 +1574,10 @@ quantised to 140 mHz bins with 1.2 Hz spread and slow wander (280 mHz over
   120;
 - a CENTRE-needing commit whose write is refused, then lands in a spent
   window: the eventual write is CENTRE and stamps the centre pair;
+- a CENTRE-needing commit refused, then sub-threshold, then a later noise
+  write: that write is FILL; a full apply while the flag is up clears it;
+- a deferred centre whose estimate drifts back inside the old centre's
+  hysteresis: the pending centre is dropped, nothing commits;
 - a committed centre whose plan is invalid faults as today; one that is
   structurally different takes the structural full apply with `I` zeroed;
 - a gate open armed at DTS-2048 slice k = 1 to 3: deferred to the next
@@ -1657,8 +1672,9 @@ blockers the round 4 fixes opened (pending-boundary sign, deferral
 deadlock, an unobservable burst start) and four contract-text holes, folded
 above with §Slice interfaces. Round 6 (2026-10-06): NOT READY, two
 blockers (DTS slices all marked; two centre references after a relock) and
-five contract-text holes, folded. The same reviewer re-checks, then one
-clean-room confirmation. Phase 4's delivery audit re-attacks: the opening
+five contract-text holes, folded. Round 7 (2026-10-06): READY; three text
+fixes (accept sets the reference, the CENTRE flag's clear paths, four apply
+sites and a stale-pending drop) folded. Next: one clean-room confirmation. Phase 4's delivery audit re-attacks: the opening
 read and setpoint; the controller and emission state split under refusal,
 saturation and sub-threshold windows; the stamp-kind field on every write
 path; and the fill loop against the governor.
