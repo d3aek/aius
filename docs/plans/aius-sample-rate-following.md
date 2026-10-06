@@ -43,7 +43,7 @@ next handover.
 - **Next action.** Build, sign and OTA the Phase 4a image in the living
   room and run the Phase 4 device session, including gate 7 at
   fill-write cadence (4a's moved bench proof); that needs the owner.
-  Independent meanwhile: Phase 4c (`test.sh` multi-suite). Phase 4d (B1)
+  Phase 4c shipped. Phase 4d (B1)
   waits for `CLAUDE.md`'s foreign edits to be committed
   (re-check the diff, never from memory).
 - **Hook item moved.** `stop-guard.action-reverify` is item 11 of
@@ -1988,7 +1988,7 @@ underrun and the dip margin holds, put to the owner whether 4b is still
 wanted; otherwise write its design (chunked render, or render after the
 producer's commit).
 
-### Phase 4c `test.sh` runs every `--suite` given
+### Phase 4c `test.sh` runs every `--suite` given ✓ SHIPPED 2026-10-06
 
 ```yaml
 phase: 4c
@@ -2001,6 +2001,12 @@ unit: component-behind-interface
 Found during Phase 4a (2026-10-06): several `--suite` flags silently run
 only the last, so a multi-suite proof command can report green while
 skipping suites. Independent of the device session.
+
+Shipped: two or more suites each run in their own process, a `==>
+summary` lists `PASS` or `FAIL <s> (exit N)`, and the run exits 1 if any
+failed; one suite behaves exactly as before. Proof: single clock (exit 0),
+clock plus tx-gate (exit 0), unknown plus clock (exit 1, clock still ran),
+registry green, shellcheck clean.
 
 ### Phase 4d CLAUDE.md promote for the fill counters and signing form
 

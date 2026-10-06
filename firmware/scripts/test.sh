@@ -45,7 +45,7 @@ usage() {
 }
 
 environment=""
-suite=""
+suites=()
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--environment)
@@ -53,7 +53,7 @@ while [ $# -gt 0 ]; do
 		shift 2
 		;;
 	--suite)
-		suite="${2:-}"
+		suites+=("${2:-}")
 		shift 2
 		;;
 	*)
@@ -63,7 +63,31 @@ while [ $# -gt 0 ]; do
 done
 
 [ "$environment" = "native" ] || usage
-[ -n "$suite" ] || usage
+[ "${#suites[@]}" -gt 0 ] || usage
+[ -n "${suites[0]}" ] || usage
+
+# Several --suite flags: run each in order in its own process (a suite may
+# `exit`), continue past failures, summarise, and exit non-zero if any failed.
+# A single --suite falls through to the dispatch below unchanged.
+if [ "${#suites[@]}" -gt 1 ]; then
+	failed=0
+	results=()
+	for s in "${suites[@]}"; do
+		echo "==> suite: $s"
+		rc=0
+		"${BASH_SOURCE[0]}" --environment "$environment" --suite "$s" || rc=$?
+		if [ "$rc" -eq 0 ]; then
+			results+=("PASS $s")
+		else
+			results+=("FAIL $s (exit $rc)")
+			failed=1
+		fi
+	done
+	echo "==> summary"
+	printf '%s\n' "${results[@]}"
+	exit "$failed"
+fi
+suite="${suites[0]}"
 
 cc="${CC:-gcc}"
 cxx="${CXX:-g++}"
