@@ -992,7 +992,7 @@ phase: 4
 title: Close the output-rate loop on transmit-ring fill
 status: planned
 depends-on: phase 3 noise capture (setpoint spread across gate opens, PCM-versus-AC-3 floor bias)
-prebuild-review: clean-room-pending # 2026-10-06: rounds 4 to 6 NOT READY and folded; round 7 READY with text fixes folded; clean-room next, then build
+prebuild-review: clean-room-folded # 2026-10-06: rounds 4 to 6 NOT READY and folded; round 7 READY; clean-room NOT READY (1 blocker) and folded; clean-room closure check, then build
 outcome: >-
   A live source offset inside the 500 mHz target deadband no longer drains
   (or fills) the transmit ring: the output rate converges on the source's
@@ -1011,7 +1011,7 @@ targeted-proof:
   - target: clock-target, tx-gate, tx-governor, tx-fill-sensor, itcm-placement, registry, sd-editor green; ISR ITCM bytes recorded
   - device: one listening-room AC-3 session with criteria below; bench gates 1 and 7 and the stable-phase transition gates
 contract-artifact: spec-only
-fan-out: # four concurrent host-only slices against §Slice interfaces; parent-wiring after, and the parent runs every target build
+fan-out: # host-only slices against §Slice interfaces: fill-sensor-window, clock-kind, unit-start concurrently; fill-loop-core once fill-sensor-window's pure opening functions land; parent-wiring last; the parent runs every target build
   - name: fill-loop-core
     owned-paths:
       - firmware/lib/aius_clock/**
@@ -1399,7 +1399,8 @@ commit-checkpoint:
   claim and points here.
 
 **Observability.** `clock` gains `fill_offset_millihz` (signed, composed
-minus centre), `fill_setpoint_frames` (this lock's setpoint), `fill_trims`,
+minus centre), `fill_setpoint_frames` (this lock's setpoint),
+`fill_open_boundary_pending` (which setpoint formula the open used), `fill_trims`,
 `fill_trim_last_at_ms` and `fill_applied_at_ms`; the fill sensor's block
 gains the closed-window sequence number and the last window's
 exclusion-reason bits. Same openapi check; the body bound is
@@ -1436,12 +1437,14 @@ typedef struct {            /* copied from AiusTxFillSnapshot by the parent */
 typedef struct {
 	bool emit_allowed;                /* live, g_clock_plan_applied, gate open */
 	bool have_applied;
-	uint32_t applied_target_millihz;  /* applied plan readback = emission state */
+	uint32_t emission_readback_millihz; /* applied plan readback = emission state;
+	                                       never written into the tracker's centre */
 	uint32_t setpoint_frames;         /* this lock's; 0 = none yet */
 	AiusRateTrackerFillWindow window;
 } AiusRateTrackerFillInput;
 typedef struct {
-	AiusRateTrackerTrimKind emit_kind;  /* NONE: write nothing this pass */
+	AiusRateTrackerTrimKind emit_kind;  /* NONE: write nothing this pass;
+	                                       field below is the centre, never the readback */
 	uint32_t composed_target_millihz;   /* clamped to band and centre's cell */
 	uint32_t centre_millihz;            /* g_clock_desired_plan target */
 	int32_t fill_offset_millihz;        /* composed minus centre */
@@ -1461,14 +1464,19 @@ AiusRateTrackerFillResult aius_rate_tracker_fill_step(
 	AiusRateTracker *tracker, const AiusRateTrackerFillInput *in); /* every pass, after _step */
 void aius_rate_tracker_note_emit(AiusRateTracker *tracker, bool accepted); /* true spends the window */
 bool aius_rate_tracker_fill_reset(AiusRateTracker *tracker, bool discard_pending,
-	uint32_t *committed_centre_millihz); /* zero I; true if a pending centre committed */
-uint32_t aius_rate_tracker_open_setpoint_frames(uint32_t level_frames,
-	uint32_t offset_frames, bool boundary_pending); /* level+256-offset, minus 128 if pending */
+	uint32_t *committed_centre_millihz); /* zero I, clear the CENTRE flag; true if a
+	pending centre committed. On true the parent, before clock_apply_desired_plan,
+	counts trim_updates, records AIUS_EVENT_CLOCK_TRIM and rebuilds
+	g_clock_desired_plan from the committed centre; if that plan is invalid it
+	keeps the old desired plan and faults as the centre path does today. */
+/* (no tracker setpoint function: aius_tx_fill_open_setpoint_frames is the one) */
 /* _step: a proposal goes to pending_centre (target_update still reported);
  * a committed centre sets applied_target_millihz itself; accept_candidate
  * sets it to the accept target and zeroes I. note_target_applied:
  * signature unchanged, called once when g_clock_dark_transition_pending
- * goes true -> false. */
+ * goes true -> false, and only for a transition clock_apply_desired_plan
+ * started (clock_record_fault also raises the flag with no apply,
+ * optical_main.cpp:8662; that edge never notes). */
 
 /* aius_audio_clock.h (clock-kind) */
 typedef enum { AIUS_AUDIO_CLOCK_TRIM_CENTRE = 1, AIUS_AUDIO_CLOCK_TRIM_FILL = 2 }
@@ -1479,13 +1487,16 @@ bool aius_audio_clock_request_trim(const AiusSpdifClockPlan *plan,
  * volatile uint32_t queued_kind (stored after the pending check). */
 extern "C" volatile uint32_t g_aius_tx_trim_applied_at_ms; /* defined in FAKE too */
 extern "C" volatile uint32_t g_aius_tx_fill_applied_at_ms;
-uint32_t aius_audio_clock_now_ms(void);  /* millis(); fake under FAKE_TARGET */
+/* aius_audio_clock_internal.h: static inline, so the ITCM ISR never calls
+ * into flash; millis() on target, a fake variable under FAKE_TARGET. */
+static inline uint32_t aius_audio_clock_now_ms(void);
 #if defined(AIUS_AUDIO_CLOCK_FAKE_TARGET)
 void aius_audio_clock_fake_set_now_ms(uint32_t now_ms);
 #endif
-/* aius_spdif_sources.cpp, interrupts masked, ONE SADDR read, inline or ITCM
- * (dma_offset_frames is FLASHMEM today, :310); half 0/1; returns 1 iff SADDR
- * lies in g_aius_tx_fill_witness.last_half. */
+/* aius_spdif_sources.cpp: the CALLER holds the interrupt mask; the accessor
+ * never touches PRIMASK (an unconditional interrupts() would reopen the
+ * parent's masked section); FASTRUN, not FLASHMEM, not inline (another TU).
+ * ONE SADDR read; half 0/1; pending decided by the shared pure predicate. */
 extern "C" uint32_t aius_spdif_tx24_dma_read_position(uint32_t *half,
 	uint32_t *offset_frames);
 
@@ -1499,6 +1510,17 @@ extern "C" uint32_t aius_spdif_tx24_dma_read_position(uint32_t *half,
  * AiusTxFillSensor += uint32_t cur_reasons, win_reasons; reset zeroes both and
  * the served exclusions and keeps the seq. */
 static inline void aius_tx_fill_sensor_exclude(AiusTxFillSensor *s, uint32_t reason);
+/* replaces the one-argument exclude, which is removed */
+/* Shipped opening rules, pure, tested in tx-fill-sensor and called (not
+ * modelled) by the test/clock plant and by optical_main (clean-room 1): */
+static inline bool aius_tx_fill_boundary_pending(uint32_t saddr,
+	uint32_t ring_base, uint32_t last_half_base);  /* SADDR lies in last_half */
+static inline uint32_t aius_tx_fill_open_setpoint_frames(uint32_t level_frames,
+	uint32_t offset_frames, bool boundary_pending); /* 384-phi*128, or 256-phi'*128 */
+typedef enum { AIUS_TX_FILL_OPEN_WAIT = 0, AIUS_TX_FILL_OPEN_NOW = 1 } AiusTxFillOpenDecision;
+static inline AiusTxFillOpenDecision aius_tx_fill_open_decide(bool first_in_unit,
+	uint32_t committed_since_arm_frames, uint32_t unit_frames); /* NOW at a unit
+	start, or once committed_since_arm_frames >= unit_frames (the cap) */
 
 /* aius_codec.h (unit-start); appended so positional initialisers stay valid;
  * AIUS_CODEC_ABI_VERSION 1 -> 2 */
@@ -1507,24 +1529,42 @@ typedef struct { int32_t *planes[AIUS_MAX_CHANNELS]; uint16_t channels;
 	uint8_t first_in_unit; /* 1: a gate open may land here */ } AiusPcmBlock;
 ```
 
-- **Before spawning**, the parent lands `-I$fw_root/lib/aius_audio/src`
-  (and `-lm` if used) on the clock line at `firmware/scripts/test.sh:514-518`,
-  so fill-loop-core compiles its own suite while it works (round 6 R6).
+- **Before spawning**, the parent lands `-I$fw_root/lib/aius_audio/src` on
+  the clock line at `firmware/scripts/test.sh:517` (done 2026-10-06,
+  uncommitted until the fill-loop-core slice first runs the suite; add
+  `-lm` there if the plant needs it).
 - **fill-loop-core** consumes nothing new. The `test/clock` plant includes
   the Phase 3 sensor header read-only for its arithmetic and derives
   `window_seq` and `exclusions` from its own injected faults (a window
-  closes every 192,000 frames); it models the opening read and the unit
-  deferral itself, and stays self-contained after the merge (the tracker
-  input is the plain struct).
+  closes every 192,000 frames). It **calls** the shipped
+  `aius_tx_fill_boundary_pending`, `aius_tx_fill_open_setpoint_frames` and
+  `aius_tx_fill_open_decide` rather than modelling them, so a sign or
+  deferral error in the shipped rule fails the clock suite (clean-room 1).
+  Its only other sensor calls are `aius_tx_fill_saddr_offset_frames`
+  (`aius_tx_fill_sensor.h:153`), `aius_tx_fill_unit_frames` (`:173`),
+  `note_underrun`, `note_missed_fill` and `commit`, whose signatures
+  fill-sensor-window must not change; it never calls `exclude` (clean-room
+  5). A host case feeds a FILL readback that differs from the centre and
+  asserts the centre is unchanged (clean-room 4).
 - **clock-kind** updates `test_clock_target.cpp:501,544,612,614,649` to the
   new signature and adds a FILL stamp, a CENTRE stamp and a refused FILL
   keeping a pending CENTRE's kind; `itcm-placement` records the ISR and
   accessor bytes.
-- **fill-sensor-window** consumes nothing; also reports the E-AC-3 unit
-  discrepancy (§Gate open).
-- **unit-start** sets the flag after `aius_pipeline_slice_pcm_block` and in
+- **fill-sensor-window** consumes nothing. It lands the three pure opening
+  functions first (the plant depends on them), with tx-fill-sensor cases:
+  pending true and false at both halves and at the half edges, setpoint
+  `256 - phi' * 128` pending and `384 - phi * 128` not, and the open
+  decision at a unit start, mid-unit below the cap and at the cap.
+- **unit-start** sets the flag after `aius_pipeline_slice_pcm_block`, in
   `fill_pcm_descriptor` (`aius_pipeline.c:1124-1133,1281-1294`; a retried
-  block keeps its `sink_block`, so the flag survives a retry), and bumps
+  block keeps its `sink_block`, so the flag survives a retry) and in
+  `fill_silence_descriptor` (`:748-775`, which memsets `sink_block` at
+  `:767`): a substituted block is marked when its first frame starts a unit
+  of the shape `note_substitution_shape` records, so a substitution
+  covering several units marks one block per unit (clean-room 3). Pipeline
+  suite cases: AC-3 marks block 0 only; E-AC-3 the first slice only;
+  DTS-2048 1 of 4 slices; DTS-512 every slice; PCM every block; a retry
+  keeps the flag; a multi-unit substitution marks once per unit. It bumps
   `AIUS_CODEC_ABI_VERSION` to 2 (a layout change; orchestrator call) with
   `test_codec_api_contract.c:10` and `test_capability.c:330`. It converts
   the nine positional `AiusPcmBlock` initialisers in
@@ -1535,7 +1575,12 @@ typedef struct { int32_t *planes[AIUS_MAX_CHANNELS]; uint16_t channels;
   (the `optical_main.cpp:1440` pattern), the enum and exclusion-bit
   `static_assert`s, the trim branch at `:8851-8900` replaced by `fill_step`,
   plan, `request_trim(kind)`, `note_emit`; `first_in_unit` ignored on replay
-  blocks (`:2119`). It bounds the new keys in `status-body-bound`, and runs every target build itself, one
+  blocks (`:2119`). `tx_gate_execute_open` calls the three shipped opening
+  functions inside its masked section and publishes
+  `fill_open_boundary_pending` with the setpoint. It re-cites the gate-close
+  logic the class-change host case relies on (the plan's
+  `optical_main.cpp:8778-8780` is the `sampleRate()` fallback, not that
+  logic; clean-room 10). It bounds the new keys in `status-body-bound`, and runs every target build itself, one
   at a time; slices run host suites only.
 
 **Host proof (clock suite).** The tracker API owns the centre/integral
@@ -1568,6 +1613,8 @@ quantised to 140 mHz bins with 1.2 Hz spread and slow wander (280 mHz over
   transition ends), and retargets resume after the relock;
 - a relock at a different rate (same nominal and across a nominal change):
   the first FILL write is composed on the new centre, never the old;
+- a `clock_record_fault` dark transition with no apply: its end does not
+  note, and the centre is unchanged;
 - a replay or carrier loss during a deferral: the pending centre is
   discarded, the replay plan stays exactly 48,000,000 mHz, replay ready;
 - a deferral with re-proposals every 10 s: the retarget commits by window
@@ -1640,7 +1687,9 @@ quantised to 140 mHz bins with 1.2 Hz spread and slow wander (280 mHz over
 - settled |`fill_offset_millihz`| of at least 100 mHz, or the session is
   marked inconclusive (a source near zero offset proves nothing);
 - settled `fill_level_q4` within ±16 frames of `fill_setpoint_frames`, and
-  the setpoint within 256 to 384 (the "unchanged standing latency" outcome);
+  the setpoint matching the formula for the logged
+  `fill_open_boundary_pending` (129 to 256 pending, 256 to 384 otherwise;
+  the "unchanged standing latency" outcome; clean-room 6);
 - settled mean |fill error| ≤ 4 frames over the last 10 min (noise σ 1.2,
   threshold 1.5): a P-only regression (`Ki` truncated to 0) holds offsets up
   to 208 mHz inside ±16 frames and would otherwise pass;
@@ -1674,7 +1723,11 @@ above with §Slice interfaces. Round 6 (2026-10-06): NOT READY, two
 blockers (DTS slices all marked; two centre references after a relock) and
 five contract-text holes, folded. Round 7 (2026-10-06): READY; three text
 fixes (accept sets the reference, the CENTRE flag's clear paths, four apply
-sites and a stale-pending drop) folded. Next: one clean-room confirmation. Phase 4's delivery audit re-attacks: the opening
+sites and a stale-pending drop) folded. Clean-room (2026-10-06): NOT
+READY, one blocker (the opening rules were tested only against the plant's
+own copy, so the round 5 sign error or a DTS mis-mark passed every host
+case; now three shipped pure functions the plant calls) and nine text
+fixes, folded. The clean-room reviewer confirms closure, then build. Phase 4's delivery audit re-attacks: the opening
 read and setpoint; the controller and emission state split under refusal,
 saturation and sub-threshold windows; the stamp-kind field on every write
 path; and the fill loop against the governor.
