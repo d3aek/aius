@@ -14,7 +14,7 @@
  *
  *     DMAMEM static AiusRuntimeTeensy g_runtime;
  *
- * DTCM has 25,376 bytes free for locals on this image and shares FlexRAM with
+ * DTCM has 25,824 bytes free for locals on this image and shares FlexRAM with
  * ITCM; a DTCM instance would not fit. optical_main.cpp already keeps the HTTP
  * buffers in DMAMEM for the same reason.
  *
@@ -42,10 +42,20 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* GET /api/status body bound. The status document outgrew the DSP model's
+ * 12,288 B (test/status-body-bound puts the worst case at 14,723 B, mostly
+ * counters at full 10-digit width), so it has its own constant rather than
+ * borrowing AIUS_DSP_MODEL_MAX_JSON_BYTES, which stays the model's own
+ * bound. status-body-bound fails the build-time suite if the worst case plus
+ * its NUL exceeds this. */
+#define AIUS_RUNTIME_TEENSY_STATUS_BODY 16384u
+
 /* Application response-body buffer. Sized for the largest body any route
- * serializes -- GET /api/dsp/config's effective model, which optical_main.cpp
- * today serves from an equally sized dedicated DMAMEM buffer. */
-#define AIUS_RUNTIME_TEENSY_APP_BODY AIUS_DSP_MODEL_MAX_JSON_BYTES
+ * serializes: the status body above, which exceeds GET /api/dsp/config's
+ * effective model (AIUS_DSP_MODEL_MAX_JSON_BYTES). */
+#define AIUS_RUNTIME_TEENSY_APP_BODY AIUS_RUNTIME_TEENSY_STATUS_BODY
+static_assert(AIUS_RUNTIME_TEENSY_APP_BODY >= AIUS_DSP_MODEL_MAX_JSON_BYTES,
+	"the application body must still hold the largest DSP model document");
 
 extern "C" {
 

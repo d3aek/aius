@@ -27,28 +27,20 @@ buffer and no intermediate DSP quantisation.
 
 ## Current state
 
-Updated 2026-10-05 at a session handover; replace wholesale on the next.
+Updated 2026-10-06 during an orchestration run; replace wholesale on the
+next handover.
 
-- **Orchestration posture: checkpoint** (owner, 2026-10-05): surface each
+- **Orchestration posture: checkpoint** (owner, re-confirmed 2026-10-06): surface each
   decision and human-review gate as it arises. A new orchestration run may
   re-ask.
-- **Status.** Phases 1, 2 and 3 DONE (Phase 3's capture is in its
-  §Measured). Phase 4 not started: its entry gate is open, and the owner
-  chose to start with the design pass (2026-10-05). The board runs
+- **Status.** Phases 1, 2 and 3 DONE. Phase 4: entry gate decided
+  (2026-10-06, owner accepted every recommendation) and the OCRAM/status
+  body slice committed; the fill loop itself is not built. The board runs
   `0af7a8244081` (slot 2).
-- **Next action.** Phase 4 §Mechanism "Entry gate": one `opus` design pass
-  (`Plan` agent). It reads Phase 3 §Measured and the Phase 4 contract and
-  writes the setpoint, class-bias and gain decisions into the Entry gate
-  bullet, each with its why. It must cover the status-render margin
-  (troughs of 134 to 174 frames underran on a poll), the +128 underrun
-  disturbance, and the PCM top-up's +0.38 frames/s rise. For that rise,
-  read `output_rate_millihz`, `carrier_rate_millihz`, `trim_*` and
-  `clock.state` across the 21:27:59 PCM relock in
-  `.scratch/2682a96a-3760-4d00-b9e0-f71f66b336ba/capture-pcm-topup.jsonl`.
-  Present each design decision to the owner (checkpoint), then run the
-  prebuild review (`reviewer`, `opus`) and lift `prebuild-review` to
-  `ready`. Only then build. The OCRAM/status-size slice (Phase 4 "Status
-  body size") is independent and comes after the design pass.
+- **Next action.** Phase 4 prebuild review (`reviewer`, `opus`) against the
+  decided contract; it also proposes the all-excluded window rule (marked
+  Open in §Mechanism) for the owner. Lift `prebuild-review` to `ready`, then
+  build the `fill-loop-core` slice.
 - **What landed this session** (aius commits; upstream pointer bumps
   follow each):
 
@@ -60,12 +52,8 @@ Updated 2026-10-05 at a session handover; replace wholesale on the next.
 | `a10e2ff` | Phase J shipped; output-jitter Phases K and L planned; `measure_run.py --auth-file`, `replay` | three 10 s device replays, `governor_trims` 0 |
 | `c4c6200` | Phase 3 shipped on the capture; reducer underrun fixes; register update | reducer `--self-test` ok; capture reduced end to end |
 
-- **Uncommitted tree.** Owned and held on purpose:
-  `firmware/test/status-body-bound/`, its `firmware/scripts/test.sh` arm and
-  its `firmware/README.md` row. The suite runs and is red by design (worst
-  case 14,723 B against 12,288 B) until Phase 4's OCRAM slice; do not commit
-  it before then. `registry` is green with it present.
-  `CLAUDE.md` is dirty and foreign; leave it.
+- **Uncommitted tree.** `CLAUDE.md` is dirty and foreign;
+  leave it.
 - **Capture data** (scratch, reaped about 2026-10-12, so the design pass
   must read it before then):
   `.scratch/2682a96a-3760-4d00-b9e0-f71f66b336ba/capture-polled.jsonl`,
@@ -959,13 +947,27 @@ plan: main session plus a PCM top-up).
 - **Drain:** AC-3 programme −0.157 to −0.275 frames/s between underruns
   (mean −0.186), steepening; output 48,001,902 against carrier 48,001,623
   mHz at the end (279 mHz, 5.8 ppm), matching the late slope. The plant
-  model (u mHz moves u/1000 frames/s) holds to about 10 percent. In the PCM
-  top-up the fill **rose** +0.38 frames/s after the relock: unexplained.
-- **Steady fill after a gate open:** 310.3 (PCM, 3 samples), 328.3 (AC-3),
-  382.2 (PCM) frames over three observed relocks: range 72 frames, inside
-  the predicted 256 to 384.
-- **Noise (lag-1 window-to-window σ, polled):** AC-3 4.33 frames (380
-  pairs), PCM 1.42 (61 pairs). Sub-window spread median and p95: AC-3 7 and
+  model (u mHz moves u/1000 frames/s) holds to about 10 percent. The PCM
+  top-up's reported +0.38 frames/s rise is a reducer artefact (Phase 4
+  entry-gate design pass, 2026-10-06): `episode_free_slope`
+  (`firmware/tools/device/aius_fill_capture_analysis.py:344-366`) does not
+  split a span at a gate close, so its fit spanned the 21:27:59 relock's
+  +146-frame re-base. Per segment the source is 48,001,666 mHz (AC-3, before,
+  −0.236 frames/s) and 48,001,656 mHz (PCM, after, +0.033 frames/s): one
+  clock. The relock's dark full apply re-centred the output on the estimate
+  (48,001,902 to 48,001,623, `trim_updates` 0), about 33 mHz below the
+  source. Earlier the source warmed from about 48,001,866 (20:31) to
+  48,001,650 (21:00), steepest about −14 mHz/min.
+- **Steady fill after a gate open:** 292.6 (AC-3, 20:27:25), 306 to 310
+  (PCM), 328 to 339 (AC-3), 379 to 382 (PCM) frames over four real relocks:
+  range 90 frames, inside the predicted 256 to 384. The reducer's
+  "21:25:04 ac3 244.62 gate open" is the top-up file's start
+  (`gate_open_padded_frames` unchanged), not a relock.
+- **Noise (lag-1 window-to-window σ, polled):** AC-3 1.17 frames (412
+  pairs, P plus top-up, windows around an underrun excluded; the reducer's
+  4.33 included two underrun-step pairs), PCM 1.42 (61 pairs). 16 of 412
+  clean AC-3 pairs exceed 4 frames, the largest 7.06 (one render-dip
+  window). Sub-window spread median and p95: AC-3 7 and
   47, PCM 13.5 and 54 frames. Unpolled AC-3 (lag 7 to 8): white-model σ
   0.88, random-walk-model σ 0.29.
 - **Exclusions and tears:** AC-3 4 of 625 windows (0.0016 per s), PCM 0 of
@@ -983,7 +985,7 @@ phase: 4
 title: Close the output-rate loop on transmit-ring fill
 status: planned
 depends-on: phase 3 noise capture (setpoint spread across gate opens, PCM-versus-AC-3 floor bias)
-prebuild-review: entry-gate-open # capture recorded 2026-10-05 (Phase 3 §Measured); fix setpoint, class bias and gains from it, then a prebuild review, before build
+prebuild-review: entry-gate-decided # 2026-10-06: setpoint, class bias, gains, threshold and underrun handling decided (Entry gate); prebuild review next, then build
 outcome: >-
   A live source offset inside the 500 mHz target deadband no longer drains
   (or fills) the transmit ring: the output rate converges on the source's
@@ -1007,30 +1009,65 @@ fan-out:
       - firmware/test/clock/**
 review-intensity: active
 commit-checkpoint:
-  green: [clock, clock-target, tx-gate, tx-governor, tx-fill-sensor, rate-runner, itcm-placement, registry, sd-editor, optical-cutover]
+  green: [clock, clock-target, tx-gate, tx-governor, tx-fill-sensor, rate-runner, itcm-placement, registry, sd-editor, optical-cutover, status-body-bound, memory]
   buildable: [teensy41-optical, teensy41-optical-slot-a]
   parent-commit: "feat(aius): trim the output rate on transmit-ring fill"
 ```
 
 **Mechanism.**
 
-- **Entry gate.** Before build, the Phase 3 capture fixes three things:
-  the setpoint, the class bias and the gains. (1) Setpoint: the centre of
-  the 256 to 384 gate-open occupancy band by default, raised only if the
-  measured jitter needs more margin above the empty-ring reading
-  (`256 - phi * 128`); above the band top it adds latency and goes to the
-  owner. (2) Class bias: if the PCM and AC-3 floors differ by more than the
-  modulation budget allows, sub-windows are redefined by a fixed count of
-  production units, or the setpoint becomes per class. (3) Gains, below.
-  Capture findings the entry gate must absorb (Phase 3 §Measured): the
-  setpoint must clear the status-render production delay as well as the
-  256-frame empty-ring top (AC-3 troughs at 134 to 174 underran on a poll,
-  so at least about 50 frames above 256, inferred); each underrun is a
-  +128-frame disturbance to reject, not a reset; class switches relock on
-  this source, so the class bias may reduce to the gate-open reset; and the
-  PCM top-up's rising fill (+0.38 frames/s) must be explained (a tracker
-  retarget at the relock, or a different source clock) before gains are
-  set.
+- **Entry gate: decided 2026-10-06 from the Phase 3 capture** (design pass
+  `opus`; each decision put to the owner and accepted as recommended).
+  Loop figures are closed form (continuous PI, 4 s window, plant u/1000
+  frames/s); the host plant model confirms them before the device session.
+  1. **Setpoint 320 frames** (6.67 ms at 48 kHz, the centre of today's 256
+     to 384 gate-open band, so mean standing latency is unchanged). The
+     underrun line is occupancy 128, so the earlier "256 plus 50" floor was
+     conservative. Underruns struck at window statistics of 134 to 174; the
+     deepest status-render dip below its window was 71 frames (sub-window
+     spread p95: AC-3 47, PCM 54). 320, less that dip, a 700 mHz step's
+     34.5-frame peak and 3σ of noise, sits 82 frames clear (46 if the 16 KiB
+     status body deepens the dip 1.5 times). The pad target level is
+     `64 + phi * 128` (64 to 192); after one underrun the trough level is
+     192 to 320, under the governor's 384 trigger
+     (`firmware/src/optical_main.cpp:1413-1414`). Alternatives 288 (less
+     margin) and 352 (+0.67 ms latency) declined.
+  2. **Class bias: none.** All three class changes closed the gate and
+     relocked, so the occupancy pad resets the floor. The budget allows
+     3.8 frames (50 mHz over `Kp`); the estimated trough-count bias is 2 to
+     3 frames (inferred, unmeasured). The host in-lock switch case injects a
+     4-frame bias and a floor re-base and asserts no underrun. A per-class
+     setpoint is the fallback if a source is seen switching in lock.
+  3. **The PCM top-up's +0.38 frames/s was a reducer artefact** (Phase 3
+     §Measured, Drain): one source clock, the relock's full apply re-centred
+     on the estimate. No change to gains or authority; the warm-up ramp
+     (about −14 mHz/min) leaves a steady tracking error of about 2.7 frames,
+     and a 150 mHz post-relock residual with `I` zeroed peaks at about
+     7 frames.
+  4. **Gains: `Kp` 13 mHz per frame, `Ki` 345 µHz per frame per window**
+     (damping 0.70). Statistic unchanged (mean of the 16 sub-window minima,
+     4 s window at 48 kHz; 4.35 s at 44.1, 6 s at 32, so slower there).
+     Noise: AC-3 1.17 frames, PCM 1.42, unpolled 0.88, 3 to 5 times under the
+     4-frame bound. Modulation 15 to 18.5 mHz rms; a single render-dip window
+     (up to 7 frames) kicks about 91 mHz for 4 s, accepted. A 700 mHz step
+     peaks at 34.5 frames, is inside 16 frames by about 3.5 min and settled
+     by 10.3 min. Fixed point: `P = 13 * e_q4 / 16` mHz,
+     `I += 345 * e_q4 / 16` µHz, rounded. Kp 8 / Ki 130 µHz (56-frame peak,
+     17 min) and Kp 20 to 26 (more modulation and writes) declined.
+  5. **Emit threshold 20 mHz** (12 NUM LSBs). Noise moves the composed
+     target 21 to 26 mHz rms per window, so writes are not rare: expect 35
+     to 45 percent of windows polled (300 to 400 per hour), about 20 percent
+     unpolled, at a cost of 1.5 frames of fill error. Hard bound: one FILL
+     write per window (900 per hour at 48 kHz, 827 at 44.1, 600 at 32).
+     Gate 7 tests carrier continuity at one write per 4 s.
+  6. **An underrun is a +128-frame step, rejected by plain PI, not a reset**
+     (+126.94 and +126.81 measured; one sub-window excluded each, no trim).
+     The window holding it is used as is: it reads the step times the share
+     of valid sub-windows after it (+8.50 is 1 of 15), a linear partial
+     step. `Kp * 128` is 1,664 mHz, so the output rides the ±900 clamp with
+     `I` held and is back within 16 frames in about 3 to 4 min. Clipping the
+     error at ±64 frames, and subtracting known underrun frames (latency then
+     stays 128 high), declined.
 - **Status body size, checked at build.** Moved here from Phase 3 (owner,
   2026-10-05). No build or test today bounds `/api/status` against
   `AIUS_RUNTIME_TEENSY_APP_BODY` (12,288 B); the only `static_assert`s cover
@@ -1046,22 +1083,29 @@ commit-checkpoint:
   every function `http_status_json()` writes through and sums worst-case
   widths, refusing what it cannot bound) puts the worst case at 14,723 B
   against 12,288 B, mostly counters at full 10-digit width (`input_diag`
-  3,337 B, `clock` 2,160 B). The suite and its `test.sh` arm and README row
-  are **held uncommitted in the tree** until the slice below lands.
-  A 16 KiB buffer does not link: `app_body` lives in
-  `g_runtime_storage` (`DMAMEM`, OCRAM), and OCRAM free is 131,360 B
-  against the 131,040 B NativeEthernet heap floor (defect 26,
-  `link/aius_teensy41.ld`; `memory` ratchet
-  `firmware/test/memory/verify_target.py:63`). **Owner decision
-  (2026-10-05): fund the OCRAM in this phase**, then raise the buffer:
-  1. Move about 4 KiB of OCRAM residents to DTCM or flash (RAM1 locals
-     then about 21 KB by the linker's count). Do not lower the floor.
-  2. Give the status body its own constant (`AIUS_RUNTIME_TEENSY_STATUS_BODY`,
-     16,384 B) apart from `AIUS_DSP_MODEL_MAX_JSON_BYTES`
-     (`lib/aius_dsp_config/include/aius_dsp_config.h:18`), which stays at
-     12,288.
-  3. Commit the held suite; prove it fails at a limit at or below the worst
-     case and passes at 16,384.
+  3,337 B, `clock` 2,160 B).
+  **OCRAM slice: done 2026-10-06** (owner decision 2026-10-05: fund the
+  OCRAM, do not lower a floor). OCRAM free was really 131,072 B (32 B over
+  the 131,040 B heap floor; the 131,360 `teensy_size` figure omits 288 B of
+  `.bss.aius_retained`), and DTCM free 25,472 B against the 24,352 B
+  stack floor (`firmware/link/aius_teensy41.ld:285`), so DTCM had to be
+  funded first. Owner chose (2026-10-06) PROGMEM format strings over a
+  per-object linker rule or a lower DTCM floor:
+  1. `http_meters_json()::snapshot` (`AiusMeterSnapshot`, 4,776 B) moved
+     from OCRAM `DMAMEM` to DTCM `.bss` (not a DMA buffer, not hot path).
+  2. Twelve cold format literals in `firmware/src/optical_main.cpp`
+     (5,106 B) became function-local `static const char ...[] PROGMEM`, the
+     `http_clock_json` pattern; all in `FLASHMEM` HTTP render paths, none
+     read from an ISR or ITCM. Rendered text byte-identical.
+  3. `AIUS_RUNTIME_TEENSY_STATUS_BODY` 16,384 B
+     (`firmware/src/aius_runtime_teensy.h`) now sizes `app_body`;
+     `AIUS_DSP_MODEL_MAX_JSON_BYTES` stays 12,288.
+  4. The suite is committed; `test.sh` requires it to pass at 16,384 and to
+     refuse a limit equal to the worst case (and 12,288).
+  Linked: DTCM free 25,824 B (+1,472 over the floor), OCRAM free 131,776 B
+  (+736), ITCM unchanged at 191,804 B (`teensy41-optical`). Status headroom
+  is now 1,660 B; Phase 4's own `clock` keys spend part of it, and the
+  suite bounds them when they land.
 - **`CLAUDE.md` promote.** The commit that writes the fill
   stamps into CLAUDE.md (`the release-promotion step`) also corrects §Device access and
   OTA's signing line: `aius_ota_sign.py sign` needs `--image`, `--output`
@@ -1087,6 +1131,10 @@ commit-checkpoint:
 - **All-excluded window.** A window whose sub-windows are all excluded must
   not go silent (the round-1 governor-void trap). With underruns in it, it
   reads as the empty-ring value; without, `I` holds and nothing is emitted.
+  Never observed in the capture (every exclusion was a lone underrun
+  sub-window). **Open, for the prebuild review to propose and the owner to
+  settle:** which `phi` the empty-ring value takes (128, 192, or the last
+  sample's `256 - phi * 128`), and how the +128 step that follows is read.
 - **Control law: PI.** Per window, `I += Ki * e` and
   `offset = clamp(Kp * e + I)`, with `e` the window statistic minus the
   setpoint. A positive error (ring filling) speeds the output up. `I` is held
@@ -1101,8 +1149,9 @@ commit-checkpoint:
   `Ki` about 0.36 mHz per frame per window and a 34-frame peak, which needs
   statistic noise of about 4 frames or less to meet ±50 mHz; a noisier
   statistic means a slower loop.
-- **Authority.** Clamp ±900 mHz: hysteresis 500, plus the observed estimate
-  bias and wander (about 55 mHz and 280 mHz on 2026-10-04, 835 together),
+- **Authority.** Clamp ±900 mHz: the in-lock offset is at most the 500 mHz
+  hysteresis plus the estimate error (about 170 mHz at most on 2026-10-05,
+  670 together; the earlier "bias 55 plus wander 280, 835" double-counted),
   plus margin; well inside the plan band (±2 %). The composed target is also
   clamped into the plan band and into the centre's structural cell:
   `request_trim` refuses a plan that differs structurally from the applied
@@ -1127,8 +1176,9 @@ commit-checkpoint:
     `optical_main` wiring.
 - **Emission.** One composed request per `sample_rate_service` pass, at most
   once per window, and only when the composed target differs from the
-  emission state by more than an emit threshold sized from the measured noise
-  (at least 5 mHz, three NUM LSBs), so steady state writes rarely.
+  emission state by more than the emit threshold (20 mHz, entry gate item
+  5). At the measured noise writes are not rare: the bound is one FILL write
+  per window.
 - **Kinds and diagnostics.** A write is CENTRE if a centre retarget committed
   since the last write, else FILL. A centre retarget counts `trim_updates`
   and records `AIUS_EVENT_CLOCK_TRIM` when it commits, whether or not a write
@@ -1203,7 +1253,15 @@ quantised to 140 mHz bins with 1.2 Hz spread and slow wander (280 mHz over
 - a bumpless centre retarget that writes nothing: committed once, not
   re-fired every 10 s, and the desired plan follows it;
 - a composed target outside the plan band or the structural cell: clamped,
-  no fault, no permanent refusal.
+  no fault, no permanent refusal;
+- a source warm-up ramp of about −14 mHz/min (−250 mHz over 30 min, as
+  measured 2026-10-05): tracking error within about 3 frames, no underrun;
+- an in-lock class switch with a 4-frame floor bias and a floor re-base:
+  no underrun, modulation within the bound;
+- every case at 48, 44.1 and 32 kHz window lengths (4, 4.35 and 6 s),
+  because `Ki` is per window: no underrun, fill error ≤ 64 frames;
+- the closed-form figures in entry gate items 4 to 6 (34.5-frame step peak,
+  10.3 min settle, write fraction at 20 mHz) reproduced within 20 percent.
 
 **Device proof.** One listening-room AC-3 session of 45 min or more polled with
 `firmware/tools/device/aius_status_poll.py`, plus an unpolled segment of
@@ -1212,9 +1270,16 @@ quantised to 140 mHz bins with 1.2 Hz spread and slow wander (280 mHz over
 - `underrun_episode_count` delta 0 and `governor_trims` delta 0;
 - settled |`fill_offset_millihz`| of at least 100 mHz, or the session is
   marked inconclusive (a source near zero offset proves nothing);
-- settled `fill_level_q4` within ±16 frames of the setpoint (the "unchanged
-  standing latency" outcome);
-- `fill_trims` within the write bound.
+- settled `fill_level_q4` within ±16 frames of the 320-frame setpoint (the
+  "unchanged standing latency" outcome);
+- `fill_trims` delta at most the fill-window delta, and at most half of it
+  in a polled session (entry gate item 5).
+
+Before reading the session, fix the reducer
+(`firmware/tools/device/aius_fill_capture_analysis.py:344-366`): split
+`episode_free_slope` spans at a gate close, so a relock's re-base is not
+fitted as drift (the 2026-10-05 +0.38 frames/s artefact). Proof: its
+`--self-test` gains a case with a gate close inside a span.
 
 Bench: gate 1's rebased criterion (`max_follow_error_millihz` should stay
 about the estimate's own spread, 798 of 1,000 on 2026-09-04; if it breaches,
@@ -1229,6 +1294,38 @@ Prebuild review: rounds 1 to 3 and the clean-room confirmation are done
 fixes its inputs: the occupancy pad at gate open; the controller and emission
 state split under refusal and sub-threshold windows; the stamp-kind field on
 every write path; and the fill loop against the governor.
+
+Gate 1's 1,000 mHz follow-error bound was set on a bench with no underruns;
+an underrun's clamp excursion (entry gate item 6) would breach it, so a
+listening-room session reads gate 1 only across underrun-free spans.
+
+### Phase 4b Status render must not delay AC-3 production
+
+```yaml
+phase: 4b
+title: Keep the /api/status render off the AC-3 producer's critical path
+status: planned
+depends-on: phase 4 device session (does the 320-frame setpoint already absorb the render dip?)
+prebuild-review: not-started
+outcome: >-
+  An /api/status render no longer delays the next AC-3 burst, so a poll
+  cannot choose when a thin ring margin empties; the sub-window dip a render
+  causes (71 frames worst, 2026-10-05) shrinks to the non-polled level.
+unit: parent-only # design not started
+seams:
+  - app_write_status / http_status_json render scheduling (firmware/src/optical_main.cpp)
+  - AC-3 producer service order in the main loop
+targeted-proof:
+  - device: polled versus unpolled sub-window spread p95 within 10 frames of each other
+```
+
+Found by the Phase 4 entry-gate design pass (2026-10-06): Phase 3 measured
+the render delaying production, and Phase 4 only adds margin against it.
+The 16 KiB status body makes the render longer (dip estimated 1.5 times).
+First step after Phase 4's device session: if polled sessions show no
+underrun and the dip margin holds, put to the owner whether 4b is still
+wanted; otherwise write its design (chunked render, or render after the
+producer's commit).
 
 ## Acceptance
 

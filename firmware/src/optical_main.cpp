@@ -183,7 +183,7 @@ static byte g_mac[] = {0x02, 0x41, 0x49, 0x55, 0x01, 0x01};
 /* The composed runtime, in OCRAM because aius_runtime_teensy.h requires it: the
  * object is roughly 35 kB, dominated by the HTTP request/response buffers
  * (13,312 + 8,192 B) and the model-sized application body buffer (12,288 B),
- * against a 25,376-byte DTCM free-for-locals zone. A DTCM instance could not
+ * against a 25,824-byte DTCM free-for-locals zone. A DTCM instance could not
  * fit, and a stack one could not exist at all. aius_runtime_teensy_construct()
  * initializes every member it reads, so OCRAM's lack of startup zeroing is
  * harmless.
@@ -674,7 +674,7 @@ static volatile bool g_dsp_apply_pending;
  *
  * OCRAM, exactly as the AiusMeter contract asks ("on target the adapter places
  * this in OCRAM"). At ~9.5 kB (the analysis ring and its published window are
- * most of it) it is far too big to spend on the 25,376-byte DTCM
+ * most of it) it is far too big to spend on the 25,824-byte DTCM
  * free-for-locals zone when OCRAM has ~128 kB spare -- §Deciding principle's
  * "memory that is genuinely free is not an argument" points the same way.
  * DMAMEM is not zeroed at startup, so apply_config() runs aius_meter_init()
@@ -3079,13 +3079,14 @@ static FLASHMEM uint32_t meter_permille(int32_t point)
 static FLASHMEM size_t http_meters_json(uint8_t *body, size_t capacity)
 {
 	/* STATIC, not automatic: the snapshot still carries the (unserved)
-	 * analysis window, so it is ~4.7 kB against a DTCM free-for-locals zone
-	 * of 25,376 bytes. Safe because this runs only from app_write_meters()
-	 * on the main thread, one request at a time and never reentrantly;
-	 * DMAMEM keeps it off DTCM for the reason g_meter is there, and it needs
-	 * no startup zeroing because aius_meter_read() overwrites it before any
-	 * read. */
-	DMAMEM static AiusMeterSnapshot snapshot;
+	 * analysis window, so it is ~4.7 kB, too large for the stack. Safe
+	 * because this runs only from app_write_meters() on the main thread, one
+	 * request at a time and never reentrantly. DTCM .bss, not DMAMEM: its
+	 * 4,776 OCRAM bytes fund the 16 KiB status body
+	 * (AIUS_RUNTIME_TEENSY_STATUS_BODY) above the defect-26 heap floor.
+	 * No DMA touches it, and
+	 * aius_meter_read() overwrites it before any read. */
+	static AiusMeterSnapshot snapshot;
 	if (!aius_meter_read(&g_meter, &snapshot))
 		return 0;
 	if (capacity > AIUS_METERS_MAX_JSON_BYTES)
@@ -3315,8 +3316,8 @@ static FLASHMEM bool http_audio_diag_json(char *output, size_t capacity,
 			: nullptr,
 		&pipeline);
 
-	return http_json_append(
-		output, capacity, length,
+	/* PROGMEM: flash, not DTCM .rodata (see http_input_diag_json). */
+	static const char format_audio_diag[] PROGMEM =
 		",\"audio_diag\":{"
 		"\"ingress_level_words\":%lu,"
 		"\"ingress_high_water_words\":%lu,"
@@ -3357,7 +3358,10 @@ static FLASHMEM bool http_audio_diag_json(char *output, size_t capacity,
 		"\"tx_level_frames\":%lu,"
 		"\"tx_high_water_frames\":%lu,"
 		"\"runtime_epoch_max_us\":%lu,"
-		"\"runtime_epoch_budget_overruns\":%lu}",
+		"\"runtime_epoch_budget_overruns\":%lu}";
+	return http_json_append(
+		output, capacity, length,
+		format_audio_diag,
 		(unsigned long)ingress.level_words,
 		(unsigned long)ingress.high_water_words,
 		(unsigned long)ingress.generation,
@@ -3604,8 +3608,8 @@ static FLASHMEM bool http_clock_json(char *output, size_t capacity,
 static FLASHMEM bool http_clock_regs_json(char *output, size_t capacity,
 	                                      size_t *length)
 {
-	return http_json_append(
-		output, capacity, length,
+	/* PROGMEM: flash, not DTCM .rodata (see http_input_diag_json). */
+	static const char format_clk_regs[] PROGMEM =
 		",\"clk_regs\":{"
 		"\"spdif_scr\":\"0x%08lX\","
 		"\"spdif_srpc\":\"0x%08lX\","
@@ -3622,7 +3626,10 @@ static FLASHMEM bool http_clock_regs_json(char *output, size_t capacity,
 		"\"spdif_in_master\":%u,"
 		"\"spdif_out_master\":%u,"
 		"\"tx_fills\":%lu,"
-		"\"relocks\":%lu}",
+		"\"relocks\":%lu}";
+	return http_json_append(
+		output, capacity, length,
+		format_clk_regs,
 		(unsigned long)SPDIF_SCR,
 		(unsigned long)SPDIF_SRPC,
 		(unsigned long)SPDIF_SRCD,
@@ -3800,8 +3807,8 @@ static FLASHMEM bool http_fault_record_json(char *output, size_t capacity,
 		return http_json_append(output, capacity, length,
 		                        ",\"fault_record\":null");
 	}
-	return http_json_append(
-		output, capacity, length,
+	/* PROGMEM: flash, not DTCM .rodata (see http_input_diag_json). */
+	static const char format_fault_record[] PROGMEM =
 		",\"fault_record\":{"
 		"\"ipsr\":%lu,"
 		"\"cfsr\":\"0x%08lX\","
@@ -3811,7 +3818,10 @@ static FLASHMEM bool http_fault_record_json(char *output, size_t capacity,
 		"\"return_address\":\"0x%08lX\","
 		"\"xpsr\":\"0x%08lX\","
 		"\"temp_c\":%.1f,"
-		"\"uptime_s\":%lu}",
+		"\"uptime_s\":%lu}";
+	return http_json_append(
+		output, capacity, length,
+		format_fault_record,
 		(unsigned long)g_fault_record.ipsr,
 		(unsigned long)g_fault_record.cfsr,
 		(unsigned long)g_fault_record.hfsr,
@@ -3835,8 +3845,8 @@ static FLASHMEM bool http_fault_record_json(char *output, size_t capacity,
 static FLASHMEM bool http_poll_probe_json(char *output, size_t capacity,
 	                                      size_t *length)
 {
-	return http_json_append(
-		output, capacity, length,
+	/* PROGMEM: flash, not DTCM .rodata (see http_input_diag_json). */
+	static const char format_poll_probe[] PROGMEM =
 		",\"poll_probe\":{"
 		"\"wedges\":%lu,"
 		"\"ctx\":%u,"
@@ -3845,7 +3855,10 @@ static FLASHMEM bool http_poll_probe_json(char *output, size_t capacity,
 		"\"prev_maxd\":%lu,"
 		"\"prev_reent\":%lu,"
 		"\"maxd\":%lu,"
-		"\"reent\":%lu}",
+		"\"reent\":%lu}";
+	return http_json_append(
+		output, capacity, length,
+		format_poll_probe,
 		(unsigned long)aius_poll_probe.wedge_seen,
 		(unsigned)aius_poll_probe.wedge_context,
 		(unsigned)aius_poll_probe.wedge_dhcp_state,
@@ -3909,41 +3922,44 @@ static FLASHMEM bool http_pipeline_diag_json(char *output, size_t capacity,
 	int pcm_confirmed = 0;
 	(void)g_audio_processor.squelch_diag(&squelched_frames, &pcm_confirmed);
 
+	/* PROGMEM: flash, not DTCM .rodata (see http_input_diag_json). */
+	static const char format_pipeline_diag[] PROGMEM =
+		",\"pipeline_diag\":{\"class\":%u,"
+		"\"codec_pc\":%u,"
+		"\"metrics_valid\":%u,\"last_status\":%d,"
+		"\"create_status\":%d,"
+		"\"decode_cycles\":%llu,"
+		"\"arena_high_water\":%lu,"
+		"\"alloc_count\":%lu,"
+		"\"dts_decode_cycles\":%llu,"
+		"\"dts_alloc_count\":%lu,"
+		"\"ac3_decode_cycles\":%llu,"
+		"\"ac3_alloc_count\":%lu,"
+		"\"eac3_decode_cycles\":%llu,"
+		"\"eac3_alloc_count\":%lu,"
+		"\"decode_rejects\":%lu,"
+		/* Complete-but-corrupt compressed units refused
+		 * before decode and substituted with silence,
+		 * and when the last one happened. A climbing
+		 * count with decode_rejects and au_abandons
+		 * flat is a SOURCE fault (or a receiver
+		 * micro-flap), not a board one -- and the stamp
+		 * is what places it against a heard crackle. */
+		"\"crc_rejects\":%lu,"
+		"\"crc_reject_last_at_ms\":%lu,"
+		"\"bursts_ok\":%lu,"
+		"\"rejects_no_space\":%lu,"
+		"\"rejects_malformed\":%lu,"
+		"\"rejects_unsupported\":%lu,"
+		"\"resyncs\":%lu,"
+		"\"last_reject_pc\":%u,"
+		"\"last_reject_pd\":%u,"
+		"\"retype_count\":%lu,"
+		"\"reclassify_count\":%lu,"
+		"\"squelched_frames\":%lu,"
+		"\"pcm_confirmed\":%u}";
 	return http_json_append(output, capacity, length,
-	                        ",\"pipeline_diag\":{\"class\":%u,"
-	                        "\"codec_pc\":%u,"
-	                        "\"metrics_valid\":%u,\"last_status\":%d,"
-	                        "\"create_status\":%d,"
-	                        "\"decode_cycles\":%llu,"
-	                        "\"arena_high_water\":%lu,"
-	                        "\"alloc_count\":%lu,"
-	                        "\"dts_decode_cycles\":%llu,"
-	                        "\"dts_alloc_count\":%lu,"
-	                        "\"ac3_decode_cycles\":%llu,"
-	                        "\"ac3_alloc_count\":%lu,"
-	                        "\"eac3_decode_cycles\":%llu,"
-	                        "\"eac3_alloc_count\":%lu,"
-	                        "\"decode_rejects\":%lu,"
-	                        /* Complete-but-corrupt compressed units refused
-	                         * before decode and substituted with silence,
-	                         * and when the last one happened. A climbing
-	                         * count with decode_rejects and au_abandons
-	                         * flat is a SOURCE fault (or a receiver
-	                         * micro-flap), not a board one -- and the stamp
-	                         * is what places it against a heard crackle. */
-	                        "\"crc_rejects\":%lu,"
-	                        "\"crc_reject_last_at_ms\":%lu,"
-	                        "\"bursts_ok\":%lu,"
-	                        "\"rejects_no_space\":%lu,"
-	                        "\"rejects_malformed\":%lu,"
-	                        "\"rejects_unsupported\":%lu,"
-	                        "\"resyncs\":%lu,"
-	                        "\"last_reject_pc\":%u,"
-	                        "\"last_reject_pd\":%u,"
-	                        "\"retype_count\":%lu,"
-	                        "\"reclassify_count\":%lu,"
-	                        "\"squelched_frames\":%lu,"
-	                        "\"pcm_confirmed\":%u}",
+	                        format_pipeline_diag,
 	                        (unsigned)klass,
 	                        (unsigned)codec_pc,
 	                        got == AIUS_OK ? 1u : 0u,
@@ -3991,15 +4007,18 @@ static FLASHMEM bool http_stall_diag_json(char *output, size_t capacity,
 	const uint32_t pc = g_stall_witness_pc;
 	const uint32_t lr = g_stall_witness_lr;
 	interrupts();
-	return http_json_append(
-		output, capacity, length,
+	/* PROGMEM: flash, not DTCM .rodata (see http_input_diag_json). */
+	static const char format_stall_diag[] PROGMEM =
 		",\"stall_diag\":{\"events\":%lu,\"last_us\":%lu,"
 		"\"last_deficit_ms\":%lu,\"max_deficit_ms\":%lu,"
 		"\"witness_ticks\":%lu,\"isr_samples\":%lu,"
 		"\"iabr\":[\"%08lx\",\"%08lx\",\"%08lx\",\"%08lx\",\"%08lx\"],"
 		"\"pc\":\"%08lx\",\"lr\":\"%08lx\","
 		"\"flexspi_intr\":\"%08lx\",\"flexspi2_intr\":\"%08lx\","
-		"\"flexspi2_sts1\":\"%08lx\"}",
+		"\"flexspi2_sts1\":\"%08lx\"}";
+	return http_json_append(
+		output, capacity, length,
+		format_stall_diag,
 		(unsigned long)g_stall_events, (unsigned long)g_stall_last_us,
 		(unsigned long)g_stall_last_deficit_ms,
 		(unsigned long)g_stall_max_deficit_ms,
@@ -4017,19 +4036,22 @@ static FLASHMEM bool http_stall_diag_json(char *output, size_t capacity,
 static FLASHMEM bool http_replay_diag_json(char *output, size_t capacity,
 	                                       size_t *length)
 {
+	/* PROGMEM: flash, not DTCM .rodata (see http_input_diag_json). */
+	static const char format_replay_diag[] PROGMEM =
+		",\"replay_diag\":{\"jobs\":%lu,\"faults\":%lu,"
+		"\"mounts\":%lu,\"mount_reuses\":%lu,"
+		"\"consecutive_faults\":%lu,"
+		"\"last_primitive_us\":%lu,"
+		"\"longest_primitive_us\":%lu,"
+		"\"longest_action\":%u,\"last_fault\":%u,"
+		"\"last_fault_phase\":%u,"
+		"\"last_fault_action\":%u,"
+		"\"last_fault_driver\":%lu,"
+		"\"last_fault_offset_bytes\":%lu,"
+		"\"last_fault_loops\":%lu,"
+		"\"last_fault_at_ms\":%lu}";
 	return http_json_append(output, capacity, length,
-	                        ",\"replay_diag\":{\"jobs\":%lu,\"faults\":%lu,"
-	                        "\"mounts\":%lu,\"mount_reuses\":%lu,"
-	                        "\"consecutive_faults\":%lu,"
-	                        "\"last_primitive_us\":%lu,"
-	                        "\"longest_primitive_us\":%lu,"
-	                        "\"longest_action\":%u,\"last_fault\":%u,"
-	                        "\"last_fault_phase\":%u,"
-	                        "\"last_fault_action\":%u,"
-	                        "\"last_fault_driver\":%lu,"
-	                        "\"last_fault_offset_bytes\":%lu,"
-	                        "\"last_fault_loops\":%lu,"
-	                        "\"last_fault_at_ms\":%lu}",
+	                        format_replay_diag,
 	                        (unsigned long)g_replay_diag.jobs,
 	                        (unsigned long)g_replay_diag.faults,
 	                        (unsigned long)g_replay_diag.mounts,
@@ -4120,17 +4142,20 @@ static FLASHMEM bool http_net_diag_json(char *output, size_t capacity,
 	const bool heap = aius_network_teensy_stack_heap(
 		network, &heap_free, &heap_largest);
 
+	/* PROGMEM: flash, not DTCM .rodata (see http_input_diag_json). */
+	static const char format_net_diag[] PROGMEM =
+		",\"net_diag\":{\"link\":%u,\"link_live\":%u,"
+		"\"dhcp_state\":%u,\"frames_valid\":%s,"
+		"\"tx_frames\":%lu,\"rx_frames\":%lu,"
+		"\"dhcp_schedule_valid\":%s,"
+		"\"dhcp_lease_s\":%lu,"
+		"\"dhcp_t1_s\":%lu,"
+		"\"dhcp_t2_s\":%lu,"
+		"\"fnet_heap_valid\":%s,"
+		"\"fnet_heap_free_b\":%lu,"
+		"\"fnet_heap_largest_b\":%lu";
 	if (!http_json_append(output, capacity, length,
-	                      ",\"net_diag\":{\"link\":%u,\"link_live\":%u,"
-	                      "\"dhcp_state\":%u,\"frames_valid\":%s,"
-	                      "\"tx_frames\":%lu,\"rx_frames\":%lu,"
-	                      "\"dhcp_schedule_valid\":%s,"
-	                      "\"dhcp_lease_s\":%lu,"
-	                      "\"dhcp_t1_s\":%lu,"
-	                      "\"dhcp_t2_s\":%lu,"
-	                      "\"fnet_heap_valid\":%s,"
-	                      "\"fnet_heap_free_b\":%lu,"
-	                      "\"fnet_heap_largest_b\":%lu",
+	                      format_net_diag,
 	                      (unsigned)aius_network_teensy_link(network),
 	                      (unsigned)aius_network_teensy_link_live(network),
 	                      (unsigned)aius_network_teensy_dhcp_state(network),
@@ -5293,7 +5318,8 @@ static FLASHMEM bool http_ota_diag_json(char *output, size_t capacity,
 		staged = progress.staged_length + AIUS_OTA_HEADER_BYTES;
 		total = progress.image_length + AIUS_OTA_HEADER_BYTES;
 	}
-	return http_json_append(output, capacity, length,
+	/* PROGMEM: flash, not DTCM .rodata (see http_input_diag_json). */
+	static const char format_ota_diag[] PROGMEM =
 		",\"ota_diag\":{\"state\":%u,\"staged_bytes\":%lu,"
 		"\"total_bytes\":%lu,\"fault\":%u,\"key_fingerprint\":\"%s\","
 		"\"test_key\":%s,\"activation_available\":%s,"
@@ -5301,7 +5327,9 @@ static FLASHMEM bool http_ota_diag_json(char *output, size_t capacity,
 		"\"activation_fault\":\"%s\","
 		"\"rehearsal\":\"%s\",\"rehearsal_fault\":%u,"
 		"\"rehearsal_fault_injected\":%s,\"rehearsal_dark_us\":%lu,"
-		"\"rehearsal_max_step_us\":%lu}",
+		"\"rehearsal_max_step_us\":%lu}";
+	return http_json_append(output, capacity, length,
+		format_ota_diag,
 		(unsigned)progress.state,
 		(unsigned long)staged, (unsigned long)total,
 		(unsigned)progress.fail_reason,
@@ -5351,14 +5379,17 @@ static FLASHMEM bool http_ota_dark_json(char *output, size_t capacity,
 	if (!g_ota_dark_report_valid)
 		return http_json_append(output, capacity, length,
 		                        ",\"ota_dark\":null");
-	return http_json_append(output, capacity, length,
+	/* PROGMEM: flash, not DTCM .rodata (see http_input_diag_json). */
+	static const char format_ota_dark[] PROGMEM =
 		",\"ota_dark\":{\"state\":%u,\"phase\":%u,\"fault\":%u,"
 		"\"rehearsal\":%s,\"primitive_fault\":%ld,"
 		"\"step_address\":%lu,\"compare_offset\":%lu,"
 		"\"programmed_bytes\":%lu,\"verified_bytes\":%lu,"
 		"\"steps_taken\":%lu,\"steps_total\":%lu,"
 		"\"image_digest_prefix\":\"%02x%02x%02x%02x%02x%02x%02x%02x\","
-		"\"dark_window_cycles\":%llu}",
+		"\"dark_window_cycles\":%llu}";
+	return http_json_append(output, capacity, length,
+		format_ota_dark,
 		(unsigned)g_ota_dark_report.state,
 		(unsigned)g_ota_dark_report.phase,
 		(unsigned)g_ota_dark_report.fault,
@@ -5793,8 +5824,11 @@ static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
 	const bool dsp_apply_pending = g_dsp_apply_pending;
 	const DspModelOrigin reported_origin =
 		dsp_apply_pending ? g_pending_dsp_origin : g_dsp_model_origin;
+	/* PROGMEM: flash, not DTCM .rodata (see http_input_diag_json). */
+	static const char format_status[] PROGMEM =
+		"{\"version\":%u,\"state\":%u,\"carrier\":%u,\"format\":%u,\"sample_rate\":%lu,\"blocks\":%lu,\"overruns\":%lu,\"source\":\"%s\",\"model_origin\":\"%s\",\"dsp_config_pending\":%u,\"dsp_staged_generation\":%lu,\"sd_present\":%u,\"sd_filesystem\":\"%s\",\"sd_total_bytes\":%llu,\"sd_used_bytes\":%llu,\"sd_free_bytes\":%llu,\"config_valid\":%u,\"config_error_code\":%u,\"config_error\":\"%s\",\"config_error_count\":%lu,\"network_mode\":\"%s\",\"ip\":\"%u.%u.%u.%u\",\"link\":%u,\"network_restarts\":%lu,\"dhcp_pending\":%u,\"dhcp_discovers\":%lu,\"dhcp_updates\":%lu,\"reset_source\":%lu,\"http_server_rebinds\":%lu,\"cpu_temp_c\":%.2f,\"cpu_temp_valid\":%u,\"cpu_temp_max_c\":%.2f,\"cpu_temp_age_ms\":%lu,\"build_revision\":\"%s\",\"build_utc\":\"%s\",\"event_sequence\":%lu,\"event_overflows\":%lu,\"network_drops\":%lu,\"network_budget_overruns\":%lu,\"http_requests\":%lu,\"http_rejections\":%lu,\"http_client_drops\":%lu,\"http_service_overruns\":%lu,\"network_state\":%u,\"recovery_safe\":%u,\"network_last_fault\":%u,\"last_checkpoint\":%u,\"network_generation\":%lu,\"boot_generation\":%lu,\"watchdog_early_resets\":%u,\"loop_epoch\":%lu,\"psram_mb\":%u,\"psram_pad2_mb\":%u,\"tx_gate\":{\"open\":%u,\"carrier_locked\":%u,\"replay_running\":%u}}";
 	int written = snprintf((char *)body, capacity,
-		"{\"version\":%u,\"state\":%u,\"carrier\":%u,\"format\":%u,\"sample_rate\":%lu,\"blocks\":%lu,\"overruns\":%lu,\"source\":\"%s\",\"model_origin\":\"%s\",\"dsp_config_pending\":%u,\"dsp_staged_generation\":%lu,\"sd_present\":%u,\"sd_filesystem\":\"%s\",\"sd_total_bytes\":%llu,\"sd_used_bytes\":%llu,\"sd_free_bytes\":%llu,\"config_valid\":%u,\"config_error_code\":%u,\"config_error\":\"%s\",\"config_error_count\":%lu,\"network_mode\":\"%s\",\"ip\":\"%u.%u.%u.%u\",\"link\":%u,\"network_restarts\":%lu,\"dhcp_pending\":%u,\"dhcp_discovers\":%lu,\"dhcp_updates\":%lu,\"reset_source\":%lu,\"http_server_rebinds\":%lu,\"cpu_temp_c\":%.2f,\"cpu_temp_valid\":%u,\"cpu_temp_max_c\":%.2f,\"cpu_temp_age_ms\":%lu,\"build_revision\":\"%s\",\"build_utc\":\"%s\",\"event_sequence\":%lu,\"event_overflows\":%lu,\"network_drops\":%lu,\"network_budget_overruns\":%lu,\"http_requests\":%lu,\"http_rejections\":%lu,\"http_client_drops\":%lu,\"http_service_overruns\":%lu,\"network_state\":%u,\"recovery_safe\":%u,\"network_last_fault\":%u,\"last_checkpoint\":%u,\"network_generation\":%lu,\"boot_generation\":%lu,\"watchdog_early_resets\":%u,\"loop_epoch\":%lu,\"psram_mb\":%u,\"psram_pad2_mb\":%u,\"tx_gate\":{\"open\":%u,\"carrier_locked\":%u,\"replay_running\":%u}}",
+		format_status,
 		status[0], status[2], status[3] & 1u, status[23],
 		(unsigned long)aius_net_get_u32(status + 25),
 		(unsigned long)aius_net_get_u32(status + 29),
@@ -6055,8 +6089,11 @@ static FLASHMEM size_t http_replay_status_json(uint8_t *body, size_t capacity)
 		g_replay_stop_reason == REPLAY_STOP_CARRIER ? "carrier" :
 		g_replay_stop_reason == REPLAY_STOP_REQUEST ? "request" :
 		g_replay_stop_reason == REPLAY_STOP_FAULT ? "fault" : "none";
+	/* PROGMEM: flash, not DTCM .rodata (see http_input_diag_json). */
+	static const char format_replay_status[] PROGMEM =
+		"{\"ok\":true,\"state\":\"%s\",\"stop_reason\":\"%s\",\"id\":\"%s\",\"file_bytes\":%lu,\"offset_bytes\":%lu,\"duration_seconds\":%.3f,\"loop\":%s,\"loops_completed\":%lu,\"queue_words\":%lu,\"watermark_words\":%lu,\"underruns\":%lu,\"input_class\":\"%s\",\"decoder_errors\":%lu,\"refill_faults\":%lu}";
 	int length = snprintf((char *)body, capacity,
-		"{\"ok\":true,\"state\":\"%s\",\"stop_reason\":\"%s\",\"id\":\"%s\",\"file_bytes\":%lu,\"offset_bytes\":%lu,\"duration_seconds\":%.3f,\"loop\":%s,\"loops_completed\":%lu,\"queue_words\":%lu,\"watermark_words\":%lu,\"underruns\":%lu,\"input_class\":\"%s\",\"decoder_errors\":%lu,\"refill_faults\":%lu}",
+		format_replay_status,
 		state, stop_reason, replay.id, (unsigned long)replay.file_bytes,
 		(unsigned long)replay.offset_bytes, replay.duration_seconds,
 		replay.loop ? "true" : "false", (unsigned long)replay.loops_completed,
@@ -6228,7 +6265,11 @@ static FLASHMEM size_t app_write_home(void *, uint8_t *body, size_t capacity)
  * 71-byte put_status() header every such 0 is the response buffer running out
  * (test/status-body-bound bounds the worst case against it). Counted here, so
  * the one count covers every early return without a new emitter in the walk
- * the OpenAPI and bound extractors make. */
+ * the OpenAPI and bound extractors make. The dispatcher hands this the whole
+ * runtime app body, so the status bound test/status-body-bound proves
+ * (AIUS_RUNTIME_TEENSY_STATUS_BODY) must be what that buffer holds. */
+static_assert(AIUS_RUNTIME_TEENSY_STATUS_BODY <= AIUS_RUNTIME_TEENSY_APP_BODY,
+	"the runtime app body must hold the bounded status body");
 static FLASHMEM size_t app_write_status(void *, uint8_t *body, size_t capacity)
 {
 	const size_t length = http_status_json(body, capacity);
@@ -6777,7 +6818,7 @@ static bool g_boot_marked_healthy;
 
 /* UDP scratch in OCRAM rather than on the epoch stack. The epoch call chain
  * (scheduler -> service -> HTTP transaction -> dispatcher) is deeper than the
- * legacy loop's, and these three buffers are 1,576 B of the 25,376-byte DTCM
+ * legacy loop's, and these three buffers are 1,576 B of the 25,824-byte DTCM
  * free-for-locals zone. Every byte sent is written before it is read: the
  * receive buffer by the receive itself, the status payload by
  * put_recovery_status() up to the length it returns, the events payload up to

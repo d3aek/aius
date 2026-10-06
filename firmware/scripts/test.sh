@@ -14,7 +14,7 @@
 #         recovery-runner, flash, http,
 #         usb-control, replay, replay-samples, tx-gate, tx-governor, tx-fill-sensor, tx-fill-witness, underrun-episodes, input-liveness, input-dark, event-ring, recorder, boot, boot-target, fault-target, ota,
 #         build-metadata, runtime, network-transport, sd, sd-target, optical-app,
-#         optical-cutover, runtime-target, memory, itcm-placement, fake-fidelity,
+#         optical-cutover, status-body-bound, runtime-target, memory, itcm-placement, fake-fidelity,
 #         registry, sd-editor.
 #
 # That list is not documentation: the `registry` suite fails when it, the suites
@@ -1043,6 +1043,19 @@ optical-cutover)
 	# what it must not contain (static fallback, raw FNET, rebind globals,
 	# blocking socket writes, a second watchdog feed). Both groups run.
 	python3 "$fw_root/test/optical-cutover/test_optical_cutover.py"
+	;;
+status-body-bound)
+	# Worst-case GET /api/status body against AIUS_RUNTIME_TEENSY_STATUS_BODY,
+	# summed from the status emitters' printf formats in src/ (host-only, no
+	# device): a key that pushes the worst case past the buffer fails here.
+	python3 "$fw_root/test/status-body-bound/test_status_body_bound.py"
+	# The verdict must also refuse a buffer of exactly the worst case (no room
+	# for the NUL), or the pass above proves nothing.
+	if python3 "$fw_root/test/status-body-bound/test_status_body_bound.py" --limit-at-worst >/dev/null 2>&1; then
+		echo "==> status-body-bound: FAIL: the bound passed at a limit equal to the worst case" >&2
+		exit 1
+	fi
+	echo "==> status-body-bound: refuses a limit at the worst case (expected)"
 	;;
 optical-app)
 	# Optical application dispatch: one bounded decision per HTTP route and USB
