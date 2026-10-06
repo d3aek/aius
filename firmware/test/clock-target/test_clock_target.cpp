@@ -498,7 +498,8 @@ static void test_trim_order_and_applied_acknowledgement(void)
 	AiusSpdifClockPlan trim = original;
 	trim.target_rate_millihz = 48021000u;
 	trim.pll_numerator = 684544u;
-	assert(aius_audio_clock_request_trim(&trim));
+	assert(aius_audio_clock_request_trim(
+		&trim, AIUS_AUDIO_CLOCK_TRIM_CENTRE));
 
 	AiusSpdifClockPlan applied = {};
 	assert(aius_audio_clock_get_applied_plan(&applied));
@@ -541,7 +542,8 @@ static void test_trim_order_and_applied_acknowledgement(void)
 
 	/* No hold means the very next tracker correction is accepted, rather
 	 * than being refused for four periods. */
-	assert(aius_audio_clock_request_trim(&original));
+	assert(aius_audio_clock_request_trim(
+		&original, AIUS_AUDIO_CLOCK_TRIM_CENTRE));
 	aius_audio_clock_test_tx_boundary();
 	assert(target.trace_count == 2u);
 	assert_write(
@@ -609,9 +611,11 @@ static void test_trim_refuses_structural_or_nominal_change(void)
 
 	AiusSpdifClockPlan changed = original;
 	changed.pll_div_select++;
-	assert(!aius_audio_clock_request_trim(&changed));
+	assert(!aius_audio_clock_request_trim(
+		&changed, AIUS_AUDIO_CLOCK_TRIM_CENTRE));
 	changed = exact_plan(44100u);
-	assert(!aius_audio_clock_request_trim(&changed));
+	assert(!aius_audio_clock_request_trim(
+		&changed, AIUS_AUDIO_CLOCK_TRIM_FILL));
 }
 
 static void test_dark_transition_is_immediate_and_cancels_old_hold(void)
@@ -646,7 +650,153 @@ static void test_invalid_plan_writes_nothing(void)
 		aius_audio_clock_apply_with_backend(&plan, &backend) ==
 		AIUS_CLOCK_APPLY_INVALID_PLAN);
 	assert(target.trace_count == 0u);
-	assert(!aius_audio_clock_request_trim(&plan));
+	assert(!aius_audio_clock_request_trim(
+		&plan, AIUS_AUDIO_CLOCK_TRIM_CENTRE));
+}
+
+/* Applies a 48 kHz plan, lets its hold expire and zeroes both applied-at
+ * stamps and the trace, so a kind case starts from the steady state. */
+static AiusSpdifClockPlan kind_case_setup(
+	FakeTarget *target,
+	AiusAudioClockBackend *backend)
+{
+	fake_reset(target);
+	*backend = fake_backend(target);
+	const AiusSpdifClockPlan original = exact_plan(48000u);
+	assert(
+		aius_audio_clock_apply_with_backend(&original, backend) ==
+		AIUS_CLOCK_APPLY_OK);
+	acknowledge_hold();
+	clear_trace(target);
+	g_aius_tx_trim_applied_at_ms = 0u;
+	g_aius_tx_fill_applied_at_ms = 0u;
+	return original;
+}
+
+/* A FILL trim is the same carrier-continuous NUM write as a CENTRE one and
+ * differs only in its stamp: NUM written, ValCtrl and the hold untouched,
+ * only the fill applied-at stamp moved (Phase 4, The kind is a separate
+ * field). */
+static void test_fill_trim_writes_num_and_stamps_only_fill(void)
+{
+	FakeTarget target;
+	AiusAudioClockBackend backend;
+	const AiusSpdifClockPlan original = kind_case_setup(&target, &backend);
+	const size_t control = register_index(
+		AIUS_AUDIO_CLOCK_REG_SPDIF_CONTROL);
+	const uint32_t control_before = target.registers[control];
+
+	AiusSpdifClockPlan trim = original;
+	trim.target_rate_millihz = 48000400u;
+	trim.pll_numerator = original.pll_numerator + 1u;
+	aius_audio_clock_fake_set_now_ms(1234u);
+	assert(aius_audio_clock_request_trim(
+		&trim, AIUS_AUDIO_CLOCK_TRIM_FILL));
+	/* The request value is TRIM, never a new value the ISR would HOLD on. */
+	assert(g_aius_audio_clock_state.request ==
+	       AIUS_AUDIO_CLOCK_BOUNDARY_TRIM);
+	assert(g_aius_audio_clock_state.queued_kind ==
+	       AIUS_AUDIO_CLOCK_TRIM_FILL);
+
+	aius_audio_clock_fake_set_now_ms(1237u);
+	aius_audio_clock_test_tx_boundary();
+	assert(target.trace_count == 1u);
+	assert_write(
+		target, 0u, AIUS_AUDIO_CLOCK_REG_PLL_NUMERATOR,
+		trim.pll_numerator);
+	assert(target.registers[control] == control_before);
+	assert((control_before & AIUS_AUDIO_CLOCK_VALCTRL_VALID_BIT) != 0u);
+	assert(g_aius_audio_clock_state.invalid_periods_remaining == 0u);
+	assert(g_aius_audio_clock_state.invalid_active == 0u);
+	assert(g_aius_tx_fill_applied_at_ms == 1237u);
+	assert(g_aius_tx_trim_applied_at_ms == 0u);
+	AiusSpdifClockPlan applied = {};
+	assert(aius_audio_clock_get_applied_plan(&applied));
+	assert_plan_equal(applied, trim);
+	assert(boundary_status().transition_complete);
+
+	/* An idle boundary after it writes nothing and stamps nothing. */
+	aius_audio_clock_fake_set_now_ms(1300u);
+	aius_audio_clock_test_tx_boundary();
+	assert(target.trace_count == 1u);
+	assert(g_aius_tx_fill_applied_at_ms == 1237u);
+	assert(g_aius_tx_trim_applied_at_ms == 0u);
+}
+
+static void test_centre_trim_stamps_only_centre(void)
+{
+	FakeTarget target;
+	AiusAudioClockBackend backend;
+	const AiusSpdifClockPlan original = kind_case_setup(&target, &backend);
+
+	AiusSpdifClockPlan trim = original;
+	trim.target_rate_millihz = 48021000u;
+	trim.pll_numerator = 684544u;
+	assert(aius_audio_clock_request_trim(
+		&trim, AIUS_AUDIO_CLOCK_TRIM_CENTRE));
+	aius_audio_clock_fake_set_now_ms(4321u);
+	aius_audio_clock_test_tx_boundary();
+	assert(target.trace_count == 1u);
+	assert_write(
+		target, 0u, AIUS_AUDIO_CLOCK_REG_PLL_NUMERATOR,
+		trim.pll_numerator);
+	assert(g_aius_audio_clock_state.invalid_periods_remaining == 0u);
+	assert(g_aius_tx_trim_applied_at_ms == 4321u);
+	assert(g_aius_tx_fill_applied_at_ms == 0u);
+}
+
+/* The kind is stored after the pending check: a FILL refused because a
+ * CENTRE trim is still queued must not relabel it, and the boundary then
+ * stamps the centre pair with the CENTRE numerator. Kind 0 and an unknown
+ * kind are refused outright and queue nothing. */
+static void test_refused_fill_keeps_pending_centre_kind(void)
+{
+	FakeTarget target;
+	AiusAudioClockBackend backend;
+	const AiusSpdifClockPlan original = kind_case_setup(&target, &backend);
+
+	AiusSpdifClockPlan bogus = original;
+	bogus.pll_numerator = original.pll_numerator + 7u;
+	assert(!aius_audio_clock_request_trim(
+		&bogus, static_cast<AiusAudioClockTrimKind>(0)));
+	assert(!aius_audio_clock_request_trim(
+		&bogus, static_cast<AiusAudioClockTrimKind>(3)));
+	assert(!boundary_status().request_pending);
+
+	AiusSpdifClockPlan centre = original;
+	centre.target_rate_millihz = 48021000u;
+	centre.pll_numerator = 684544u;
+	assert(aius_audio_clock_request_trim(
+		&centre, AIUS_AUDIO_CLOCK_TRIM_CENTRE));
+
+	AiusSpdifClockPlan fill = original;
+	fill.target_rate_millihz = 48000400u;
+	fill.pll_numerator = original.pll_numerator + 1u;
+	assert(!aius_audio_clock_request_trim(
+		&fill, AIUS_AUDIO_CLOCK_TRIM_FILL));
+	assert(g_aius_audio_clock_state.queued_kind ==
+	       AIUS_AUDIO_CLOCK_TRIM_CENTRE);
+
+	aius_audio_clock_fake_set_now_ms(777u);
+	aius_audio_clock_test_tx_boundary();
+	assert(target.trace_count == 1u);
+	assert_write(
+		target, 0u, AIUS_AUDIO_CLOCK_REG_PLL_NUMERATOR,
+		centre.pll_numerator);
+	assert(g_aius_tx_trim_applied_at_ms == 777u);
+	assert(g_aius_tx_fill_applied_at_ms == 0u);
+
+	/* With the slot free again the FILL is accepted and stamps its own. */
+	assert(aius_audio_clock_request_trim(
+		&fill, AIUS_AUDIO_CLOCK_TRIM_FILL));
+	aius_audio_clock_fake_set_now_ms(780u);
+	aius_audio_clock_test_tx_boundary();
+	assert(target.trace_count == 2u);
+	assert_write(
+		target, 1u, AIUS_AUDIO_CLOCK_REG_PLL_NUMERATOR,
+		fill.pll_numerator);
+	assert(g_aius_tx_trim_applied_at_ms == 777u);
+	assert(g_aius_tx_fill_applied_at_ms == 780u);
 }
 
 static void test_srfm_integer_millihertz(void)
@@ -884,6 +1034,9 @@ int main(void)
 	test_trim_refuses_structural_or_nominal_change();
 	test_dark_transition_is_immediate_and_cancels_old_hold();
 	test_invalid_plan_writes_nothing();
+	test_fill_trim_writes_num_and_stamps_only_fill();
+	test_centre_trim_stamps_only_centre();
+	test_refused_fill_keeps_pending_centre_kind();
 	test_srfm_integer_millihertz();
 	test_flush_preserves_lifetime_diagnostics();
 	test_gate_open_trim_normalizes_occupancy();

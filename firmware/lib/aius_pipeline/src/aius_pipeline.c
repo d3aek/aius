@@ -772,6 +772,11 @@ static void fill_silence_descriptor(AiusPipeline *p)
 	p->sink_block.frames = frames;
 	p->sink_block.sample_rate_hz = p->sub_rate_hz;
 	p->sink_block.channel_mask = p->sub_mask;
+	/* One mark per unit: the remaining frames sit on a unit boundary exactly
+	 * when this block's first frame starts a unit of the recorded shape.
+	 * Derived from state a retry does not advance. */
+	p->sink_block.first_in_unit =
+		(uint8_t)((p->sub_frames_left % p->sub_au_frames) == 0u);
 }
 
 /* A completed burst failed its own CRC. Refuse the decode and, when this
@@ -1130,6 +1135,7 @@ static void fill_pcm_descriptor(AiusPipeline *p)
 	p->sink_block.frames = p->pcm_frames;
 	p->sink_block.sample_rate_hz = p->pcm_sample_rate_hz;
 	p->sink_block.channel_mask = AIUS_CH_FL | AIUS_CH_FR;
+	p->sink_block.first_in_unit = 1u; /* every PCM block */
 }
 
 AiusStatus aius_pipeline_slice_pcm_block(const AiusPcmBlock *source,
@@ -1291,6 +1297,13 @@ AiusStatus aius_pipeline_service_one(AiusPipeline *p,
 			*result = AIUS_PIPELINE_SERVICE_PROGRESSED;
 			return AIUS_OK;
 		}
+		/* Unit start: AC-3 block 0 of 6; E-AC-3 and DTS the first slice
+		 * of each access unit. Set once here, so a retried block (which
+		 * skips this branch) keeps it. */
+		p->sink_block.first_in_unit =
+			(p->pending == PENDING_A52_OUTPUT)
+				? (uint8_t)(p->a52_blocks_decoded == 1u)
+				: (uint8_t)(p->retained_offset == 0u);
 	}
 
 	p->service_diag.sink_attempts++;

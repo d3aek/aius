@@ -514,6 +514,7 @@ audio-service)
 clock)
 	compile_and_run clock \
 		"-I$fw_root/lib/aius_clock/include" \
+		"-I$fw_root/lib/aius_audio/src" \
 		"$fw_root/test/clock/test_clock.c" \
 		"$fw_root/lib/aius_clock/src/aius_clock.c"
 	;;

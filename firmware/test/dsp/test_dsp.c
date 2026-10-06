@@ -591,8 +591,8 @@ static void test_layout_stereo_chain_is_an_exact_round_trip(void)
     int32_t r[N] = {-4242, AIUS_DSP_SAMPLE_MIN, AIUS_DSP_SAMPLE_MAX, -1, 1,
                     -333333, 8388606, 0};
     int32_t ol[N], orr[N];
-    AiusPcmBlock in = {{l, r, 0, 0, 0, 0}, 2, N, 48000,
-                       AIUS_CH_FL | AIUS_CH_FR};
+    AiusPcmBlock in = {.planes = {l, r, 0, 0, 0, 0}, .channels = 2, .frames = N,
+                       .sample_rate_hz = 48000, .channel_mask = AIUS_CH_FL | AIUS_CH_FR};
     AiusPcmBlock out;
     memset(&out, 0, sizeof out);
     out.planes[0] = ol;
@@ -1301,7 +1301,8 @@ static void test_process_bypass_equals_downmix(void)
     int32_t fl[2] = {111, -222}, fr[2] = {333, -444}, fc[2] = {555, 666};
     int32_t ol[2], or_[2];
     uint32_t mask = AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_FC;
-    AiusPcmBlock in = {{fl, fr, fc, 0, 0, 0}, 3, 2, 48000, mask};
+    AiusPcmBlock in = {.planes = {fl, fr, fc, 0, 0, 0}, .channels = 3, .frames = 2,
+                       .sample_rate_hz = 48000, .channel_mask = mask};
 
     /* Reference: the matrix alone, over the same planes converted to double, then
      * THE single quantize applied by hand. */
@@ -1469,7 +1470,8 @@ static void test_process_input_identity_equals_downmix(void)
     int32_t fl[3] = {111, -222, 333}, fr[3] = {444, -555, 666},
             fc[3] = {777, -888, 999};
     uint32_t mask = AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_FC;
-    AiusPcmBlock in = {{fl, fr, fc, 0, 0, 0}, 3, 3, 48000, mask};
+    AiusPcmBlock in = {.planes = {fl, fr, fc, 0, 0, 0}, .channels = 3, .frames = 3,
+                       .sample_rate_hz = 48000, .channel_mask = mask};
 
     double dfl[3], dfr[3], dfc[3], dl[3], dr[3];
     to_d(fl, dfl, 3);
@@ -1526,7 +1528,8 @@ static void test_process_input_trim_scales(void)
     int32_t fl[2] = {100000, -100000}, fr[2] = {50000, -50000},
             fc[2] = {800001, -400001}; /* odd: 0.5x has a half-LSB to carry */
     uint32_t mask = AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_FC;
-    AiusPcmBlock in = {{fl, fr, fc, 0, 0, 0}, 3, 2, 48000, mask};
+    AiusPcmBlock in = {.planes = {fl, fr, fc, 0, 0, 0}, .channels = 3, .frames = 2,
+                       .sample_rate_hz = 48000, .channel_mask = mask};
 
     /* Reference: FC plane pre-scaled by 0.5 IN DOUBLE, then the bare matrix, then
      * the chain's one quantize. */
@@ -1978,7 +1981,8 @@ static void test_process_full_path(void)
     int32_t fr[4] = {6000000, -6000000, 300, -400};
     int32_t fc[4] = {6000000, -6000000, 500, -600};
     uint32_t mask = AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_FC;
-    AiusPcmBlock in = {{fl, fr, fc, 0, 0, 0}, 3, 4, 48000, mask};
+    AiusPcmBlock in = {.planes = {fl, fr, fc, 0, 0, 0}, .channels = 3, .frames = 4,
+                       .sample_rate_hz = 48000, .channel_mask = mask};
 
     AiusInputStage stage = aius_input_stage_default();
 
@@ -2606,7 +2610,8 @@ static void test_meter_input_peak_rms(void)
             pl[c][i] = val[c];
     uint32_t mask = AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_FC | AIUS_CH_LFE |
                     AIUS_CH_SL | AIUS_CH_SR;
-    AiusPcmBlock in = {{fl, fr, fc, lfe, sl, sr}, 6, N, 48000, mask};
+    AiusPcmBlock in = {.planes = {fl, fr, fc, lfe, sl, sr}, .channels = 6, .frames = N,
+                       .sample_rate_hz = 48000, .channel_mask = mask};
 
     AiusMeter m;
     aius_meter_init(&m, 48000);
@@ -2853,7 +2858,8 @@ static void test_meter_bounds_finite(void)
     }
     uint32_t mask = AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_FC | AIUS_CH_LFE |
                     AIUS_CH_SL | AIUS_CH_SR;
-    AiusPcmBlock in = {{fl, fr, fc, lfe, sl, sr}, 6, N, 48000, mask};
+    AiusPcmBlock in = {.planes = {fl, fr, fc, lfe, sl, sr}, .channels = 6, .frames = N,
+                       .sample_rate_hz = 48000, .channel_mask = mask};
 
     AiusMeter m;
     aius_meter_init(&m, 48000);
@@ -3091,7 +3097,8 @@ static void test_meter_process_no_mutation(void)
     int32_t fr[4] = {5000000, -5000000, 300, -400};
     int32_t fc[4] = {4000000, -4000000, 500, -600};
     uint32_t mask = AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_FC;
-    AiusPcmBlock in = {{fl, fr, fc, 0, 0, 0}, 3, 4, 48000, mask};
+    AiusPcmBlock in = {.planes = {fl, fr, fc, 0, 0, 0}, .channels = 3, .frames = 4,
+                       .sample_rate_hz = 48000, .channel_mask = mask};
 
     AiusBiquad eq[1];
     size_t ns = aius_eq_default(eq, 1);
@@ -3212,7 +3219,8 @@ static void test_invalid_args(void)
     memset(&out, 0, sizeof out);
     out.planes[0] = l;
     out.planes[1] = r;
-    AiusPcmBlock in = {{p, 0, 0, 0, 0, 0}, 1, 1, 48000, AIUS_CH_FC};
+    AiusPcmBlock in = {.planes = {p, 0, 0, 0, 0, 0}, .channels = 1, .frames = 1,
+                       .sample_rate_hz = 48000, .channel_mask = AIUS_CH_FC};
     AiusPcmBlockD ind = {{dp, 0, 0, 0, 0, 0}, 1, 1, 48000, AIUS_CH_FC};
 
     assert(aius_dsp_downmix(NULL, &ind, dl, dr) == AIUS_INVALID_ARG);

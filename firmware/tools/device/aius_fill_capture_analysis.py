@@ -43,6 +43,7 @@ import math
 import statistics
 import sys
 import tempfile
+import types
 import os
 
 CLASS_NAMES = {0: "unknown", 1: "pcm"}
@@ -342,13 +343,20 @@ def underrun_jumps(records, n=3):
 
 
 def episode_free_slope(win, args):
-    """Pooled fill slope over spans free of underruns, resets, closes and gaps (weighted by points)."""
+    """Pooled fill slope over spans free of underruns, resets, closes and gaps (weighted by points).
+
+    `win` carries the closed records too: a gate close (a closed record, or a gate-open pad
+    between two open polls) ends the span, so a relock's re-based floor is never fitted as
+    drift (the 2026-10-05 +0.38 frames/s artefact, aius-sample-rate-following Phase 4)."""
     spans, cur, prev = [], [], None
     for r in win:
-        if prev is not None and (r.underrun or r.reset or r.t - prev.t > args.gap):
+        if prev is not None and (not r.open or not prev.open or r.underrun or r.reset
+                                 or r.t - prev.t > args.gap
+                                 or r.clock.get("gate_open_padded_frames")
+                                 != prev.clock.get("gate_open_padded_frames")):
             spans.append(cur)
             cur = []
-        if r.fill is not None:
+        if r.open and r.fill is not None:
             cur.append((r.t, r.fill))
         prev = r
     spans.append(cur)
@@ -373,7 +381,8 @@ def step_report(records, steps, args, have_fill, cadence=None):
             pts = [(r.t, r.fill) for r in win if r.fill is not None and lo < r.t < hi]
             pre = fit([p for p in pts if p[0] < t0])
             post = fit([p for p in pts if p[0] >= t0])
-            slope = episode_free_slope(win, args)
+            slope = episode_free_slope([r for r in records
+                                        if t0 - args.step_window <= r.t <= t0 + args.step_window], args)
             if episodes:
                 row["straddles_underrun"] = True  # occupancy jumps at an underrun: no continuity verdict
                 row["underrun_utcs"] = [hms(t) for t in episodes]
@@ -843,6 +852,21 @@ def self_test():
         assert set(rep["session"]["classes_seen"]) == {"pcm", "compressed-unknown"}, rep["session"]
         assert "steady_fill" in rep and not rep["transitions"]
         render_text(rep)
+    # A gate close inside a span: two flat runs whose floor re-bases +80 frames at the relock.
+    # Fitted across the close the pair reads as about +0.67 frames/s of drift; split, it is flat.
+    # Then the close without a closed poll (the relock seen only as a gate-open pad step).
+    def span_rec(t, is_open, fill, padded):
+        return types.SimpleNamespace(t=float(t), open=is_open, fill=fill if is_open else None,
+                                     underrun=False, reset=False,
+                                     clock={"gate_open_padded_frames": padded})
+    flat_a = [span_rec(t, True, 300.0 + 0.01 * (t % 2), 128) for t in range(0, 60)]
+    flat_b = [span_rec(t, True, 380.0 + 0.01 * (t % 2), 256) for t in range(61, 121)]
+    with_close = flat_a + [span_rec(60, False, None, 128)] + flat_b
+    slope = episode_free_slope(with_close, ns)
+    assert slope is not None and abs(slope) < 0.01, slope
+    assert fit([(r.t, r.fill) for r in flat_a + flat_b])[0] > 0.5, "the fixture does not re-base"
+    slope = episode_free_slope(flat_a + flat_b, ns)
+    assert slope is not None and abs(slope) < 0.01, ("unpolled close not split", slope)
     print("self-test ok")
     return 0
 

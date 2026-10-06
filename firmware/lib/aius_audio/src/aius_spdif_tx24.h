@@ -419,7 +419,11 @@ extern AiusSpdifTx24Ring g_aius_spdif_tx24;
  * actually changed. Paired with clock.trim_last_at_ms (stamped at the request,
  * thread context) it brackets the queueing delay -- up to one 128-frame period
  * -- between asking for a trim and the wire rate moving. 0 = no trim has been
- * applied this boot.
+ * applied this boot. It stamps only a CENTRE trim; g_aius_tx_fill_applied_at_ms
+ * is the same instant for a FILL trim, paired with clock.fill_trim_last_at_ms
+ * (the request's AiusAudioClockTrimKind picks which; nothing else differs).
+ * Both are also declared in aius_audio_clock_internal.h and defined outside
+ * the target guard, so the FAKE build observes them.
  *
  * g_aius_tx_missed_fill_flexspi holds FLEXSPI_INTR, FLEXSPI2_INTR and
  * FLEXSPI2_STS1 sampled at the first miss of a burst. A missed transmit
@@ -429,7 +433,18 @@ extern AiusSpdifTx24Ring g_aius_spdif_tx24;
  * discipline, as the stall witness's NVIC_IABR snapshot in optical_main.cpp. */
 extern AiusTxFillWitness g_aius_tx_fill_witness;
 extern volatile uint32_t g_aius_tx_trim_applied_at_ms;
+extern volatile uint32_t g_aius_tx_fill_applied_at_ms;
 extern volatile uint32_t g_aius_tx_missed_fill_flexspi[3];
+
+/* The TX DMA read position from ONE SADDR read, for the gate open's masked
+ * section: `*half` 0/1 (the half the DMA is reading), `*offset_frames`
+ * 0..AIUS_TX_FILL_HALF_FRAMES-1 inside it, and a nonzero return when a period
+ * boundary is pending (SADDR lies in g_aius_tx_fill_witness.last_half). The
+ * CALLER holds the interrupt mask; this never touches PRIMASK. FASTRUN and
+ * noinline at the definition (aius_spdif_sources.cpp); ITCM residency is
+ * pinned by test/itcm-placement/verify_target.py. Target build only. */
+uint32_t aius_spdif_tx24_dma_read_position(uint32_t *half,
+                                           uint32_t *offset_frames);
 
 /* Point the S/PDIF transmit DMA interrupt at the 24-bit filler. Call once,
  * after AudioOutputSPDIF3 has been constructed (its begin() allocates the DMA

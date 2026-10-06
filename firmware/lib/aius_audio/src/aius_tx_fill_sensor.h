@@ -1,6 +1,7 @@
 #ifndef AIUS_TX_FILL_SENSOR_H
 #define AIUS_TX_FILL_SENSOR_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -42,6 +43,13 @@ extern "C" {
 #define AIUS_TX_FILL_HALF_FRAMES 128
 #define AIUS_TX_FILL_MAX_ATTEMPTS 3u
 
+/* Exclusion reasons (equal to AIUS_CLOCK_FILL_EXCL_*). NO_SAMPLE is set when a
+ * sub-window closes with cur_min INT32_MAX. */
+#define AIUS_TX_FILL_EXCL_UNDERRUN 0x01u
+#define AIUS_TX_FILL_EXCL_STALL 0x02u
+#define AIUS_TX_FILL_EXCL_MISSED_FILL 0x04u
+#define AIUS_TX_FILL_EXCL_NO_SAMPLE 0x08u
+
 /* Reader callbacks for the torn-read retry; the host suite injects tears.
  * `fills` is the ring's fills counter, `level` its frame level,
  * `dma_offset_frames` the TX DMA read offset into the current half (frames,
@@ -62,6 +70,8 @@ typedef struct {
 	uint32_t fill_windows;                 /* valid windows published */
 	uint32_t fill_subwindows_excluded;     /* lifetime */
 	uint32_t fill_torn_reads;              /* samples dropped after 3 tears */
+	uint32_t fill_window_seq;              /* every window close, valid or not; lifetime */
+	uint32_t fill_window_exclusions;       /* OR of reason bits over the last window */
 } AiusTxFillSnapshot;
 
 typedef struct {
@@ -71,6 +81,8 @@ typedef struct {
 	int32_t cur_min_q4;      /* INT32_MAX = no sample yet */
 	uint32_t cur_frames;
 	int cur_excluded;
+	uint32_t cur_reasons;    /* reason bits, current sub-window */
+	uint32_t win_reasons;    /* OR of closed sub-windows' bits, current window */
 	int have_last_block;
 	uint32_t last_commit_us;
 	uint32_t last_unit_frames;
@@ -88,6 +100,8 @@ aius_tx_fill_sensor_clear_window(AiusTxFillSensor *s)
 	s->cur_min_q4 = INT32_MAX;
 	s->cur_frames = 0u;
 	s->cur_excluded = 0;
+	s->cur_reasons = 0u;
+	s->win_reasons = 0u;
 	s->have_last_block = 0;
 	for (uint32_t i = 0u; i < AIUS_TX_FILL_SUBWINDOWS; i++)
 		s->sub_min_q4[i] = INT32_MAX;
@@ -104,6 +118,8 @@ aius_tx_fill_sensor_init(AiusTxFillSensor *s)
 	s->snap.fill_windows = 0u;
 	s->snap.fill_subwindows_excluded = 0u;
 	s->snap.fill_torn_reads = 0u;
+	s->snap.fill_window_seq = 0u;
+	s->snap.fill_window_exclusions = 0u;
 }
 
 /* Gate close, governor trim, carrier loss, replay block: empty the window and
@@ -116,6 +132,7 @@ aius_tx_fill_sensor_reset(AiusTxFillSensor *s)
 	s->snap.fill_level_valid = 0;
 	s->snap.fill_level_q4 = 0;
 	s->snap.fill_subwindow_spread_frames = 0u;
+	s->snap.fill_window_exclusions = 0u;
 }
 
 /* Governor trim: empties the window like reset but KEEPS the fault latches.
@@ -128,6 +145,7 @@ aius_tx_fill_sensor_reset_keep_latches(AiusTxFillSensor *s)
 	s->snap.fill_level_valid = 0;
 	s->snap.fill_level_q4 = 0;
 	s->snap.fill_subwindow_spread_frames = 0u;
+	s->snap.fill_window_exclusions = 0u;
 }
 
 /* Convenience for the tap: resets and returns 1 when the sensor must not
@@ -184,6 +202,52 @@ aius_tx_fill_unit_frames(uint32_t pc, uint32_t block_frames, int is_pcm)
 	}
 }
 
+/* Opening rules (Phase 4), pure. Always-inline and not COLD: the callers are
+ * a FASTRUN accessor and the masked gate open, which must not run from flash. */
+#define AIUS_TX_FILL_INLINE static inline __attribute__((always_inline))
+
+/* A period boundary is pending when SADDR lies in the half the ISR last filled
+ * (the DMA already reads it; the half it just played is stale). An address
+ * outside the ring is never pending. */
+AIUS_TX_FILL_INLINE bool
+aius_tx_fill_boundary_pending(uint32_t saddr, uint32_t ring_base,
+                              uint32_t last_half_base)
+{
+	const uint32_t half = AIUS_TX_FILL_BUFFER_BYTES / 2u;
+	if (saddr < ring_base || saddr - ring_base >= AIUS_TX_FILL_BUFFER_BYTES)
+		return false;
+	return saddr >= last_half_base && saddr - last_half_base < half;
+}
+
+/* Setpoint at the open: level + 256 - offset, minus 128 if a boundary is
+ * pending (384 - phi*128, or 256 - phi'*128 at level 128). */
+AIUS_TX_FILL_INLINE uint32_t
+aius_tx_fill_open_setpoint_frames(uint32_t level_frames, uint32_t offset_frames,
+                                  bool boundary_pending)
+{
+	const uint32_t off = offset_frames > (uint32_t)AIUS_TX_FILL_HALF_FRAMES
+		? (uint32_t)AIUS_TX_FILL_HALF_FRAMES : offset_frames;
+	uint32_t sp = level_frames + 2u * (uint32_t)AIUS_TX_FILL_HALF_FRAMES - off;
+	if (boundary_pending)
+		sp -= (uint32_t)AIUS_TX_FILL_HALF_FRAMES;
+	return sp;
+}
+
+typedef enum {
+	AIUS_TX_FILL_OPEN_WAIT = 0,
+	AIUS_TX_FILL_OPEN_NOW = 1
+} AiusTxFillOpenDecision;
+
+/* NOW at a unit start, or once the committed frames since the arm reach one
+ * unit (the cap); otherwise WAIT. */
+AIUS_TX_FILL_INLINE AiusTxFillOpenDecision
+aius_tx_fill_open_decide(bool first_in_unit, uint32_t committed_since_arm_frames,
+                         uint32_t unit_frames)
+{
+	return (first_in_unit || committed_since_arm_frames >= unit_frames)
+		? AIUS_TX_FILL_OPEN_NOW : AIUS_TX_FILL_OPEN_WAIT;
+}
+
 /* Occupancy in 1/16 frame, signed: level + 256 - dma_offset_frames. */
 AIUS_TX_FILL_SENSOR_COLD static inline int32_t
 aius_tx_fill_occupancy_q4(uint32_t level_frames, uint32_t dma_offset_frames)
@@ -195,22 +259,23 @@ aius_tx_fill_occupancy_q4(uint32_t level_frames, uint32_t dma_offset_frames)
 }
 
 AIUS_TX_FILL_SENSOR_COLD static inline void
-aius_tx_fill_sensor_exclude(AiusTxFillSensor *s)
+aius_tx_fill_sensor_exclude(AiusTxFillSensor *s, uint32_t reason)
 {
 	s->cur_excluded = 1;
+	s->cur_reasons |= reason;
 }
 
 /* An underrun or a missed fill voids the current sub-window. */
 AIUS_TX_FILL_SENSOR_COLD static inline void
 aius_tx_fill_sensor_note_underrun(AiusTxFillSensor *s)
 {
-	aius_tx_fill_sensor_exclude(s);
+	aius_tx_fill_sensor_exclude(s, AIUS_TX_FILL_EXCL_UNDERRUN);
 }
 
 AIUS_TX_FILL_SENSOR_COLD static inline void
 aius_tx_fill_sensor_note_missed_fill(AiusTxFillSensor *s)
 {
-	aius_tx_fill_sensor_exclude(s);
+	aius_tx_fill_sensor_exclude(s, AIUS_TX_FILL_EXCL_MISSED_FILL);
 }
 
 /* Latch-based form of the two above for the tap: pass the ring's lifetime
@@ -285,6 +350,9 @@ aius_tx_fill_sensor_close_window(AiusTxFillSensor *s)
 		s->snap.fill_level_q4 = 0;
 		s->snap.fill_subwindow_spread_frames = 0u;
 	}
+	s->snap.fill_window_exclusions = s->win_reasons;
+	s->snap.fill_window_seq++;
+	s->win_reasons = 0u;
 	s->subs_closed = 0u;
 	for (uint32_t i = 0u; i < AIUS_TX_FILL_SUBWINDOWS; i++)
 		s->sub_min_q4[i] = INT32_MAX;
@@ -309,7 +377,7 @@ aius_tx_fill_sensor_commit(AiusTxFillSensor *s, uint32_t frames,
 			(uint64_t)s->last_unit_frames * 1000000u / rate_hz;
 		if ((uint64_t)gap_us >
 		    unit_us + AIUS_TX_FILL_STALL_ALLOWANCE_US)
-			aius_tx_fill_sensor_exclude(s);
+			aius_tx_fill_sensor_exclude(s, AIUS_TX_FILL_EXCL_STALL);
 	}
 	s->have_last_block = 1;
 	s->last_commit_us = now_us;
@@ -318,6 +386,10 @@ aius_tx_fill_sensor_commit(AiusTxFillSensor *s, uint32_t frames,
 	s->cur_frames += frames;
 	while (s->cur_frames >= AIUS_TX_FILL_SUBWINDOW_FRAMES) {
 		s->cur_frames -= AIUS_TX_FILL_SUBWINDOW_FRAMES;
+		if (s->cur_min_q4 == INT32_MAX)
+			s->cur_reasons |= AIUS_TX_FILL_EXCL_NO_SAMPLE;
+		s->win_reasons |= s->cur_reasons;
+		s->cur_reasons = 0u;
 		if (s->cur_excluded || s->cur_min_q4 == INT32_MAX) {
 			s->snap.fill_subwindows_excluded++;
 			s->sub_min_q4[s->subs_closed] = INT32_MAX;

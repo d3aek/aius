@@ -3542,6 +3542,170 @@ static void test_eac3_decode_entry_phase_sweep(const char *dir)
 	free(carrier);
 }
 
+/* ---- unit-start flag (AiusPcmBlock.first_in_unit) ------------------------- */
+
+struct flag_sink {
+	uint8_t acc_flag[64];  /* accepted blocks, in order */
+	uint32_t acc_frames[64];
+	int acc_n;
+	uint8_t att_flag[128]; /* every attempt, in order */
+	int att_n;
+	uint32_t stall_mask;   /* attempt indexes (< 32) answered NO_SPACE once */
+};
+
+static AiusStatus flag_consume(void *ctx, const AiusPcmBlock *b)
+{
+	struct flag_sink *s = ctx;
+	const int attempt = s->att_n;
+	if (attempt < 128)
+		s->att_flag[s->att_n++] = b->first_in_unit;
+	if (attempt < 32 && (s->stall_mask & (1u << attempt)))
+		return AIUS_NO_SPACE;
+	if (s->acc_n < 64) {
+		s->acc_flag[s->acc_n] = b->first_in_unit;
+		s->acc_frames[s->acc_n++] = b->frames;
+	}
+	return AIUS_OK;
+}
+
+/* Ingest + service until the whole wire is consumed and nothing is pending. */
+static void flag_drive(const uint16_t *w, size_t n, struct flag_sink *s)
+{
+	AiusPcmSink sink = { .ctx = s, .consume = flag_consume };
+	AiusPipeline *p = NULL;
+	if (aius_pipeline_create(&p, NULL, &sink) != AIUS_OK) {
+		CHECK(0, "flag: create");
+		return;
+	}
+	size_t off = 0u;
+	for (int guard = 0; guard < 100000; guard++) {
+		AiusPipelineServiceResult r;
+		if (aius_pipeline_has_pending(p)) {
+			(void)aius_pipeline_service_one(p, &r);
+			continue;
+		}
+		if (off >= n)
+			break;
+		size_t c = 0u;
+		(void)aius_pipeline_ingest(p, w + off, n - off, &c);
+		off += c;
+		if (c == 0u && !aius_pipeline_has_pending(p))
+			break;
+	}
+	(void)aius_pipeline_finish(p);
+	for (int guard = 0; guard < 1000 && aius_pipeline_has_pending(p); guard++) {
+		AiusPipelineServiceResult r;
+		(void)aius_pipeline_service_one(p, &r);
+	}
+	aius_pipeline_destroy(p);
+}
+
+static int flags_match(const struct flag_sink *s, const uint8_t *want, int n)
+{
+	if (s->acc_n != n)
+		return 0;
+	for (int i = 0; i < n; i++)
+		if (s->acc_flag[i] != want[i])
+			return 0;
+	return 1;
+}
+
+static void test_unit_start_flag(const char *dir)
+{
+	static const uint8_t ac3[12] = { 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0 };
+	static const uint8_t eac3[6] = { 1, 0, 0, 1, 0, 0 };
+	static const uint8_t dts[1] = { 1 };
+	struct flag_sink s;
+	size_t n = 0u;
+
+	uint16_t *w = load_wire(dir, "ac3_surround51_ident", &n);
+	CHECK(w != NULL, "unit-start: ac3 corpus load");
+	if (!w)
+		return;
+	memset(&s, 0, sizeof(s));
+	flag_drive(w, n, &s);
+	CHECK(flags_match(&s, ac3, 12), "unit-start: AC-3 marks block 0 of 6 only");
+
+	/* A retried block keeps its flag: stall attempt 0 (block 0, marked) and
+	 * attempt 3 (a mid-unit block). Every stalled attempt's flag equals the
+	 * flag of the attempt that finally commits it. */
+	memset(&s, 0, sizeof(s));
+	s.stall_mask = (1u << 0) | (1u << 3);
+	flag_drive(w, n, &s);
+	CHECK(flags_match(&s, ac3, 12) && s.att_n == 14 &&
+	          s.att_flag[0] == s.att_flag[1] && s.att_flag[0] == 1u &&
+	          s.att_flag[3] == s.att_flag[4] && s.att_flag[3] == 0u,
+	      "unit-start: AC-3 retry keeps the flag (%d attempts)", s.att_n);
+
+	/* A corrupt second AC-3 unit is substituted by six silent blocks, marked
+	 * at the unit's first block only. */
+	uint16_t *dirty = malloc(n * sizeof(uint16_t));
+	memcpy(dirty, w, n * sizeof(uint16_t));
+	const size_t pa0 = find_preamble(w, n, 0u);
+	const size_t pa1 = find_preamble(w, n, pa0 + 4u);
+	CHECK(corrupt_burst_payload(dirty, n, pa1, 2000u) == 1,
+	      "unit-start: ac3 corruption did not land");
+	memset(&s, 0, sizeof(s));
+	flag_drive(dirty, n, &s);
+	CHECK(flags_match(&s, ac3, 12),
+	      "unit-start: AC-3 substituted unit marked once");
+	free(dirty);
+	free(w);
+
+	w = load_wire(dir, "eac3_surround51_ident", &n);
+	CHECK(w != NULL, "unit-start: eac3 corpus load");
+	if (w) {
+		memset(&s, 0, sizeof(s));
+		flag_drive(w, n, &s);
+		CHECK(flags_match(&s, eac3, 6),
+		      "unit-start: E-AC-3 marks the first slice of each unit");
+		dirty = malloc(n * sizeof(uint16_t));
+		memcpy(dirty, w, n * sizeof(uint16_t));
+		const size_t e0 = find_preamble(w, n, 0u);
+		const size_t e1 = find_preamble(w, n, e0 + 4u);
+		CHECK(corrupt_burst_payload(dirty, n, e1, 1000u) == 1,
+		      "unit-start: eac3 corruption did not land");
+		memset(&s, 0, sizeof(s));
+		flag_drive(dirty, n, &s);
+		CHECK(flags_match(&s, eac3, 6),
+		      "unit-start: E-AC-3 substituted unit marked once (3 slices)");
+		free(dirty);
+		free(w);
+	}
+
+	/* DTS-512: one slice per access unit, so every slice is a unit start.
+	 * No corpus carries a DTS-2048 unit; the multi-slice path (marks only
+	 * retained_offset == 0) is the one the E-AC-3 case above drives. */
+	w = load_wire(dir, "dts_be16", &n);
+	CHECK(w != NULL, "unit-start: dts corpus load");
+	if (w) {
+		memset(&s, 0, sizeof(s));
+		flag_drive(w, n, &s);
+		CHECK(flags_match(&s, dts, 1) && s.acc_frames[0] <= 512u,
+		      "unit-start: DTS-512 slice marked");
+		free(w);
+	}
+
+	/* PCM: every block. */
+	{
+		enum { BLOCKS = 3 };
+		const size_t block_words = 2u * AIUS_PIPELINE_PCM_BLOCK_FRAMES;
+		const size_t total = AIUS_PIPELINE_PCM_CONFIRM_WORDS +
+		                     BLOCKS * block_words;
+		uint16_t *ramp = make_ramp(total);
+		memset(&s, 0, sizeof(s));
+		flag_drive(ramp, total, &s);
+		int all = s.acc_n >= 1;
+		for (int i = 0; i < s.acc_n; i++)
+			all = all && s.acc_flag[i] == 1u;
+		CHECK(all, "unit-start: PCM marks every block (%d blocks)",
+		      s.acc_n);
+		free(ramp);
+	}
+	printf("  unit-start     AC-3 block 0, E-AC-3/DTS first slice, PCM all, "
+	       "substitution once per unit, retry keeps flag\n");
+}
+
 int main(int argc, char **argv)
 {
 	if (argc != 2) {
@@ -3584,6 +3748,7 @@ int main(int argc, char **argv)
 	test_clear_drops_observation_latches(dir);
 	test_output_slicing();
 	test_deferred_pcm_and_legacy_loss();
+	test_unit_start_flag(dir);
 
 	if (g_fail) {
 		printf("RESULT: %d check(s) FAILED\n", g_fail);

@@ -2086,6 +2086,13 @@ CLOCK_JSON_KEYS = (
     "trim_updates",
     "trim_last_at_ms",
     "trim_applied_at_ms",
+    # Phase 4 fill-referenced trim.
+    "fill_offset_millihz",
+    "fill_setpoint_frames",
+    "fill_open_boundary_pending",
+    "fill_trims",
+    "fill_trim_last_at_ms",
+    "fill_applied_at_ms",
     "structural_replans",
     "invalid_windows",
     "clock_faults",
@@ -2123,6 +2130,9 @@ CLOCK_JSON_KEYS = (
     "fill_windows",
     "fill_subwindows_excluded",
     "fill_torn_reads",
+    # Phase 4 sensor window sequence and last exclusion bits.
+    "fill_window_seq",
+    "fill_window_exclusions",
     "underrun_episodes",
     # Episode record entries.
     "start_ms",
@@ -2133,6 +2143,7 @@ CLOCK_JSON_KEYS = (
 CLOCK_COUNTERS = (
     "g_clock_rate_changes",
     "g_clock_trim_updates",
+    "g_clock_fill_trims",
     "g_clock_structural_replans",
     "g_clock_invalid_windows",
     "g_clock_faults",
@@ -2142,6 +2153,14 @@ CLOCK_COUNTERS = (
     "g_clock_unsupported_episodes",
 )
 RATE_UNSUPPORTED_EVENT = "record_event(AIUS_EVENT_RATE_UNSUPPORTED"
+
+
+# The trailing ")\n" excludes the `;`-terminated forward declaration.
+TX_GATE_EXECUTE_OPEN_DEFINITION = (
+    "static inline void tx_gate_execute_open(bool replay, bool first_in_unit,\n"
+    "                                        uint32_t unit_frames,\n"
+    "                                        uint32_t block_frames)\n"
+)
 
 
 def assert_replay_gate_open_pads_to_its_own_floor(text):
@@ -2161,7 +2180,7 @@ def assert_replay_gate_open_pads_to_its_own_floor(text):
     ), "the replay floor is not guarded against sinking below the live target"
     # The trailing newline excludes the `;`-terminated forward declaration.
     execute = without_comments_and_literals(
-        function_body(text, "static inline void tx_gate_execute_open(bool replay)\n")
+        function_body(text, TX_GATE_EXECUTE_OPEN_DEFINITION)
     )
     assert re.search(
         r"replay\s*\?\s*AIUS_TX_GATE_OPEN_REPLAY_TARGET_FRAMES\s*:\s*"
@@ -2186,7 +2205,7 @@ def assert_replay_gate_open_pads_to_its_own_floor(text):
         r"AIUS_REPLAY_SOURCE_REPLAY;",
         enqueue,
     )
-    call = enqueue.find("tx_gate_execute_open(replay);")
+    call = enqueue.find("tx_gate_execute_open(replay,")
     assert fact is not None and call >= 0 and fact.start() < call, (
         "enqueue() does not pass its own replay fact to the gate-open edge"
     )
@@ -2350,6 +2369,20 @@ def assert_rate_acquisition_quiesces_ingress(text):
     service = without_comments_and_literals(
         function_body(text, "static FLASHMEM void sample_rate_service(")
     )
+    # Phase 4 moved the same-nominal centre path into clock_fill_service(),
+    # called once from sample_rate_service(): splice its body in at the call
+    # so the ownership order below still reads in execution order.
+    fill_call = "clock_fill_service(source, now_ms);"
+    if fill_call in service:
+        assert service.count(fill_call) == 1, (
+            "sample_rate_service() must call clock_fill_service() exactly once"
+        )
+        service = service.replace(
+            fill_call,
+            without_comments_and_literals(
+                function_body(text, "static FLASHMEM void clock_fill_service(")
+            ),
+        )
     for call, owner in (
         (
             r"clock_apply_desired_plan\s*\(\s*now_ms\s*,\s*true\s*,\s*"
@@ -5158,7 +5191,9 @@ static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
         "#if AIUS_TX_GATE_OPEN_REPLAY_TARGET_FRAMES < AIUS_TX_GATE_OPEN_TARGET_FRAMES\n"
         "#error \"below\"\n"
         "#endif\n"
-        "static inline void tx_gate_execute_open(bool replay)\n"
+        "static inline void tx_gate_execute_open(bool replay, bool first_in_unit,\n"
+        "                                        uint32_t unit_frames,\n"
+        "                                        uint32_t block_frames)\n"
         "{\n"
         "\tif (!g_tx_gate_open_pending)\n"
         "\t\treturn;\n"
@@ -5172,7 +5207,8 @@ static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
         "{\n"
         "\tconst bool replay =\n"
         "\t\tg_replay_service.source == AIUS_REPLAY_SOURCE_REPLAY;\n"
-        "\ttx_gate_execute_open(replay);\n"
+        "\ttx_gate_execute_open(replay, block->first_in_unit != 0u,\n"
+        "\t                     unit_frames, block->frames);\n"
         "\treturn AIUS_OK;\n"
         "}\n"
     )
@@ -5205,8 +5241,8 @@ static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
     )
     _expect_fail(
         assert_replay_gate_open_pads_to_its_own_floor,
-        good_floor.replace("\ttx_gate_execute_open(replay);\n",
-                           "\ttx_gate_execute_open(false);\n", 1),
+        good_floor.replace("\ttx_gate_execute_open(replay, ",
+                           "\ttx_gate_execute_open(false, ", 1),
         "replay-floor/fact-not-passed", "replay fact",
     )
 

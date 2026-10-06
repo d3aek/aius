@@ -103,12 +103,24 @@ AiusClockApplyResult aius_audio_clock_apply_with_backend(
 	const AiusSpdifClockPlan *plan,
 	const AiusAudioClockBackend *backend);
 
-/* Queue a live numerator update. The request is accepted only when a complete
- * applied plan exists, its nominal and structural fields match, and no prior
- * boundary request/hold is active. The ISR makes validity invalid before the
- * NUM write and publishes the new applied target at that same boundary. */
+/* Which applied-at stamp a trim's boundary writes. It never changes what the
+ * boundary does: every trim is the same carrier-continuous NUM write. CENTRE
+ * stamps g_aius_tx_trim_applied_at_ms, FILL g_aius_tx_fill_applied_at_ms
+ * (docs/plans/aius-sample-rate-following.md Phase 4, Kinds and diagnostics). */
+typedef enum {
+	AIUS_AUDIO_CLOCK_TRIM_CENTRE = 1,
+	AIUS_AUDIO_CLOCK_TRIM_FILL = 2
+} AiusAudioClockTrimKind; /* 0 or any other value: refused */
+
+/* Queue a live numerator update. The request is accepted only when `kind` is
+ * CENTRE or FILL, a complete applied plan exists, its nominal and structural
+ * fields match, and no prior boundary request/hold is active. The kind is
+ * stored only after that pending check, so a refused call never relabels a
+ * trim still pending. The ISR writes NUM, and nothing else, at the next TX
+ * boundary and publishes the new applied target there. */
 bool aius_audio_clock_request_trim(
-	const AiusSpdifClockPlan *plan);
+	const AiusSpdifClockPlan *plan,
+	AiusAudioClockTrimKind kind);
 
 /* Race-safe checkpoint snapshots. An applied plan is reported after a full
  * apply succeeds or after the ISR consumes a queued NUM trim. */

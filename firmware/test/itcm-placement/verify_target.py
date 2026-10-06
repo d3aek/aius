@@ -295,6 +295,22 @@ DARK_WINDOW_SYMBOLS = (
 # flash at 0x60000000, so anything at or above this bound is not ITCM code.
 ITCM_ADDRESS_LIMIT = 0x00080000
 
+# The S/PDIF transmit path's ITCM code, pinned in the LINKED image by exact
+# symbol name, with its bytes reported against ITCM headroom
+# (aius-sample-rate-following.md Phase 4). lib/aius_audio/src/
+# aius_spdif_sources.cpp.o is neither cold nor the pinned hot object, so no
+# section check above sees it; and FASTRUN emits `.fastrun`, not `.text.*`, so
+# the linked symbol table is the only oracle.
+TX_ITCM_SYMBOLS = (
+    # AiusSpdifTx24Hook::isr (anonymous namespace): the TX DMA vector, with the
+    # period-boundary handshake (the trim kind's stamp included) inlined.
+    "_ZN12_GLOBAL__N_117AiusSpdifTx24Hook3isrEv",
+    # FASTRUN + noinline: the gate open's one-SADDR position read, called
+    # inside its masked section, so a flash copy would run with interrupts
+    # masked across a FlexSPI fetch and a folded copy would lose the pin.
+    "aius_spdif_tx24_dma_read_position",
+)
+
 # platformio.ini, read only to prove the flag that would blind every per-object
 # check above is absent. `${section.key}` is PlatformIO's interpolation syntax;
 # INI_REF finds one occurrence of it.
@@ -583,6 +599,66 @@ def verify_dark_window_residency(build_dir: Path, readelf: str) -> int:
     return verify_dark_window_symbols(parse_function_symbols(result.stdout))
 
 
+def parse_function_sizes(output: str) -> dict[str, tuple[int, int]]:
+    """FUNC symbols from `readelf -sW` on the linked ELF: name -> (st_value,
+    st_size). readelf prints the size in decimal, or in hex with 0x past
+    99999; int(..., 0) reads both."""
+    symbols: dict[str, tuple[int, int]] = {}
+    for line in output.splitlines():
+        parts = line.split()
+        if len(parts) < 8 or parts[3] != "FUNC":
+            continue
+        try:
+            value = int(parts[1], 16)
+            size = int(parts[2], 0)
+        except ValueError:
+            continue
+        symbols.setdefault(parts[7], (value, size))
+    return symbols
+
+
+def verify_tx_itcm_symbols(
+    symbols: Mapping[str, tuple[int, int]],
+) -> dict[str, int]:
+    """Every TX_ITCM_SYMBOLS name exists as a FUNC in ITCM. Pure half:
+    returns name -> bytes for the PASS line."""
+    missing = [name for name in TX_ITCM_SYMBOLS if name not in symbols]
+    misplaced = [
+        f"{name} at 0x{symbols[name][0]:08x}"
+        for name in TX_ITCM_SYMBOLS
+        if name in symbols and symbols[name][0] >= ITCM_ADDRESS_LIMIT
+    ]
+    if missing or misplaced:
+        details = []
+        if missing:
+            details.append(
+                "absent (renamed or inlined away): " + ", ".join(sorted(missing))
+            )
+        if misplaced:
+            details.append("outside ITCM: " + ", ".join(sorted(misplaced)))
+        raise VerificationError(
+            "TX ITCM residency: " + "; ".join(details) + ". The TX DMA ISR "
+            "and aius_spdif_tx24_dma_read_position (FASTRUN + noinline, "
+            "lib/aius_audio/src/aius_spdif_sources.cpp) must run from ITCM; "
+            "restore the attribute, or update TX_ITCM_SYMBOLS in "
+            "test/itcm-placement/verify_target.py if the symbol was renamed"
+        )
+    return {name: symbols[name][1] for name in TX_ITCM_SYMBOLS}
+
+
+def verify_tx_itcm_residency(build_dir: Path, readelf: str) -> dict[str, int]:
+    elf = build_dir / "firmware.elf"
+    if not elf.exists():
+        raise VerificationError(f"linked image not found: {elf}")
+    result = subprocess.run(
+        [readelf, "-sW", str(elf)],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    return verify_tx_itcm_symbols(parse_function_sizes(result.stdout))
+
+
 # The ldscript pins whole vendored trees' .text to flash (TweetNaCl for the
 # OTA crypto, the ffmpeg-eac3 fork for E-AC-3 decode -- E-AC-3 plan phase 4).
 # An object-section check cannot see an ld-level pin (the .o still carries
@@ -865,6 +941,14 @@ def _dark_window_summary(checked: int) -> str:
     )
 
 
+def _tx_itcm_summary(sizes: Mapping[str, int]) -> str:
+    detail = ", ".join(f"{name} {size} B" for name, size in sizes.items())
+    return (
+        "TX ITCM residency: PASS "
+        f"({len(sizes)} symbols in ITCM, {sum(sizes.values())} bytes: {detail})"
+    )
+
+
 def _flash_pinned_summary(checked: int) -> str:
     return (
         "flash-pinned residency: PASS "
@@ -918,6 +1002,7 @@ def verify_cold_placement(source, target, env) -> None:
     print(_dark_window_summary(
         verify_dark_window_residency(build_dir, readelf)
     ))
+    print(_tx_itcm_summary(verify_tx_itcm_residency(build_dir, readelf)))
     print(_flash_pinned_summary(
         verify_flash_pinned_residency(build_dir, readelf)
     ))
@@ -987,6 +1072,12 @@ def _main(argv: list[str]) -> int:
         print(f"dark-window ITCM residency: FAIL: {error}", file=sys.stderr)
         return 1
     print(_dark_window_summary(dark))
+    try:
+        tx_sizes = verify_tx_itcm_residency(build_dir, args.readelf)
+    except (OSError, subprocess.CalledProcessError, VerificationError) as error:
+        print(f"TX ITCM residency: FAIL: {error}", file=sys.stderr)
+        return 1
+    print(_tx_itcm_summary(tx_sizes))
     return 0
 
 

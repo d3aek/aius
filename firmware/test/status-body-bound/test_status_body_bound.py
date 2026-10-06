@@ -657,6 +657,36 @@ def fits(worst, limit):
     return worst + 1 <= limit
 
 
+# Keys a plan spent headroom on, pinned to the emitter whose formats the walk
+# bounds: a key moved to an emitter the walk never reaches (or renamed away)
+# fails here instead of silently leaving the bound.
+PINNED_KEYS = {
+    # aius-sample-rate-following Phase 4: the fill-referenced trim and the
+    # fill sensor's window sequence and last exclusion bits.
+    "http_clock_json": (
+        "fill_offset_millihz",
+        "fill_setpoint_frames",
+        "fill_open_boundary_pending",
+        "fill_trims",
+        "fill_trim_last_at_ms",
+        "fill_applied_at_ms",
+        "fill_window_seq",
+        "fill_window_exclusions",
+    ),
+}
+
+
+def check_pinned_keys(sources, rows):
+    walked = {callee for callee, _ in rows}
+    for emitter, keys in PINNED_KEYS.items():
+        if emitter not in walked:
+            raise BoundError(f"{emitter}() is not reached by the walk from {ROOT_EMITTER}()")
+        _, body = sources.function(emitter)
+        for key in keys:
+            if f'\\"{key}\\":' not in body:
+                raise BoundError(f"{emitter}() no longer renders {key!r}, so the bound does not cover it")
+
+
 def main(argv):
     parser = argparse.ArgumentParser()
     group = parser.add_mutually_exclusive_group()
@@ -667,6 +697,7 @@ def main(argv):
     self_checks(sources)
     rows = []
     worst = walk(sources, ROOT_EMITTER, rows=rows)
+    check_pinned_keys(sources, rows)
     # The verdict itself, at the boundary: a buffer of exactly the worst case
     # has no room for the NUL and must fail; one byte more must pass.
     if fits(worst, worst) or not fits(worst, worst + 1):

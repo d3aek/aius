@@ -33,6 +33,16 @@
 
 volatile AiusAudioClockSharedState g_aius_audio_clock_state;
 
+/* DTCM .bss in the target build (see the witness note below for why not
+ * DMAMEM); defined in the FAKE build too, so clock-target reads the stamps
+ * the boundary writes. Declared extern "C" in aius_audio_clock_internal.h. */
+volatile uint32_t g_aius_tx_trim_applied_at_ms;
+volatile uint32_t g_aius_tx_fill_applied_at_ms;
+
+#if defined(AIUS_AUDIO_CLOCK_FAKE_TARGET)
+volatile uint32_t g_aius_audio_clock_fake_now_ms;
+#endif
+
 #if !defined(AIUS_AUDIO_CLOCK_FAKE_TARGET)
 /* DMAMEM, not DTCM: 16 KiB is the one large buffer in this path and OCRAM is
  * where large buffers live.
@@ -55,10 +65,10 @@ DMAMEM AiusSpdifTx24Ring g_aius_spdif_tx24;
  * preference: the OCRAM heap floor assert (link/aius_teensy41.ld,
  * `_heap_end - _heap_start >= 0x1FFE0`) stands at exactly zero margin, so a
  * byte added to the ring above is a link error. Zero-initialised is the correct
- * reset state for all three (a real half address is never 0, and 0 reads as
- * "never happened" on both stamps). Contracts: aius_spdif_tx24.h. */
+ * reset state for all of them (a real half address is never 0, and 0 reads as
+ * "never happened" on every stamp, the two applied-at stamps above included).
+ * Contracts: aius_spdif_tx24.h. */
 AiusTxFillWitness g_aius_tx_fill_witness;
-volatile uint32_t g_aius_tx_trim_applied_at_ms;
 volatile uint32_t g_aius_tx_missed_fill_flexspi[3];
 #endif
 
@@ -119,8 +129,8 @@ static inline void clock_memory_barrier(void)
  *  2. consume a newly queued request;
  *  3. a HOLD request marks validity invalid and arms four periods without
  *     decrementing at that same boundary; and
- *  4. a TRIM request writes the queued numerator and touches neither validity
- *     nor the hold.
+ *  4. a TRIM request writes the queued numerator, touches neither validity
+ *     nor the hold, and stamps the applied-at time its queued kind names.
  *
  * There are no checkpoint helpers in this translation unit.
  *
@@ -181,12 +191,18 @@ static inline void aius_audio_clock_tx_boundary(void)
 		g_aius_audio_clock_state.applied_sequence++;
 		g_aius_audio_clock_state.request =
 			AIUS_AUDIO_CLOCK_BOUNDARY_NONE;
-#if !defined(AIUS_AUDIO_CLOCK_FAKE_TARGET)
-		/* The instant the wire rate actually moved, against
-		 * clock.trim_last_at_ms at the request: the pair brackets the
-		 * queueing delay, at most one 128-frame period. */
-		g_aius_tx_trim_applied_at_ms = millis();
-#endif
+		/* The instant the wire rate actually moved, against the request's
+		 * clock.trim_last_at_ms (CENTRE) or clock.fill_trim_last_at_ms
+		 * (FILL): each pair brackets the queueing delay, at most one
+		 * 128-frame period. The kind picks the stamp and nothing else:
+		 * one load, one compare, one store. request_trim refuses any
+		 * other kind, so everything not FILL is CENTRE. */
+		const uint32_t now_ms = aius_audio_clock_now_ms();
+		if (g_aius_audio_clock_state.queued_kind ==
+		    static_cast<uint32_t>(AIUS_AUDIO_CLOCK_TRIM_FILL))
+			g_aius_tx_fill_applied_at_ms = now_ms;
+		else
+			g_aius_tx_trim_applied_at_ms = now_ms;
 	} else if (request != AIUS_AUDIO_CLOCK_BOUNDARY_NONE) {
 		const uint32_t control = clock_register_read(
 			AIUS_AUDIO_CLOCK_REG_SPDIF_CONTROL);
@@ -219,6 +235,10 @@ public:
 	 * 0..AUDIO_BLOCK_SAMPLES-1 (aius-sample-rate-following Phase 3 sensor).
 	 * FLASHMEM: called per producer block from the flash-resident enqueue. */
 	static uint32_t dma_offset_frames(void);
+	/* The gate open's masked read: {half, offset} and boundary-pending from
+	 * ONE SADDR read. FASTRUN: its caller holds the interrupt mask. */
+	static uint32_t dma_read_position(uint32_t *half,
+	                                  uint32_t *offset_frames);
 };
 
 /* THE TRANSMIT DMA INTERRUPT, once per AUDIO_BLOCK_SAMPLES frames (375 Hz at
@@ -319,6 +339,42 @@ extern "C" FLASHMEM uint32_t aius_spdif_tx24_dma_offset_frames(void)
 	return AiusSpdifTx24Hook::dma_offset_frames();
 }
 
+/* Runs inside the caller's masked section, so: FASTRUN (never flash), no
+ * PRIMASK access (an unconditional interrupts() would reopen the caller's
+ * section), ONE SADDR read (a second read, or the DMA interrupt flag, can
+ * straddle a crossing), and the offset computed inline rather than through
+ * dma_offset_frames(), which is FLASHMEM. Same half test and clamp as
+ * aius_tx_fill_saddr_offset_frames. Returns nonzero when a period boundary is
+ * pending: SADDR lies in the half the ISR last filled, decided by the shared
+ * always-inline predicate aius_tx_fill_boundary_pending (aius_tx_fill_sensor.h;
+ * aius-sample-rate-following Phase 4, Read phi inside the masked section). */
+FASTRUN uint32_t AiusSpdifTx24Hook::dma_read_position(uint32_t *half,
+                                                      uint32_t *offset_frames)
+{
+	const uint32_t saddr = (uint32_t)(dma.TCD->SADDR);
+	const uint32_t base = (uint32_t)SPDIF_tx_buffer;
+	const uint32_t half_bytes = AIUS_TX_FILL_BUFFER_BYTES / 2u;
+	const uint32_t second = saddr >= base + half_bytes ? 1u : 0u;
+	const uint32_t frames =
+		(saddr - base - second * half_bytes) / AIUS_TX_FILL_FRAME_BYTES;
+
+	*half = second;
+	*offset_frames = frames < (uint32_t)AIUS_TX_FILL_HALF_FRAMES
+		? frames : (uint32_t)AIUS_TX_FILL_HALF_FRAMES - 1u;
+	return aius_tx_fill_boundary_pending(
+		saddr, base, g_aius_tx_fill_witness.last_half) ? 1u : 0u;
+}
+
+/* C-linkage entry for the gate open in optical_main.cpp. FASTRUN on this core
+ * is section placement only, so noinline keeps the symbol (and the ITCM
+ * residency test/itcm-placement/verify_target.py pins) from being folded
+ * away. */
+extern "C" FASTRUN __attribute__((noinline)) uint32_t
+aius_spdif_tx24_dma_read_position(uint32_t *half, uint32_t *offset_frames)
+{
+	return AiusSpdifTx24Hook::dma_read_position(half, offset_frames);
+}
+
 FLASHMEM void AiusSpdifTx24Hook::install(void)
 {
 	/* attachInterrupt() only stores the vector and enables the IRQ, so this
@@ -409,6 +465,11 @@ FLASHMEM void AiusSpdifRxHook::install(void)
 void aius_audio_clock_test_tx_boundary(void)
 {
 	aius_audio_clock_tx_boundary();
+}
+
+void aius_audio_clock_fake_set_now_ms(uint32_t now_ms)
+{
+	g_aius_audio_clock_fake_now_ms = now_ms;
 }
 #else
 FLASHMEM void aius_spdif_tx24_begin(void)

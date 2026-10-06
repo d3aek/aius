@@ -2492,6 +2492,12 @@
           "trim_updates",
           "trim_last_at_ms",
           "trim_applied_at_ms",
+          "fill_offset_millihz",
+          "fill_setpoint_frames",
+          "fill_open_boundary_pending",
+          "fill_trims",
+          "fill_trim_last_at_ms",
+          "fill_applied_at_ms",
           "structural_replans",
           "invalid_windows",
           "clock_faults",
@@ -2525,6 +2531,8 @@
           "fill_windows",
           "fill_subwindows_excluded",
           "fill_torn_reads",
+          "fill_window_seq",
+          "fill_window_exclusions",
           "underrun_episodes"
         ],
         "properties": {
@@ -2588,7 +2596,35 @@
           "trim_applied_at_ms": {
             "type": "integer",
             "minimum": 0,
-            "description": "millis() at the TX period boundary that actually wrote CCM_ANALOG_PLL_AUDIO_NUM, stamped in the transmit ISR. With trim_last_at_ms it brackets the queueing delay, which is at most one 128-frame period (2.67 ms). 0 = no trim applied this boot."
+            "description": "millis() at the TX period boundary that actually wrote CCM_ANALOG_PLL_AUDIO_NUM for a CENTRE trim (a carrier-estimate retarget), stamped in the transmit ISR. With trim_last_at_ms it brackets the queueing delay, which is at most one 128-frame period (2.67 ms). A FILL trim stamps fill_applied_at_ms instead. 0 = no centre trim applied this boot."
+          },
+          "fill_offset_millihz": {
+            "type": "integer",
+            "description": "The fill loop's signed offset: the composed output-rate target minus the centre (the carrier-estimate target), in millihertz, clamped to +/-900. Positive speeds the output up (the ring is filling). Updated every rate-service pass; 0 before the first lock and after a reset of the loop (accept, full apply, replay, carrier loss)."
+          },
+          "fill_setpoint_frames": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "This lock's fill setpoint in frames: the phase-corrected occupancy measured inside the gate open's masked section, 384 - phi*128 (256 to 384) or, when a period boundary was pending, 256 - phi'*128 (129 to 256). Fixed for the lock; a governor trim leaves it valid. 0 = no live open yet, after carrier loss or a rate change, and for a replay open."
+          },
+          "fill_open_boundary_pending": {
+            "type": "boolean",
+            "description": "Which setpoint formula the last live gate open used: true when the TX DMA already read the half the ISR last filled (a period boundary pending), so fill_setpoint_frames is 256 - phi'*128; false for 384 - phi*128."
+          },
+          "fill_trims": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Accepted FILL trim requests: carrier-continuous numerator writes from the fill loop, at most one per fill window. POST /api/clear zeroes it. A centre retarget counts trim_updates instead."
+          },
+          "fill_trim_last_at_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "millis() at the last accepted FILL trim REQUEST. Lifetime, like trim_last_at_ms. 0 = none this boot."
+          },
+          "fill_applied_at_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "millis() at the TX period boundary that wrote the numerator for a FILL trim, stamped in the transmit ISR. With fill_trim_last_at_ms it brackets the queueing delay (at most one 128-frame period). 0 = no fill trim applied this boot."
           },
           "structural_replans": {
             "type": "integer",
@@ -2754,6 +2790,17 @@
             "type": "integer",
             "minimum": 0,
             "description": "Fill samples dropped after three torn reads of the ring's fills counter. Lifetime."
+          },
+          "fill_window_seq": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Closed fill windows, valid or not (fill_windows counts valid ones only), so a reader sees every close. Lifetime; survives a sensor reset; wraps at 2^32."
+          },
+          "fill_window_exclusions": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 15,
+            "description": "Exclusion-reason bits ORed over the last closed window's sub-windows: 1 underrun, 2 production stall, 4 missed fill, 8 no sample. 0 after a sensor reset (gate close, governor trim, carrier loss, replay block)."
           },
           "underrun_episodes": {
             "type": "array",

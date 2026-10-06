@@ -20,11 +20,11 @@
  * under about two bins retrims on quantization noise alone (48 kHz gate 1
  * measured ~53 post-settle trims in 10 minutes at 50 mHz, one per 10.8 s,
  * each costing a 512-frame invalid window). 500 mHz is about 3.5 bins, so a
- * one-bin hop can no longer request a target. Not trimming inside the
- * deadband costs at most 500 mHz / 48 kHz, about 10 ppm of ring drift, half
- * a frame per second -- bounded by the 10 s cadence to a few frames between
- * trims, far under the 128-frame ring floor -- and it stays inside the
- * 1000 mHz follow-error bound with the estimate's own spread on top. The
+ * one-bin hop can no longer request a target. The residual offset inside the
+ * deadband (plus the estimate's own error) drains or fills the ring without
+ * bound; the fill loop below carries it (aius-sample-rate-following Phase 4,
+ * fill-referenced rate trim), and the deadband stays inside the 1000 mHz
+ * follow-error bound with the estimate's own spread on top. The
  * 2026-09-04 re-run at 500 mHz read 19 post-settle trims (from 53): the
  * settled estimate still spreads ~1.2 Hz over ten minutes, so the deadband
  * cannot grow past the follow-error bound. A wider band cannot help, and
@@ -105,6 +105,20 @@ static FLASHMEM void reset_window(AiusRateTracker *tracker)
 	tracker->window_count = 0u;
 	tracker->window_sum_millihz = 0u;
 	tracker->has_window = false;
+}
+
+static FLASHMEM void fill_zero_controller(AiusRateTracker *tracker)
+{
+	tracker->fill_integral_microhz = 0;
+	tracker->fill_offset_millihz = 0;
+	tracker->fill_proportional_millihz = 0;
+	tracker->fill_saturated = false;
+}
+
+static FLASHMEM void fill_drop_pending(AiusRateTracker *tracker)
+{
+	tracker->pending_centre_millihz = 0u;
+	tracker->pending_centre_windows = 0u;
 }
 
 static FLASHMEM AiusRateTrackerResult tracker_result(
@@ -218,7 +232,12 @@ static FLASHMEM void accept_candidate(
 	tracker->has_nominal_accept = true;
 	tracker->last_nominal_accept_ms = now_ms;
 	tracker->last_target_request_ms = now_ms;
-	tracker->applied_target_millihz = 0u;
+	/* The centre and the hysteresis reference are one field: the accept
+	 * target, so the first FILL write after a relock composes on it. */
+	tracker->applied_target_millihz = target;
+	fill_zero_controller(tracker);
+	fill_drop_pending(tracker);
+	tracker->centre_flag = false;
 	tracker->unsupported_episode_reported = false;
 	reset_window(tracker);
 
@@ -255,16 +274,27 @@ static FLASHMEM void observe_measurement_window(
 	mean = rounded_average(tracker->window_sum_millihz,
 	                       tracker->window_count);
 	reset_window(tracker);
-	if (tracker->applied_target_millihz == 0u ||
-	    absolute_difference(mean, tracker->applied_target_millihz) <
-		    AIUS_CLOCK_TARGET_HYSTERESIS_MILLIHZ ||
-	    !elapsed_at_least(now_ms, tracker->last_target_request_ms,
+	if (tracker->applied_target_millihz == 0u)
+		return;
+	if (absolute_difference(mean, tracker->applied_target_millihz) <
+	    AIUS_CLOCK_TARGET_HYSTERESIS_MILLIHZ) {
+		/* Back inside the reference's hysteresis: a deferred centre is
+		 * stale and must never commit at the cap or end of saturation. */
+		fill_drop_pending(tracker);
+		return;
+	}
+	if (!elapsed_at_least(now_ms, tracker->last_target_request_ms,
 	                      AIUS_CLOCK_TARGET_INTERVAL_MS))
 		return;
 
 	tracker->last_target_request_ms = now_ms;
 	result->target_update = true;
 	result->target_rate_millihz = mean;
+	/* A re-proposal refreshes the value only; the deferral cap counts from
+	 * the episode's first proposal. */
+	if (tracker->pending_centre_millihz == 0u)
+		tracker->pending_centre_windows = 0u;
+	tracker->pending_centre_millihz = mean;
 }
 
 FLASHMEM AiusRateTrackerResult aius_rate_tracker_step(
@@ -287,6 +317,7 @@ FLASHMEM AiusRateTrackerResult aius_rate_tracker_step(
 		result.carrier_ready = false;
 		reset_candidate(tracker);
 		reset_window(tracker);
+		fill_drop_pending(tracker);
 		tracker->unsupported_episode_reported = false;
 		return result;
 	}
@@ -300,6 +331,7 @@ FLASHMEM AiusRateTrackerResult aius_rate_tracker_step(
 		tracker->carrier_ready = false;
 		result.carrier_ready = false;
 		reset_window(tracker);
+		fill_drop_pending(tracker);
 		if (nominal_hz != 0u)
 			tracker->unsupported_episode_reported = false;
 		observe_candidate(tracker, nominal_hz,
@@ -476,4 +508,265 @@ FLASHMEM bool aius_spdif_clock_plan_reconstruct_rate(
 		return false;
 	*target_rate_millihz = (uint32_t)reconstructed;
 	return true;
+}
+
+/* ---- Fill-referenced rate trim (aius-sample-rate-following Phase 4) ----
+ * The tracker owns the controller state (the centre, which IS
+ * applied_target_millihz, and I) and the emission decision; the parent feeds
+ * the fill window and the applied-plan readback and writes what it is told. */
+
+static FLASHMEM int64_t div_round_symmetric(int64_t numerator,
+                                            int64_t denominator)
+{
+	return numerator >= 0
+		? (numerator + denominator / 2) / denominator
+		: -((-numerator + denominator / 2) / denominator);
+}
+
+static FLASHMEM int64_t clamp_i64(int64_t value, int64_t bound)
+{
+	if (value > bound)
+		return bound;
+	if (value < -bound)
+		return -bound;
+	return value;
+}
+
+/* offset = clamp(P + I); saturated when the clamp bites. */
+static FLASHMEM void fill_recompute_offset(AiusRateTracker *tracker)
+{
+	const int64_t raw = (int64_t)tracker->fill_proportional_millihz +
+		div_round_symmetric(tracker->fill_integral_microhz, 1000);
+	const int64_t clamped =
+		clamp_i64(raw, AIUS_CLOCK_FILL_OFFSET_MAX_MILLIHZ);
+
+	tracker->fill_offset_millihz = (int32_t)clamped;
+	tracker->fill_saturated = clamped != raw;
+}
+
+/* One closed window's PI update. e = statistic - setpoint; positive (ring
+ * filling) speeds the output up. I holds while the clamp is active. */
+static FLASHMEM void fill_integrate(AiusRateTracker *tracker, int32_t level_q4,
+                                    uint32_t setpoint_frames)
+{
+	const int64_t e_q4 = (int64_t)level_q4 - (int64_t)setpoint_frames * 16;
+	const int64_t p = clamp_i64(
+		div_round_symmetric(AIUS_CLOCK_FILL_KP_MILLIHZ_PER_FRAME * e_q4, 16),
+		INT32_MAX);
+	const int64_t raw_held = p + div_round_symmetric(
+		tracker->fill_integral_microhz, 1000);
+
+	tracker->fill_proportional_millihz = (int32_t)p;
+	if (raw_held <= AIUS_CLOCK_FILL_OFFSET_MAX_MILLIHZ &&
+	    raw_held >= -AIUS_CLOCK_FILL_OFFSET_MAX_MILLIHZ) {
+		const int64_t next = (int64_t)tracker->fill_integral_microhz +
+			div_round_symmetric(
+				AIUS_CLOCK_FILL_KI_MICROHZ_PER_FRAME * e_q4, 16);
+		tracker->fill_integral_microhz = (int32_t)clamp_i64(
+			next, AIUS_CLOCK_FILL_INTEGRAL_MAX_MICROHZ);
+	}
+	fill_recompute_offset(tracker);
+}
+
+/* Bumpless: I -= (centre_new - centre_old), int64 uHz (a full band move is
+ * 1.92e9 uHz), then re-clamped. Raises the CENTRE flag. */
+static FLASHMEM void fill_commit_centre(AiusRateTracker *tracker,
+                                        uint32_t centre_millihz)
+{
+	const int64_t delta_microhz =
+		((int64_t)centre_millihz -
+		 (int64_t)tracker->applied_target_millihz) * 1000;
+
+	tracker->fill_integral_microhz = (int32_t)clamp_i64(
+		(int64_t)tracker->fill_integral_microhz - delta_microhz,
+		AIUS_CLOCK_FILL_INTEGRAL_MAX_MICROHZ);
+	tracker->applied_target_millihz = centre_millihz;
+	fill_drop_pending(tracker);
+	fill_recompute_offset(tracker);
+	tracker->centre_flag = true;
+}
+
+/* centre + offset, clamped into the plan band and into the centre's
+ * structural cell (request_trim refuses a structurally different plan
+ * forever). False when the centre itself has no valid plan. */
+static FLASHMEM bool fill_compose(const AiusRateTracker *tracker,
+                                  uint32_t *composed_millihz)
+{
+	const AiusRateDefinition *definition =
+		definition_for_nominal(tracker->accepted_nominal_hz);
+	const uint32_t centre = tracker->applied_target_millihz;
+	AiusSpdifClockPlan centre_plan;
+	AiusSpdifClockPlan probe;
+	int64_t target;
+	uint32_t good;
+	uint32_t bad;
+
+	if (definition == NULL ||
+	    !aius_spdif_clock_plan(tracker->accepted_nominal_hz, centre,
+	                           &centre_plan))
+		return false;
+	target = (int64_t)centre + tracker->fill_offset_millihz;
+	if (target < definition->lower_millihz)
+		target = definition->lower_millihz;
+	if (target > definition->upper_millihz)
+		target = definition->upper_millihz;
+	if (aius_spdif_clock_plan(tracker->accepted_nominal_hz,
+	                          (uint32_t)target, &probe) &&
+	    aius_spdif_clock_plan_structurally_equal(&centre_plan, &probe)) {
+		*composed_millihz = (uint32_t)target;
+		return true;
+	}
+	/* Across a cell edge: the furthest target toward the request that keeps
+	 * the centre's structure (a cell is contiguous). */
+	good = centre;
+	bad = (uint32_t)target;
+	while (absolute_difference(good, bad) > 1u) {
+		const uint32_t mid = good < bad
+			? good + (bad - good) / 2u
+			: bad + (good - bad) / 2u;
+		if (aius_spdif_clock_plan(tracker->accepted_nominal_hz, mid,
+		                          &probe) &&
+		    aius_spdif_clock_plan_structurally_equal(&centre_plan, &probe))
+			good = mid;
+		else
+			bad = mid;
+	}
+	*composed_millihz = good;
+	return true;
+}
+
+FLASHMEM AiusRateTrackerFillResult aius_rate_tracker_fill_step(
+	AiusRateTracker *tracker,
+	const AiusRateTrackerFillInput *in)
+{
+	AiusRateTrackerFillResult result;
+	bool new_window = false;
+	uint32_t composed = 0u;
+	bool composed_ok;
+
+	memset(&result, 0, sizeof(result));
+	if (tracker == NULL || in == NULL)
+		return result;
+
+	if (!tracker->fill_have_seq) {
+		tracker->fill_have_seq = true;
+		tracker->fill_last_seq = in->window.window_seq;
+	} else if (in->window.window_seq != tracker->fill_last_seq) {
+		new_window = true;
+		tracker->fill_last_seq = in->window.window_seq;
+	}
+
+	if (new_window && tracker->pending_centre_millihz != 0u &&
+	    tracker->pending_centre_windows <
+		    AIUS_CLOCK_FILL_RETARGET_DEFER_MAX_WINDOWS)
+		tracker->pending_centre_windows++;
+
+	if (new_window && in->emit_allowed && in->setpoint_frames != 0u &&
+	    tracker->applied_target_millihz != 0u) {
+		const uint8_t excl = in->window.exclusions;
+
+		if (in->window.level_valid) {
+			fill_integrate(tracker, in->window.level_q4,
+			               in->setpoint_frames);
+		} else if ((excl & AIUS_CLOCK_FILL_EXCL_UNDERRUN) != 0u &&
+		           (excl & AIUS_CLOCK_FILL_EXCL_STALL) == 0u) {
+			/* The true occupancy at an underrun (level 0 at phi 1). */
+			fill_integrate(tracker,
+			               (int32_t)(AIUS_CLOCK_FILL_UNDERRUN_LEVEL_FRAMES *
+			                         16u),
+			               in->setpoint_frames);
+		} else {
+			/* Stall or no underrun: hold I, emit nothing this window. */
+			tracker->fill_spent = true;
+			tracker->fill_spent_seq = tracker->fill_last_seq;
+		}
+	}
+
+	if (tracker->pending_centre_millihz != 0u &&
+	    tracker->applied_target_millihz != 0u) {
+		const int64_t delta = (int64_t)tracker->pending_centre_millihz -
+		                      (int64_t)tracker->applied_target_millihz;
+		const bool same_sign =
+			(delta > 0 && tracker->fill_offset_millihz > 0) ||
+			(delta < 0 && tracker->fill_offset_millihz < 0) ||
+			delta == 0;
+
+		/* Saturated, an opposite-sign retarget defers (that saturation
+		 * resolves itself) up to the cap; anything else commits now. */
+		if (!tracker->fill_saturated || same_sign ||
+		    tracker->pending_centre_windows >=
+			    AIUS_CLOCK_FILL_RETARGET_DEFER_MAX_WINDOWS) {
+			fill_commit_centre(tracker, tracker->pending_centre_millihz);
+			result.centre_committed = true;
+		}
+	}
+
+	composed_ok = tracker->applied_target_millihz != 0u &&
+	              fill_compose(tracker, &composed);
+	if (!composed_ok)
+		composed = tracker->applied_target_millihz;
+
+	if (in->emit_allowed && in->have_applied && composed_ok) {
+		if (absolute_difference(composed, in->emission_readback_millihz) >
+		    AIUS_CLOCK_FILL_EMIT_THRESHOLD_MILLIHZ) {
+			const bool spent = tracker->fill_spent &&
+				tracker->fill_spent_seq == tracker->fill_last_seq;
+
+			/* CENTRE persists until accepted and bypasses the one
+			 * FILL write per window. */
+			if (tracker->centre_flag)
+				result.emit_kind = AIUS_RATE_TRACKER_TRIM_CENTRE;
+			else if (!spent)
+				result.emit_kind = AIUS_RATE_TRACKER_TRIM_FILL;
+		} else {
+			/* A pass that needs no write clears the flag, so a noise
+			 * write later is never labelled CENTRE. */
+			tracker->centre_flag = false;
+		}
+	}
+
+	result.composed_target_millihz = composed;
+	result.centre_millihz = tracker->applied_target_millihz;
+	result.fill_offset_millihz =
+		(int32_t)((int64_t)composed -
+		          (int64_t)tracker->applied_target_millihz);
+	result.fill_integral_microhz = tracker->fill_integral_microhz;
+	result.retarget_pending = tracker->pending_centre_millihz != 0u;
+	result.retarget_pending_windows =
+		(uint8_t)tracker->pending_centre_windows;
+	result.saturated = tracker->fill_saturated;
+	return result;
+}
+
+FLASHMEM void aius_rate_tracker_note_emit(AiusRateTracker *tracker,
+                                          bool accepted)
+{
+	if (tracker == NULL || !accepted)
+		return;
+	tracker->fill_spent = true;
+	tracker->fill_spent_seq = tracker->fill_last_seq;
+	/* A FILL is only returned with the flag down, so this clears it
+	 * exactly when a CENTRE write was accepted. */
+	tracker->centre_flag = false;
+}
+
+FLASHMEM bool aius_rate_tracker_fill_reset(
+	AiusRateTracker *tracker,
+	bool discard_pending,
+	uint32_t *committed_centre_millihz)
+{
+	bool committed = false;
+
+	if (tracker == NULL)
+		return false;
+	fill_zero_controller(tracker);
+	tracker->centre_flag = false;
+	if (!discard_pending && tracker->pending_centre_millihz != 0u) {
+		tracker->applied_target_millihz = tracker->pending_centre_millihz;
+		committed = true;
+	}
+	fill_drop_pending(tracker);
+	if (committed_centre_millihz != NULL)
+		*committed_centre_millihz = tracker->applied_target_millihz;
+	return committed;
 }

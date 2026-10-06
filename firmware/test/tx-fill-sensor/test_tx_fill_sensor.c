@@ -404,5 +404,108 @@ int main(void)
 		}
 	}
 
+	/* --- opening rules ------------------------------------------------- */
+	{
+		const uint32_t rb = 0x20000000u, h0 = rb, h1 = rb + 1024u;
+		/* Pending: SADDR lies in the last-filled half, both halves, edges. */
+		assert(aius_tx_fill_boundary_pending(h0, rb, h0));
+		assert(aius_tx_fill_boundary_pending(h0 + 1023u, rb, h0));
+		assert(!aius_tx_fill_boundary_pending(h1, rb, h0));
+		assert(!aius_tx_fill_boundary_pending(h1 + 1023u, rb, h0));
+		assert(aius_tx_fill_boundary_pending(h1, rb, h1));
+		assert(aius_tx_fill_boundary_pending(h1 + 1023u, rb, h1));
+		assert(!aius_tx_fill_boundary_pending(h0, rb, h1));
+		assert(!aius_tx_fill_boundary_pending(h1 - 1u, rb, h1));
+		assert(!aius_tx_fill_boundary_pending(rb + 2048u, rb, h1));
+		/* Setpoint at level 128: 384 - phi*128, or 256 - phi'*128 pending. */
+		assert(aius_tx_fill_open_setpoint_frames(128u, 0u, false) == 384u);
+		assert(aius_tx_fill_open_setpoint_frames(128u, 64u, false) == 320u);
+		assert(aius_tx_fill_open_setpoint_frames(128u, 127u, false) == 257u);
+		assert(aius_tx_fill_open_setpoint_frames(128u, 0u, true) == 256u);
+		assert(aius_tx_fill_open_setpoint_frames(128u, 64u, true) == 192u);
+		/* A level other than 128. */
+		assert(aius_tx_fill_open_setpoint_frames(256u, 32u, false) == 480u);
+		assert(aius_tx_fill_open_setpoint_frames(256u, 32u, true) == 352u);
+		/* Open decision: unit start, mid-unit below the cap, at the cap. */
+		assert(aius_tx_fill_open_decide(true, 0u, 1536u) == AIUS_TX_FILL_OPEN_NOW);
+		assert(aius_tx_fill_open_decide(false, 256u, 1536u) == AIUS_TX_FILL_OPEN_WAIT);
+		assert(aius_tx_fill_open_decide(false, 1535u, 1536u) == AIUS_TX_FILL_OPEN_WAIT);
+		assert(aius_tx_fill_open_decide(false, 1536u, 1536u) == AIUS_TX_FILL_OPEN_NOW);
+		assert(aius_tx_fill_open_decide(false, 4000u, 1536u) == AIUS_TX_FILL_OPEN_NOW);
+	}
+
+	/* --- window sequence and exclusion reasons ------------------------- */
+	{
+		AiusTxFillSensor q;
+		aius_tx_fill_sensor_init(&q);
+		assert(q.snap.fill_window_seq == 0u && q.snap.fill_window_exclusions == 0u);
+		g_now = 100u;
+		/* Clean valid window: seq 1, no reasons. */
+		for (uint32_t sub = 0u; sub < 16u; sub++)
+			for (uint32_t b = 0u; b < 3u; b++) {
+				feed(&q, 300u, 4000u, 4000u, g_now);
+				g_now += 4000u * 1000000u / RATE;
+			}
+		assert(q.snap.fill_window_seq == 1u && q.snap.fill_windows == 1u);
+		assert(q.snap.fill_window_exclusions == 0u);
+		/* Invalid window (9 underruns): seq advances, windows does not. */
+		for (uint32_t sub = 0u; sub < 16u; sub++) {
+			if (sub < 9u)
+				aius_tx_fill_sensor_note_underrun(&q);
+			for (uint32_t b = 0u; b < 3u; b++) {
+				feed(&q, 300u, 4000u, 4000u, g_now);
+				g_now += 4000u * 1000000u / RATE;
+			}
+		}
+		assert(q.snap.fill_level_valid == 0);
+		assert(q.snap.fill_window_seq == 2u && q.snap.fill_windows == 1u);
+		assert(q.snap.fill_window_exclusions == AIUS_TX_FILL_EXCL_UNDERRUN);
+		/* Reset keeps the seq, zeroes the served reasons and the in-flight bits. */
+		aius_tx_fill_sensor_note_missed_fill(&q);
+		aius_tx_fill_sensor_reset(&q);
+		assert(q.snap.fill_window_seq == 2u);
+		assert(q.snap.fill_window_exclusions == 0u);
+		assert(q.cur_reasons == 0u && q.win_reasons == 0u);
+		/* Each reason bit alone, and OR across sub-windows of one window. */
+		{
+			static const uint32_t want[4] = {
+				AIUS_TX_FILL_EXCL_UNDERRUN, AIUS_TX_FILL_EXCL_MISSED_FILL,
+				AIUS_TX_FILL_EXCL_STALL, AIUS_TX_FILL_EXCL_NO_SAMPLE };
+			for (uint32_t k = 0u; k < 4u; k++) {
+				aius_tx_fill_sensor_init(&q);
+				g_now = 100u;
+				for (uint32_t sub = 0u; sub < 16u; sub++) {
+					for (uint32_t b = 0u; b < 3u; b++) {
+						if (sub == 3u && k == 0u && b == 0u)
+							aius_tx_fill_sensor_note_underrun(&q);
+						if (sub == 3u && k == 1u && b == 0u)
+							aius_tx_fill_sensor_note_missed_fill(&q);
+						if (sub == 3u && k == 2u && b == 1u)
+							g_now += 100000u; /* stall */
+						if (sub == 3u && k == 3u) {
+							/* commit without a sample */
+							aius_tx_fill_sensor_commit(&q, 4000u, 4000u,
+								g_now, RATE);
+						} else {
+							feed(&q, 300u, 4000u, 4000u, g_now);
+						}
+						g_now += 4000u * 1000000u / RATE;
+					}
+				}
+				assert(q.snap.fill_window_seq == 1u);
+				assert(q.snap.fill_window_exclusions == want[k]);
+				assert(q.snap.fill_subwindows_excluded == 1u);
+			}
+			/* A window after a faulty one starts clean. */
+			for (uint32_t sub = 0u; sub < 16u; sub++)
+				for (uint32_t b = 0u; b < 3u; b++) {
+					feed(&q, 300u, 4000u, 4000u, g_now);
+					g_now += 4000u * 1000000u / RATE;
+				}
+			assert(q.snap.fill_window_seq == 2u);
+			assert(q.snap.fill_window_exclusions == 0u);
+		}
+	}
+
 	return 0;
 }

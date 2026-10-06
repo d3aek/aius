@@ -36,15 +36,21 @@ next handover.
   resolve each Phase 4 call on its recommendation and record it with its
   why; device sessions and anything destructive still go to the owner.
   A new orchestration run may re-ask.
-- **Status.** Phases 1, 2 and 3 DONE. Phase 4: entry gate decided
-  (2026-10-06, owner accepted every recommendation) and the OCRAM/status
-  body slice committed; the fill loop itself is not built. The board runs
-  `0af7a8244081` (slot 2).
-- **Next action.** Phase 4 prebuild review is complete (`ready`,
-  2026-10-06). Build the five fan-out slices in the YAML order against
-  §Slice interfaces: fill-sensor-window, clock-kind and unit-start
-  concurrently; fill-loop-core once fill-sensor-window's opening functions
-  land; parent-wiring last. Rounds 5 and 6 found more blockers, each
+- **Status.** Phases 1, 2 and 3 DONE. Phase 4 BUILT (2026-10-06): prebuild
+  review rounds 4 to 7 and a clean-room passed; five slices landed; verifier
+  green (20 host suites, both images); delivery audit FAIL on B1 only. Not
+  deployed: the board still runs `0af7a8244081` (slot 2).
+- **Next action.** Phase 4a (delivery-audit fixes, each already decided):
+  dispatch implementers for F3 and N5 to N11 (aius_clock, tx-fill-sensor,
+  optical_main), F2 and N12 (bench tools); verifier; same-reviewer
+  closure. B1 waits for `CLAUDE.md`'s foreign edits to be
+  committed (re-check the diff, never from memory). Then build, sign and
+  OTA the image (bench or listening-room per the owner) and run the Phase 4
+  device session; that needs the owner.
+- **Owner open item.** A proposed hook (`stop-guard.action-reverify`)
+  that makes every `▶ ACTION` carry a `verify:` check re-run at turn end,
+  after this session asserted a stale index lock from memory. Ask the
+  owner whether to build it (src/tools/hook, independent of aius). Rounds 5 and 6 found more blockers, each
   folded (2026-10-06); the same reviewer re-checks until its findings run
   dry. The parent lands the `test.sh` clock include before spawning.
 - **What landed this session** (aius commits; upstream pointer bumps
@@ -989,7 +995,7 @@ plan: main session plus a PCM top-up).
 ```yaml
 phase: 4
 title: Close the output-rate loop on transmit-ring fill
-status: planned
+status: built # 2026-10-06: five slices landed, verifier green (20 suites, both images); delivery audit FAIL on B1 only, fixes in Phase 4a; device session after 4a
 depends-on: phase 3 noise capture (setpoint spread across gate opens, PCM-versus-AC-3 floor bias)
 prebuild-review: ready # 2026-10-06: rounds 4 to 6 NOT READY and folded; round 7 READY; clean-room NOT READY (1 blocker) folded, closure READY with N1 to N3 folded. Delivery audit adds: the parent's arm counter and unit_frames input, and the apply-started note flag (host-untested)
 outcome: >-
@@ -1467,7 +1473,10 @@ bool aius_rate_tracker_fill_reset(AiusRateTracker *tracker, bool discard_pending
 	pending centre committed. On true the parent, before clock_apply_desired_plan,
 	counts trim_updates, records AIUS_EVENT_CLOCK_TRIM and rebuilds
 	g_clock_desired_plan from the committed centre; if that plan is invalid it
-	keeps the old desired plan and faults as the centre path does today. */
+	faults as the centre path does today (clock_record_fault(INVALID_PLAN)
+	marks the desired plan invalid, so the following apply returns false;
+	orchestrator call 2026-10-06: unreachable in band, as every in-band
+	centre has a valid plan, so today's behaviour is kept). */
 /* (no tracker setpoint function: aius_tx_fill_open_setpoint_frames is the one) */
 /* _step: a proposal goes to pending_centre (target_update still reported);
  * a committed centre sets applied_target_millihz itself; accept_candidate
@@ -1740,9 +1749,120 @@ read and setpoint; the controller and emission state split under refusal,
 saturation and sub-threshold windows; the stamp-kind field on every write
 path; and the fill loop against the governor.
 
+**Build record (2026-10-06).** Slices fill-sensor-window, clock-kind,
+unit-start and fill-loop-core landed with their host suites green; the
+clock suite carries the full host-proof list. Measured against the entry
+gate's closed form: 700 mHz step peak 36.0 frames (34.5), back inside 16
+frames in 277 s (the gate text's "about 3.5 min" should read about
+4.7 min, as the continuous PI gives 283 s), settled in 405 s (618 s was
+the envelope bound), write fraction 0.39, modulation 17.1 mHz rms,
+underrun recovery 101 / 145 / 489 s for `I` −670 / 0 / +670 (gate: 99 /
+144 / 491), ramp tracking −2.71 frames. Plant readings to know: anti-windup
+holds `I` when |P + I_old| > 900; the offset matrix holds the centre fixed
+(estimate noise covered separately up to ±480, because ±650 to ±800 plus
+the full 1.2 Hz estimate noise exceed the 670 authority budget); only the
+offset matrix runs at all three rates. The tracker gained
+`fill_proportional_millihz` (the last P, needed to hold the offset at the
+clamp across a saturated retarget). Delivery-audit items from the slices:
+- **Untested unit-start cases.** DTS-2048 and a multi-unit substitution
+  cannot be driven from the pipeline API (the corpus has only DTS-512, and
+  every substitution today is one unit); the multi-slice
+  `retained_offset == 0` path is covered through E-AC-3. Add a DTS-2048
+  vector when one is captured.
+- **Cap opens mid-unit.** A class that never marks a unit start opens at
+  the cap and took 7 underruns at the open in the plant: the accepted cost
+  of the guard, worth confirming against real classes in the audit.
+- **Sensor sample between a DMA crossing and its ISR** reads 128 high;
+  harmless at real ISR latency, but the plant models latency only at the
+  open.
+
+Parent-wiring landed (2026-10-06): both images build; ISR 496 B (+12),
+accessor 92 B, ITCM 191,996 B (+192), DTCM free 25,760 B (1,408 over the
+floor), OCRAM free 131,776 B; status worst case 14,981 B (1,402 B
+headroom). Recorded deviations: `aius_tx_fill_open_decide` runs before the
+mask (it reads no ISR state; the setpoint is still computed inside);
+`clock_fill_service` runs before `clock_refresh_applied` (on the dark-end
+pass emission is blocked anyway); a centre commit now counts
+`trim_updates` and records the event at commit, not at an accepted trim;
+carrier loss and the rate-change quiesce also call `fill_reset(true)`; the
+reducer also splits a span when `gate_open_padded_frames` changes between
+two open polls.
+
 Gate 1's 1,000 mHz follow-error bound was set on a bench with no underruns;
 an underrun's clamp excursion (entry gate item 6) would breach it, so a
 listening-room session reads gate 1 only across underrun-free spans.
+
+### Phase 4a Delivery-audit fixes before the device session
+
+```yaml
+phase: 4a
+title: Close the Phase 4 delivery audit before the listening-room session
+status: planned
+depends-on: phase 4 build (committed 2026-10-06, host suites and both images green)
+outcome: >-
+  The Phase 4 build carries no known path to a periodic underrun, its bench
+  tooling can see fill writes, and its stamps and counters say what
+  CLAUDE.md tells a reader they say.
+unit: component-behind-interface
+seams:
+  - aius_tx_fill_open_setpoint_frames and tx_gate_execute_open pad (F3)
+  - clock_fill_service / clock_refresh_applied order, centre commit gating (N5 to N8)
+  - gate 1 and gate 7 bench tooling (F2, N12)
+  - CLAUDE.md stamp and signing lines (B1)
+targeted-proof:
+  - host: clock (new cases per item), tx-fill-sensor, clock-target, optical-cutover, status-body-bound; both images build
+  - bench: aius_rate_bench gate 7 at fill-write cadence with the fixed matcher
+review-intensity: active
+```
+
+Delivery audit (2026-10-06, `reviewer` `opus`) of the Phase 4 build:
+FAIL on B1 only; no blocking code defect. Each item decided by the
+orchestrator under the owner's Phase 4 delegation:
+
+- **B1, CLAUDE.md promote.** Add `fill_trim_last_at_ms` and
+  `fill_applied_at_ms` to the glitch-reading stamp list and the full
+  `aius_ota_sign.py sign --image --output --build-revision` form, via
+  `the release-promotion step`. Blocked while the file carries another session's
+  uncommitted edits (re-check `git -C git_modules/aius diff --stat --
+  CLAUDE.md` before acting; never from memory).
+- **F2, gate 7 cannot see fill writes.** `rate_gate_capture/capture.py:559-576`
+  and `net/aius_rate_bench.py:1033-1044` match waveform jumps against
+  `trim_updates` only. Match against the two applied-at stamps
+  (`trim_applied_at_ms`, `fill_applied_at_ms`) and add a fill-cadence
+  assertion.
+- **F3, pending-boundary open leaves 1 to 128 frames.** Decided: when
+  pending, pad to the level-128 target plus 128, so after the late ISR the
+  level is 128 and the setpoint is `384 - phi' * 128` as in the normal
+  case; count the extra pad separately (new counter) so the CLAUDE.md
+  `gate_open_padded_frames` line stays true. Update
+  `aius_tx_fill_open_setpoint_frames` and its tx-fill-sensor cases, the
+  plant, and §Mechanism's pending text in the same change.
+- **N5.** Run `clock_refresh_applied` before `clock_fill_service`, matching
+  the plant (`test/clock/test_clock.c:1543-1573`), so the dark-end note
+  never resets a centre committed in the same pass.
+- **N6.** Commit a centre only when `in->have_applied`, so a failing
+  accept's apply does not spawn full applies outside the 1 s retry throttle.
+- **N7.** Validate the plan before `clock_note_centre_commit`; an invalid
+  centre neither counts nor stays in the tracker.
+- **N8.** The CENTRE flag also clears on a pass with emission disallowed
+  and nothing to write.
+- **N9.** Carrier loss and quiesce clear `fill_open_boundary_pending` with
+  the setpoint.
+- **N10.** Device criterion compares `fill_trims` with `fill_window_seq`
+  (all closes), not `fill_windows`; add a `centre_writes` counter (accepted
+  CENTRE writes) so the one-write-per-window bound is checkable.
+- **N11.** The accessor calls `aius_tx_fill_saddr_offset_frames` instead of
+  re-implementing the arithmetic. Residual risk, recorded: the parent's
+  `clock_fill_service`, `clock_fill_reset`, arm counter and note flag are
+  copied into the plant, not called; a wiring divergence passes the host
+  suite, so the device session and this audit carry it.
+- **N12.** `trim_updates` now counts commits (including no-write and
+  structural); gate 1's trim-cadence check (`aius_rate_bench.py:849-854`)
+  moves to `centre_writes`. `firmware/tools/latency/linked_probe.py:457`
+  was already stale; fix it in the same pass.
+- **N4.** Correct the `tx_gate_execute_open` comment: the masked section
+  runs inlined in `.flashmem.audio_enqueue` (already true of `set_level`);
+  record its duration.
 
 ### Phase 4b Status render must not delay AC-3 production
 

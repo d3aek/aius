@@ -389,5 +389,87 @@ class DarkWindowTests(unittest.TestCase):
             VERIFY.verify_dark_window_symbols(table)
 
 
+def tx_symbol_table(
+    *rows: tuple[str, int, int],
+) -> dict[str, tuple[int, int]]:
+    """Every TX_ITCM_SYMBOLS name in ITCM with a size, the given (name,
+    address, size) rows overriding or extending it."""
+    table: dict[str, tuple[int, int]] = {}
+    address = 0x200
+    for name in VERIFY.TX_ITCM_SYMBOLS:
+        table[name] = (address, 0x80)
+        address += 0x100
+    for name, value, size in rows:
+        table[name] = (value, size)
+    return table
+
+
+class TxItcmResidencyTests(unittest.TestCase):
+    """The TX DMA ISR and the gate open's masked SADDR accessor must link
+    into ITCM (aius-sample-rate-following Phase 4): a flash copy runs a
+    FlexSPI fetch with interrupts masked, a folded copy loses the pin."""
+
+    def test_parses_sizes_in_decimal_and_hex(self) -> None:
+        output = (
+            "     1: 00000401   484 FUNC    LOCAL  DEFAULT    1 "
+            "_ZN12_GLOBAL__N_117AiusSpdifTx24Hook3isrEv\n"
+            "     2: 00000601 0x186a0 FUNC    GLOBAL DEFAULT    1 "
+            "aius_spdif_tx24_dma_read_position\n"
+            "     3: 20001000    16 OBJECT  GLOBAL DEFAULT    4 "
+            "g_aius_tx_fill_applied_at_ms\n"
+        )
+        self.assertEqual(
+            VERIFY.parse_function_sizes(output),
+            {
+                "_ZN12_GLOBAL__N_117AiusSpdifTx24Hook3isrEv": (0x401, 484),
+                "aius_spdif_tx24_dma_read_position": (0x601, 100000),
+            },
+        )
+
+    def test_a_complete_itcm_table_passes_with_sizes(self) -> None:
+        table = tx_symbol_table(
+            ("aius_spdif_tx24_dma_read_position", 0x900, 52),
+        )
+        sizes = VERIFY.verify_tx_itcm_symbols(table)
+        self.assertEqual(set(sizes), set(VERIFY.TX_ITCM_SYMBOLS))
+        self.assertEqual(sizes["aius_spdif_tx24_dma_read_position"], 52)
+
+    def test_a_flash_resident_accessor_fails_as_outside_itcm(self) -> None:
+        table = tx_symbol_table(
+            ("aius_spdif_tx24_dma_read_position", 0x60012340, 52),
+        )
+        with self.assertRaisesRegex(
+            VERIFY.VerificationError,
+            r"outside ITCM: aius_spdif_tx24_dma_read_position at 0x60012340",
+        ):
+            VERIFY.verify_tx_itcm_symbols(table)
+
+    def test_a_dtcm_isr_fails_as_outside_itcm(self) -> None:
+        table = tx_symbol_table(
+            ("_ZN12_GLOBAL__N_117AiusSpdifTx24Hook3isrEv", 0x20000400, 484),
+        )
+        with self.assertRaisesRegex(
+            VERIFY.VerificationError, r"outside ITCM.*AiusSpdifTx24Hook3isr"
+        ):
+            VERIFY.verify_tx_itcm_symbols(table)
+
+    def test_a_folded_accessor_fails_as_missing(self) -> None:
+        table = tx_symbol_table()
+        del table["aius_spdif_tx24_dma_read_position"]
+        with self.assertRaisesRegex(
+            VERIFY.VerificationError,
+            r"absent \(renamed or inlined away\): "
+            r"aius_spdif_tx24_dma_read_position",
+        ):
+            VERIFY.verify_tx_itcm_symbols(table)
+
+    def test_the_summary_names_each_symbol_and_the_total(self) -> None:
+        line = VERIFY._tx_itcm_summary(
+            {"isr": 484, "aius_spdif_tx24_dma_read_position": 52}
+        )
+        self.assertIn("2 symbols in ITCM, 536 bytes", line)
+        self.assertIn("isr 484 B", line)
+
+
 if __name__ == "__main__":
     unittest.main()

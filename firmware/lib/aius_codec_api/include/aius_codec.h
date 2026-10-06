@@ -16,7 +16,7 @@ extern "C" {
  * host tests and the Teensy target. Implementations land per capability-gate
  * phase (parser P2, decoder P3); this header is the stable contract they fill. */
 
-#define AIUS_CODEC_ABI_VERSION 1u
+#define AIUS_CODEC_ABI_VERSION 2u
 
 /* 5.1 is the widest layout in scope. */
 #define AIUS_MAX_CHANNELS 6
@@ -79,6 +79,9 @@ typedef struct {
 	uint32_t frames;
 	uint32_t sample_rate_hz;
 	uint32_t channel_mask; /* OR of AIUS_CH_*; popcount == channels */
+	/* Appended so positional initialisers stay valid. 1: a gate open may land
+	 * at this block (it starts a unit); set by the pipeline, 0 elsewhere. */
+	uint8_t first_in_unit;
 } AiusPcmBlock;
 
 /* One IEC 61937 data burst emitted by the parser, normalized to big-endian

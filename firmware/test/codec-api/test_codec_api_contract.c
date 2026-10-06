@@ -7,7 +7,7 @@
  * headers compile cleanly as C and hold their documented invariants before any
  * implementation exists. */
 
-_Static_assert(AIUS_CODEC_ABI_VERSION == 1u, "codec ABI is v1");
+_Static_assert(AIUS_CODEC_ABI_VERSION == 2u, "codec ABI is v2");
 _Static_assert(AIUS_OK == 0, "AIUS_OK must be zero so {0} init is a success");
 _Static_assert(AIUS_MAX_CHANNELS == 6, "5.1 is the widest layout in scope");
 

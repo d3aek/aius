@@ -565,12 +565,15 @@ FLASHMEM bool aius_audio_clock_get_applied_plan(
 }
 
 FLASHMEM bool aius_audio_clock_request_trim(
-	const AiusSpdifClockPlan *plan)
+	const AiusSpdifClockPlan *plan,
+	AiusAudioClockTrimKind kind)
 {
 	AiusSpdifClockPlan applied;
 	uint32_t saved;
 
-	if (!plan_is_valid(plan) ||
+	if ((kind != AIUS_AUDIO_CLOCK_TRIM_CENTRE &&
+	     kind != AIUS_AUDIO_CLOCK_TRIM_FILL) ||
+	    !plan_is_valid(plan) ||
 	    !aius_audio_clock_get_applied_plan(&applied) ||
 	    plan->nominal_rate_hz != applied.nominal_rate_hz ||
 	    plan->channel_status_rate_bits !=
@@ -590,6 +593,10 @@ FLASHMEM bool aius_audio_clock_request_trim(
 	}
 	copy_plan_to_volatile(
 		&g_aius_audio_clock_state.queued_plan, plan);
+	/* Only past the pending check: a refused FILL must not relabel a CENTRE
+	 * trim still queued. The request value stays TRIM; any other value is a
+	 * HOLD at the boundary. */
+	g_aius_audio_clock_state.queued_kind = static_cast<uint32_t>(kind);
 	memory_barrier();
 	g_aius_audio_clock_state.request =
 		AIUS_AUDIO_CLOCK_BOUNDARY_TRIM;
