@@ -1826,7 +1826,8 @@ clock-target, optical-cutover, status-body-bound, itcm-placement,
 registry and sd-editor green; both images build (ITCM free 4,612 B
 plain, 4,340 B canonical); tool tests rate-gate-capture 93,
 rate-runner 71, latency-runner 119. Delivery review FAIL, then same-reviewer
-closure PASS, then clean-room PASS. B1 moved to Phase 4d.
+closure PASS, then clean-room PASS. B1 moved to Phase 4d. The owner
+confirmed the autonomous calls R2, R3 and R13 (2026-10-06).
 
 Delivery audit (2026-10-06, `reviewer` `opus`) of the Phase 4 build:
 FAIL on B1 only; no blocking code defect. Each item decided by the
@@ -2035,19 +2036,7 @@ unit: parent-only
 Executed once, at the end of the run or at handover. Each entry: phase,
 call, alternative, cost of reversing.
 
-- **Phase 4a R2.** Gate 7 matches waveform jumps against full applies
-  only; fill and trim writes never excuse a jump. Alternative: F2 as
-  written (match the applied-at stamps), which at fill cadence excuses
-  almost any glitch. Reversing: one function in `capture.py` and its
-  tests.
-- **Phase 4a R3.** A pending live open makes one `set_level` to floor
-  plus 128 after a single early SADDR read. Alternative: pad, read, pad
-  again (the first F3 build), which inserted 128 zeros after kept audio.
-  Reversing: `tx_gate_execute_open` and the plant.
-- **Phase 4a R13.** Gate 1's trim-cadence check is advisory in code (D4
-  (b) had made it advisory in docs only). Alternative: keep N12's
-  `centre_writes` bound, which almost never fires. Reversing: one check in
-  `aius_rate_bench.py`.
+- (none open; Phase 4a R2, R3 and R13 confirmed by the owner 2026-10-06)
 
 ## Acceptance
 
