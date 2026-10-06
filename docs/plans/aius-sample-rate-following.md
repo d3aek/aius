@@ -47,9 +47,9 @@ next handover.
   2026-10-06 run passed every criterion but ran 33.7 min polled and 0
   min unpolled; see Phase 4 §Device evidence 2026-10-06), then gate 7 at
   fill-write cadence (4a's moved bench proof); that needs the owner.
-  Phase 4c shipped. Phase 4d (B1)
-  waits for `CLAUDE.md`'s foreign edits to be committed
-  (re-check the diff, never from memory).
+  Phase 4c shipped. Phase 4d (B1): promote queued for owner approval;
+  re-check `git status` on `CLAUDE.md`, never from
+  memory.
 - **Hook item moved.** `stop-guard.action-reverify` is item 11 of
   `src/tools/hook/docs/plans/hook-daemon-feature-backlog.md` (owner:
   plan, do not dispatch).
@@ -64,8 +64,8 @@ next handover.
 | `a10e2ff` | Phase J shipped; output-jitter Phases K and L planned; `measure_run.py --auth-file`, `replay` | three 10 s device replays, `governor_trims` 0 |
 | `c4c6200` | Phase 3 shipped on the capture; reducer underrun fixes; register update | reducer `--self-test` ok; capture reduced end to end |
 
-- **Uncommitted tree.** `CLAUDE.md` is dirty and foreign;
-  leave it.
+- **Uncommitted tree.** Clean apart from a landed Phase 4d promote, if
+  approved.
 - **Capture data** (scratch, reaped about 2026-10-12, so the design pass
   must read it before then):
   `.scratch/2682a96a-3760-4d00-b9e0-f71f66b336ba/capture-polled.jsonl`,
@@ -2053,9 +2053,11 @@ targeted-proof: the promoted diff carries exactly B1's lines; no foreign hunk is
 unit: parent-only
 ```
 
-Blocked: the file carries another session's uncommitted edits. Re-check
-`git -C git_modules/aius diff --stat -- CLAUDE.md` before acting, never
-from memory. Content: Phase 4a §B1.
+The pending CLAUDE.md edits were this work's (owner, 2026-10-06) and are
+committed (`5d7c05d`). B1's promote is queued for owner approval
+(2026-10-06); once `git -C git_modules/aius status -- CLAUDE.md` shows
+it landed, review the diff against Phase 4a §B1, commit, and flip this
+phase. If the queue entry expired, re-run the promote from Phase 4a §B1.
 
 ### Phase 5 Interrogate the user: confirm autonomous calls
 
