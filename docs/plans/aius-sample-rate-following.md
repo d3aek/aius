@@ -40,12 +40,11 @@ next handover.
   (2026-10-06, owner accepted every recommendation) and the OCRAM/status
   body slice committed; the fill loop itself is not built. The board runs
   `0af7a8244081` (slot 2).
-- **Next action.** Phase 4 prebuild round 4 came back NOT READY; its
-  findings are folded into the contract (setpoint now per session). The
-  same reviewer re-checks the folded text, then one clean-room
-  confirmation; lift `prebuild-review` to `ready`, then build the five
-  fan-out slices in the YAML (four concurrent host-only, then the parent
-  wiring), against §Slice interfaces. Rounds 5 and 6 found more blockers, each
+- **Next action.** Phase 4 prebuild review is complete (`ready`,
+  2026-10-06). Build the five fan-out slices in the YAML order against
+  §Slice interfaces: fill-sensor-window, clock-kind and unit-start
+  concurrently; fill-loop-core once fill-sensor-window's opening functions
+  land; parent-wiring last. Rounds 5 and 6 found more blockers, each
   folded (2026-10-06); the same reviewer re-checks until its findings run
   dry. The parent lands the `test.sh` clock include before spawning.
 - **What landed this session** (aius commits; upstream pointer bumps
@@ -992,7 +991,7 @@ phase: 4
 title: Close the output-rate loop on transmit-ring fill
 status: planned
 depends-on: phase 3 noise capture (setpoint spread across gate opens, PCM-versus-AC-3 floor bias)
-prebuild-review: clean-room-folded # 2026-10-06: rounds 4 to 6 NOT READY and folded; round 7 READY; clean-room NOT READY (1 blocker) and folded; clean-room closure check, then build
+prebuild-review: ready # 2026-10-06: rounds 4 to 6 NOT READY and folded; round 7 READY; clean-room NOT READY (1 blocker) folded, closure READY with N1 to N3 folded. Delivery audit adds: the parent's arm counter and unit_frames input, and the apply-started note flag (host-untested)
 outcome: >-
   A live source offset inside the 500 mHz target deadband no longer drains
   (or fills) the transmit ring: the output rate converges on the source's
@@ -1512,11 +1511,15 @@ extern "C" uint32_t aius_spdif_tx24_dma_read_position(uint32_t *half,
 static inline void aius_tx_fill_sensor_exclude(AiusTxFillSensor *s, uint32_t reason);
 /* replaces the one-argument exclude, which is removed */
 /* Shipped opening rules, pure, tested in tx-fill-sensor and called (not
- * modelled) by the test/clock plant and by optical_main (clean-room 1): */
+ * modelled) by the test/clock plant and by optical_main (clean-room 1).
+ * Always-inline and WITHOUT AIUS_TX_FILL_SENSOR_COLD (FLASHMEM in both
+ * callers, optical_main.cpp:130, aius_spdif_sources.cpp:23-26), so neither
+ * the FASTRUN accessor nor the masked gate open runs from flash (N2): */
 static inline bool aius_tx_fill_boundary_pending(uint32_t saddr,
 	uint32_t ring_base, uint32_t last_half_base);  /* SADDR lies in last_half */
 static inline uint32_t aius_tx_fill_open_setpoint_frames(uint32_t level_frames,
-	uint32_t offset_frames, bool boundary_pending); /* 384-phi*128, or 256-phi'*128 */
+	uint32_t offset_frames, bool boundary_pending); /* level + 256 - offset,
+	minus 128 if pending (384 - phi*128 or 256 - phi'*128 at level 128) */
 typedef enum { AIUS_TX_FILL_OPEN_WAIT = 0, AIUS_TX_FILL_OPEN_NOW = 1 } AiusTxFillOpenDecision;
 static inline AiusTxFillOpenDecision aius_tx_fill_open_decide(bool first_in_unit,
 	uint32_t committed_since_arm_frames, uint32_t unit_frames); /* NOW at a unit
@@ -1553,7 +1556,8 @@ typedef struct { int32_t *planes[AIUS_MAX_CHANNELS]; uint16_t channels;
 - **fill-sensor-window** consumes nothing. It lands the three pure opening
   functions first (the plant depends on them), with tx-fill-sensor cases:
   pending true and false at both halves and at the half edges, setpoint
-  `256 - phi' * 128` pending and `384 - phi * 128` not, and the open
+  `256 - phi' * 128` pending and `384 - phi * 128` not, one setpoint case
+  at a level other than 128 (N3), and the open
   decision at a unit start, mid-unit below the cap and at the cap.
 - **unit-start** sets the flag after `aius_pipeline_slice_pcm_block`, in
   `fill_pcm_descriptor` (`aius_pipeline.c:1124-1133,1281-1294`; a retried
@@ -1575,12 +1579,12 @@ typedef struct { int32_t *planes[AIUS_MAX_CHANNELS]; uint16_t channels;
   (the `optical_main.cpp:1440` pattern), the enum and exclusion-bit
   `static_assert`s, the trim branch at `:8851-8900` replaced by `fill_step`,
   plan, `request_trim(kind)`, `note_emit`; `first_in_unit` ignored on replay
-  blocks (`:2119`). `tx_gate_execute_open` calls the three shipped opening
-  functions inside its masked section and publishes
-  `fill_open_boundary_pending` with the setpoint. It re-cites the gate-close
-  logic the class-change host case relies on (the plan's
-  `optical_main.cpp:8778-8780` is the `sampleRate()` fallback, not that
-  logic; clean-room 10). It bounds the new keys in `status-body-bound`, and runs every target build itself, one
+  blocks (`:2119`). `tx_gate_execute_open`, inside its masked section,
+  calls the accessor (which alone calls `aius_tx_fill_boundary_pending` on
+  its one SADDR read; never a second SADDR read in the parent), then
+  `aius_tx_fill_open_setpoint_frames` and `aius_tx_fill_open_decide` with
+  the accessor's pending result, and publishes `fill_open_boundary_pending`
+  with the setpoint (clean-room closure N1). It bounds the new keys in `status-body-bound`, and runs every target build itself, one
   at a time; slices run host suites only.
 
 **Host proof (clock suite).** The tracker API owns the centre/integral
@@ -1652,8 +1656,10 @@ quantised to 140 mHz bins with 1.2 Hz spread and slow wander (280 mHz over
 - the trough-timing jitter measured in Phase 3, injected into the sensor
   model for every case;
 - a PCM-to-AC-3 switch with the gate open, modelled from the transition the
-  capture recorded (the gate stays open through a class change,
-  `firmware/src/optical_main.cpp:8778-8780`, and the real gap may re-base the
+  capture recorded (the gate stays open through a class change: the open
+  decision `aius_tx_gate_permitted(carrier, g_clock_live_ready,
+  g_clock_replay_ready, source)` at `firmware/src/optical_main.cpp:8973-8977`
+  takes no class input; and the real gap may re-base the
   floor): its assertion is set from that capture, not assumed;
 - a centre retarget with non-zero `I`: composed target continuous;
 - a 2,048-frame stall backlog: the governor trims once, the loop neither
@@ -1727,7 +1733,9 @@ sites and a stale-pending drop) folded. Clean-room (2026-10-06): NOT
 READY, one blocker (the opening rules were tested only against the plant's
 own copy, so the round 5 sign error or a DTS mis-mark passed every host
 case; now three shipped pure functions the plant calls) and nine text
-fixes, folded. The clean-room reviewer confirms closure, then build. Phase 4's delivery audit re-attacks: the opening
+fixes, folded. Closure check (2026-10-06): READY; N1 (the accessor alone
+reads SADDR), N2 (opening functions always-inline, not COLD) and N3 (a
+non-128 level case) folded. Prebuild review complete. Phase 4's delivery audit re-attacks: the opening
 read and setpoint; the controller and emission state split under refusal,
 saturation and sub-threshold windows; the stamp-kind field on every write
 path; and the fill loop against the governor.
