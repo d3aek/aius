@@ -43,8 +43,9 @@ next handover.
   sha256 `bb3e090a8e8b…`), slot 1, healthy-boot self-commit,
   `rollback_observed` false; `clock.centre_writes` and
   `clock.gate_open_pending_padded_frames` present.
-- **Next action.** Build, sign and OTA the Phase 4a image in the living
-  room and run the Phase 4 device session, including gate 7 at
+- **Next action.** Repeat the Phase 4 device session in full (the
+  2026-10-06 run passed every criterion but ran 33.7 min polled and 0
+  min unpolled; see Phase 4 §Device evidence 2026-10-06), then gate 7 at
   fill-write cadence (4a's moved bench proof); that needs the owner.
   Phase 4c shipped. Phase 4d (B1)
   waits for `CLAUDE.md`'s foreign edits to be committed
@@ -1737,6 +1738,33 @@ whose stable-phase labelling uses the same bound
 (`firmware/tools/net/aius_rate_bench.py:410-424`), and gate 7's
 carrier-continuity check at fill-write cadence, since the existing evidence
 covers isolated NUM writes only.
+
+**Device evidence 2026-10-06, `df966f17b370`, SHORT.** listening-room AC-3,
+11:35:22 to 12:15:36 UTC: 33.7 min polled at 1 Hz (a 7 min unpolled gap
+at 12:00 from a late segment launch; counters continuous), 0 min
+unpolled (source switched off at 12:15:37 before that segment). Every
+criterion that could run passed:
+
+- `underrun_episode_count`, `governor_trims`, `tx_underrun_frames`,
+  `tx_missed_fills` deltas 0;
+- settled `fill_offset_millihz` about −233 mHz (not inconclusive);
+- setpoint 377 throughout (`fill_open_boundary_pending` false, inside 257
+  to 384), max |fill error| 8 frames, last-10-min mean 0.99 frames;
+- `fill_trims` 184 against `fill_window_seq` 604 (30.5%);
+- `centre_writes`, `trim_updates`, `structural_replans`,
+  `invalid_windows`, both pad counters: delta 0; window-to-window σ 1.14
+  frames;
+- polled sub-window spread p95 52 frames (median 7, max 75); no unpolled
+  figure, so Phase 4b's comparison is open;
+- two owner seeks (11:44 and 11:59 UTC) left no trace: gate open, no
+  counter moved, fill level 370 to 379 frames.
+
+Not yet proven: 45 min polled, 10 min unpolled, and gate 7 at fill-write
+cadence. Next session: one polled run of 45 min or more and an unpolled
+run of 10 min or more, launched back to back (a background job ends at
+about 30 min, so two polled jobs with no gap), then gate 7. Raw data:
+`.scratch/2682a96a-3760-4d00-b9e0-f71f66b336ba/session-4a/` (reaped about
+2026-10-13).
 
 Prebuild review: rounds 1 to 3 and the clean-room confirmation are done
 (records in Phase 3). Round 4 (2026-10-06, against the decided entry gate):
