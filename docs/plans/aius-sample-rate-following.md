@@ -43,10 +43,11 @@ next handover.
   sha256 `bb3e090a8e8b…`), slot 1, healthy-boot self-commit,
   `rollback_observed` false; `clock.centre_writes` and
   `clock.gate_open_pending_padded_frames` present.
-- **Next action.** Repeat the Phase 4 device session in full (the
-  2026-10-06 run passed every criterion but ran 33.7 min polled and 0
-  min unpolled; see Phase 4 §Device evidence 2026-10-06), then gate 7 at
-  fill-write cadence (4a's moved bench proof); that needs the owner.
+- **Next action.** Phase 4b design pass (widened by the owner's
+  2026-10-07 ruling: the audio hot path always has priority over HTTP and
+  SD work). Phase 4's fill-loop device criteria passed on 2026-10-07;
+  its last proof is gate 7 at fill-write cadence on the U24 bench, which
+  needs the owner.
   Phases 4c and 4d shipped.
 - **Hook item moved.** `stop-guard.action-reverify` is item 11 of
   `src/tools/hook/docs/plans/hook-daemon-feature-backlog.md` (owner:
@@ -988,7 +989,7 @@ plan: main session plus a PCM top-up).
 ```yaml
 phase: 4
 title: Close the output-rate loop on transmit-ring fill
-status: built # 2026-10-06: five slices landed, verifier green (20 suites, both images); delivery audit FAIL on B1 only, fixes in Phase 4a; device session after 4a
+status: built # 4a shipped and deployed (df966f17b370); device fill-loop criteria passed 2026-10-07; gate 7 at fill-write cadence outstanding
 depends-on: phase 3 noise capture (setpoint spread across gate opens, PCM-versus-AC-3 floor bias)
 prebuild-review: ready # 2026-10-06: rounds 4 to 6 NOT READY and folded; round 7 READY; clean-room NOT READY (1 blocker) folded, closure READY with N1 to N3 folded. Delivery audit adds: the parent's arm counter and unit_frames input, and the apply-started note flag (host-untested)
 outcome: >-
@@ -1759,6 +1760,40 @@ about 30 min, so two polled jobs with no gap), then gate 7. Raw data:
 `.scratch/2682a96a-3760-4d00-b9e0-f71f66b336ba/session-4a/` (reaped about
 2026-10-13).
 
+**Device evidence 2026-10-07, `df966f17b370`, full length.** listening-room
+AC-3, 07:12:37 to 08:12:50 UTC: 48 min polled at 1 Hz (two segments, 5 s
+gap), then 12 min unpolled at 30 s. The polled span passed every
+criterion: underrun and governor deltas 0; settled offset −255 mHz;
+setpoint 353 (not pending), last-10-min mean |fill error| 1.14 frames,
+max 7.75 after the first 600 s (21.4 at 80 s, before settling);
+`fill_trims` 221 of 721 windows (30.7%); every other counter delta 0.
+
+- **Intentional source silence is tolerated.** The owner's 25 s episode
+  change (08:05:49 to 08:06:14) kept the gate open and the carrier locked;
+  the fill level moved ±20 frames and recovered by 08:10:50, no underrun.
+  This is now an acceptance criterion: a source silence or pause within a
+  lock never underruns.
+- **Web UI load underran the ring.** At 08:11:38 the owner opened the SD
+  web UI: 108 HTTP requests and 5 SD download jobs in one 30 s window,
+  HTTP checkpoint 1.4 ms to 20.9 ms, an epoch budget overrun, ingress
+  backlog at its 2048-word cap. Two 128-frame underruns 0.93 s apart
+  (`underrun_episode_count` +2, `tx_underrun_frames` +256). AC-3, fill
+  loop, DMA and governor ruled out (no crc, resync, missed fill, governor
+  trim, or fill write in the prior 52 s); the recorder's underrun capture
+  has continuous programme. Recovery was as designed (entry gate item 6):
+  +256 step, offset on the +900 mHz clamp, back near setpoint in about 5
+  min, no further underrun. Owner ruling (2026-10-07): loading the SD
+  interfaces must never cause audio issues; the audio hot path always has
+  priority. Moved to Phase 4b, widened.
+- **Phase 4b's question answered.** Polled sub-window spread p95 54
+  frames against unpolled 10 (median 8 against 7.5): polling inflates the
+  tail, so 4b is needed.
+
+Phase 4's fill-loop criteria are met; the remaining proof is gate 7 at
+fill-write cadence (bench, U24). Raw data:
+`.scratch/63e414f8-e0a8-416d-8629-cda946de784a/session-4a-full/` and
+`underrun-0811/` (reaped about 2026-10-14).
+
 Prebuild review: rounds 1 to 3 and the clean-room confirmation are done
 (records in Phase 3). Round 4 (2026-10-06, against the decided entry gate):
 NOT READY, two blockers (the constant-occupancy pad's fixed residue; the
@@ -1988,33 +2023,45 @@ this plan, the gate 7 README and one code comment fixed. Decided:
   checked by reading. The Phase 4 device session's
   `gate_open_pending_padded_frames` readings carry it.
 
-### Phase 4b Status render must not delay AC-3 production
+### Phase 4b No HTTP or SD work delays the audio producer
 
 ```yaml
 phase: 4b
-title: Keep the /api/status render off the AC-3 producer's critical path
+title: The audio hot path always has priority over HTTP and SD-card service
 status: planned
-depends-on: phase 4 device session (does the per-session setpoint, worst-phase tolerance 128 frames, already absorb the render dip?)
+depends-on: phase 4 device session (done 2026-10-07)
 prebuild-review: not-started
 outcome: >-
-  An /api/status render no longer delays the next AC-3 burst, so a poll
-  cannot choose when a thin ring margin empties; the sub-window dip a render
-  causes (71 frames worst, 2026-10-05) shrinks to the non-polled level.
-unit: parent-only # design not started
+  No HTTP request, status render or SD-card transfer (web UI load, file
+  download, sync, OTA staging) delays the AC-3 producer or the transmit
+  path enough to move the ring: a web UI load during playback causes no
+  underrun, and the polled sub-window spread matches the unpolled one.
+unit: parent-only # design pass next
 seams:
-  - app_write_status / http_status_json render scheduling (firmware/src/optical_main.cpp)
-  - AC-3 producer service order in the main loop
+  - HTTP service and SD job scheduling against the producer (firmware/src/optical_main.cpp main loop, checkpoint budget)
+  - app_write_status / http_status_json render scheduling
+  - SD download / sync / OTA staging job slicing
 targeted-proof:
+  - device: web UI load (all SD downloads) during AC-3 playback, repeated, gives underrun_episode_count delta 0 and ingress backlog below cap
   - device: polled versus unpolled sub-window spread p95 within 10 frames of each other
 ```
+
+**Owner ruling 2026-10-07:** loading the SD interfaces must never cause
+audio issues; the audio hot path always has priority. This widens 4b from
+the status render to every HTTP and SD service path, and supersedes
+`CLAUDE.md`'s "owner-initiated card traffic is
+deliberately NOT gated" (that paragraph is updated in this phase; until it
+ships, card traffic still costs dropouts). Evidence: Phase 4 §Device
+evidence 2026-10-07 (page-load underrun; polled p95 54 against unpolled
+10). First step: a design pass (budgeted or sliced HTTP and SD work
+yielding to the producer, or producer service between slices), then the
+prebuild review.
 
 Found by the Phase 4 entry-gate design pass (2026-10-06): Phase 3 measured
 the render delaying production, and Phase 4 only adds margin against it.
 The 16 KiB status body makes the render longer (dip estimated 1.5 times).
-First step after Phase 4's device session: if polled sessions show no
-underrun and the dip margin holds, put to the owner whether 4b is still
-wanted; otherwise write its design (chunked render, or render after the
-producer's commit).
+The design options it named (chunked render, or render after the
+producer's commit) remain candidates for the status path.
 
 ### Phase 4c `test.sh` runs every `--suite` given ✓ SHIPPED 2026-10-06
 
