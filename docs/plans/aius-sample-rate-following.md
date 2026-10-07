@@ -43,8 +43,12 @@ replace wholesale on the next handover.
   confirmed (E2 deferred to the recommendation) except H4, H10 and H14,
   overturned; 4h is rewritten as filesystem-independent
   copy-before-write (backup holds the new bytes first, then the target;
-  mount restore through the existing loaders), `prebuild-review:
-  revised`, focused review pending. Implementation held by the owner.
+  mount restore through the existing loaders). The focused 4h review
+  (NOT READY: FR-B1, a restore's flush emptied the only good copy) is
+  folded: each entry tracks its safe copy and writes it last; saves
+  overwrite in place with sector 0 zeroed first and written last. Owner
+  scoped the rename-gap fix to settings files (2026-10-07). 4h closure
+  review pending. Implementation held by the owner.
 - **Board.** Runs `df966f17b370` (Phase 4a) in slot 1, deployed by OTA
   2026-10-06, healthy-boot self-commit. It is the owner's **fail-safe
   rollback candidate** (2026-10-07): tag `fw-rollback-df966f17b370`,
@@ -60,9 +64,8 @@ replace wholesale on the next handover.
   give each call its own line). Every device session (OTAs and
   source-off checks included) and anything destructive goes to the owner
   (ruling 2026-10-07).
-- **Next action.** A focused `opus` `reviewer` over the rewritten 4h
-  (and the 4b and 4e lines it touched); fold findings to READY; then
-  wait for the owner's "start" and dispatch 4e.
+- **Next action.** The focused 4h reviewer checks its FR items closed;
+  fold to READY; then wait for the owner's "start" and dispatch 4e.
 - **What landed this run** (aius commits; each followed by a upstream repository
   pointer bump; foreign commits from the mixer session omitted):
 
@@ -87,7 +90,8 @@ replace wholesale on the next handover.
 | `9c12136` | clean-room round 3 (HOLD, CR3-B1 to B4, CR3-S1 to S5) folded; isolation walk rewritten as W1 to W8; Phase 5 gains E15, F14, H16; E3, H4 corrected | prototype walk over the Oct 6 optical ELF: no forbidden symbol reached with declared targets; yaml parses |
 | `6c327f4` | round 3 closure (HOLD, CR4-B1 to B3, CR4-S1 to S4) folded; W5 (2) forward, per-row counts, relocation-based address-taken, chain stack bound; Phase 5 gains E16, E17, H17; H16 corrected | per-row prototype walk (`walk_cr4.py`): 447 nodes, 74 sites, 39 leaf pairs; yaml parses |
 | `e520fc4` | second closure READY (4b, 4e to 4h); CR5-S1 to S4 folded (dependency-file wording, libc row 77 nodes and 12 sites in 7 functions, SHF_ALLOC relocations, FAT serial stored at mount); `prebuild-review: ready` | yaml parses; figures from `walk7.txt`, `walk8.txt` |
-| this commit | owner answers Phase 5: confirmed (E2 deferred), H4/H10/H14 overturned; 4h rewritten as copy-before-write (journal, RECOVER, unlink patch, FAT-only gate removed; 3N+12 primitives, 84 for dsp.json); confirmations recorded per phase; Phase 5 deleted | yaml parses; citations checked by the reviser |
+| `a0dcb55` | owner answers Phase 5: confirmed (E2 deferred), H4/H10/H14 overturned; 4h rewritten as copy-before-write (journal, RECOVER, unlink patch, FAT-only gate removed); confirmations recorded per phase; Phase 5 deleted | yaml parses; citations checked by the reviser |
+| this commit | focused 4h review (NOT READY, FR-B1, FR-S1 to S13) folded: safe-copy ordering, in-place overwrite with sector 0 last, 3N+17 primitives (89, 90 epochs for dsp.json); owner scopes the rename-gap fix to settings files | 4h yaml parses; parser trailing-byte rejection checked in source |
 
 - **Uncommitted tree.** Clean after this commit. `firmware/sd/www/mixer.*`
   and `tools/aius_dsp_set.py` belong to another session (committed).
@@ -2113,7 +2117,7 @@ session. Decision to phase map:
 | A-DMA with a vendored SdFat; B2 only if the DMA device check fails | 4e |
 | HTTP best-effort, 503 shedding; lighter polling (compact editor status, meters 4 to 5 Hz, self-scheduled polls) | 4f |
 | PSRAM web cache on pad 2, CRC per 512 B chunk, SD fallback; gzip bundling with cache validation | 4g |
-| Write-behind flushing within seconds; Apply heard at PSRAM accept; pending writes held on a card swap; the rename-gap fix (copy-before-write saves since the owner's 2026-10-07 overturn) | 4h |
+| Write-behind flushing within seconds; Apply heard at PSRAM accept; pending writes held on a card swap; the rename-gap fix: 4h's copy-before-write covers the settings files (`dsp.json`, `config.json`, presets); sync uploads keep the gap, a re-sync restores them (owner, 2026-10-07) | 4h |
 | OTA excluded; replay out of scope | every phase (no proof claims either) |
 
 **Images and owner time.** 4e needs two OTAs (DMA runtime-armed, then
@@ -4668,7 +4672,7 @@ with 4h. Each item is followed by its resolution.
   only, so an HTTP SD request arriving while a 4h flush owns the volume
   still answers `503 sd_busy`, which a browser does not retry; on an
   8 MiB fitment (no cache) every page load is a card read. Resolved as
-  a residual risk in 4h, which owns the flush (Phase 5 H16); G9 is
+  a residual risk in 4h, which owns the flush; G9 is
   unchanged.
 
 **Clean-room round 3 closure (2026-10-07): HOLD** only via 4e's
@@ -4700,7 +4704,7 @@ phase: 4h
 title: Settings writes complete into PSRAM and reach the card within seconds
 status: planned
 depends-on: phase-4g
-prebuild-review: revised # copy-before-write replaces the journal per owner 2026-10-07; focused review pending (the journal design was READY at the clean-room round 3 second closure, 2026-10-07)
+prebuild-review: revised # copy-before-write replaces the journal per owner 2026-10-07; focused review 2026-10-07 NOT READY (FR-B1, FR-S1 to S13) folded; rename-gap scope answered by the owner (settings only); closure review pending
 outcome: >-
   Every write during live input (DSP Apply, public config, preset save,
   import and delete, card-sync uploads) answers once its bytes are in the
@@ -4723,37 +4727,42 @@ outcome: >-
   OTA activation, rehearsal and reboot answer 409 until the queue is
   drained, re-checked before the SD-writes freeze and again immediately
   before the one-way step, so a write accepted at any point before it is
-  never lost across the reset; and a settings save writes a full backup
-  copy before it rewrites the target in place, on FAT and exFAT alike,
-  so a power cut anywhere inside it leaves a target or a backup that
-  passes its validator, and the next mount restores `/aius/dsp.json` or
+  never lost across the reset; and a settings save writes two full
+  copies, target and fixed backup, each overwritten in place, writing
+  first whichever of the two is not the card's only known-valid copy,
+  on FAT and exFAT alike, so a power cut anywhere inside a save, a
+  restore's flush or a retry leaves a target or a backup that passes its
+  validator, and the next mount restores `/aius/dsp.json` or
   `/aius/config.json` from a valid backup when the target fails its own
   (H4, H10).
 unit: component-behind-interface
 seams:
-  - "firmware/lib/aius_sd_overlay (new, portable C): put (latest wins, versioned), tombstone, lookup for GET and listings, shadows(path) for the reload skip, flush scheduler (500 ms debounce, settings class (/aius/dsp.json, /aius/config.json, /www/presets/) before sync class, oldest first within a class, one file at a time), read-back verify, volume hold and discard, drain query, status; remount and volume-change invalidation and the post-mount refill act on clean entries only, so a dirty, flushing, held or tombstoned entry is never dropped or overwritten from a card file (H11); a settings-class entry flushes as one copy-before-write job with its fixed backup path (H4: /aius/.bak-dsp.json, /aius/.bak-config.json, /aius/.bak-preset-<name>.json; a preset name whose backup path would not fit AIUS_SD_PATH_STORAGE is refused at accept as an over-long target path is), and a settings tombstone as two DELETE jobs, the backup's first, so a cut between them leaves the target and no backup; sync-class entries keep today's REPLACE"
-  - "firmware/lib/aius_sd: a copy-before-write install mode (H4): the job writes the backup path in place (OPEN_WRITE_BEGIN, which opens O_RDWR | O_CREAT; TRUNCATE to 0; one WRITE per 512 B; CLOSE, which syncs), then the target path the same way, then one CACHE_DROP and the read-back of the target (OPEN_READ, FILE_SIZE, one READ per 512 B, CLOSE) CRC-checked against the bytes written; no temp file, no RENAME and no REMOVE in this mode; AIUS_SD_INSTALL_REPLACE and its two-rename install stay unchanged for the sync class and direct uploads; the BEGIN that opens every job carries the volume identity on its OK event (H3), which the payload rule (aius_sd.h:139-143) admits on BEGIN OK only, as it admits a filesystem on MEDIA_PRESENT only"
-  - "firmware/src/aius_sd_teensy.cpp aius_sd_teensy_execute BEGIN: the OK event on both the reused-mount return (aius_sd_teensy.cpp:207-212) and a successful mount (:216-222) carries the volume identity (the CID SdioCard keeps from mount, which readCID returns with no card command, plus 4e's FAT volume-serial accessor, which returns the serial the vendored FatPartition stored from the boot sector at mount, zero on a non-FAT volume, so the reused-mount return adds no card read; H3, CR5-S4), still one primitive per case. One new adapter case, one primitive run inside the windowed storage execute like every other: AIUS_SD_ACTION_CACHE_DROP (cacheClear() of whichever partition FsVolume mounted, FatPartition.h:95 or ExFatPartition.h:78 in the SdFat 2.1.2 the vendor snapshot copies, which syncs a dirty cached sector then drops it; issued before the read-back, H1, CR4-B2). BEGIN no longer carries a volume type: only the journal read it (H14 withdrawn)"
-  - "firmware/src/optical_main.cpp: app_store_dsp_config and app_store_public_config accept into the overlay (g_dsp_apply_pending and g_staged_generation at accept); platform_publish_config acknowledges without applying any path the overlay shadows (B6); 4g's remount and volume-change invalidation and refill routed through the overlay's clean-only rule (H11); the flush job in the SD checkpoint, started through 4f's sd_fifo_defer() and, when a 4g fill file is in flight, after web_cache_fill_cancel() stops it at its next primitive boundary (4g G9), calling web_cache_fill_hold_release() when that flush job ends (R5-S1); sd_settle_http_write no longer arms Apply; volume identity read from each BEGIN OK event, never from SD. or the card directly (the cache drop and identity read are adapter primitives, H17, CR4-B2); discard queues SD_STEP_LOAD_CONFIG for the inserted card; coalesced USAGE_REFRESH; the drain gate at the routes and again in service_ota_activation, service_ota_rehearsal and the g_reboot_requested service, each as the first step after the HTTP drain wait and before any one-way step (the recorder park, optical_main.cpp:9921 and :10077; the reset in service_reboot_request, :9850-9851), latching an SD-writes freeze (no SD job starts: an HTTP SD request answers 503 sd_busy; an in-flight 4g fill file is cancelled through web_cache_fill_cancel()) and waiting for any other in-flight SD job under the freeze's own ceiling, AIUS_SD_FREEZE_MS 2,000 ms from the latch (not the 500 ms AIUS_REBOOT_DRAIN_MS armed at the route's epoch, :9794, :9895); then, in the same call, the drain query again immediately before aius_recorder_bank_park (before reset_application in the reboot service), abandoning and unfreezing if a write was accepted during the wait (R4-B1); every unfreeze calls web_cache_fill_hold_release() (R5-S1); an abandoned activation calls ota_activation_recover() (optical_main.cpp:9885-9890), an abandoned rehearsal calls ota_rehearsal_finish() (:10006-10011) with a new distinct OTA_REHEARSAL_ABANDONED result (the OtaRehearsalResult enum, :4445-4449, and ota_rehearsal_result_name, :4749), so each clears its request and never re-runs, and an abandoned reboot clears g_reboot_requested (R5-S2); an activation or rehearsal abandoned on the drain sets OTA_ACTIVATION_FAULT_FLUSH_PENDING (activation_fault ota_flush_pending, beside the existing names at :4737-4746), one abandoned on the freeze ceiling sets OTA_ACTIVATION_FAULT_SD_BUSY (ota_sd_busy); a reboot whose freeze ceiling expires resets as today's ceiling does (the drain already passed, so no settings write is in flight); the accept and flush yield points in the producer-isolation yield-root table; the sd_flush status object (also in /api/status/brief); the mount restore (H10): a SD_STEP_LOAD_CONFIG or SD_STEP_LOAD_DSP that fails (open, size or read fault, or the parser refuses the bytes, optical_main.cpp:8195-8197, :8207-8209) on a path the overlay does not shadow is followed by a CONFIG_LOAD of that path's backup through the same platform_publish_config parse, which on a pass applies the bytes as the target's load would and puts them into the overlay as an accept for the target path, so the ordinary flush rewrites backup and target; sd_diag settings_restores and settings_restore_faults"
+  - "firmware/lib/aius_sd_overlay (new, portable C): put (latest wins, versioned), tombstone, lookup for GET and listings, shadows(path) for the reload skip, flush scheduler (500 ms debounce, settings class (/aius/dsp.json, /aius/config.json, /www/presets/) before sync class, oldest first within a class, one file at a time), read-back verify, volume hold and discard, drain query (true only when nothing is dirty, flushing, held or tombstoned, FR-S8), status; remount and volume-change invalidation and the post-mount refill act on clean entries only, so a dirty, flushing, held or tombstoned entry is never dropped or overwritten from a card file (H11); a settings-class entry flushes as one copy-before-write job with its fixed backup path (H4: /aius/.bak-dsp.json, /aius/.bak-config.json, /aius/.bak-preset-<name>.json; a preset name whose backup path would not fit AIUS_SD_PATH_STORAGE is refused at accept as an over-long target path is); each settings entry carries its safe copy (target or backup: the file the next job writes last, FR-B1): an accepted entry starts at target, a restore-created entry at backup; a pass whose CLOSE succeeds makes its file the safe copy, a passing read-back makes it target, a failed read-back makes it backup, a job failing mid-pass leaves it unchanged; a restore-created entry whose version is unchanged flushes target-only (its backup already holds those bytes); a flush pins its version at job start, both passes and the CRC use that version's buffer, which is released only at job end, and a put landing mid-job makes version N+1 and leaves the entry dirty (FR-S4); the input callback serves the pinned bytes at the NEED_INPUT offset (FR-S3); a settings tombstone flushes as two DELETE jobs, the backup's first, so a cut between them leaves the target and no backup, or as the target's DELETE alone when the backup path cannot be formed (a name predating 4h or written with a card reader, FR-S9); aius_sd_overlay_restore_decision(target_valid, backup_result) returns KEEP, RESTORE, FAULT or NOTHING (H10, FR-S5); sync-class entries keep today's REPLACE (owner scope, 2026-10-07)"
+  - "firmware/lib/aius_sd: a copy-before-write install mode (H4): the request names the backup path, the order (backup first, or target first when the safe copy is the backup) and whether the backup pass is skipped; the directory walk covers the paths the job writes, one EXISTS per path per directory as today's walk does (prepare_next_directory, aius_sd.c:696-724, does not dedupe; FR-S2); each pass overwrites its file in place, for a file of N > 1 sectors: OPEN_WRITE_BEGIN (O_RDWR | O_CREAT, position 0), a WRITE of a zero sector 0 the job fills itself (no NEED_INPUT), one WRITE per 512 B for sectors 1 to N - 1, TRUNCATE to the new length (frees any old tail and syncs), SEEK 0, the WRITE of the real sector 0, CLOSE, which syncs: N + 5 primitives; a one-sector file: OPEN_WRITE_BEGIN, WRITE, TRUNCATE to the length, CLOSE: 4 primitives (FR-S1); then one CACHE_DROP and the read-back of the target (OPEN_READ, FILE_SIZE, one READ per 512 B, CLOSE) CRC-checked against the bytes written; no temp file, no RENAME and no REMOVE in this mode; AIUS_SD_INSTALL_REPLACE and its two-rename install stay unchanged for the sync class and direct uploads; the BEGIN that opens every job carries the volume identity on its OK event (H3), which the payload rule (aius_sd.h:139-143) admits on BEGIN OK only, as it admits a filesystem on MEDIA_PRESENT only"
+  - "firmware/src/aius_sd_teensy.cpp aius_sd_teensy_execute BEGIN: the OK event on both the reused-mount return (aius_sd_teensy.cpp:207-212) and a successful mount (:216-222) carries the volume identity (the CID SdioCard keeps from mount, which readCID returns with no card command, plus 4e's FAT volume-serial accessor, which returns the serial the vendored FatPartition stored from the boot sector at mount, zero on a non-FAT volume, so the reused-mount return adds no card read; H3, CR5-S4), still one primitive per case. One new adapter case, one primitive run inside the windowed storage execute like every other: AIUS_SD_ACTION_CACHE_DROP (cacheClear() of whichever partition FsVolume mounted, FatPartition.h:95 or ExFatPartition.h:78 in the SdFat 2.1.2 the vendor snapshot copies, which syncs a dirty cached sector then drops it; issued before the read-back, H1, CR4-B2). TRUNCATE truncates to the action's offset (file.truncate(offset), which seeks there, frees the tail and syncs, FatFile.h:896-898 and FatFile.cpp:1288-1326; today's case passes 0u, aius_sd_teensy.cpp:313-324, and REPLACE's request carries offset 0, so its behaviour is unchanged; truncate_payload admits an offset as seek_payload does, FR-S1). BEGIN no longer carries a volume type: only the journal read it (H14 overturned and replaced by the filesystem-independence item)"
+  - "firmware/src/optical_main.cpp: app_store_dsp_config and app_store_public_config accept into the overlay (g_dsp_apply_pending and g_staged_generation at accept); platform_publish_config acknowledges without applying any path the overlay shadows (B6); 4g's remount and volume-change invalidation and refill routed through the overlay's clean-only rule (H11); the flush job in the SD checkpoint, started through 4f's sd_fifo_defer() and, when a 4g fill file is in flight, after web_cache_fill_cancel() stops it at its next primitive boundary (4g G9), calling web_cache_fill_hold_release() when that flush job ends (R5-S1); sd_settle_http_write no longer arms Apply; volume identity read from each BEGIN OK event, never from SD. or the card directly (the cache drop and identity read are adapter primitives, H1, H3, CR4-B2); discard queues SD_STEP_LOAD_CONFIG for the inserted card; coalesced USAGE_REFRESH; the drain gate at the routes and again in service_ota_activation, service_ota_rehearsal and the g_reboot_requested service, each as the first step after the HTTP drain wait and before any one-way step (the recorder park, optical_main.cpp:9921 and :10077; the reset in service_reboot_request, :9850-9851), latching an SD-writes freeze (no SD job starts: an HTTP SD request answers 503 sd_busy; an in-flight 4g fill file is cancelled through web_cache_fill_cancel()) and waiting for any other in-flight SD job under the freeze's own ceiling, AIUS_SD_FREEZE_MS 2,000 ms from the latch (not the 500 ms AIUS_REBOOT_DRAIN_MS armed at the route's epoch, :9794, :9895); then, in the same call, the drain query again immediately before aius_recorder_bank_park (before reset_application in the reboot service), abandoning and unfreezing if a write was accepted during the wait (R4-B1); every unfreeze calls web_cache_fill_hold_release() (R5-S1); an abandoned activation calls ota_activation_recover() (optical_main.cpp:9885-9890), an abandoned rehearsal calls ota_rehearsal_finish() (:10006-10011) with a new distinct OTA_REHEARSAL_ABANDONED result (the OtaRehearsalResult enum, :4445-4449, and ota_rehearsal_result_name, :4749), so each clears its request and never re-runs, and an abandoned reboot clears g_reboot_requested (R5-S2); an activation or rehearsal abandoned on the drain sets OTA_ACTIVATION_FAULT_FLUSH_PENDING (activation_fault ota_flush_pending, beside the existing names at :4737-4746), one abandoned on the freeze ceiling sets OTA_ACTIVATION_FAULT_SD_BUSY (ota_sd_busy); a reboot whose freeze ceiling expires resets as today's ceiling does (the drain already passed, so no settings write is in flight); the accept and flush yield points in the producer-isolation yield-root table; the sd_flush status object (also in /api/status/brief); the mount restore (H10): platform_publish_config records each load's parse verdict, since a refused parse still completes the job (optical_main.cpp:8194-8209); a SD_STEP_LOAD_CONFIG or SD_STEP_LOAD_DSP that fails (open, size or read fault, or the parser refuses the bytes) on a path the overlay does not shadow is followed by a new SD_STEP_RESTORE_CONFIG or SD_STEP_RESTORE_DSP, a CONFIG_LOAD of that path's backup whose platform_publish_config arm parses with its target's parser (the parser is picked from g_sd_step, :8194, :8200) into a local, checks the overlay's shadow on the target's path, and on a pass applies the bytes as the target's load would and puts them into the overlay as a restore-created accept for the target path (safe copy backup, so its flush writes the target only, FR-B1); the step handler acts on aius_sd_overlay_restore_decision; g_config_error_count advances once for the failed config.json target, as today (:8075 or :8197), and neither the restore nor a failed backup load advances it again (FR-S11); sd_diag settings_restores and settings_restore_faults"
+  - "firmware/src/aius_runtime_storage.cpp (FR-S3): a root input source registered beside the publish consumer; route_action's NEED_INPUT arm, for a root job (!authoritative, root_state RUNNING, aius_runtime_storage.cpp:239-241 returns today), calls it for the action's offset and length, passes the bytes to aius_sd_job_supply and steps the job once more in the same advance, which then emits the WRITE, so NEED_INPUT costs no epoch and no primitive and each advance still spends at most one primitive; the flush job's source is the overlay's pinned version, read once per pass"
   - "firmware/src/aius_optical_app.cpp dispatch_store, dispatch_sd_upload and sd_delete: 200 at accept, 503 sd_busy only when staging is full; POST /api/sd/pending/discard (authed); 409 sd_flush_pending on OTA activate, OTA rehearse and POST /api/reboot"
   - "firmware/lib/aius_http (route), firmware/sd/www/openapi.json, firmware/sd/www/dsp-editor.js (pending versus saved from sd_flush), firmware/tools/ota/aius_ota_flash.py (waits out 409 sd_flush_pending up to 30 s; after activate, reports activation_fault ota_flush_pending or ota_sd_busy as an abandoned activation, not a success)"
 targeted-proof:
-  - "host: sd-overlay (new): latest wins per path; a tombstone hides a file from GET and listings until flushed; a flush of version N with N+1 accepted flushes N+1 next; a settings entry flushes before an older sync entry; a read-back CRC mismatch retries, then counts a failure and keeps the entry dirty; a volume mismatch holds every entry and writes nothing; discard drops them; staging full answers busy; shadows(path) is true for dirty, flushing, held and tombstoned entries only; the drain query is true only when nothing is dirty, flushing or held; one USAGE_REFRESH per burst; POST /api/clear resets max_settings_latency_ms and sync_drain_ms; a preset PUT to /www/presets/<name>.json is settings class; a remount or volume change with a held dsp.json and a held preset drops and refills only clean entries, and a refill reading an older card file never replaces a dirty, flushing, held or tombstoned entry; a settings entry flushes as one copy-before-write job naming its fixed backup path (/aius/.bak-dsp.json, /aius/.bak-config.json, /aius/.bak-preset-<name>.json), a sync entry as today's REPLACE, and a settings tombstone as a DELETE of the backup and then of the target; a preset name whose backup path would not fit is refused at accept; the restore rule (H10): target valid keeps it and reads no backup; target present but invalid, or missing, with a valid backup restores the backup; target present but invalid with the backup missing or invalid keeps the target and counts a restore fault; target missing with no valid backup is the missing-file case and counts nothing; power-cut model (lib/aius_sd on the sd suite's fake card, with the dsp.json and config.json parsers): a cut before and after every primitive of a save, and inside each WRITE and CLOSE any prefix of the new sectors on the card, then the mount load and restore: the target ends valid with the old or the new bytes (a path's first save: missing or the new bytes), a restore never installs bytes older than the target's, and no case renames or removes a file"
-  - "host: sd: the copy-before-write mode issues, in order, BEGIN, the directory EXISTS walk, the backup's OPEN_WRITE_BEGIN, TRUNCATE, WRITEs and CLOSE, then the same four for the target, then exactly one CACHE_DROP and the target's read-back (OPEN_READ, FILE_SIZE, READs, CLOSE), and never a RENAME, a REMOVE or a temp path; a save of an N-sector file whose paths share one directory takes exactly 3N + 12 primitives, 84 for a 12,288 B dsp.json, the CACHE_DROP included (H4); a fault at any primitive fails the job with no RENAME or REMOVE issued; a read-back CRC mismatch fails the job; AIUS_SD_INSTALL_REPLACE's primitive sequence is unchanged; a BEGIN OK event carrying the identity fields is accepted, and any other event carrying them faults AIUS_SD_FAULT_PROTOCOL (CR4-B2, CR5-S4)"
-  - "host: sd-target: BEGIN's OK event carries the fake CID and volume serial (serial zero on a non-FAT fake) on the reused-mount and the fresh-mount paths, the reused-mount BEGIN's payload adds no card call and each case stays one primitive (test_source_guard.py and test_aius_sd_teensy.cpp updated; CR5-S4); CACHE_DROP calls the mounted partition's cacheClear once and nothing else, on a FAT and on an exFAT fake, and counts driver_faults only on a nonzero sdErrorCode (CR4-B2)"
+  - "host: sd-overlay (new): latest wins per path; a tombstone hides a file from GET and listings until flushed; a flush of version N with N+1 accepted flushes N+1 next; a settings entry flushes before an older sync entry; a read-back CRC mismatch retries, then counts a failure and keeps the entry dirty; a volume mismatch holds every entry and writes nothing; discard drops them; staging full answers busy; shadows(path) is true for dirty, flushing, held and tombstoned entries only; the drain query is true only when nothing is dirty, flushing, held or tombstoned (an unflushed preset delete keeps it false, FR-S8); one USAGE_REFRESH per burst; POST /api/clear resets max_settings_latency_ms and sync_drain_ms; a preset PUT to /www/presets/<name>.json is settings class; a remount or volume change with a held dsp.json and a held preset drops and refills only clean entries, and a refill reading an older card file never replaces a dirty, flushing, held or tombstoned entry; a settings entry flushes as one copy-before-write job naming its fixed backup path (/aius/.bak-dsp.json, /aius/.bak-config.json, /aius/.bak-preset-<name>.json), a sync entry as today's REPLACE, and a settings tombstone as a DELETE of the backup and then of the target, or the target's alone when the backup path cannot be formed (FR-S9); a preset name whose backup path would not fit is refused at accept; safe-copy order (FR-B1): an accepted entry's job is backup first, a restore-created entry's is target-only, a job failing after its first pass's CLOSE or at a failed read-back makes the retry write the other order, a card pull mid target pass held and returned makes the flush target first; version pin (FR-S4): a put landing mid-pass and one landing between the two passes leave both passes and the CRC on version N and the entry dirty with N+1; job-request cases (mode, order, skip-backup fields) are written after copy-before-write reports (FR-S7); aius_sd_overlay_restore_decision (H10, FR-S5, FR-S10): target valid gives KEEP (no backup read); target not valid with a backup that parses gives RESTORE; target not valid with a backup whose bytes reached the parser and were refused gives FAULT; target not valid with a backup load that failed before its bytes reached the parser (missing, empty, oversized, read fault) gives NOTHING; power-cut model (FR-S6; lib/aius_sd driving sd-overlay's own stateful fake card, firmware/test/sd-overlay/fake_card.c, with the dsp.json and config.json parsers; the card keeps files as sectors plus a size, lands a full-sector WRITE at once, and lands a partial last sector, the size and any allocation at the next sync, data before the directory entry, FatFile.cpp:1406-1458): starting from (target valid, backup valid), (target missing, backup missing), and (target torn, backup valid), a cut before and after every primitive of a save in each order, of a restore's target-only flush and of a retry after a failure in each pass, then the mount load and restore: after every cut the target or the backup passes its validator (from a missing pair: the target is missing or new), every file that passes holds a complete saved version, never a mix of two (the zero sector 0 makes a partly overwritten file fail, FR-S1), a restore installs the newest complete save on the card, and no case renames or removes a file"
+  - "host: sd: the copy-before-write mode issues, in order, BEGIN, the directory EXISTS walk (two EXISTS /aius for a full save, one for a target-only save, FR-S2), the first file's pass (OPEN_WRITE_BEGIN, the zero sector 0 WRITE, the WRITEs of sectors 1 to N - 1, TRUNCATE carrying the length, SEEK 0, the sector 0 WRITE, CLOSE), the second file's pass, then exactly one CACHE_DROP and the target's read-back (OPEN_READ, FILE_SIZE, READs, CLOSE), and never a RENAME, a REMOVE or a temp path; backup first and target first issue the same primitives with the passes swapped; a full save of an N-sector file (N > 1) whose paths share one directory takes exactly 3N + 17 primitives, 89 for a 12,288 B dsp.json, the CACHE_DROP included, a one-sector file 16, and a target-only save 2N + 11, 59 for dsp.json (H4); the zero sector 0 WRITE asks for no input; a fault at any primitive fails the job with no RENAME or REMOVE issued; a read-back CRC mismatch fails the job; AIUS_SD_INSTALL_REPLACE's primitive sequence is unchanged; a BEGIN OK event carrying the identity fields is accepted, and any other event carrying them faults AIUS_SD_FAULT_PROTOCOL (CR4-B2, CR5-S4)"
+  - "host: sd-target: BEGIN's OK event carries the fake CID and volume serial (serial zero on a non-FAT fake) on the reused-mount and the fresh-mount paths, the reused-mount BEGIN's payload adds no card call and each case stays one primitive (test_source_guard.py and test_aius_sd_teensy.cpp updated; CR5-S4); CACHE_DROP calls the mounted partition's cacheClear once and nothing else, on a FAT and on an exFAT fake, and counts driver_faults only on a nonzero sdErrorCode (CR4-B2); TRUNCATE carrying offset L calls the file's truncate(L) once, and offset 0 still truncates to 0 (FR-S1)"
+  - "host: runtime-target (FR-S3): a root copy-before-write job of a 24-sector file against the fakes takes 90 epochs (89 primitives plus the terminal COMPLETE advance), NEED_INPUT resolved by the root input source in the same advance, at most one primitive per advance, and both passes supplied from the same buffer; a root job with no input source registered fails at its first NEED_INPUT instead of stalling"
   - "host: optical-cutover (CR4-B2 part): optical_main.cpp names no cacheClear, readCID or volume-serial call (4e's SD-naming guard still holds with no new W2 row)"
-  - "host: optical-app: PUT /api/dsp/config answers 200 at accept and arms Apply; GET /sd/aius/dsp.json returns the accepted bytes before the flush; GET /api/dsp/config (serialised from the model, write_dsp_config) returns the new model once config_generation advances; a preset delete leaves the manifest listing at once; discard needs the token; OTA activate, OTA rehearse and POST /api/reboot answer 409 sd_flush_pending while anything is dirty, flushing or held; a PUT accepted after the route check makes service_ota_activation, service_ota_rehearsal and the reboot service refuse without resetting, before the recorder park (the recorder stays live) and with activation_fault ota_flush_pending set; once the first re-check passes, no SD job starts (an HTTP SD request answers 503 sd_busy), an in-flight fill file is cancelled at its next primitive and the direct-SD copy waits for any other in-flight SD job; a PUT /api/dsp/config accepted 200 during that wait makes the final re-check fail, so each service abandons before aius_recorder_bank_park (before the reset in the reboot service), unfreezes, sets ota_flush_pending, and the PUT then flushes and reads back from the card (R4-B1); an in-flight SD job outlasting AIUS_SD_FREEZE_MS abandons activation and rehearsal with ota_sd_busy and the recorder live, while the reboot service resets; an in-flight 4g fill file no longer abandons the activation (R4-S3); an activation and a rehearsal abandoned on the drain and on the freeze ceiling each leave their request cleared (the rehearsal's result OTA_REHEARSAL_ABANDONED), and with the service then called every epoch until the flush drains and after, neither re-runs, parks the recorder or resets (R5-S2); a flush start that cancels a fill file lets the next fill file start 2 s after that flush job ends with no HTTP SD job after it, and a freeze that cancels a fill and then abandons with ota_sd_busy lets it start 2 s after the unfreeze (R5-S1)"
-  - "host: optical-app (mount restore, H10): with /aius/dsp.json truncated mid-file and a valid backup, the mount's load fails, the backup load applies its model (config_generation advances once) and the flush rewrites target and backup, settings_restores 1; the same with /aius/config.json restores the public config instead of the defaults; a target present but invalid with an invalid backup keeps both files, leaves the active model (dsp.json) or the defaults with g_config_error_count advanced (config.json), and counts settings_restore_faults; a fresh card with neither file counts nothing; a path the overlay shadows is neither loaded nor restored"
+  - "host: optical-app: PUT /api/dsp/config answers 200 at accept and arms Apply; GET /sd/aius/dsp.json returns the accepted bytes before the flush; GET /api/dsp/config (serialised from the model, write_dsp_config) returns the new model once config_generation advances; a preset delete leaves the manifest listing at once; discard needs the token; OTA activate, OTA rehearse and POST /api/reboot answer 409 sd_flush_pending while anything is dirty, flushing, held or tombstoned (a preset delete accepted and not yet flushed included, FR-S8); a PUT accepted after the route check makes service_ota_activation, service_ota_rehearsal and the reboot service refuse without resetting, before the recorder park (the recorder stays live) and with activation_fault ota_flush_pending set; once the first re-check passes, no SD job starts (an HTTP SD request answers 503 sd_busy), an in-flight fill file is cancelled at its next primitive and the direct-SD copy waits for any other in-flight SD job; a PUT /api/dsp/config accepted 200 during that wait makes the final re-check fail, so each service abandons before aius_recorder_bank_park (before the reset in the reboot service), unfreezes, sets ota_flush_pending, and the PUT then flushes and reads back from the card (R4-B1); an in-flight SD job outlasting AIUS_SD_FREEZE_MS abandons activation and rehearsal with ota_sd_busy and the recorder live, while the reboot service resets; an in-flight 4g fill file no longer abandons the activation (R4-S3); an activation and a rehearsal abandoned on the drain and on the freeze ceiling each leave their request cleared (the rehearsal's result OTA_REHEARSAL_ABANDONED), and with the service then called every epoch until the flush drains and after, neither re-runs, parks the recorder or resets (R5-S2); a flush start that cancels a fill file lets the next fill file start 2 s after that flush job ends with no HTTP SD job after it, and a freeze that cancels a fill and then abandons with ota_sd_busy lets it start 2 s after the unfreeze (R5-S1)"
+  - "host: optical-app (mount restore, H10): with /aius/dsp.json truncated mid-file and a valid backup, the mount's load fails, the SD_STEP_RESTORE_DSP load applies its model (config_generation advances once) and the flush rewrites the target only, settings_restores 1; the same with /aius/config.json restores the public config instead of the defaults, with g_config_error_count advanced once (FR-S11); a target invalid with a backup that reaches the parser and is refused keeps both files, leaves the active model (dsp.json) or the defaults with g_config_error_count advanced once (config.json), and counts settings_restore_faults; a target invalid with no backup file counts nothing (FR-S10); a fresh card with neither file counts nothing; a path the overlay shadows is neither loaded nor restored, the restore step included"
   - "host: optical-cutover: platform_publish_config consults the overlay before writing g_config or g_pending_dsp_model; a shadowed path is acknowledged and not applied; the flush job start consults sd_fifo_defer() and calls web_cache_fill_cancel() when a fill file is in flight; in both OTA services the first drain re-check precedes the freeze latch and a second drain query is the statement immediately before aius_recorder_bank_park, with no epoch return between them; in the reboot service the second drain query immediately precedes tx_gate_actuate and reset_application (R4-B1)"
   - "host: ota (test_ota_flash_client.py: the 409 wait, and activation_fault ota_flush_pending and ota_sd_busy each reported as abandoned), http, status-body-bound (sd_flush; sd_diag settings_restores and settings_restore_faults), sd-editor (dsp-editor pending and saved states; openapi), stack-bound (accept and flush roots), producer-isolation (accept and flush roots in the yield-root table), runtime-target (aius_optical_app.cpp and aius_runtime_storage.cpp against the fakes), memory (OCRAM free unchanged; on the canonical image ITCM growth at most 1,000 B, DTCM statics growth at most 256 B), registry and itcm-placement green; both images build"
   - "device (owner, AC-3, sd_mode DMA asserted at start and end): one full sync with one Apply during it (its latency recorded, not bounded); once sd_flush.dirty is 0, POST /api/clear, then three Applies, two preset saves and one preset delete, each made only once sd_flush.dirty reads 0 after the previous one, so each is measured with no settings file queued ahead (H8, CR-S10): underrun_episode_count delta 0 throughout, sd_flush.max_settings_latency_ms at most 5,000, sd_flush.sync_drain_ms recorded, sd_flush.failures 0; once drained, and again after a reboot, GET /sd/aius/dsp.json and every saved preset (GET /sd/www/presets/...) equal their PUT bodies and /api/status shows the PUT public config (config.json has no read route)"
   - "device (owner's hands, source off, /api/status tx_gate.open 0): every Apply, save and discard below answered 200 at its first attempt, http_shed and sd_fifo_defers delta 0 (4f F11, CR-B1); card pulled, an Apply and a preset saved (held, sd_flush.held true); the same card reinserted: GET /api/dsp/config still the Apply's model and config_generation not advanced by the reload, the held preset (GET /sd/www/presets/...) still the saved body after the post-mount refill, then flushed and GET /sd/aius/dsp.json and the preset equal to their PUT bodies; sd_diag absent_mounts recorded and fault deltas taken outside the card-out intervals; pulled again, an Apply and a preset saved, a different card inserted: nothing written to it and the running model still the Apply's; discard: dropped, the inserted card's dsp.json applied and its files serve"
 contract-artifact: spec-only
-fan-out: # sd-overlay, copy-before-write, ota-tool and ui-pending concurrently; parent-wiring after sd-overlay's header lands; sd-overlay's power-cut model case after copy-before-write reports
+fan-out: # sd-overlay, copy-before-write, ota-tool and ui-pending concurrently; parent-wiring after sd-overlay's header lands; sd-overlay's job-request cases and power-cut model cases after copy-before-write reports (FR-S7)
   - name: sd-overlay
     owned-paths:
       - firmware/lib/aius_sd_overlay/**
-      - firmware/test/sd-overlay/** # the power-cut model links lib/aius_sd and reads firmware/test/sd's fake card without editing it
+      - firmware/test/sd-overlay/** # FR-S6: sd-overlay builds the stateful fake card here (fake_card.c); the power-cut model links lib/aius_sd and drives it; firmware/test/sd is a scripted event oracle with no card state
+    handoff: parent-wiring adds the sd-overlay arm to firmware/scripts/test.sh and its registry entry, which it owns (FR-S6)
   - name: copy-before-write
     owned-paths:
       - firmware/lib/aius_sd/**
@@ -4772,7 +4781,7 @@ fan-out: # sd-overlay, copy-before-write, ota-tool and ui-pending concurrently; 
       - firmware/sd/www/dsp-editor.js
       - test/sd-editor/dsp-editor.test.js
       - test/sd-editor/fixtures/** # CR-S11: the sd_flush brief fixtures; parent-wiring's openapi.test.js only reads them
-  - name: parent-wiring # store accept, reload skip, flush job, volume identity, drain gates, discard route, status keys
+  - name: parent-wiring # store accept, reload skip, flush job, root input source, restore steps, volume identity, drain gates, discard route, status keys, the sd-overlay test.sh arm
     owned-paths:
       - firmware/src/optical_main.cpp
       - firmware/src/aius_optical_app.cpp
@@ -4802,6 +4811,13 @@ commit-checkpoint:
   coordination: owned-path sets are disjoint (aius_sd_teensy.cpp and .h, sd-target and fake-fidelity are copy-before-write's alone; runtime-target is parent-wiring's, edited for the new adapter case only after copy-before-write's report; 4h no longer edits firmware/vendor/SdFat/** or firmware/test/sdfat-vendor/**, which stay 4e's)
 ```
 
+- **Rename-gap scope (owner, 2026-10-07): settings files only.**
+  Copy-before-write covers `/aius/dsp.json`, `/aius/config.json` and
+  presets; card-sync and direct uploads keep today's two-rename REPLACE,
+  so a cut between a sync upload's renames can leave that
+  `firmware/sd/www/` file missing until the next sync, which restores
+  it. This narrows 4b's "fix the rename gap" to the settings class.
+
 **Owner overturn (2026-10-07).** The install journal, RECOVER and the
 FAT-only gate are withdrawn: H4, H10 and H14 overturned, H15 withdrawn
 with them. Owner: "journal sounds over complicated for a rare edge case
@@ -4811,8 +4827,10 @@ full backup copy, then rewrites the target in place, and the next mount
 restores a target that fails its validator from a backup that passes
 (H4, H10); a power cut may lose the save in progress. No rename runs
 and no file that could share a cluster chain is removed, so round 2
-S17's cross-link hazard cannot arise, and nothing rests on FAT rename
-semantics, so FAT and exFAT behave alike (H14). Removed with the
+S17's rename-specific cross-link cannot arise; the general SdFat sync
+exposure stays, narrowed by the in-place overwrite (residual risks,
+FR-S1). Nothing rests on FAT rename semantics, so FAT and exFAT behave
+alike (H14). Removed with the
 journal: the journal file and its records, RECOVER, the vendored SdFat
 unlink-entry patch and its `PATCHED_SHA256` update, the UNLINK_ENTRY
 and FIRST_CLUSTER adapter cases, BEGIN's volume-type payload and the
@@ -4846,7 +4864,7 @@ tombstone, with the same per-chunk CRC.
   drops the cached sector),
   so a partial last sector is read from the card, not from SdFat's
   `FsCache`, and the sync's write runs inside the windowed storage
-  execute (H17, CR4-B2).
+  execute (CR4-B2).
 - **H2, sync uploads.** PUT bodies stream into PSRAM staging and are
   pointer-swapped into the entry at the end of the body; staging full
   answers `503 sd_busy` with `Retry-After` (`aius-sd-sync.sh` honours it
@@ -4857,63 +4875,121 @@ tombstone, with the same per-chunk CRC.
   the FAT volume serial (4e's vendor accessor; `FatPartition` keeps no
   serial, so the vendored patch stores it from the boot sector at
   mount, CR5-S4), taken at each mount and carried on the BEGIN OK event
-  by the adapter with no card read on a reused mount (H17), so a
+  by the adapter with no card read on a reused mount (CR4-B2), so a
   reformatted card is a different volume. On exFAT the serial accessor
   returns zero, so identity is the CID alone and a reformat of the same
   card to exFAT is not told apart. While held, accepted contents
   keep serving (the board's settings stay the owner's latest); discard
   reverts to the inserted card's files.
 - **H4, copy-before-write save (owner overturn 2026-10-07).** A
-  settings flush is one job: write the backup in place
-  (`OPEN_WRITE_BEGIN`, `O_RDWR | O_CREAT` per the framework `SD.h:184`;
-  `TRUNCATE` to 0; one `WRITE` per 512 B; `CLOSE`, which syncs), then
-  the target the same way, then CACHE_DROP and the read-back (H1). Each
-  target has one fixed backup in `/aius`: `/aius/.bak-dsp.json`,
-  `/aius/.bak-config.json`, `/aius/.bak-preset-<name>.json`. One
-  directory, so the two `/aius` files add no EXISTS to the walk; outside
+  settings flush is one job of two passes, one per file, then
+  CACHE_DROP and the read-back of the target (H1). A pass overwrites its
+  file in place: `OPEN_WRITE_BEGIN` (`O_RDWR | O_CREAT` per the
+  framework `SD.h:184`, position 0), a `WRITE` of a zero sector 0,
+  one `WRITE` per 512 B for sectors 1 to N - 1, `TRUNCATE` to the new
+  length (seeks there, frees any old tail and syncs: `FatFile.h:896-898`,
+  `FatFile.cpp:1288-1326`; `ExFatFileWrite.cpp:549-602` likewise),
+  `SEEK` 0, the `WRITE` of the real sector 0, and `CLOSE`, which syncs;
+  a one-sector file (every `config.json`, at most 256 B) is
+  `OPEN_WRITE_BEGIN`, `WRITE`, `TRUNCATE`, `CLOSE`. Each target has one
+  fixed backup in `/aius`: `/aius/.bak-dsp.json`,
+  `/aius/.bak-config.json`, `/aius/.bak-preset-<name>.json`; outside
   `/www`, so 4g's fill and the editor's preset listing never see them;
   and distinct from today's per-upload `/aius/.backup-<id>-<seq>.bak`
   (`firmware/src/aius_optical_app.cpp:356`), which says nothing about
   its target. A settings delete removes the backup, then the target, so
-  a cut between leaves the target and no backup. Cost: 3N + 12
-  primitives for N sectors (BEGIN, one EXISTS, two passes of N + 3
-  writes, CACHE_DROP, an N + 3 read-back), 84 for a 12,288 B `dsp.json`,
-  about 0.73 s at one per epoch at 115 epochs/s (4e §Epoch period), off
-  the response path under write-behind. With the 500 ms debounce and the
-  1 s start window that is about 2.2 s, inside H8's 5 s bound (the
-  journal's was 92 and 2.3 s); the sd suite pins the count. Under
-  playback nested passes lower the epoch rate, so the 0.73 s and the
-  2.2 s are re-derived from 4e run 2's measured playback rate before the
-  4h device run, and the 5 s bound is re-checked against them (R4-N2).
+  a cut between leaves the target and no backup; a tombstone whose
+  backup path cannot be formed deletes the target alone (FR-S9).
+  **Order (FR-B1).** Each settings entry carries its safe copy, the
+  file the job writes last: target for an accepted entry, backup for a
+  restore-created one. A pass whose `CLOSE` succeeds makes its file the
+  safe copy (it now holds the pinned version complete), a passing
+  read-back makes it the target, a failed read-back the backup (both
+  passes ran by then), and a job that fails mid-pass leaves it
+  unchanged. So a save normally runs backup first; it runs target first
+  after a job failed past its first pass's `CLOSE` or at the read-back,
+  or after a card pull mid target pass (the held entry keeps its safe
+  copy across the swap, and a shadowed path is not reloaded); and a
+  restore-created entry whose version is unchanged writes the target
+  only, since its backup already holds those bytes. The safe copy lives
+  in PSRAM; after a power cut the mount load re-derives it (a target
+  that validates is safe, a restore makes the backup safe). Why: the
+  journal-free design held only from a valid target; a flush that began
+  with the target torn and the backup the only good copy (the restore's
+  own flush, a retry, a returned card) zeroed the backup first, and a
+  cut there left neither file valid.
+  **Version pin (FR-S4).** A flush pins the entry's version at job start;
+  both passes and the CRC read that version's buffer, released only at
+  job end; a put landing mid-job makes version N + 1 and leaves the
+  entry dirty. The root job's bytes come from a root input source in
+  `aius_runtime_storage.cpp` that answers each `NEED_INPUT` from the
+  pinned buffer within the same advance (FR-S3).
+  **Cost.** The walk runs one `EXISTS /aius` per path, as
+  `prepare_next_directory` does today (`aius_sd.c:696-724`, no dedupe,
+  FR-S2). A full save of an N-sector file is 3N + 17 primitives (BEGIN,
+  two EXISTS, two passes of N + 5, CACHE_DROP, an N + 3 read-back): 89
+  for a 12,288 B `dsp.json`, 90 epochs with the terminal COMPLETE
+  advance and no epoch for `NEED_INPUT`, about 0.78 s at 115 epochs/s
+  (4e §Epoch period), off the response path under write-behind; a
+  one-sector `config.json` save is 16; a restore's target-only flush is
+  2N + 11, 59 for `dsp.json`. With the 500 ms debounce and the 1 s start
+  window a `dsp.json` save lands in about 2.3 s, inside H8's 5 s bound;
+  the sd and runtime-target suites pin the counts. Under playback nested
+  passes lower the epoch rate, so the 0.78 s and the 2.3 s are
+  re-derived from 4e run 2's measured playback rate before the 4h device
+  run, and the 5 s bound is re-checked against them (R4-N2).
   Autonomous calls in this rewrite, each with its why:
-  - **The backup holds the new bytes, written first, not a copy of the
-    card's old target.** The same N writes, with no N reads of the old
-    file; no dependence on the old target being valid (a torn preset,
-    which has no mount restore, would otherwise be copied over its good
-    backup); and the backup is never older than the target, so a
-    restore cannot roll a file back, and a cut during the target write
-    restores the new save. A cut during the backup write leaves the old
-    target, which validates: the latest save is lost, as the owner
-    accepted. Alternative: read the card's target into the backup first
+  - **The backup holds the new bytes, not a copy of the card's old
+    target.** The same N writes, with no N reads of the old file; no
+    dependence on the old target being valid (a torn preset, which has
+    no mount restore, would otherwise be copied over its good backup);
+    and whenever the target fails, the backup holds the newest complete
+    save on the card, so a restore cannot roll a file back, and a cut
+    during a backup-first save's target write restores the new save. A
+    cut during its backup write leaves the old target, which validates:
+    the latest save is lost, as the owner accepted. Alternative: read the card's target into the backup first
     (the orchestrator's first wording); reversing: the backup pass reads
     the target instead of the PSRAM entry, plus a validity check before
     it overwrites a good backup.
-  - **Truncate, then write.** The adapter's TRUNCATE already cuts to 0
-    with no length payload (`firmware/src/aius_sd_teensy.cpp:313-324`),
-    and today's REPLACE opens, truncates and writes its temp the same
-    way (`firmware/lib/aius_sd/src/aius_sd.c:944-976`), so no new action
-    is needed. A cut leaves a strict prefix of the new bytes, which the
-    JSON validators reject; write-then-truncate would need a length
-    payload and leaves the old file's tail after the new bytes until the
-    truncate lands.
-  - **Settings class only.** Sync and direct uploads keep today's
-    two-rename REPLACE and its rename gap: their source is the host's
-    `firmware/sd/www/`, a re-sync restores them, they have no validator
-    to restore against, and doubling a 600 KB sync's writes buys
-    nothing.
+  - **Overwrite in place, sector 0 zeroed first and written last
+    (FR-S1, orchestrator 2026-10-07).** Truncate-first freed and
+    reallocated the file's clusters on every save, so a cut inside a
+    `CLOSE` that wrote the directory entry before the FAT sector
+    (`FatPartition.h:250-252`) could leave a cluster the next save's
+    other pass reallocates; in place, a save allocates or frees a
+    cluster only when the file's cluster count changes. The `TRUNCATE`
+    gains a length (the action's offset; REPLACE passes 0, so its
+    behaviour is unchanged). Why the zero sector: the validators alone
+    do not reject every partly overwritten file. Both parsers reject
+    trailing bytes (`aius_dsp_config.c:1052-1054`, `aius_config.c:254`),
+    so new bytes over a longer old tail fail; but SdFat writes each full
+    512 B sector straight to the card (`FatFile.cpp:1451-1458`), so a cut
+    after sector k of an equal-length `dsp.json` (up to 24 sectors) can
+    leave new sectors before it and old sectors after it, which parses
+    whenever the edits on both sides keep their lengths (two EQ gains
+    changed, say): a model that was never saved. With sector 0 zeroed
+    first (a zero byte fails both parsers at the opening brace and the
+    editor's `JSON.parse`), the tail and the length synced by `TRUNCATE`,
+    and the real sector 0 written last, a cut leaves the old file, a
+    file that fails, or the new file. A one-sector file needs no zero
+    sector: its sector lands whole at the sync, before the directory
+    entry, and a length mismatch leaves a strict prefix or trailing old
+    bytes, which fail. Cost: two primitives per pass (N + 5 against
+    N + 3). Alternative: a length and CRC record per file (a sidecar or
+    a trailer the parsers skip), which costs a format change or a read
+    at every mount; reversing: drop the zero sector and the `SEEK`, and
+    validate against the record.
+  - **Settings class only, confirmed by the owner (FR-S13).** Sync and direct
+    uploads keep today's two-rename REPLACE and its rename gap: their
+    source is the host's `firmware/sd/www/`, a re-sync restores them,
+    they have no validator to restore against, and doubling a 600 KB
+    sync's writes buys little. This narrows the owner's 4b "fix the
+    rename gap"; the owner chose it on 2026-10-07 (scope line above).
 - **H5, OTA.** Activate and rehearse refuse with `409 sd_flush_pending`
-  while anything is dirty, flushing or held (a held entry needs the card
-  back or a discard first); the flash tool waits up to 30 s for the drain.
+  while anything is dirty, flushing, held or tombstoned (a held entry
+  needs the card back or a discard first; an unflushed delete would
+  otherwise let the preset return after the reset, FR-S8); the flash
+  tool waits up to 30 s for the drain.
   H9 adds the re-check and the reboot gate.
 - **H6, no more BUSY.** Settings PUTs no longer refuse on
   `sd_job_active()`; the overlay accepts while a job runs.
@@ -4950,7 +5026,7 @@ tombstone, with the same per-chunk CRC.
   sync waits at most the one in-flight file (recorded, not bounded).
   Flushes run one file per job, so a settings write with k other
   settings files queued ahead waits about k save durations more
-  (about 0.73 s each at 115 epochs/s, H4, longer under playback); that is
+  (about 0.78 s each at 115 epochs/s, H4, longer under playback); that is
   recorded, not bounded, and the device step spaces its writes so each
   is measured alone (CR-S10). `sync_drain_ms` records the burst.
 - **H9, the drain is checked where the reset is taken (S16).** The 409 at
@@ -5012,20 +5088,35 @@ tombstone, with the same per-chunk CRC.
   (`firmware/src/optical_main.cpp:8194-8209`), each within its publish
   capacity (a missing, empty or oversized file fails the load,
   `:8064-8076`). When a load fails (missing, empty, oversized, a read
-  fault or a parse refusal) on a path the overlay does not shadow (H7),
-  a CONFIG_LOAD of its backup runs through the same parse; a pass
-  applies it as the target's load would and puts the bytes into the
-  overlay as an accept for the target path, so the ordinary flush
-  rewrites backup and target and reads back, and
-  `sd_diag.settings_restores` counts it. A backup missing or failing the
-  same parse keeps the target as found (config.json takes the defaults
-  and counts `g_config_error_count`, dsp.json leaves the active model,
-  both as today) and counts `sd_diag.settings_restore_faults` when the
-  target was present; a missing target with no valid backup is today's
-  missing-file case and counts nothing. A restore after a read fault on
-  a good target does no harm: the backup is never older than the target
-  (H4). Cost: nothing when the target validates; a backup load (N + 4)
-  and one save (3N + 12) when it restores. A file deleted with a card
+  fault or a parse refusal; `platform_publish_config` records the parse
+  verdict, since a refused parse still completes the job) on a path the
+  overlay does not shadow (H7), a new step, `SD_STEP_RESTORE_CONFIG` or
+  `SD_STEP_RESTORE_DSP`, runs a CONFIG_LOAD of its backup; its
+  `platform_publish_config` arm parses with the target's parser into a
+  local (the parser is picked from `g_sd_step`, `:8194`, `:8200`) and
+  checks the shadow on the target's path (FR-S11). The step acts on the
+  portable `aius_sd_overlay_restore_decision(target_valid,
+  backup_result)` (FR-S5), so the host suite tests the rule
+  `optical_main.cpp` runs: target valid, KEEP (no backup read); a backup
+  that parses, RESTORE: the bytes apply as the target's load would and
+  enter the overlay as a restore-created accept for the target path, so
+  the flush writes the target only and reads back (H4), and
+  `sd_diag.settings_restores` counts it; a backup whose bytes reached the
+  parser and were refused, FAULT: the target stays as found (config.json
+  on the defaults, dsp.json on the active model, both as today) and
+  `sd_diag.settings_restore_faults` counts it; a backup load that failed
+  before its bytes reached the parser (missing, empty, oversized, read
+  fault), NOTHING, today's missing-file case. Presence is the backup's
+  bytes reaching the parser, since a missing file and an I/O fault both
+  fail `OPEN_READ` as a driver fault (`aius_sd_teensy.cpp:276-277`) and
+  the job result names no failing action (FR-S10). `g_config_error_count`
+  advances once for a failed config.json target (`:8075` or `:8197`), as
+  today; neither a restore nor a failed backup load advances it again. A
+  restore after a read fault on a good target does no harm: whenever the
+  target fails, the backup holds the newest complete save on the card
+  (H4), with the two exceptions in the residual risks (FR-S12). Cost:
+  nothing when the target validates; a backup load (N + 4) and a
+  target-only save (2N + 11) when it restores. A file deleted with a card
   reader comes back from its backup at the next mount unless the backup
   is deleted too. Autonomous call: presets get no mount restore. The
   firmware has no preset loader or validator, and the engine has no
@@ -5063,16 +5154,35 @@ device power-cut test is planned. A cut during a save's backup write
 loses that save (the old target stays and validates); a cut during its
 target write is restored at the next mount, for `dsp.json` and
 `config.json` only. A torn preset is not restored automatically: its
-backup holds the save for a manual restore (H10). A target and backup
-that both fail their validator keep the target as found and count
-`sd_diag.settings_restore_faults`; config.json then runs on defaults
-and dsp.json on the boot model, as with a missing file today. A cut
-inside any SdFat sync can still leave lost clusters, or a directory
-entry on clusters the FAT shows free, since SdFat writes the directory
-sector before the FAT sector (`FatPartition::cacheSync`,
-`FatPartition.h:250-252` in SdFat 2.1.2); every card write carries that
-exposure today and no check-disk runs. Sync-class files keep today's
-rename gap; a re-sync restores them (H4). In FIFO mode
+backup holds the save for a manual restore (H10); presets get no mount
+validation, so a preset already torn by an earlier cut starts its next
+save backup first, and a cut in that backup pass leaves neither file
+valid (FR-B1, low stakes). A target and backup that both fail their
+validator keep the target as found and count
+`sd_diag.settings_restore_faults` when the backup's bytes reached the
+parser; config.json then runs on defaults and dsp.json on the boot
+model, as with a missing file today. A cut inside any SdFat sync can
+still leave lost clusters, or a directory entry on clusters the FAT
+shows free, since SdFat writes the directory sector before the FAT
+sector (`FatPartition::cacheSync`, `FatPartition.h:250-252` in SdFat
+2.1.2, with the separate FAT cache on ARM); a later allocation by any
+file can then take that cluster, so two files share sectors (a
+cross-link), and no check-disk runs. Every card write carries that
+exposure today. The in-place overwrite narrows it for settings: a save
+allocates or frees a cluster only when the file's cluster count changes
+(a path's first save, its backup's first save, or a length crossing a
+cluster boundary; on cards formatted with clusters of 16 KiB or more a
+`dsp.json` of at most 12,288 B never crosses one), but a cut in such a
+save can still leave the target or backup on a cluster the FAT shows
+free, and a later save of the other file, a sync upload or a recording
+can be given it (FR-S1). The backup assumes only firmware writes these
+files (FR-S12): a `config.json` or `dsp.json` hand-edited in a card
+reader that fails its parser is replaced at the next mount by the older
+backup, and after a discard of an entry held by a card pull past its
+backup pass's `CLOSE`, the backup holds the discarded write, so a later
+mount whose target fails restores it. Sync-class files keep today's
+rename gap; a re-sync restores them (H4; owner scope 2026-10-07). In
+FIFO mode
 during live input settings stay in PSRAM until live input stops owning
 the ring (4f F9, F11), so a power cut in that window loses them, and OTA
 and reboot answer 409 until then. An HTTP SD request (a page miss, a
@@ -5081,11 +5191,12 @@ arriving while a flush job owns the volume answers `503 sd_busy`, as
 when any job owns it; a browser page load does not retry, so its
 resource fails. A flush starts 0.5 to 1.5 s after a settings accept
 (H1's 500 ms debounce, then a start within 1 s) and holds the volume
-for about one save (about 0.73 s at 115 epochs/s, H4, longer in
-playback), so a page load from about 0.5 s to 2.2 s or more after an
+for about one save (about 0.78 s at 115 epochs/s, H4, longer in
+playback), so a page load from about 0.5 s to 2.3 s or more after an
 Apply or save is exposed; a warm cache serves pages without the card,
 but an 8 MiB fitment has no cache, so there every page load is exposed
-in that window (CR3-S3, H16 corrected).
+in that window (CR3-S3, with the window as corrected at the clean-room
+round 3 closure).
 
 **Prebuild review round 2 (2026-10-07, `reviewer` `opus`): NOT READY.**
 
@@ -5400,6 +5511,59 @@ resolution.
 - **CR5-S1 to S3 (4h part, from 4e).** Resolved in 4e (link half
   include check, libc row figures, `SHF_ALLOC` relocations); nothing
   changes here.
+
+**Focused review (2026-10-07): NOT READY** (FR-B1) on the
+copy-before-write design. Interplay with H7, H9 and H11 confirmed
+holding. Each item is followed by its resolution; orchestrator
+decisions, 2026-10-07.
+
+- **FR-B1 (blocker).** Every flush wrote the backup first even with the
+  target torn and the backup the only good copy (the restore's own
+  flush, a retry after a target-pass failure, a card pulled mid target
+  pass and returned), so a cut in that backup pass left neither file
+  valid. Resolved as the reviewer proposed: a per-entry safe copy, the
+  target written first when it is not known valid, a restore-created
+  entry writing the target only; H4 Order, overlay seam, sd-overlay
+  cases and power-cut model cases from (target torn, backup valid)
+  around every primitive of a restore's flush and of a retry.
+- **FR-S1.** Truncate-first freed and reallocated clusters each save,
+  and the cross-link claim was too strong. Resolved: overwrite in place
+  with sector 0 zeroed first and written last, `TRUNCATE` to the new
+  length; the parsers reject trailing bytes but not an equal-length
+  splice, hence the zero sector; N + 5 per pass; residual risks state
+  the narrowed cross-link exposure; the owner-overturn line corrected.
+- **FR-S2.** The walk does not dedupe. Resolved: re-pinned to two
+  EXISTS, 3N + 17 (89).
+- **FR-S3.** A root job had no input path. Resolved: a root input source
+  in `aius_runtime_storage.cpp` answers `NEED_INPUT` in the same advance;
+  90 epochs per `dsp.json` save, pinned by runtime-target.
+- **FR-S4.** Resolved: version pinned at job start for both passes and
+  the CRC; sd-overlay cases for a put mid-pass and between passes.
+- **FR-S5.** Resolved: `aius_sd_overlay_restore_decision` in the
+  portable overlay, called by `optical_main.cpp`.
+- **FR-S6.** Resolved: sd-overlay builds the stateful fake card in its
+  own test directory; parent-wiring adds the `test.sh` arm.
+- **FR-S7.** Resolved: sd-overlay's job-request cases follow
+  copy-before-write's report (fan-out comment).
+- **FR-S8.** Resolved: tombstoned joins the drain query, H5 and the
+  drain proofs.
+- **FR-S9.** Resolved: a tombstone whose backup path cannot be formed
+  deletes the target alone.
+- **FR-S10.** Resolved: a restore fault counts on a backup whose bytes
+  reached the parser and were refused; a failed backup load is the
+  missing case.
+- **FR-S11.** Resolved: `SD_STEP_RESTORE_CONFIG` and
+  `SD_STEP_RESTORE_DSP` with the target's parser and shadow check;
+  `g_config_error_count` advances once for the failed target.
+- **FR-S12.** Resolved: the hand-edit and discard exceptions are
+  residual risks.
+- **FR-S13 (owner scope).** Resolved by the owner 2026-10-07: settings
+  files only (scope line at the head of this phase); the 4b row says
+  what 4h covers.
+- **Stale references.** Resolved: the adapter seam's H14 wording; H16
+  and H17 citations replaced by the items the owner confirmation maps
+  them to (H1, H3, CR4-B2, the residual risks); the 4b row. History
+  blocks left as written.
 
 ### Phase 4c `test.sh` runs every `--suite` given ✓ SHIPPED 2026-10-06
 
