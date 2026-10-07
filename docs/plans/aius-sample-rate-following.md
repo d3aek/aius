@@ -37,7 +37,9 @@ replace wholesale on the next handover.
   prebuild rounds 2 to 5 and a clean-room round (HOLD: CR-B1 margin
   without a live source, CR-B2 window storage, CR-B3 stdio yield;
   CR-S1 to S12; all folded into each clean-room block); clean-room
-  closure pending; implementation held by the owner. Phase 5 (confirm
+  closure HOLD on CR2-B1 (E-AC-3 log shim under the isolation walk) and
+  CR2-S1, both folded; 4f, 4g, 4h READY on their own contracts; a fresh
+  clean-room confirmation pending; implementation held by the owner. Phase 5 (confirm
   autonomous calls) holds E1 to E14, F1 to F13, G1 to G4, G6 to G10, H1
   to H4, H7 to H15 (H5 folded into H9; G5 and H6 follow from owner
   rulings).
@@ -54,9 +56,8 @@ replace wholesale on the next handover.
   calls wanting confirmation in Phase 5. Every device session (OTAs and
   source-off checks included) and anything destructive goes to the owner
   (ruling 2026-10-07).
-- **Next action.** The clean-room reviewer checks its CR items closed
-  (and `## Acceptance` for wording the revision made stale); fold any
-  finding; then one fresh clean-room confirmation. Then put the
+- **Next action.** One fresh clean-room `opus` `reviewer` confirms 4b and
+  4e to 4h READY; fold any finding. Then put the
   Phase 5 confirmations to the owner (deferred until the contracts
   settle) and wait for "start".
 - **What landed this run** (aius commits; each followed by a upstream repository
@@ -78,7 +79,8 @@ replace wholesale on the next handover.
 | `881f57a` | prebuild round 3 (NOT READY) folded and resolved; Phase 5 gains G3, E10, E11, F7, F8 and nine corrections | reviewer citations checked against source by the reviser |
 | `17e0474` | prebuild round 4 (closure; 4f READY) folded and resolved; Phase 5 gains E12, F9, F10, G9, H12, H13 | reviser checked citations against source |
 | `e54ee82` | prebuild round 5 (closure, no blocker; 4f, 4g READY) written in: R4-N1 to N3, R5-S1 to S3; Phase 5 gains E13 | reviser checked citations against source |
-| this commit | clean-room round (HOLD, CR-B1 to B3, CR-S1 to S12) folded; Phase 5 gains E14, F11 to F13, G10, H14, H15 and four corrections | edited yaml blocks parse; citations checked by the reviser |
+| `6e4eff8` | clean-room round (HOLD, CR-B1 to B3, CR-S1 to S12) folded; Phase 5 gains E14, F11 to F13, G10, H14, H15 and four corrections | edited yaml blocks parse; citations checked by the reviser |
+| this commit | clean-room closure (HOLD, CR2-B1 E-AC-3 log compiled out, CR2-S1 FAT check from the job's own BEGIN) folded; E14, H14 amended | all yaml blocks parse; citations checked by the reviser |
 
 - **Uncommitted tree.** Clean after this commit. `firmware/sd/www/mixer.*`
   and `tools/aius_dsp_set.py` belong to another session (committed).
@@ -2723,7 +2725,7 @@ phase: 4e
 title: Every SD-card wait and checkpoint boundary runs pending live-input production
 status: planned
 depends-on: phase-4 (device session done 2026-10-07)
-prebuild-review: clean-room-folded # 2026-10-07: rounds 2 to 4 NOT READY and folded; round 5 closure found no blocker, its R4-N1 to N3 and R5-S1 to S3 written in; clean-room confirmation NOT READY (CR-B3; CR-S1, CR-S9, CR-S12) folded below; clean-room re-confirmation pending
+prebuild-review: clean-room-folded # 2026-10-07: rounds 2 to 4 NOT READY and folded; round 5 closure found no blocker, its R4-N1 to N3 and R5-S1 to S3 written in; clean-room confirmation NOT READY (CR-B3; CR-S1, CR-S9, CR-S12) folded below; clean-room closure HOLD (CR2-B1) folded below; clean-room re-confirmation pending
 outcome: >-
   During live input the producer waits behind no card latency: every
   SD-card wait between card commands inside an SD job primitive, a mount
@@ -2750,8 +2752,9 @@ seams:
   - "firmware/src/optical_main.cpp: platform_checkpoint (yield point at every boundary except EPOCH_COMPLETE), app_read_directory, http_replay_list_json and app_replay_delete (windows), the replay refill execute (optical_main.cpp:8294, no window), AiusAudioProcessor::update (pend stamp), the strong aius_sdio_wait_hook (an object file, not an LDF archive, so it beats the weak one), the mode route callback, POST /api/clear resetting the new watermarks, audio_diag and sd_diag keys; no new retained object (E5) and no alignas on g_replay_transfer (E9)"
   - "firmware/test/memory/verify_target.py: the single COMMITTED_OCRAM_FREE_BYTES (stale 131,040, the 0x1FFE0 link floor, aius_teensy41.ld:271) becomes a floor table keyed by PIOENV with one entry per env in OPTICAL_IMAGE_ENVS (verify_target.py:265-273; verify_target passes $PIOENV, the CLI gains --env). Each entry is the OCRAM free measured on that env's link of the unchanged tree at 4e start, before any 4e edit, and recorded in §Memory: the A/B envs carry the 32 B .aius_retained_ab ledger (optical_main.cpp:4521-4537, under #if AIUS_AB_SLOT) in the content-sized .bss.aius_retained (aius_teensy41.ld:151-174), so the plain env's 131,776 B is not their figure. An env below its own floor, or an env with no entry, fails; a floor only ever rises to a new measurement (lowering one needs funding, the file's own rule), so any OCRAM growth in any env fails the gate (R4-B2). In the same edit parent-wiring (which owns firmware/test/memory/**, CR-S12) rewrites the stale comment at verify_target.py:54-57 (\"OCRAM margin is now ZERO\") and the history block through :63, stating the per-env floors and the 0x1FFE0 link floor (R4-N1)"
   - "firmware/lib/aius_http route POST /api/sd/mode, firmware/src/aius_optical_app.cpp dispatch, firmware/sd/www/openapi.json"
-  - "firmware/platformio.ini teensy41-optical: lib_deps symlinks to the two snapshots, lib_ignore of the framework SD and SdFat, -fstack-usage, -DAIUS_DTS_LOG_STDERR=0 (inherited by slot-a, slot-b and fault, which extend teensy41-optical's build_flags, platformio.ini:374-393)"
+  - "firmware/platformio.ini teensy41-optical: lib_deps symlinks to the two snapshots, lib_ignore of the framework SD and SdFat, -fstack-usage, -DAIUS_DTS_LOG_STDERR=0 and -DAIUS_AVSHIM_LOG=0 (both inherited by slot-a, slot-b and fault, which extend teensy41-optical's build_flags, platformio.ini:374-393)"
   - "firmware/lib/aius_dts/src/aius_dts.c dca_format_log: its stderr body (aius_dts.c:57-59) compiled only when AIUS_DTS_LOG_STDERR is nonzero, default 1, so the native dts suite and host tools keep the log and the optical images carry an empty sink (E14, CR-B3)"
+  - "firmware/vendor/ffmpeg-eac3/shim/aius_avshim.c av_log and avpriv_request_sample: their bodies (the g_log_fn test, the vsnprintf into a 256 B stack buffer and the g_log_fn call, aius_avshim.c:109-133) compiled only when AIUS_AVSHIM_LOG is nonzero, default 1, so the native eac3 suites keep them and the optical images carry two empty functions with no vsnprintf edge and no indirect call; aius_avshim_set_log keeps its definition (no caller in firmware/) (E14, CR2-B1)"
   - "firmware/lib/aius_producer_yield: the window stretch clock behind sd_window_nonyield_max_us (window open and close, hook entry and return stamps; pass time excluded, CR-S1)"
 targeted-proof:
   - "host: sdfat-vendor (new): UPSTREAM_SHA256 and PATCHED_SHA256 source contract in the manner of firmware/test/network-transport/test_vendor_source.py; the hook is called only inside the yieldTimeout loop and the ACMD41 loop; no hook call in waitTimeout, cardCommand, readData or writeData, so none between the SDHC_XFERTYP write and the CC observation; readSectors and writeSectors with a non-DTCM buffer take the per-sector bounce, and no rdWrSectors or cardCMD6 call passes a buffer the DTCM predicate has not passed"
@@ -2759,10 +2762,10 @@ targeted-proof:
   - "host: runtime-target (test.sh:1203-1255, which compiles aius_sd_teensy.cpp, aius_runtime_storage.cpp, aius_runtime_network_http.cpp and aius_optical_app.cpp against test/runtime-target/fake/SD.h): the fake gains begin(cs, dma), clearError, cardDetected and the new counters, and the suite stays green"
   - "host: fake-fidelity: both fake SD.h files are compared against firmware/vendor/SD/src/SD.h (the linked copy) instead of the framework libraries/SD/src/SD.h that lib_ignore drops (test_fake_fidelity.py:152, :157)"
   - "host: producer-yield (new): guard truth table over window or point, in-producer, IPSR, PRIMASK, IRQ_SOFTWARE enabled, audio ready, recovery-safe and work pending; the pend stamped only while the producer is idle (round 1 B1) and re-stamped at pass exit when ingress is non-empty (S3); every nested pass records AUDIO and commits the ledger before and restores the saved checkpoint after, on every path (E5); late-pass and latency watermarks against a fake cycle clock; on the same clock a window of 0.2 ms to a hook, a 7.6 ms nested pass, 0.3 ms to a second hook with no pass, and 0.1 ms to the close records sd_window_nonyield_max_us 0.3 ms, never a figure that includes the pass (CR-S1); clear_diag resets them"
-  - "host: producer-isolation (new): post-link call graph of teensy41-optical. From explicit producer roots (aius_audio_service_run, the enqueue sink, the codec vtable targets) no SdFat, SD, FNET, NativeEthernet, yield, aius_sdio_wait_hook or aius_producer_yield symbol is reachable. The walk stops at a declared libc leaf table and never descends into a leaf (so newlib's internal fp->_write indirect calls are never walked): malloc, free, __wrap_malloc, __real_malloc, abort, __assert_func and the formatting-only vsnprintf and snprintf. Leaves are reachable from producer roots only along an explicit allowlist of decode-path edges (ta_zalloc_size from core_filter, avpriv_request_sample from aius_eac3_core_frame, which only formats into a stack buffer and calls a log pointer the firmware never sets, aius_avshim.c:122-133, __assert_func, av_malloc_array through firmware/lib/aius_dts/src/aius_alloc_shim.c), and any other edge fails. No I/O stdio entry (fputs, fputc, fwrite, puts, printf, fprintf, vfprintf, fiprintf, _write) is reachable from a producer root; dca_format_log is in the image with an empty body and no stdio edge (E14, CR-B3). __assert_func reaches stderr inside newlib and is accepted only as a terminal leaf: it ends in abort, which never returns (cores/teensy4/startup.c:828-831). Every caller chain of aius_sdio_wait_hook runs through vendored SdioTeensy wait loops back to a windowed root (storage execute, the three raw scans, mount) and through no malloc, free or stdio function, so a nested pass never interrupts an allocator or stdio caller. Every caller chain of aius_producer_yield_point starts at an entry of a declared yield-root table (4e: platform_checkpoint; 4f, 4g and 4h each add theirs) and runs through no malloc, free or stdio function; a caller outside the table fails. An indirect branch outside the root table fails"
+  - "host: producer-isolation (new): post-link call graph of teensy41-optical. From explicit producer roots (aius_audio_service_run, the enqueue sink, the codec vtable targets) no SdFat, SD, FNET, NativeEthernet, yield, aius_sdio_wait_hook or aius_producer_yield symbol is reachable. The walk stops at a declared libc leaf table and never descends into a leaf (so newlib's internal fp->_write indirect calls are never walked): malloc, free, __wrap_malloc, __real_malloc, abort, __assert_func and the formatting-only vsnprintf and snprintf. Leaves are reachable from producer roots only along an explicit allowlist of decode-path edges (ta_zalloc_size from core_filter, __assert_func, av_malloc_array through firmware/lib/aius_dts/src/aius_alloc_shim.c), and any other edge fails. No I/O stdio entry (fputs, fputc, fwrite, puts, printf, fprintf, vfprintf, fiprintf, _write) is reachable from a producer root; dca_format_log is in the image with an empty body and no stdio edge (E14, CR-B3). av_log and avpriv_request_sample, reached from aius_eac3_core_frame through the decoder compiled into its unit (aius_eac3_core.c:21-38; av_log at ac3dec.c:471-1724 and in eac3dec.c), are in the image with empty bodies: no vsnprintf edge and no indirect call through g_log_fn, so neither needs an allowlist entry or an indirect-branch exemption (E14, CR2-B1). __assert_func reaches stderr inside newlib and is accepted only as a terminal leaf: it ends in abort, which never returns (cores/teensy4/startup.c:828-831). Every caller chain of aius_sdio_wait_hook runs through vendored SdioTeensy wait loops back to a windowed root (storage execute, the three raw scans, mount) and through no malloc, free or stdio function, so a nested pass never interrupts an allocator or stdio caller. Every caller chain of aius_producer_yield_point starts at an entry of a declared yield-root table (4e: platform_checkpoint; 4f, 4g and 4h each add theirs) and runs through no malloc, free or stdio function; a caller outside the table fails. An indirect branch outside the root table fails"
   - "host: producer-isolation, link half (S7): the linked SdioCard symbols come from firmware/vendor/SdFat (DWARF compile-unit path), not the framework copy, and aius_sdio_wait_hook resolves to the strong definition, whose body calls aius_producer_yield_wait"
   - "host: stack-bound (new): call edges from the same post-link walk (SdFat block-device virtuals resolved to SdioCard, codec pointers from the root table), frames from -fstack-usage; symbols without a .su (libc, core) from a declared frame table, an unlisted one failing; the 512 B bounce frame counted under the hook; the deeper of two paths (loop, storage execute, SD wait, hook, pass; and HTTP dispatch, app_read_directory, SD.open, wait, hook, pass), plus the exception chain stacked on the same main stack (per NVIC preemption level among the enabled handlers, the ITCM update() audio ISR, DMA, SDHC, ENET and USB included, the deepest handler path from the same walk plus a 104 B FPU extended frame; handlers from a declared table of handler and priority, checked against every attachInterruptVector and NVIC_SET_PRIORITY call site, an unlisted site failing), plus 2,048 B, fits the DTCM stack zone (_estack minus _ebss) of the canonical teensy41-optical-slot-a image, recorded at 4e start (25,760 B on the plain image); a dynamic or unbounded frame on either path fails"
-  - "host: optical-cutover (yield-point and window placement, no window at the refill, no yield point at EPOCH_COMPLETE, the ledger wrapper around every nested pass), status-body-bound (new keys), boot and boot-target (no retained-region or ledger-layout change), memory (the per-env floor table: a synthetic snapshot 1 B under any env's floor fails, an env missing from the table fails, and every env's link of the 4e tree is at or above its 4e-start floor, so OCRAM free is unchanged in each; on the canonical teensy41-optical-slot-a image, ITCM growth at most 1,280 B over its 4a figure of 4,340 B free, DTCM statics growth at most 256 B), itcm-placement, fake-fidelity, runtime, runtime-target, audio-service, audio-ingress, http, optical-app, registry and sd-editor (openapi) green; both images build"
+  - "host: optical-cutover (yield-point and window placement, no window at the refill, no yield point at EPOCH_COMPLETE, the ledger wrapper around every nested pass), status-body-bound (new keys), boot and boot-target (no retained-region or ledger-layout change), memory (the per-env floor table: a synthetic snapshot 1 B under any env's floor fails, an env missing from the table fails, and every env's link of the 4e tree is at or above its 4e-start floor, so OCRAM free is unchanged in each; on the canonical teensy41-optical-slot-a image, ITCM growth at most 1,280 B over its 4a figure of 4,340 B free, DTCM statics growth at most 256 B), itcm-placement, fake-fidelity, runtime, runtime-target, audio-service, audio-ingress, http, optical-app, registry, sd-editor (openapi), dts and eac3 (the native builds keep each log body at its default 1, E14) green; both images build"
   - "device run 1 (owner session, source off, DMA armed, POST /api/clear after arming): content check of every /sd/www file and /aius/dsp.json against the sync source; one full aius-sd-sync.sh; the /sd/www/presets/ and /sd/www/ listings; GET /sd/www/missing.js answers 404 with open_misses +1 and driver_faults and mounts unchanged; one card pull and reinsert (a DMA-mode remount, hook_calls advancing across it; sd_diag read just before the pull and just after the first successful remount, absent_mounts advancing about once per second while the card is out, and the interval's other counters recorded, not judged); driver_faults, protocol_faults and busy_timeouts delta 0 over the run outside that card-out interval, sd_mode DMA and sd_window_nonyield_max_us recorded; the source-off epoch rate recorded from /api/status loop_epoch read at the run's start and end against wall time (R4-N2); last, one OTA stage of the image 1 container and POST /api/ota/rehearse, whose copy into PSRAM and verify run in DMA mode (ota_dark rehearsal verdict COMPLETED; the reset reverts to FIFO)"
   - "device run 2 (owner, AC-3 playing, DMA armed, POST /api/clear after arming): ten web UI loads at least 5 s apart, one full sync and the editor open (full status at 1 Hz) give underrun_episode_count delta 0, producer_pend_latency_max_us at most 2,500, ingress_high_water_words at most 1,264, stack_free_min_bytes at least 2,048, producer_wait_passes above 0, the run 1 fault deltas 0, sd_mode still DMA at the end, and the playback epoch rate recorded from loop_epoch deltas over the polled segment against wall time (R4-N2); then an unpolled segment of 10 min or more (no browser open, http_requests checked) whose sub-window spread p95 is within 10 frames of Phase 4's unpolled baseline (10 frames, 2026-10-07), with clock.fill_trims recorded against the Phase 4 rate"
   - "decision gate (E7): B2 (Phase 4b, Fallback design) only on a content mismatch, driver_faults above 0 outside a card-out interval (absent_mounts is never a fault; a driver fault inside the interval, such as a contact bounce at insertion, is diagnosed first), busy_timeouts above 0 in DMA mode (the DMA hang: a 1 s BUSY_TIMEOUT_MICROS expiry), or a watchdog reset during a DMA run whose pv= is the SD or HTTP checkpoint. Stays on A-DMA and is fixed in 4e: pv= AUDIO (a guard or nested-pass defect), stack_free_min_bytes under 2,048, a timing miss with integrity intact (attributed by the counters to the stretch 4f or a new yield point closes). Any other reset is diagnosed before a verdict"
@@ -2813,10 +2816,11 @@ fan-out: # sdfat-vendor, sd-adapter, producer-yield and link-checks concurrently
       - firmware/scripts/test.sh
       - firmware/platformio.ini
       - firmware/lib/aius_dts/src/aius_dts.c # E14: the log sink's compile switch only
+      - firmware/vendor/ffmpeg-eac3/shim/aius_avshim.c # E14, CR2-B1: the two log bodies' compile switch only
       - firmware/README.md
 review-intensity: active
 commit-checkpoint:
-  green: [sdfat-vendor, sd-target, runtime-target, producer-yield, producer-isolation, stack-bound, optical-cutover, status-body-bound, boot, boot-target, memory, itcm-placement, fake-fidelity, runtime, audio-service, audio-ingress, http, optical-app, registry, sd-editor, dts]
+  green: [sdfat-vendor, sd-target, runtime-target, producer-yield, producer-isolation, stack-bound, optical-cutover, status-body-bound, boot, boot-target, memory, itcm-placement, fake-fidelity, runtime, audio-service, audio-ingress, http, optical-app, registry, sd-editor, dts, eac3]
   buildable: [teensy41-optical, teensy41-optical-slot-a]
   parent-commit: "feat(aius): SD-card waits run the audio producer (vendored SdFat, DMA SDIO) (Phase 4e)"
   coordination: owned-path sets are disjoint at any moment; runtime-target moves from sd-adapter to parent-wiring at sd-adapter's report and is never edited by both at once (R4-S7); host suites build one at a time
@@ -3040,8 +3044,9 @@ confirmation):
   unnoticed. A floor per env holds "OCRAM growth zero" in every image
   the gate already guards, at the cost of four numbers instead of one.
 - **Isolation argument (B2).** The decode paths do reach `malloc` and
-  stdio (DTS `core_filter`, E-AC-3 `avpriv_request_sample`, the DTS
-  allocator shim), so "the producer reaches no malloc" is false and not
+  stdio (DTS `core_filter`, the DTS allocator shim; E-AC-3 `av_log` and
+  `avpriv_request_sample` until E14 empties them), so "the producer
+  reaches no malloc" is false and not
   needed. What matters is that a nested pass never interrupts an
   allocator or stdio caller: the hook is reachable only from vendored
   SdFat wait loops under a windowed root, and SdFat never allocates or
@@ -3069,6 +3074,26 @@ confirmation):
   reachable from a producer root fails the proof. `__assert_func` still
   prints inside newlib, accepted only because it ends in `abort`, which
   never returns.
+- **E14 covers the E-AC-3 log shim too (CR2-B1).** `av_log` and
+  `avpriv_request_sample`
+  (`firmware/vendor/ffmpeg-eac3/shim/aius_avshim.c:109-133`) each
+  format into a 256 B stack buffer with `vsnprintf` and then call
+  `g_log_fn`, and the decoder calls `av_log` on its error paths
+  throughout (`ac3dec.c:471-1724`, `eac3dec.c`), all compiled into the
+  `aius_eac3_core_frame` unit (`aius_eac3_core.c:21-38`). On a correct
+  build the walk would meet an `av_log` to `vsnprintf` edge outside the
+  allowlist, and both functions' `g_log_fn` call is an indirect branch
+  outside the root table. `aius_avshim_set_log` has no caller anywhere
+  in `firmware/`, tests included, so `g_log_fn` is always null and both
+  bodies are dead on every build. The optical envs therefore compile
+  them empty (`AIUS_AVSHIM_LOG=0`), the same switch shape as the DTS
+  sink; native builds keep them (default 1), so the `eac3` suite runs
+  the unchanged source. The other choice, keeping the bodies, allowlisting
+  `av_log` to `vsnprintf` and declaring the null `g_log_fn` call sites in
+  an indirect-branch exemption table, was rejected: it adds a second
+  exception class to a rule that is otherwise absolute, keeps a 256 B
+  formatting frame under the producer in stack-bound for a log no one
+  can read, and buys nothing while no setter exists.
 
 **OTA and owner.** Two OTAs (image 1, then image 2 after the gate).
 Both runs are owner sessions (ruling above): run 1 source-off, ending
@@ -3374,6 +3399,20 @@ Each item is followed by its resolution.
   parent-wiring owns `firmware/test/memory/**`. Resolved: the seam names
   parent-wiring (the round 4 and 5 entries above keep their original
   wording as history).
+
+**Clean-room closure (2026-10-07): HOLD** (CR2-B1). Each item is
+followed by its resolution.
+
+- **CR2-B1 (blocker).** The rewritten producer-isolation proof could not
+  pass on a correct build: the E-AC-3 shim's `av_log` calls `vsnprintf`
+  from the decode path and is neither a leaf nor an allowlisted edge,
+  and both `av_log` and the allowlisted `avpriv_request_sample` call
+  through `g_log_fn`, an indirect branch outside the root table.
+  Resolved: E14 extended, `AIUS_AVSHIM_LOG=0` in the optical envs
+  empties both bodies (`aius_avshim_set_log` has no caller in
+  `firmware/`); `avpriv_request_sample` dropped from the allowlist;
+  `aius_avshim.c` in the seams and parent-wiring's paths; `eac3` in the
+  targeted proof and green list (Phase 5 E14).
 
 ### Phase 4f HTTP is best-effort: shedding, render yields, lighter polling
 
@@ -4134,7 +4173,7 @@ phase: 4h
 title: Settings writes complete into PSRAM and reach the card within seconds
 status: planned
 depends-on: phase-4g
-prebuild-review: clean-room-folded # 2026-10-07: rounds 2 to 4 NOT READY and folded; round 5 closure found no blocker, its R4-N1 to N3 and R5-S1 to S3 written in; clean-room confirmation NOT READY only via 4f's CR-B1, plus CR-S4, CR-S5, CR-S10, CR-S11, folded below; clean-room re-confirmation pending
+prebuild-review: clean-room-folded # 2026-10-07: rounds 2 to 4 NOT READY and folded; round 5 closure found no blocker, its R4-N1 to N3 and R5-S1 to S3 written in; clean-room confirmation NOT READY only via 4f's CR-B1, plus CR-S4, CR-S5, CR-S10, CR-S11, folded below; clean-room closure HOLD only via 4e's CR2-B1, plus CR2-S1, folded below; clean-room re-confirmation pending
 outcome: >-
   Every write during live input (DSP Apply, public config, preset save,
   import and delete, card-sync uploads) answers once its bytes are in the
@@ -4164,15 +4203,17 @@ outcome: >-
 unit: component-behind-interface
 seams:
   - "firmware/lib/aius_sd_overlay (new, portable C): put (latest wins, versioned), tombstone, lookup for GET and listings, shadows(path) for the reload skip, flush scheduler (500 ms debounce, settings class (/aius/dsp.json, /aius/config.json, /www/presets/) before sync class, oldest first within a class, one file at a time), read-back verify, volume hold and discard, drain query, status; remount and volume-change invalidation and the post-mount refill act on clean entries only, so a dirty, flushing, held or tombstoned entry is never dropped or overwritten from a card file (H11)"
-  - "firmware/lib/aius_sd: on a volume the probe reports as FAT12, FAT16 or FAT32 (AiusSdFilesystem, aius_sd.h:125), REPLACE writes the temp file, syncs and verifies it, then an install journal (/aius/.install-journal, created by writing two 512 B zero sectors and syncing, which allocates its cluster and sets its size to 1,024 B only after both zero sectors are on the card, replacing preallocate, which zeroes nothing, FatFile.cpp:699-711, CR-S5: sector 0 the BEGIN record with target, backup and temp names, temp length and CRC, and had_target (whether the target existed when REPLACE began, R4-N3); sector 1 the INSTALL record, written once before the second rename; each record with its own CRC, no sector rewritten once it holds a valid record, no truncate) and removes it after the backup; a RECOVER root job at mount, before CONFIG_LOAD, keyed on the last valid record read only within the journal's recorded size (a journal shorter than 1,024 B holds no valid record) and the existence and first clusters of target, backup and temp (H10, H15); on any other mounted volume (exFAT reads unknown) REPLACE keeps today's two-rename install with no journal and RECOVER does not run (H14, CR-S4)"
+  - "firmware/lib/aius_sd: the BEGIN that opens every job carries the mounted volume's type (filesystem_payload_is_valid, aius_sd.c:1693-1702, admits a filesystem on a BEGIN OK event as on MEDIA_PRESENT, and the rule comment at aius_sd.h:139-143 says so), and the job keeps it; the journal decision reads that job-local type, never the probe's last AiusSdFilesystem (g_sd_filesystem, optical_main.cpp:579, :8029, which stays the status surface's source; H14, CR2-S1). On a volume whose job BEGIN reports FAT12, FAT16 or FAT32 (AiusSdFilesystem, aius_sd.h:125), REPLACE writes the temp file, syncs and verifies it, then an install journal (/aius/.install-journal, created by writing two 512 B zero sectors and syncing, which allocates its cluster and sets its size to 1,024 B only after both zero sectors are on the card, replacing preallocate, which zeroes nothing, FatFile.cpp:699-711, CR-S5: sector 0 the BEGIN record with target, backup and temp names, temp length and CRC, and had_target (whether the target existed when REPLACE began, R4-N3); sector 1 the INSTALL record, written once before the second rename; each record with its own CRC, no sector rewritten once it holds a valid record, no truncate) and removes it after the backup; a RECOVER root job at mount, before CONFIG_LOAD, keyed on the last valid record read only within the journal's recorded size (a journal shorter than 1,024 B holds no valid record) and the existence and first clusters of target, backup and temp (H10, H15); on any other mounted volume (exFAT reads unknown) REPLACE keeps today's two-rename install with no journal and RECOVER, keyed on its own BEGIN the same way, ends after that BEGIN with no other primitive (H14, CR-S4, CR2-S1)"
+  - "firmware/src/aius_sd_teensy.cpp aius_sd_teensy_execute BEGIN: the OK event on both the reused-mount return (aius_sd_teensy.cpp:207-212) and a successful mount (:216-222) carries filesystem_of(SD.sdfs.vol()->fatType()) (:135-147; FsVolume::fatType, FsVolume.h:119-121, reads the mounted volume's descriptor with no card transaction; exFAT returns FAT_TYPE_EXFAT 64, ExFatPartition.h:40, which maps to unknown), still one primitive per case (H14, CR2-S1)"
   - "firmware/vendor/SdFat (4e's snapshot): unlink one FAT directory entry without freeing its cluster chain (RECOVER's primitive for a half-done rename; FatFile only, no exFAT counterpart, H14), recorded in NOTICE.md and the sdfat-vendor PATCHED_SHA256"
   - "firmware/src/optical_main.cpp: app_store_dsp_config and app_store_public_config accept into the overlay (g_dsp_apply_pending and g_staged_generation at accept); platform_publish_config acknowledges without applying any path the overlay shadows (B6); 4g's remount and volume-change invalidation and refill routed through the overlay's clean-only rule (H11); the flush job in the SD checkpoint, started through 4f's sd_fifo_defer() and, when a 4g fill file is in flight, after web_cache_fill_cancel() stops it at its next primitive boundary (4g G9), calling web_cache_fill_hold_release() when that flush job ends (R5-S1), FatPartition::cacheClear before each read-back; sd_settle_http_write no longer arms Apply; volume identity at mount; discard queues SD_STEP_LOAD_CONFIG for the inserted card; coalesced USAGE_REFRESH; the drain gate at the routes and again in service_ota_activation, service_ota_rehearsal and the g_reboot_requested service, each as the first step after the HTTP drain wait and before any one-way step (the recorder park, optical_main.cpp:9921 and :10077; the reset in service_reboot_request, :9850-9851), latching an SD-writes freeze (no SD job starts: an HTTP SD request answers 503 sd_busy; an in-flight 4g fill file is cancelled through web_cache_fill_cancel()) and waiting for any other in-flight SD job under the freeze's own ceiling, AIUS_SD_FREEZE_MS 2,000 ms from the latch (not the 500 ms AIUS_REBOOT_DRAIN_MS armed at the route's epoch, :9794, :9895); then, in the same call, the drain query again immediately before aius_recorder_bank_park (before reset_application in the reboot service), abandoning and unfreezing if a write was accepted during the wait (R4-B1); every unfreeze calls web_cache_fill_hold_release() (R5-S1); an abandoned activation calls ota_activation_recover() (optical_main.cpp:9885-9890), an abandoned rehearsal calls ota_rehearsal_finish() (:10006-10011) with a new distinct OTA_REHEARSAL_ABANDONED result (the OtaRehearsalResult enum, :4445-4449, and ota_rehearsal_result_name, :4749), so each clears its request and never re-runs, and an abandoned reboot clears g_reboot_requested (R5-S2); an activation or rehearsal abandoned on the drain sets OTA_ACTIVATION_FAULT_FLUSH_PENDING (activation_fault ota_flush_pending, beside the existing names at :4737-4746), one abandoned on the freeze ceiling sets OTA_ACTIVATION_FAULT_SD_BUSY (ota_sd_busy); a reboot whose freeze ceiling expires resets as today's ceiling does (the drain already passed, so no settings write is in flight); the accept and flush yield points in the producer-isolation yield-root table; the sd_flush status object (also in /api/status/brief); sd_diag recover_faults and recover_aside (the set-aside journal's name, empty when none)"
   - "firmware/src/aius_optical_app.cpp dispatch_store, dispatch_sd_upload and sd_delete: 200 at accept, 503 sd_busy only when staging is full; POST /api/sd/pending/discard (authed); 409 sd_flush_pending on OTA activate, OTA rehearse and POST /api/reboot"
   - "firmware/lib/aius_http (route), firmware/sd/www/openapi.json, firmware/sd/www/dsp-editor.js (pending versus saved from sd_flush), firmware/tools/ota/aius_ota_flash.py (waits out 409 sd_flush_pending up to 30 s; after activate, reports activation_fault ota_flush_pending or ota_sd_busy as an abandoned activation, not a success)"
 targeted-proof:
   - "host: sd-overlay (new): latest wins per path; a tombstone hides a file from GET and listings until flushed; a flush of version N with N+1 accepted flushes N+1 next; a settings entry flushes before an older sync entry; a read-back CRC mismatch retries, then counts a failure and keeps the entry dirty; a volume mismatch holds every entry and writes nothing; discard drops them; staging full answers busy; shadows(path) is true for dirty, flushing, held and tombstoned entries only; the drain query is true only when nothing is dirty, flushing or held; one USAGE_REFRESH per burst; POST /api/clear resets max_settings_latency_ms and sync_drain_ms; a preset PUT to /www/presets/<name>.json is settings class; a remount or volume change with a held dsp.json and a held preset drops and refills only clean entries, and a refill reading an older card file never replaces a dirty, flushing, held or tombstoned entry"
-  - "host: sd: BEGIN is written and synced after the temp file verifies and before the first rename, INSTALL before the second, the journal removed after the backup, on every REPLACE path, faults included; a REPLACE of an N-sector file takes exactly the pinned primitive count (temp write and verify read, journal create, two zero-sector writes and a sync, BEGIN, INSTALL, two renames, two removes, read-back), about 92 for a 12,288 B dsp.json (R3-N2, CR-S5); on a volume reported as not FAT, REPLACE writes no journal and takes today's count, and no RECOVER runs at mount (H14); RECOVER from the last valid record: none valid and no backup-pattern file present removes the journal and any journal-pattern temp silently and counts nothing (the temp is written and verified before BEGIN, so no rename ran; R4-S4); none valid with a backup-pattern file present renames the journal aside (.install-journal.bad), keeps every file and counts recover_faults; BEGIN, while the target exists: target and backup on one first cluster unlinks the backup entry only, and a backup entry with first cluster 0 (rename 1's new entry before its copy) unlinks that entry; BEGIN with the target missing renames the backup back whatever its first cluster (an empty original legitimately sits on cluster 0, R4-S5); then the temp is removed; BEGIN with the target missing and no backup: had_target false with the temp matching BEGIN's length and CRC renames the temp to target and removes the journal (the latest write, as INSTALL installs it), and had_target true, or a temp absent or failing the check, renames the journal aside, keeps every file and counts recover_faults (R4-N3); INSTALL with the temp present: target on the temp's first cluster unlinks the temp entry only and removes the backup (R4-S6b); a target entry with first cluster 0 is unlinked, then with the target absent the temp (length and CRC checked against BEGIN, else the backup renamed back) is renamed to target and the backup removed; target on a different nonzero chain renames the journal aside, keeps every file and counts recover_faults (R4-S6c); INSTALL with no temp: target present removes the backup; orphan .tmp files not named by a valid record are removed, except in a RECOVER that set a journal aside, which keeps every file (R4-S6a); the power-cut model covers each rename step (new entry created with first cluster 0, entry copied, old entry removed, in every sector-write order) and every primitive, plus a torn journal sector (any prefix of new bytes over old, and garbage) at each record write, plus a journal created over clusters that hold a prior REPLACE's valid-CRC BEGIN and INSTALL, cut after the create, after each zero-sector write and before the sync: RECOVER reads no stale record (the size is under 1,024 B, or both sectors are zero) and acts as for no valid record (CR-S5), and every case leaves the old or the new file with its cluster chain allocated"
+  - "host: sd: BEGIN is written and synced after the temp file verifies and before the first rename, INSTALL before the second, the journal removed after the backup, on every REPLACE path, faults included; a REPLACE of an N-sector file takes exactly the pinned primitive count (temp write and verify read, journal create, two zero-sector writes and a sync, BEGIN, INSTALL, two renames, two removes, read-back), about 92 for a 12,288 B dsp.json (R3-N2, CR-S5); on a job whose BEGIN reports a volume other than FAT12, FAT16 or FAT32, REPLACE writes no journal and takes today's count, and RECOVER at mount issues no primitive after its BEGIN (H14); with the probe's last report FAT32 and the REPLACE job's BEGIN reporting unknown (a card swapped to exFAT and remounted at a job BEGIN while the probe is deferred), REPLACE writes no journal, and the reverse (probe unknown, BEGIN FAT32) journals (CR2-S1); a BEGIN OK event with a filesystem is accepted, while any action other than BEGIN and MEDIA_PRESENT whose event carries one still faults AIUS_SD_FAULT_PROTOCOL; RECOVER from the last valid record: none valid and no backup-pattern file present removes the journal and any journal-pattern temp silently and counts nothing (the temp is written and verified before BEGIN, so no rename ran; R4-S4); none valid with a backup-pattern file present renames the journal aside (.install-journal.bad), keeps every file and counts recover_faults; BEGIN, while the target exists: target and backup on one first cluster unlinks the backup entry only, and a backup entry with first cluster 0 (rename 1's new entry before its copy) unlinks that entry; BEGIN with the target missing renames the backup back whatever its first cluster (an empty original legitimately sits on cluster 0, R4-S5); then the temp is removed; BEGIN with the target missing and no backup: had_target false with the temp matching BEGIN's length and CRC renames the temp to target and removes the journal (the latest write, as INSTALL installs it), and had_target true, or a temp absent or failing the check, renames the journal aside, keeps every file and counts recover_faults (R4-N3); INSTALL with the temp present: target on the temp's first cluster unlinks the temp entry only and removes the backup (R4-S6b); a target entry with first cluster 0 is unlinked, then with the target absent the temp (length and CRC checked against BEGIN, else the backup renamed back) is renamed to target and the backup removed; target on a different nonzero chain renames the journal aside, keeps every file and counts recover_faults (R4-S6c); INSTALL with no temp: target present removes the backup; orphan .tmp files not named by a valid record are removed, except in a RECOVER that set a journal aside, which keeps every file (R4-S6a); the power-cut model covers each rename step (new entry created with first cluster 0, entry copied, old entry removed, in every sector-write order) and every primitive, plus a torn journal sector (any prefix of new bytes over old, and garbage) at each record write, plus a journal created over clusters that hold a prior REPLACE's valid-CRC BEGIN and INSTALL, cut after the create, after each zero-sector write and before the sync: RECOVER reads no stale record (the size is under 1,024 B, or both sectors are zero) and acts as for no valid record (CR-S5), and every case leaves the old or the new file with its cluster chain allocated"
   - "host: sdfat-vendor: the unlink-entry patch frees no cluster; PATCHED_SHA256 updated"
+  - "host: sd-target: BEGIN's OK event carries the fake volume's type on the reused-mount and the fresh-mount paths (fake fatType 32 reads fat32, 64 reads unknown), with no extra card call and still one primitive per case (test_source_guard.py and test_aius_sd_teensy.cpp updated; CR2-S1)"
   - "host: optical-app: PUT /api/dsp/config answers 200 at accept and arms Apply; GET /sd/aius/dsp.json returns the accepted bytes before the flush; GET /api/dsp/config (serialised from the model, write_dsp_config) returns the new model once config_generation advances; a preset delete leaves the manifest listing at once; discard needs the token; OTA activate, OTA rehearse and POST /api/reboot answer 409 sd_flush_pending while anything is dirty, flushing or held; a PUT accepted after the route check makes service_ota_activation, service_ota_rehearsal and the reboot service refuse without resetting, before the recorder park (the recorder stays live) and with activation_fault ota_flush_pending set; once the first re-check passes, no SD job starts (an HTTP SD request answers 503 sd_busy), an in-flight fill file is cancelled at its next primitive and the direct-SD copy waits for any other in-flight SD job; a PUT /api/dsp/config accepted 200 during that wait makes the final re-check fail, so each service abandons before aius_recorder_bank_park (before the reset in the reboot service), unfreezes, sets ota_flush_pending, and the PUT then flushes and reads back from the card (R4-B1); an in-flight SD job outlasting AIUS_SD_FREEZE_MS abandons activation and rehearsal with ota_sd_busy and the recorder live, while the reboot service resets; an in-flight 4g fill file no longer abandons the activation (R4-S3); an activation and a rehearsal abandoned on the drain and on the freeze ceiling each leave their request cleared (the rehearsal's result OTA_REHEARSAL_ABANDONED), and with the service then called every epoch until the flush drains and after, neither re-runs, parks the recorder or resets (R5-S2); a flush start that cancels a fill file lets the next fill file start 2 s after that flush job ends with no HTTP SD job after it, and a freeze that cancels a fill and then abandons with ota_sd_busy lets it start 2 s after the unfreeze (R5-S1)"
   - "host: optical-cutover: platform_publish_config consults the overlay before writing g_config or g_pending_dsp_model; a shadowed path is acknowledged and not applied; the flush job start consults sd_fifo_defer() and calls web_cache_fill_cancel() when a fill file is in flight; in both OTA services the first drain re-check precedes the freeze latch and a second drain query is the statement immediately before aius_recorder_bank_park, with no epoch return between them; in the reboot service the second drain query immediately precedes tx_gate_actuate and reset_application (R4-B1)"
   - "host: ota (test_ota_flash_client.py: the 409 wait, and activation_fault ota_flush_pending and ota_sd_busy each reported as abandoned), http, status-body-bound (sd_flush; sd_diag recover_faults and recover_aside at its longest name), sd-editor (dsp-editor pending and saved states; openapi), stack-bound (accept and flush roots), producer-isolation (accept and flush roots in the yield-root table), runtime-target (aius_optical_app.cpp and aius_runtime_storage.cpp against the fakes), memory (OCRAM free unchanged; on the canonical image ITCM growth at most 1,000 B, DTCM statics growth at most 256 B), registry and itcm-placement green; both images build"
@@ -4190,6 +4231,8 @@ fan-out: # sd-overlay, install-journal, ota-tool and ui-pending concurrently; pa
       - firmware/test/sd/**
       - firmware/vendor/SdFat/**
       - firmware/test/sdfat-vendor/**
+      - firmware/src/aius_sd_teensy.cpp # CR2-S1: BEGIN's volume-type payload only
+      - firmware/test/sd-target/**
   - name: ota-tool
     owned-paths:
       - firmware/tools/ota/aius_ota_flash.py
@@ -4223,7 +4266,7 @@ fan-out: # sd-overlay, install-journal, ota-tool and ui-pending concurrently; pa
       - firmware/README.md
 review-intensity: active
 commit-checkpoint:
-  green: [sd-overlay, sd, sdfat-vendor, optical-app, optical-cutover, ota, http, status-body-bound, sd-editor, stack-bound, producer-isolation, runtime-target, memory, registry, itcm-placement]
+  green: [sd-overlay, sd, sdfat-vendor, sd-target, optical-app, optical-cutover, ota, http, status-body-bound, sd-editor, stack-bound, producer-isolation, runtime-target, memory, registry, itcm-placement]
   buildable: [teensy41-optical, teensy41-optical-slot-a]
   parent-commit: "feat(aius): write-behind settings flush with card-swap hold and rename-gap recovery (Phase 4h)"
   coordination: owned-path sets are disjoint
@@ -4418,10 +4461,19 @@ tombstone, with the same per-chunk CRC.
   firmware also mounts exFAT, which the probe reports as `unknown`
   (`firmware/lib/aius_sd/include/aius_sd.h:115-124`,
   `firmware/src/optical_main.cpp:1269-1270`). So the journal and RECOVER
-  run only on a volume the probe reports as FAT12, FAT16 or FAT32; on any
-  other mounted volume REPLACE keeps today's two-rename install with no
-  journal (the rename gap stays open there, as today), RECOVER does not
-  run, and volume identity is the CID alone (H3). Write-behind, the
+  run only on a FAT12, FAT16 or FAT32 volume; on any other mounted volume
+  REPLACE keeps today's two-rename install with no journal (the rename
+  gap stays open there, as today), RECOVER does nothing past its BEGIN,
+  and volume identity is the CID alone (H3). The type is the job's own:
+  the BEGIN that opens every job reports `SD.sdfs.vol()->fatType()` of
+  the volume it mounted or reused (`FsVolume.h:119-121`, a descriptor
+  read with no card transaction), not the probe's last report. During
+  live input the probe is deferred after bring-up
+  (`optical_main.cpp:8162-8164`) and a playback remount happens only at a
+  job BEGIN, so a card swapped to exFAT mid-playback would still read
+  FAT32 in `g_sd_filesystem` and REPLACE would write a journal RECOVER
+  never reads (CR2-S1). `sd_filesystem` in `/api/status` stays the
+  probe's value. Write-behind, the
   card-swap hold and the drain gates are unchanged on exFAT. The
   deployed card's filesystem is not known to this plan; the first 4h
   device step reads `sd_filesystem` and records it here, so whether the
@@ -4692,6 +4744,21 @@ resolution.
 - **CR-S11 (4h part).** ui-pending did not own the fixtures an
   `sd_flush` case needs. Resolved: `test/sd-editor/fixtures/**` in
   ui-pending's paths.
+
+**Clean-room closure (2026-10-07): HOLD** only via 4e's CR2-B1 (its
+producer-isolation proof, which 4h's accept and flush roots extend);
+CR2-S1 is 4h's own. Each item is followed by its resolution.
+
+- **CR2-B1 (4h part, from 4e).** Resolved in 4e (E14 covers the E-AC-3
+  log shim); nothing changes here.
+- **CR2-S1.** The FAT-only gate read the probe's last
+  `AiusSdFilesystem`, which the deferred playback probe never refreshes,
+  so a card swapped to exFAT and remounted at a job BEGIN would get a
+  journal RECOVER never reads. Resolved: H14 keys on the job's own BEGIN,
+  which carries the mounted volume's `fatType()`; `lib/aius_sd` and
+  `aius_sd_teensy.cpp` seams, the swap case in `sd`, an `sd-target` case,
+  install-journal owns the adapter and `sd-target`, `sd-target` in the
+  green list (Phase 5 H14).
 
 ### Phase 4c `test.sh` runs every `--suite` given ✓ SHIPPED 2026-10-06
 
@@ -5050,7 +5117,18 @@ call, alternative, cost of reversing.
   `yield()` (E1 does not hook `yield()`), which also accepts a producer
   stall of up to 120 ms (`TX_TIMEOUT_MSEC`) on a malformed DTS frame
   with no USB host draining. Reversing: one build flag, the `#if` in
-  `dca_format_log` and the leaf table's stdio entries.
+  `dca_format_log` and the leaf table's stdio entries. The E-AC-3 shim's
+  `av_log` and `avpriv_request_sample` bodies (`vsnprintf` into a 256 B
+  stack buffer, then the `g_log_fn` indirect call) are compiled out the
+  same way (`AIUS_AVSHIM_LOG=0`; native keeps them), since
+  `aius_avshim_set_log` has no caller and the log pointer is always null
+  (clean-room closure CR2-B1). Alternative: keep the bodies, allowlist
+  `av_log` to `vsnprintf` and declare the null `g_log_fn` call sites in
+  an indirect-branch exemption table, a second exception class in the
+  isolation rule plus a 256 B frame under the producer. Reversing: the
+  second build flag, the `#if` around the two bodies, and either the
+  allowlist edge and exemption table or a setter call wired to a sink
+  that never blocks.
 - **4f F11.** Admission and `sd_fifo_defer()` act only while live input
   owns the ring (the ring's gate flag set and the carrier locked); with
   the gate closed or during a replay the margin is unbounded and nothing
@@ -5082,9 +5160,13 @@ call, alternative, cost of reversing.
   FAT12, FAT16 and FAT32 volumes only; an exFAT volume keeps today's
   unjournalled install and a CID-only identity, and the first 4h device
   step records the deployed card's `sd_filesystem` (clean-room CR-S4).
+  The check reads the job's own BEGIN, which carries the mounted
+  volume's `fatType()`, not the probe's last report, which the deferred
+  playback probe leaves stale across a swap (clean-room closure CR2-S1).
   Alternative: an exFAT journal and unlink built on `ExFatFile`, or
   refusing write-behind on exFAT. Reversing: one filesystem check in
-  `lib/aius_sd` and H3's identity rule.
+  `lib/aius_sd`, BEGIN's volume-type payload in `aius_sd_teensy.cpp` and
+  the engine's payload rule, and H3's identity rule.
 - **4h H15.** The journal is created by writing two zero sectors and
   syncing, and RECOVER reads records only within its recorded size, so a
   reused cluster cannot replay a prior REPLACE's records (clean-room
