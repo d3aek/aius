@@ -7,8 +7,8 @@ out of the audio path's headroom. ITCM is reserved for the bounded producer code
 that must preempt the serial AUDIO epoch. Epoch processing remains FLASHMEM even
 when it runs per block.
 
-Five checks: the no-LTO precondition, then the cold, optical composition, mixed
-ingress-producer and LDF-library translation-unit shapes.
+Six checks: the no-LTO precondition, then the cold, optical composition, mixed
+ingress-producer, producer-yield and LDF-library translation-unit shapes.
 
 The no-LTO precondition. Every other check reads ONE OBJECT FILE at a time, so
 it sees only placement the compiler has already committed to. Link-time
@@ -139,6 +139,32 @@ INGRESS_HOT_SECTIONS = (
     ".text.aius_audio_ingress_record_gap",
     ".text.aius_audio_ingress_record_source_change",
 )
+
+# The producer-yield object (aius-sample-rate-following.md Phase 4e) is the
+# third mixed object: its guard, the SD wait hook body, the checkpoint yield
+# point, the regular-visit pair and the nested-pass ledger wrapper run on every
+# SD wait and checkpoint boundary during live input, so they stay in ITCM (no
+# attribute); configure, the window pair and the diag pair are FLASHMEM. It is
+# compiled through build_src_filter (lib_ignore'd, so never LDF-shaped) and is
+# outside COLD_TREES, so without this pin no other check would see it. The
+# pinned set is by section name with GCC's clone suffixes (.constprop.N,
+# .isra.N, .part.N) stripped; the static nested pass may also be inlined away,
+# so only the five public entry points are required. Any other ITCM section in
+# the object fails and is named.
+PRODUCER_YIELD_HOT_OBJECT = "lib/aius_producer_yield/src/aius_producer_yield.c.o"
+PRODUCER_YIELD_HOT_SECTIONS = (
+    ".text.aius_producer_yield_guard",
+    ".text.aius_producer_yield_wait",
+    ".text.aius_producer_yield_point",
+    ".text.aius_producer_yield_visit_begin",
+    ".text.aius_producer_yield_visit_end",
+)
+PRODUCER_YIELD_OPTIONAL_SECTIONS = (
+    ".text.nested_pass",
+    ".text.producer_leave",
+    ".text.segment_close",
+)
+CLONE_SUFFIX = re.compile(r"(\.(constprop|isra|part)\.\d+)+$")
 
 # An object PlatformIO's library dependency finder compiled, by the only thing
 # that identifies one: the `lib<hash>/<libname>/` prefix the LDF gives each
@@ -523,6 +549,62 @@ def verify_ingress_hot_object(build_dir: Path, readelf: str) -> int:
             f"{INGRESS_HOT_OBJECT} no longer emits producer code: {missing}"
         )
     return sum(sections.values())
+
+
+def verify_producer_yield_sections(sections: Mapping[str, int]) -> int:
+    """Pure half: `sections` maps the object's non-COMDAT `.text*` names to
+    sizes. Returns the pinned ITCM bytes."""
+    allowed = set(PRODUCER_YIELD_HOT_SECTIONS) | set(
+        PRODUCER_YIELD_OPTIONAL_SECTIONS
+    )
+    offenders = {
+        name: size
+        for name, size in sections.items()
+        if CLONE_SUFFIX.sub("", name) not in allowed
+    }
+    if offenders:
+        raise VerificationError(
+            f"{PRODUCER_YIELD_HOT_OBJECT} emits ITCM outside its pinned "
+            "producer-yield set: "
+            + ", ".join(
+                f"{name}: {size} bytes"
+                for name, size in sorted(offenders.items())
+            )
+            + ". Put FLASHMEM on the definition, or add the section to "
+            "PRODUCER_YIELD_HOT_SECTIONS in test/itcm-placement/"
+            "verify_target.py if it runs on every SD wait"
+        )
+    present = {CLONE_SUFFIX.sub("", name) for name in sections}
+    missing = [
+        name for name in PRODUCER_YIELD_HOT_SECTIONS if name not in present
+    ]
+    if missing:
+        raise VerificationError(
+            f"{PRODUCER_YIELD_HOT_OBJECT} no longer emits its producer-yield "
+            f"code: {missing} (renamed, inlined away or given FLASHMEM)"
+        )
+    return sum(sections.values())
+
+
+def verify_producer_yield_object(build_dir: Path, readelf: str) -> int:
+    obj = build_dir / PRODUCER_YIELD_HOT_OBJECT
+    if not obj.is_file():
+        raise VerificationError(
+            f"producer-yield object is missing from the build: {obj}"
+        )
+    sections, comdat, clones = inspect_object(obj, readelf)
+    if comdat or clones:
+        raise VerificationError(
+            f"{PRODUCER_YIELD_HOT_OBJECT} unexpectedly emits COMDAT/clone code"
+        )
+    return verify_producer_yield_sections(sections)
+
+
+def _producer_yield_summary(pinned: int) -> str:
+    return (
+        "producer-yield ITCM placement: PASS "
+        f"({PRODUCER_YIELD_HOT_OBJECT}, {pinned} bytes in the pinned set)"
+    )
 
 
 def parse_function_symbols(output: str) -> dict[str, int]:
@@ -998,6 +1080,9 @@ def verify_cold_placement(source, target, env) -> None:
     print(_summary(*verify_placement(build_dir, linked, readelf)))
     print(_hot_summary(*verify_hot_object(build_dir, readelf)))
     print(_ingress_hot_summary(verify_ingress_hot_object(build_dir, readelf)))
+    print(_producer_yield_summary(
+        verify_producer_yield_object(build_dir, readelf)
+    ))
     print(_ldf_summary(*verify_ldf_libraries_in_build(build_dir, readelf)))
     print(_dark_window_summary(
         verify_dark_window_residency(build_dir, readelf)
@@ -1060,6 +1145,12 @@ def _main(argv: list[str]) -> int:
         print(f"ingress-object ITCM placement: FAIL: {error}", file=sys.stderr)
         return 1
     print(_ingress_hot_summary(ingress))
+    try:
+        pinned = verify_producer_yield_object(build_dir, args.readelf)
+    except (OSError, subprocess.CalledProcessError, VerificationError) as error:
+        print(f"producer-yield ITCM placement: FAIL: {error}", file=sys.stderr)
+        return 1
+    print(_producer_yield_summary(pinned))
     try:
         ldf = verify_ldf_libraries_in_build(build_dir, args.readelf)
     except (OSError, subprocess.CalledProcessError, VerificationError) as error:

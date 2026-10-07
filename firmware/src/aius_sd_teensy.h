@@ -61,6 +61,18 @@ typedef struct {
 	 * healthy running system should show reuses climbing and mounts nearly
 	 * still. */
 	uint32_t mount_reuses;
+	/* A failed primitive whose driver error code is zero (the card answered
+	 * and refused: a not-found OPEN). Not a driver fault; the mount is kept. */
+	uint32_t open_misses;
+	/* A failed mount with no card inserted (cardDetected() false). Not a
+	 * driver fault. */
+	uint32_t absent_mounts;
+	/* The driver's 1 s BUSY_TIMEOUT_MICROS expiries, mirrored after each
+	 * primitive; nonzero in DMA mode is the DMA hang. */
+	uint32_t busy_timeouts;
+	/* Mount mode: true is DMA SDIO, false FIFO. Set by
+	 * aius_sd_teensy_set_mode; the next real mount uses it. */
+	bool dma;
 	uint32_t driver_faults;
 	uint8_t last_protocol_action;
 } AiusSdTeensy;
@@ -76,6 +88,11 @@ void aius_sd_teensy_init(AiusSdTeensy *adapter);
  * explicitly rather than leaving the adapter to infer it. Memory only; it starts
  * no card transaction and cannot fail. */
 void aius_sd_teensy_invalidate_mount(AiusSdTeensy *adapter);
+
+/* Selects the mount mode. A change invalidates the mount (the next BEGIN
+ * remounts in the new mode) only when no file is open; with one open only the
+ * mode is recorded. Memory only; starts no card transaction. */
+void aius_sd_teensy_set_mode(AiusSdTeensy *adapter, bool dma);
 
 AiusSdEvent aius_sd_teensy_execute(
 	AiusSdTeensy *adapter,

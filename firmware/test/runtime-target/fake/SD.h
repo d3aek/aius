@@ -55,7 +55,12 @@ private:
 
 class SDClass {
 public:
-	bool begin(uint8_t chip_select);
+	bool begin(uint8_t chip_select, bool dma);
+	/* Vendored driver error state (firmware/vendor/SD): not card primitives. */
+	void clearError();
+	uint8_t sdErrorCode();
+	bool cardDetected();
+	uint32_t busyTimeouts();
 	bool mediaPresent();
 	bool mkdir(const char *path);
 	File open(const char *path, uint8_t mode);

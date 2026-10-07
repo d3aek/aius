@@ -87,6 +87,10 @@ FLASHMEM void record_duration(AiusSdTeensy *adapter, uint32_t started, uint32_t 
 	adapter->last_duration_us = duration;
 	if (duration > adapter->longest_duration_us)
 		adapter->longest_duration_us = duration;
+	/* The driver's own count of 1 s BUSY_TIMEOUT_MICROS expiries (the DMA
+	 * hang), mirrored so the status surface reads it from the adapter. A
+	 * member read, not a card primitive. */
+	adapter->busy_timeouts = SD.busyTimeouts();
 }
 
 FLASHMEM AiusSdEvent protocol_fault(
@@ -104,22 +108,40 @@ FLASHMEM AiusSdEvent protocol_fault(
 	return event;
 }
 
-FLASHMEM AiusSdEvent driver_fault(AiusSdTeensy *adapter, uint64_t action_id)
+FLASHMEM AiusSdEvent fault_event(uint64_t action_id)
 {
-	if (adapter->driver_faults != UINT32_MAX)
-		adapter->driver_faults++;
-	/* THE CARD SAID NO, SO THE MOUNT IS NO LONGER TRUSTED. Deliberately
-	 * blunt: this fires for an open against a missing file as readily as for
-	 * a card that stopped answering, and the adapter cannot tell those apart
-	 * from a bool. Over-invalidating costs one extra mount on a path that has
-	 * already failed; under-invalidating leaves a stale volume descriptor in
-	 * front of every later job, which is the failure mode worth avoiding. The
-	 * hot path is unaffected -- a replay refill opens a file that exists. */
-	adapter->mounted = false;
-	adapter->last_fault = AIUS_SD_TEENSY_DRIVER_FAULT;
 	AiusSdEvent event = action_event(AIUS_SD_EVENT_FAULT, action_id);
 	event.fault = AIUS_SD_TEENSY_DRIVER_FAULT;
 	return event;
+}
+
+/* THE CARD SAID NO, SO THE MOUNT IS NO LONGER TRUSTED. Counted and invalidated
+ * unconditionally; used where a nonzero driver code is already established or
+ * the failure cannot be a miss. Over-invalidating costs one extra mount on a
+ * path that has already failed; under-invalidating leaves a stale volume
+ * descriptor in front of every later job. */
+FLASHMEM AiusSdEvent hard_driver_fault(AiusSdTeensy *adapter, uint64_t action_id)
+{
+	if (adapter->driver_faults != UINT32_MAX)
+		adapter->driver_faults++;
+	adapter->mounted = false;
+	adapter->last_fault = AIUS_SD_TEENSY_DRIVER_FAULT;
+	return fault_event(action_id);
+}
+
+/* A failed primitive. The vendored driver's error code is cleared before every
+ * primitive (SD.clearError()), so a zero here means the card answered and the
+ * path or request was simply refused (a not-found OPEN): a miss, mount kept,
+ * not a driver fault. Only a nonzero code is the card failing. The event is
+ * the same FAULT either way, so the portable machine fails the job alike. */
+FLASHMEM AiusSdEvent driver_fault(AiusSdTeensy *adapter, uint64_t action_id)
+{
+	if (SD.sdErrorCode() == 0u) {
+		if (adapter->open_misses != UINT32_MAX)
+			adapter->open_misses++;
+		return fault_event(action_id);
+	}
+	return hard_driver_fault(adapter, action_id);
 }
 
 FLASHMEM bool action_id_valid(const AiusSdAction *action)
@@ -161,6 +183,10 @@ FLASHMEM void aius_sd_teensy_init(AiusSdTeensy *adapter)
 	adapter->mounts = 0u;
 	adapter->mount_reuses = 0u;
 	adapter->driver_faults = 0u;
+	adapter->open_misses = 0u;
+	adapter->absent_mounts = 0u;
+	adapter->busy_timeouts = 0u;
+	adapter->dma = false;
 	adapter->last_protocol_action = (uint8_t)AIUS_SD_ACTION_NONE;
 }
 
@@ -169,6 +195,19 @@ FLASHMEM void aius_sd_teensy_invalidate_mount(AiusSdTeensy *adapter)
 	if (adapter == nullptr)
 		return;
 	adapter->mounted = false;
+}
+
+FLASHMEM void aius_sd_teensy_set_mode(AiusSdTeensy *adapter, bool dma)
+{
+	if (adapter == nullptr || adapter->dma == dma)
+		return;
+	adapter->dma = dma;
+	/* The mounted volume is in the old mode; the next BEGIN must remount in
+	 * the new one. Not with a file open: dropping the mount under a live
+	 * handle is the stale-descriptor failure, so only the mode is recorded
+	 * and the remount waits for a later invalidation. */
+	if (!adapter->file_open)
+		adapter->mounted = false;
 }
 
 FLASHMEM AiusSdEvent aius_sd_teensy_execute(
@@ -212,19 +251,28 @@ FLASHMEM AiusSdEvent aius_sd_teensy_execute(
 		}
 		if (adapter->mounts != UINT32_MAX)
 			adapter->mounts++;
+		SD.clearError();
 		const uint32_t started = micros();
-		const bool success = SD.begin(BUILTIN_SDCARD);
+		const bool success = SD.begin(BUILTIN_SDCARD, adapter->dma);
 		const uint32_t ended = micros();
 		record_duration(adapter, started, ended);
 		adapter->mounted = success;
-		return success
-			       ? action_event(AIUS_SD_EVENT_OK, action->action_id)
-			       : driver_fault(adapter, action->action_id);
+		if (success)
+			return action_event(AIUS_SD_EVENT_OK, action->action_id);
+		/* No card inserted is absence, not a fault: DAT3 reads low
+		 * after the failed begin. The job still fails alike. */
+		if (!SD.cardDetected()) {
+			if (adapter->absent_mounts != UINT32_MAX)
+				adapter->absent_mounts++;
+			return fault_event(action->action_id);
+		}
+		return hard_driver_fault(adapter, action->action_id);
 	}
 
 	case AIUS_SD_ACTION_MEDIA_PRESENT: {
 		if (!action_id_valid(action) || !empty_payload(action))
 			return protocol_fault(adapter, action);
+		SD.clearError();
 		const uint32_t started = micros();
 		const bool present = SD.mediaPresent();
 		/* Not a second SD primitive and not an extra epoch: fatType()
@@ -256,6 +304,7 @@ FLASHMEM AiusSdEvent aius_sd_teensy_execute(
 	case AIUS_SD_ACTION_MKDIR: {
 		if (!action_id_valid(action) || !path_payload(action))
 			return protocol_fault(adapter, action);
+		SD.clearError();
 		const uint32_t started = micros();
 		const bool success = SD.mkdir(action->path);
 		const uint32_t ended = micros();
@@ -269,6 +318,7 @@ FLASHMEM AiusSdEvent aius_sd_teensy_execute(
 		if (!action_id_valid(action) || !path_payload(action) ||
 		    adapter->file_open)
 			return protocol_fault(adapter, action);
+		SD.clearError();
 		const uint32_t started = micros();
 		File opened = SD.open(action->path, FILE_READ);
 		const uint32_t ended = micros();
@@ -284,6 +334,7 @@ FLASHMEM AiusSdEvent aius_sd_teensy_execute(
 		if (!action_id_valid(action) || !path_payload(action) ||
 		    adapter->file_open)
 			return protocol_fault(adapter, action);
+		SD.clearError();
 		const uint32_t started = micros();
 		File opened = SD.open(action->path, FILE_WRITE_BEGIN);
 		const uint32_t ended = micros();
@@ -299,6 +350,7 @@ FLASHMEM AiusSdEvent aius_sd_teensy_execute(
 		if (!action_id_valid(action) || !path_payload(action) ||
 		    adapter->file_open)
 			return protocol_fault(adapter, action);
+		SD.clearError();
 		const uint32_t started = micros();
 		File opened = SD.open(action->path, FILE_WRITE);
 		const uint32_t ended = micros();
@@ -314,6 +366,7 @@ FLASHMEM AiusSdEvent aius_sd_teensy_execute(
 		if (!action_id_valid(action) || !truncate_payload(action) ||
 		    !adapter->file_open)
 			return protocol_fault(adapter, action);
+		SD.clearError();
 		const uint32_t started = micros();
 		const bool success = adapter->file.truncate(0u);
 		const uint32_t ended = micros();
@@ -327,6 +380,7 @@ FLASHMEM AiusSdEvent aius_sd_teensy_execute(
 		if (!action_id_valid(action) || !seek_payload(action) ||
 		    !adapter->file_open)
 			return protocol_fault(adapter, action);
+		SD.clearError();
 		const uint32_t started = micros();
 		const bool success = adapter->file.seek(action->offset);
 		const uint32_t ended = micros();
@@ -340,13 +394,14 @@ FLASHMEM AiusSdEvent aius_sd_teensy_execute(
 		if (!action_id_valid(action) || !transfer_payload(action) ||
 		    !adapter->file_open)
 			return protocol_fault(adapter, action);
+		SD.clearError();
 		const uint32_t started = micros();
 		const size_t bytes =
 			adapter->file.read(action->buffer, action->length);
 		const uint32_t ended = micros();
 		record_duration(adapter, started, ended);
 		if (bytes > action->length)
-			return driver_fault(adapter, action->action_id);
+			return hard_driver_fault(adapter, action->action_id);
 		AiusSdEvent event =
 			action_event(AIUS_SD_EVENT_BYTES, action->action_id);
 		event.bytes = bytes;
@@ -357,13 +412,14 @@ FLASHMEM AiusSdEvent aius_sd_teensy_execute(
 		if (!action_id_valid(action) || !transfer_payload(action) ||
 		    !adapter->file_open)
 			return protocol_fault(adapter, action);
+		SD.clearError();
 		const uint32_t started = micros();
 		const size_t bytes =
 			adapter->file.write(action->buffer, action->length);
 		const uint32_t ended = micros();
 		record_duration(adapter, started, ended);
 		if (bytes > action->length)
-			return driver_fault(adapter, action->action_id);
+			return hard_driver_fault(adapter, action->action_id);
 		AiusSdEvent event =
 			action_event(AIUS_SD_EVENT_BYTES, action->action_id);
 		event.bytes = bytes;
@@ -374,6 +430,7 @@ FLASHMEM AiusSdEvent aius_sd_teensy_execute(
 		if (!action_id_valid(action) || !empty_payload(action) ||
 		    !adapter->file_open)
 			return protocol_fault(adapter, action);
+		SD.clearError();
 		const uint32_t started = micros();
 		const uint64_t size = adapter->file.size();
 		const uint32_t ended = micros();
@@ -387,6 +444,7 @@ FLASHMEM AiusSdEvent aius_sd_teensy_execute(
 	case AIUS_SD_ACTION_EXISTS: {
 		if (!action_id_valid(action) || !path_payload(action))
 			return protocol_fault(adapter, action);
+		SD.clearError();
 		const uint32_t started = micros();
 		const bool exists = SD.exists(action->path);
 		const uint32_t ended = micros();
@@ -400,6 +458,7 @@ FLASHMEM AiusSdEvent aius_sd_teensy_execute(
 	case AIUS_SD_ACTION_RENAME: {
 		if (!action_id_valid(action) || !rename_payload(action))
 			return protocol_fault(adapter, action);
+		SD.clearError();
 		const uint32_t started = micros();
 		const bool success = SD.rename(action->path, action->path_to);
 		const uint32_t ended = micros();
@@ -412,6 +471,7 @@ FLASHMEM AiusSdEvent aius_sd_teensy_execute(
 	case AIUS_SD_ACTION_REMOVE: {
 		if (!action_id_valid(action) || !path_payload(action))
 			return protocol_fault(adapter, action);
+		SD.clearError();
 		const uint32_t started = micros();
 		const bool success = SD.remove(action->path);
 		const uint32_t ended = micros();
@@ -425,6 +485,7 @@ FLASHMEM AiusSdEvent aius_sd_teensy_execute(
 		if (!action_id_valid(action) || !empty_payload(action) ||
 		    !adapter->file_open)
 			return protocol_fault(adapter, action);
+		SD.clearError();
 		const uint32_t started = micros();
 		adapter->file.close();
 		const uint32_t ended = micros();
@@ -436,6 +497,7 @@ FLASHMEM AiusSdEvent aius_sd_teensy_execute(
 	case AIUS_SD_ACTION_TOTAL_SIZE: {
 		if (!action_id_valid(action) || !empty_payload(action))
 			return protocol_fault(adapter, action);
+		SD.clearError();
 		const uint32_t started = micros();
 		const uint64_t size = SD.totalSize();
 		const uint32_t ended = micros();
@@ -449,6 +511,7 @@ FLASHMEM AiusSdEvent aius_sd_teensy_execute(
 	case AIUS_SD_ACTION_USED_SIZE: {
 		if (!action_id_valid(action) || !empty_payload(action))
 			return protocol_fault(adapter, action);
+		SD.clearError();
 		const uint32_t started = micros();
 		const uint64_t size = SD.usedSize();
 		const uint32_t ended = micros();

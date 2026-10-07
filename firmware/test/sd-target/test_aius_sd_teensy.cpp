@@ -54,6 +54,16 @@ struct Fake {
 	const uint8_t *const_buffer;
 	size_t length;
 	uint64_t offset;
+	/* The vendored driver's error state. A failing primitive leaves
+	 * fail_code in error_code (0 models the card answering and refusing, a
+	 * not-found OPEN); clearError() zeroes it, so a stale code a test
+	 * pre-sets is gone before the primitive runs. */
+	uint8_t error_code;
+	uint8_t fail_code;
+	bool card_detected;
+	uint32_t busy_timeouts;
+	unsigned clear_error_calls;
+	bool begin_dma;
 };
 
 Fake g_fake;
@@ -68,12 +78,21 @@ void record(Primitive primitive)
 	g_fake.calls[g_fake.call_count++] = primitive;
 }
 
+bool outcome(bool ok)
+{
+	if (!ok && g_fake.fail_code != 0)
+		g_fake.error_code = g_fake.fail_code;
+	return ok;
+}
+
 void reset_fake()
 {
 	memset(&g_fake, 0, sizeof(g_fake));
 	for (size_t i = 0; i < PRIMITIVE_COUNT; ++i)
 		g_fake.succeeds[i] = true;
 	g_fake.media_present = true;
+	g_fake.fail_code = 5;
+	g_fake.card_detected = true;
 	g_fake.exists = true;
 	g_fake.open_valid = true;
 	g_fake.read_result = 3;
@@ -1063,6 +1082,166 @@ void test_mount_is_cached_and_revalidated()
 	aius_sd_teensy_invalidate_mount(nullptr);
 }
 
+/* THE FAULT SPLIT (Phase 4e). The driver's error code, cleared before every
+ * primitive, decides whether a failure is the card failing or a plain miss. */
+void test_fault_split_and_absence()
+{
+	AiusSdTeensy adapter;
+	AiusSdAction open_read = make_action(AIUS_SD_ACTION_OPEN_READ);
+	AiusSdAction begin = make_action(AIUS_SD_ACTION_BEGIN);
+	AiusSdEvent event;
+
+	/* A not-found OPEN (code 0) counts open_misses, keeps the mount, and is
+	 * not a driver fault; the job still sees a FAULT event. */
+	reset_fake();
+	reset_adapter(&adapter);
+	assert(begin_touched_the_card(&adapter) && adapter.mounted);
+	reset_fake();
+	g_fake.open_valid = false;
+	g_fake.fail_code = 0;
+	event = aius_sd_teensy_execute(&adapter, &open_read);
+	assert(event.kind == AIUS_SD_EVENT_FAULT);
+	assert(adapter.open_misses == 1);
+	assert(adapter.driver_faults == 0);
+	assert(adapter.mounted);
+	assert(!adapter.file_open);
+
+	/* A nonzero code is the card failing: counted, mount invalidated. */
+	reset_fake();
+	g_fake.open_valid = false;
+	g_fake.fail_code = 7;
+	event = aius_sd_teensy_execute(&adapter, &open_read);
+	assert(event.kind == AIUS_SD_EVENT_FAULT);
+	assert(adapter.open_misses == 1);
+	assert(adapter.driver_faults == 1);
+	assert(!adapter.mounted);
+
+	/* A stale nonzero code from an earlier primitive does not turn a later
+	 * not-found OPEN into a driver fault: clearError() runs first. */
+	reset_fake();
+	reset_adapter(&adapter);
+	assert(begin_touched_the_card(&adapter));
+	reset_fake();
+	g_fake.error_code = 9;
+	g_fake.open_valid = false;
+	g_fake.fail_code = 0;
+	event = aius_sd_teensy_execute(&adapter, &open_read);
+	assert(g_fake.clear_error_calls == 1);
+	assert(adapter.open_misses == 1);
+	assert(adapter.driver_faults == 0);
+	assert(adapter.mounted);
+
+	/* clearError() precedes every card primitive, one per execute. */
+	reset_fake();
+	AiusSdAction exists = make_action(AIUS_SD_ACTION_EXISTS);
+	exists.path = kPath;
+	aius_sd_teensy_execute(&adapter, &exists);
+	assert(g_fake.clear_error_calls == 1);
+	reset_fake();
+	AiusSdAction media = make_action(AIUS_SD_ACTION_MEDIA_PRESENT);
+	aius_sd_teensy_execute(&adapter, &media);
+	assert(g_fake.clear_error_calls == 1);
+
+	/* A failed BEGIN with no card inserted counts absent_mounts, leaves
+	 * driver_faults alone and leaves the mount unset. */
+	reset_fake();
+	reset_adapter(&adapter);
+	g_fake.succeeds[PRIMITIVE_BEGIN] = false;
+	g_fake.card_detected = false;
+	event = aius_sd_teensy_execute(&adapter, &begin);
+	assert(event.kind == AIUS_SD_EVENT_FAULT);
+	assert(adapter.absent_mounts == 1);
+	assert(adapter.driver_faults == 0);
+	assert(adapter.mounts == 1);
+	assert(!adapter.mounted);
+
+	/* With the card present the same failure is a driver fault. */
+	reset_fake();
+	g_fake.succeeds[PRIMITIVE_BEGIN] = false;
+	event = aius_sd_teensy_execute(&adapter, &begin);
+	assert(adapter.absent_mounts == 1);
+	assert(adapter.driver_faults == 1);
+
+	/* A failed BEGIN whose driver code is zero is still a mount failure,
+	 * not a miss, when the card is present. */
+	reset_fake();
+	g_fake.succeeds[PRIMITIVE_BEGIN] = false;
+	g_fake.fail_code = 0;
+	event = aius_sd_teensy_execute(&adapter, &begin);
+	assert(adapter.driver_faults == 2);
+	assert(adapter.open_misses == 0);
+
+	/* The counters saturate. */
+	reset_fake();
+	reset_adapter(&adapter);
+	adapter.absent_mounts = UINT32_MAX;
+	adapter.open_misses = UINT32_MAX;
+	g_fake.succeeds[PRIMITIVE_BEGIN] = false;
+	g_fake.card_detected = false;
+	aius_sd_teensy_execute(&adapter, &begin);
+	assert(adapter.absent_mounts == UINT32_MAX);
+	reset_fake();
+	assert(begin_touched_the_card(&adapter));
+	reset_fake();
+	g_fake.open_valid = false;
+	g_fake.fail_code = 0;
+	aius_sd_teensy_execute(&adapter, &open_read);
+	assert(adapter.open_misses == UINT32_MAX);
+}
+
+/* busy_timeouts is mirrored from the driver after each primitive. */
+void test_busy_timeouts_surface()
+{
+	reset_fake();
+	AiusSdTeensy adapter;
+	reset_adapter(&adapter);
+	assert(adapter.busy_timeouts == 0);
+	g_fake.busy_timeouts = 3;
+	AiusSdAction exists = make_action(AIUS_SD_ACTION_EXISTS);
+	exists.path = kPath;
+	aius_sd_teensy_execute(&adapter, &exists);
+	assert(adapter.busy_timeouts == 3);
+}
+
+/* Mode-aware mount: one begin() call carrying the mode; a mode change
+ * invalidates the mount only with no file open. */
+void test_mode_and_remount()
+{
+	reset_fake();
+	AiusSdTeensy adapter;
+	reset_adapter(&adapter);
+	assert(!adapter.dma);
+	assert(begin_touched_the_card(&adapter));
+	assert(!g_fake.begin_dma);
+	assert(g_fake.call_count == 1);
+
+	/* Same mode: the mount stays. */
+	aius_sd_teensy_set_mode(&adapter, false);
+	assert(adapter.mounted);
+
+	/* A change with no file open forces a remount in the new mode. */
+	aius_sd_teensy_set_mode(&adapter, true);
+	assert(adapter.dma);
+	assert(!adapter.mounted);
+	assert(begin_touched_the_card(&adapter));
+	assert(g_fake.begin_dma);
+	assert(g_fake.call_count == 1);
+	assert(adapter.mounted);
+
+	/* A change with a file open records the mode but keeps the mount. */
+	adapter.file_open = true;
+	aius_sd_teensy_set_mode(&adapter, false);
+	assert(!adapter.dma);
+	assert(adapter.mounted);
+	adapter.file_open = false;
+
+	/* init returns to FIFO; null is safe. */
+	aius_sd_teensy_set_mode(&adapter, true);
+	aius_sd_teensy_init(&adapter);
+	assert(!adapter.dma);
+	aius_sd_teensy_set_mode(nullptr, true);
+}
+
 } // namespace
 
 SDClass SD;
@@ -1080,14 +1259,14 @@ bool File::truncate(uint64_t size)
 {
 	record(PRIMITIVE_TRUNCATE);
 	g_fake.offset = size;
-	return g_fake.succeeds[PRIMITIVE_TRUNCATE];
+	return outcome(g_fake.succeeds[PRIMITIVE_TRUNCATE]);
 }
 
 bool File::seek(uint64_t position)
 {
 	record(PRIMITIVE_SEEK);
 	g_fake.offset = position;
-	return g_fake.succeeds[PRIMITIVE_SEEK];
+	return outcome(g_fake.succeeds[PRIMITIVE_SEEK]);
 }
 
 size_t File::read(uint8_t *buffer, size_t length)
@@ -1118,11 +1297,33 @@ void File::close()
 	valid_ = false;
 }
 
-bool SDClass::begin(uint8_t chip_select)
+bool SDClass::begin(uint8_t chip_select, bool dma)
 {
 	record(PRIMITIVE_BEGIN);
 	g_fake.chip_select = chip_select;
-	return g_fake.succeeds[PRIMITIVE_BEGIN];
+	g_fake.begin_dma = dma;
+	return outcome(g_fake.succeeds[PRIMITIVE_BEGIN]);
+}
+
+void SDClass::clearError()
+{
+	g_fake.clear_error_calls++;
+	g_fake.error_code = 0;
+}
+
+uint8_t SDClass::sdErrorCode()
+{
+	return g_fake.error_code;
+}
+
+bool SDClass::cardDetected()
+{
+	return g_fake.card_detected;
+}
+
+uint32_t SDClass::busyTimeouts()
+{
+	return g_fake.busy_timeouts;
 }
 
 bool SDClass::mediaPresent()
@@ -1135,7 +1336,7 @@ bool SDClass::mkdir(const char *path)
 {
 	record(PRIMITIVE_MKDIR);
 	g_fake.path = path;
-	return g_fake.succeeds[PRIMITIVE_MKDIR];
+	return outcome(g_fake.succeeds[PRIMITIVE_MKDIR]);
 }
 
 File SDClass::open(const char *path, uint8_t mode)
@@ -1143,6 +1344,7 @@ File SDClass::open(const char *path, uint8_t mode)
 	record(PRIMITIVE_OPEN);
 	g_fake.path = path;
 	g_fake.open_mode = mode;
+	outcome(g_fake.open_valid);
 	return File(g_fake.open_valid);
 }
 
@@ -1158,14 +1360,14 @@ bool SDClass::rename(const char *path, const char *path_to)
 	record(PRIMITIVE_RENAME);
 	g_fake.path = path;
 	g_fake.path_to = path_to;
-	return g_fake.succeeds[PRIMITIVE_RENAME];
+	return outcome(g_fake.succeeds[PRIMITIVE_RENAME]);
 }
 
 bool SDClass::remove(const char *path)
 {
 	record(PRIMITIVE_REMOVE);
 	g_fake.path = path;
-	return g_fake.succeeds[PRIMITIVE_REMOVE];
+	return outcome(g_fake.succeeds[PRIMITIVE_REMOVE]);
 }
 
 uint64_t SDClass::totalSize()
@@ -1213,5 +1415,8 @@ int main()
 	test_durations_and_counter_saturation();
 	test_diagnostic_counters();
 	test_mount_is_cached_and_revalidated();
+	test_fault_split_and_absence();
+	test_busy_timeouts_surface();
+	test_mode_and_remount();
 	return 0;
 }

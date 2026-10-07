@@ -758,6 +758,7 @@ describe("Aius OpenAPI contract", () => {
       "/api/replays/status",
       "/api/replays/stop",
       "/api/sd",
+      "/api/sd/mode",
       "/api/start",
       "/api/status",
       "/api/stop",

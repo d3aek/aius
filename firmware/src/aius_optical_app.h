@@ -310,6 +310,11 @@ typedef struct {
 		uint32_t generation, const uint8_t **data, uint32_t *length,
 		uint32_t *resolved_slot);
 	void (*recorder_read_release)(void *context, uint32_t slot);
+	/* POST /api/sd/mode (aius-sample-rate-following.md Phase 4e, E3): selects
+	 * DMA (true) or FIFO (false) SDIO for the next mount. Returns false when a
+	 * file is open, answered 503 sd_busy with the mode unchanged. Optional and
+	 * last in the table: a table without it answers 404 on the route. */
+	bool (*sd_set_mode)(void *context, bool dma);
 } AiusOpticalApp;
 
 /* --------------------------------------------------------------------------

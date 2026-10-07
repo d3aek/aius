@@ -32,6 +32,8 @@ extern "C" {
 	#include "aius_recorder_bank.h"
 	#include "aius_audio_ingress.h"
 	#include "aius_audio_service.h"
+	#include "aius_producer_yield.h"
+	#include "aius_producer_yield_platform.h"
 	#include "aius_audio_clock.h"
 	#include "aius_clock.h"
 	#include "aius_pipeline.h"
@@ -250,6 +252,90 @@ static bool g_audio_ingest_since_reset;
 static uint32_t g_runtime_epoch_max_us;
 static uint32_t g_runtime_epoch_budget_overruns;
 static uint32_t g_audio_checkpoint_max_cycles;
+/* Phase 4e: the DTCM stack zone's since-boot free floor (stack_paint() at
+ * boot, stack_scan() from the 1 Hz METRICS sampler); a nested producer pass
+ * stacks on the main stack, so this is the device backstop for stack-bound.
+ * Never cleared: an earlier low only makes the check stricter. */
+static uint32_t g_stack_free_min_bytes;
+static uint32_t g_stack_scan_at_ms;
+extern "C" unsigned long _ebss;
+static constexpr uint32_t kStackPaintWord = 0x5354414bu; /* "STAK" */
+/* Below the live frame, keep this many bytes unpainted: setup()'s own frame
+ * and whatever the paint loop's caller chain still needs. */
+static constexpr uint32_t kStackPaintGuardBytes = 512u;
+/* The core's stack-overflow trap: configure_cache() maps a 32 B NOACCESS MPU
+ * region at _ebss (cores/teensy4/startup.c:313-314, SIZE_32B). RBAR keeps
+ * only the address bits above the region size, so the region is the 32 B
+ * block containing _ebss. Any access there is a MemManage fault (a HardFault
+ * with PRIMASK set), so the paint and the scan start at the first word above
+ * it, and the free figure is measured from there; the 32 B trap is never
+ * stack the firmware can use anyway. */
+static constexpr uintptr_t kStackTrapBytes = 32u;
+
+/* always_inline: an out-of-line copy would be an unpinned ITCM section in
+ * this object (itcm-placement HOT_SECTIONS). */
+static inline __attribute__((always_inline)) uint32_t *stack_paint_base(void)
+{
+	return (uint32_t *)((((uintptr_t)&_ebss) & ~(kStackTrapBytes - 1u)) +
+	                    kStackTrapBytes);
+}
+
+static FLASHMEM __attribute__((noinline)) void stack_paint(void)
+{
+	uint32_t *const base = stack_paint_base();
+	uint32_t *word = base;
+	uint32_t sp;
+	__asm__ volatile("mov %0, sp" : "=r"(sp));
+	uint32_t *const end = (uint32_t *)(sp - kStackPaintGuardBytes);
+	/* Masked: an interrupt taken mid-paint stacks its frame below sp, and
+	 * the paint must not overwrite it. About 25 KB of stores, tens of us. */
+	__disable_irq();
+	while (word < end)
+		*word++ = kStackPaintWord;
+	__enable_irq();
+	g_stack_free_min_bytes = (uint32_t)((uintptr_t)end - (uintptr_t)base);
+}
+
+/* The lowest word the stack has ever written is the first non-paint word
+ * scanning up from the paint base; everything below it is free. At most once
+ * a second, from the METRICS checkpoint. */
+static FLASHMEM void stack_scan(uint32_t now_ms)
+{
+	if ((uint32_t)(now_ms - g_stack_scan_at_ms) < 1000u &&
+	    g_stack_scan_at_ms != 0u)
+		return;
+	g_stack_scan_at_ms = now_ms == 0u ? 1u : now_ms;
+	const uint32_t *const base = stack_paint_base();
+	const uint32_t *word = base;
+	const uint32_t *const limit =
+		(const uint32_t *)((uintptr_t)base + g_stack_free_min_bytes);
+	while (word < limit && *word == kStackPaintWord)
+		word++;
+	const uint32_t free_bytes =
+		(uint32_t)((uintptr_t)word - (uintptr_t)base);
+	if (free_bytes < g_stack_free_min_bytes)
+		g_stack_free_min_bytes = free_bytes;
+}
+
+/* Phase 4e SD window for the three raw scans (app_read_directory,
+ * http_replay_list_json, app_replay_delete): declared first in the function,
+ * so it opens before the first SD.open and closes after the last File
+ * destructor on every return path. always_inline keeps both halves inside
+ * the scan's own FLASHMEM body (an out-of-line COMDAT copy would land in
+ * ITCM). Never used around the replay refill or ota_copy_staged_to_psram,
+ * the accepted unwindowed SD roots. */
+struct ProducerSdWindow {
+	__attribute__((always_inline)) ProducerSdWindow()
+	{
+		aius_producer_yield_window_open();
+	}
+	__attribute__((always_inline)) ~ProducerSdWindow()
+	{
+		aius_producer_yield_window_close();
+	}
+	ProducerSdWindow(const ProducerSdWindow &) = delete;
+	ProducerSdWindow &operator=(const ProducerSdWindow &) = delete;
+};
 static uint32_t g_tx_high_water_frames;
 static constexpr uint32_t AIUS_RUNTIME_EPOCH_BUDGET_US = 25000u;
 
@@ -1760,6 +1846,9 @@ public:
 		g_runtime_epoch_max_us = 0u;
 		g_runtime_epoch_budget_overruns = 0u;
 		g_audio_checkpoint_max_cycles = 0u;
+		/* Phase 4e watermarks: pend latency, late passes and the SD
+		 * window's non-yield stretch, so a run measures only itself. */
+		aius_producer_yield_clear_diag();
 		if (g_audio_service_ready)
 			aius_audio_service_clear_diag(&g_audio_service);
 		if (g_pipeline != nullptr)
@@ -1836,9 +1925,10 @@ protected:
 				const size_t count = aius_replay_service_pop_words(
 					&g_replay_service, slot,
 					AIUS_AUDIO_INGRESS_CHUNK_WORDS);
-				if (count == AIUS_AUDIO_INGRESS_CHUNK_WORDS)
+				if (count == AIUS_AUDIO_INGRESS_CHUNK_WORDS) {
 					(void)aius_audio_ingress_commit(&g_audio_ingress);
-				else
+					aius_producer_yield_note_pend(ARM_DWT_CYCCNT);
+				} else
 					aius_audio_ingress_cancel_gap(
 						&g_audio_ingress,
 						AIUS_AUDIO_INGRESS_GAP_SHORT_REPLAY);
@@ -1861,6 +1951,9 @@ protected:
 			    AIUS_OK) {
 				audio_ingress_publish_live(slot, left, right);
 				(void)aius_audio_ingress_commit(&g_audio_ingress);
+				/* Phase 4e: stamp the oldest unserved commit so the
+				 * next producer pass (regular or nested) times it. */
+				aius_producer_yield_note_pend(ARM_DWT_CYCCNT);
 			}
 		} else if (g_audio_ingress_ready) {
 			aius_audio_ingress_record_gap(
@@ -3454,7 +3547,17 @@ static FLASHMEM bool http_audio_diag_json(char *output, size_t capacity,
 		"\"tx_level_frames\":%lu,"
 		"\"tx_high_water_frames\":%lu,"
 		"\"runtime_epoch_max_us\":%lu,"
-		"\"runtime_epoch_budget_overruns\":%lu}";
+		"\"runtime_epoch_budget_overruns\":%lu,"
+		"\"producer_wait_passes\":%lu,"
+		"\"producer_point_passes\":%lu,"
+		"\"producer_pend_latency_max_us\":%lu,"
+		"\"producer_late_passes\":%lu,"
+		"\"stack_free_min_bytes\":%lu}";
+	/* Phase 4e: nested producer passes (SD hook and checkpoint yield point),
+	 * the pend latency watermark and its late count against D, and the
+	 * since-boot stack paint floor (never cleared). */
+	AiusProducerYieldDiag yield;
+	aius_producer_yield_get_diag(&yield);
 	return http_json_append(
 		output, capacity, length,
 		format_audio_diag,
@@ -3504,7 +3607,12 @@ static FLASHMEM bool http_audio_diag_json(char *output, size_t capacity,
 		(unsigned long)aius_spdif_tx24_level(&g_aius_spdif_tx24),
 		(unsigned long)g_tx_high_water_frames,
 		(unsigned long)g_runtime_epoch_max_us,
-		(unsigned long)g_runtime_epoch_budget_overruns);
+		(unsigned long)g_runtime_epoch_budget_overruns,
+		(unsigned long)yield.wait_passes,
+		(unsigned long)yield.point_passes,
+		(unsigned long)yield.pend_latency_max_us,
+		(unsigned long)yield.late_passes,
+		(unsigned long)g_stack_free_min_bytes);
 }
 
 static FLASHMEM bool http_clock_json(char *output, size_t capacity,
@@ -6250,6 +6358,7 @@ static FLASHMEM size_t http_replay_status_json(uint8_t *body, size_t capacity)
  * mistakable for a complete one. */
 static FLASHMEM size_t http_replay_list_json(uint8_t *body, size_t capacity)
 {
+	const ProducerSdWindow window;
 	if (!g_sd_ready) return (size_t)snprintf((char *)body, capacity,
 		"{\"ok\":false,\"error\":\"sd_unavailable\"}");
 	File directory = SD.open("/aius/replays");
@@ -6557,6 +6666,7 @@ static FLASHMEM AiusOpticalAppReplayResult app_replay_delete(void *,
 	     g_replay_service.source == AIUS_REPLAY_SOURCE_SWITCHING_TO_REPLAY))
 		return AIUS_OPTICAL_APP_REPLAY_ACTIVE;
 	snprintf(path, sizeof(path), "/aius/replays/%s.iec", id);
+	const ProducerSdWindow window;
 	if (!SD.exists(path))
 		return AIUS_OPTICAL_APP_REPLAY_NOT_FOUND;
 	return SD.remove(path) ? AIUS_OPTICAL_APP_REPLAY_OK :
@@ -6794,6 +6904,7 @@ static FLASHMEM AiusOpticalAppDirResult app_read_directory(
 {
 	if (!g_sd_ready)
 		return AIUS_OPTICAL_APP_DIR_FAILED;
+	const ProducerSdWindow window;
 	File directory = SD.open(path);
 	if (!directory)
 		return AIUS_OPTICAL_APP_DIR_NOT_FOUND;
@@ -6856,6 +6967,18 @@ static AiusOpticalAppRecorderReadResult app_recorder_read(
 	uint32_t *length, uint32_t *resolved_slot);
 static void app_recorder_read_release(void *, uint32_t slot);
 
+/* POST /api/sd/mode (Phase 4e, E3). Memory only: the adapter records the mode
+ * and drops the mount, so the next storage BEGIN mounts in it. Refused while a
+ * file is open (an in-flight job keeps its mount). Not persisted. */
+static FLASHMEM bool app_sd_set_mode(void *, bool dma)
+{
+	AiusSdTeensy *target = &g_runtime.storage.target;
+	if (target->file_open)
+		return false;
+	aius_sd_teensy_set_mode(target, dma);
+	return true;
+}
+
 /* Handed to aius_optical_app_init() by slice S2a. Deliberately external
  * linkage: an internal-linkage table nothing references yet is exactly the
  * shape -Wunused-variable reports, whereas an extern definition is never
@@ -6893,7 +7016,8 @@ const AiusOpticalApp g_aius_optical_app = {
 	app_recorder_thaw,
 	app_recorder_config,
 	app_recorder_read,
-	app_recorder_read_release
+	app_recorder_read_release,
+	app_sd_set_mode
 };
 
 /* ------------------------------------------------------------------ */
@@ -7771,6 +7895,7 @@ static FLASHMEM bool platform_metrics(void *, const AiusRuntimeBudget *budget,
 	if (budget == nullptr ||
 	    budget->checkpoint != AIUS_BOOT_CHECKPOINT_METRICS)
 		return false;
+	stack_scan(now_ms);
 	const uint32_t started = micros();
 	service_hw_metrics();
 	measure_epoch_service(now_ms);
@@ -9353,6 +9478,86 @@ static FLASHMEM bool platform_replay(void *, const AiusRuntimeBudget *budget,
 	return true;
 }
 
+/* Phase 4e producer yield (lib/aius_producer_yield). The platform half the
+ * library links against: every function is FLASHMEM, since each runs in
+ * thread mode from the main loop (the SD wait hook or a checkpoint yield
+ * point), never from the audio ISR; only the library's guard and pass
+ * wrapper sit in ITCM. */
+extern "C" {
+
+FLASHMEM uint32_t aius_producer_yield_plat_cycles(void)
+{
+	return ARM_DWT_CYCCNT;
+}
+
+FLASHMEM uint32_t aius_producer_yield_plat_ipsr(void)
+{
+	uint32_t ipsr;
+	__asm__ volatile("mrs %0, ipsr" : "=r"(ipsr));
+	return ipsr;
+}
+
+FLASHMEM uint32_t aius_producer_yield_plat_primask(void)
+{
+	uint32_t primask;
+	__asm__ volatile("mrs %0, primask" : "=r"(primask));
+	return primask;
+}
+
+FLASHMEM bool aius_producer_yield_plat_irq_software_on(void)
+{
+	return NVIC_IS_ENABLED(IRQ_SOFTWARE) != 0;
+}
+
+FLASHMEM bool aius_producer_yield_plat_audio_ready(void)
+{
+	return g_audio_service_ready;
+}
+
+FLASHMEM bool aius_producer_yield_plat_recovery_safe(void)
+{
+	return g_runtime.recovery_safe;
+}
+
+FLASHMEM bool aius_producer_yield_plat_work_pending(void)
+{
+	return aius_audio_ingress_level(&g_audio_ingress) != 0u;
+}
+
+/* One pass of the producer under the AUDIO budget, exactly as the regular
+ * AUDIO visit runs it (platform_audio below). */
+FLASHMEM void aius_producer_yield_plat_run_pass(void)
+{
+	(void)aius_audio_service_run(&g_audio_service, g_audio_reset_sequence);
+}
+
+FLASHMEM uint16_t aius_producer_yield_plat_ledger_checkpoint(void)
+{
+	return g_boot_ledger.last_checkpoint;
+}
+
+/* E5: the nested pass records AUDIO before it runs and the saved checkpoint
+ * after, each committed through the same retained double slot as
+ * platform_checkpoint, so a wedge inside the pass reads pv= AUDIO. No new
+ * retained object. */
+FLASHMEM void aius_producer_yield_plat_ledger_record(uint16_t checkpoint)
+{
+	aius_boot_record_checkpoint(&g_boot_ledger, checkpoint);
+	(void)aius_boot_storage_teensy_commit(&g_boot_storage, &g_boot_ledger);
+}
+
+/* The strong definition of the vendored SdFat's weak wait hook. It lives in
+ * this object file, not an LDF archive, so the linker takes it over the weak
+ * one in SdioTeensy.cpp (an archive member's strong copy would lose silently).
+ * Called between card commands only; the library decides whether a pass
+ * runs. */
+FLASHMEM void aius_sdio_wait_hook(void)
+{
+	(void)aius_producer_yield_wait();
+}
+
+} // extern "C"
+
 static FLASHMEM bool platform_audio(void *, const AiusRuntimeBudget *budget,
                                     uint32_t now_ms)
 {
@@ -9367,8 +9572,12 @@ static FLASHMEM bool platform_audio(void *, const AiusRuntimeBudget *budget,
 		return false;
 
 	const uint32_t cycles_started = ARM_DWT_CYCCNT;
+	/* The regular visit marks the producer running, so a checkpoint or SD
+	 * wait reached from inside it never nests a second pass. */
+	aius_producer_yield_visit_begin();
 	const AiusStatus status =
 		aius_audio_service_run(&g_audio_service, g_audio_reset_sequence);
+	aius_producer_yield_visit_end();
 	const uint32_t cycles = ARM_DWT_CYCCNT - cycles_started;
 	if (cycles > g_audio_checkpoint_max_cycles)
 		g_audio_checkpoint_max_cycles = cycles;
@@ -9419,6 +9628,12 @@ static FLASHMEM void platform_checkpoint(void *, uint16_t checkpoint)
 	aius_boot_record_checkpoint(&g_boot_ledger, checkpoint);
 	(void)aius_boot_storage_teensy_commit(&g_boot_storage, &g_boot_ledger);
 	aius_fault_checkpoint(checkpoint);
+	/* Phase 4e yield point: pending live input is produced at every
+	 * checkpoint boundary before its service runs, except EPOCH_COMPLETE, so
+	 * nothing runs after that commit (round 1 B2). Before the HTTP stamp, so
+	 * a pass here is not charged to the HTTP service's own overrun count. */
+	if (checkpoint != AIUS_BOOT_CHECKPOINT_EPOCH_COMPLETE)
+		(void)aius_producer_yield_point();
 	if (checkpoint == AIUS_BOOT_CHECKPOINT_HTTP)
 		g_http_checkpoint_entered_us = micros();
 }
@@ -9546,6 +9761,12 @@ FLASHMEM void setup(void)
 	 * checkpoint 7 first evaluates the policy. */
 	tx_gate_actuate(false);
 	aius_rate_tracker_init(&g_rate_tracker);
+	/* Phase 4e: the stack floor's paint and the producer-yield state, both
+	 * before AudioMemory lets update() stamp a pend (configure re-zeroes the
+	 * state, so an earlier stamp would be dropped anyway). */
+	stack_paint();
+	aius_producer_yield_configure(F_CPU_ACTUAL / 1000000u,
+	                              AIUS_PRODUCER_YIELD_LATE_US_DEFAULT);
 
 	capture_retained_boot_state();
 	(void)aius_boot_teensy_watchdog_arm(&g_boot_primitives);

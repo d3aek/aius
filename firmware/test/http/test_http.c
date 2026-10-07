@@ -661,8 +661,26 @@ static void test_parser_result_registry(void)
 	}
 }
 
+/* Phase 4e: POST /api/sd/mode routes; every other method is refused, and
+ * neither /api/sd nor the /sd/ resource prefix swallows it. */
+static void test_sd_mode_route(void)
+{
+	static const char post[] =
+		"POST /api/sd/mode HTTP/1.0\r\nContent-Length: 12\r\n\r\n"
+		"{\"dma\":true}";
+	static const char get[] = "GET /api/sd/mode HTTP/1.0\r\n\r\n";
+	AiusHttpRequest request;
+	assert(aius_http_parse((const uint8_t *)post, strlen(post),
+	                               &request) == AIUS_HTTP_OK);
+	assert(request.route == AIUS_HTTP_ROUTE_SD_MODE);
+	assert(request.body_complete && request.body_length == 12u);
+	assert(aius_http_parse((const uint8_t *)get, strlen(get),
+	                               &request) == AIUS_HTTP_ERR_METHOD);
+}
+
 int main(void)
 {
+	test_sd_mode_route();
 	AiusHttpRequest request;
 	test_sd_auth_header();
 	test_sd_auth_header_name_case();

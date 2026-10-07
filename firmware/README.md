@@ -325,18 +325,27 @@ straight out of the audio path's headroom. Three rules, all enforced:
   source defines a no-op fallback so the host suites still compile Arduino-free.
 - **Large buffers in `DMAMEM`** (OCRAM). The composed runtime is roughly 35 kB,
   dominated by the HTTP request/response buffers and the model-sized application
-  body buffer, against a DTCM free-for-locals zone of **37,856 bytes**
-  (`_estack - _ebss`, Phase-4 `teensy41-optical`; it moves with every static
-  addition, so read it from the build); a DTCM instance could not fit. The
+  body buffer, against a DTCM free-for-locals zone of **25,696 bytes**
+  (`_estack - _ebss` on the canonical `teensy41-optical-slot-a` image at
+  aius-sample-rate-following Phase 4e start; 25,728 B on the plain image; it
+  moves with every static addition, so read it from the build); a DTCM
+  instance could not fit. The
   active and pending DSP models, the replay service and the three UDP buffers are
   placed the same way. That zone is the whole stack for both the main loop and
   audio ISR. `enqueue()` uses about 4 kB of frame at the bounded AUDIO
-  checkpoint; the ISR now only publishes ingress.
-- **Five post-link ITCM guards**, in `test/itcm-placement/verify_target.py` and
+  checkpoint; the ISR now only publishes ingress. Since Phase 4e a nested
+  producer pass also runs on the main stack under an SD wait or a checkpoint
+  yield point; `stack-bound` proves the deepest path plus 2,048 B fits the
+  zone, and `audio_diag.stack_free_min_bytes` is the device floor (boot
+  paint, 1 Hz scan).
+- **Nine post-link ITCM checks**, in `test/itcm-placement/verify_target.py` and
   run by every optical build. They reject executable `.text` from declared cold
-  objects, pin the mixed ingress library to its five producer entry points, and
-  pin `optical_main.cpp` to its two ingress-producer functions plus the 12-byte
-  per-decode DWT reader. New objects under a cold engine tree must be declared,
+  objects, pin the mixed ingress library to its five producer entry points, pin
+  the producer-yield object (Phase 4e) to its guard, wait, point and visit
+  entry points plus the nested-pass wrapper, and pin `optical_main.cpp` to its
+  exact `HOT_SECTIONS` set (the ingress producer, the per-decode DWT reader and
+  the stall witness); the last three read the linked image for the OTA
+  dark-window, TX and flash-pinned residency. New objects under a cold engine tree must be declared,
   so "this is legitimately hot" remains a reviewable claim rather than an
   opinion. The fourth closes the half `build_src_filter` paths cannot reach:
   PlatformIO's LDF lands each resolved library at `lib<hash>/<libname>/`, so
@@ -353,11 +362,14 @@ straight out of the audio path's headroom. Three rules, all enforced:
   seventh 32 KiB FlexRAM block and remove the same amount from the shared
   stack/local zone.
 - **A post-link audio-memory guard**, in `test/memory/verify_target.py`, pins the
-  16 KiB OCRAM ingress, the 128 KiB DTCM decoder arena, zero OCRAM recorder
-  staging, and the committed 131,424-byte OCRAM free floor.
+  16 KiB OCRAM ingress, the 213.6 KiB DTCM decoder arena, zero OCRAM recorder
+  staging, and a per-env OCRAM free floor (`OCRAM_FREE_FLOORS`: 131,776 B plain
+  and fault, 131,744 B slot-a and slot-b, the Phase 4e start measurements,
+  above the 131,040 B `0x1FFE0` link floor). A floor only rises to a fresh
+  measurement, so any OCRAM growth in any optical env fails the build.
 
 `scripts/build.sh` prints the per-bank report and fails when a bank is over
-capacity; `scripts/test.sh --suite itcm-placement` re-runs the five guards over
+capacity; `scripts/test.sh --suite itcm-placement` re-runs the ITCM checks over
 an existing build.
 
 ## Running host tests
@@ -424,8 +436,12 @@ Suites (all build with `-Wall -Wextra -Werror` + ASan/UBSan):
 | `status-body-bound` | Worst-case `GET /api/status` body, summed from the emitters' printf formats (ILP32 conversion widths, loop bounds and `%s` sizes resolved from source, fail-closed on anything unmodelled), against `AIUS_RUNTIME_TEENSY_STATUS_BODY` (16,384 B) plus its NUL; also run at a limit equal to the worst case, which must fail. |
 | `fault-target` | Fault-image source guard + checkpoint selection. |
 | `build-metadata` | Compile-time build id, revision and fault-selector derivation. |
-| `memory` | The per-bank release gate plus the optical post-link ingress/arena/staging/headroom proof; the native suite is driven over a committed ELF reduction of a real optical image. |
-| `itcm-placement` | The five post-link ITCM guards, re-run over an existing optical build, plus the host-only tests of the LDF-library gate and the `-flto` precondition. |
+| `memory` | The per-bank release gate plus the optical post-link ingress/arena/staging/headroom proof against the per-env OCRAM floor table (a snapshot 1 B under any env's floor and an env with no entry both fail); the native suite is driven over a committed ELF reduction of a real optical image. |
+| `sdfat-vendor` | The vendored SdFat and SD snapshots (Phase 4e): upstream and patched SHA-256 source contract, the SD wait hook only in the `yieldTimeout` and ACMD41 loops, the DTCM-only DMA bounce, the FAT volume-serial accessor. |
+| `producer-yield` | The SD-wait and checkpoint producer yield (`lib/aius_producer_yield`) over a fake cycle clock: guard truth table, pend stamp, the nested-pass ledger wrapper, latency and window non-yield watermarks, clear. |
+| `producer-isolation` | The post-link walk over the optical images: producer roots reach no SD, network, USB or stdio symbol, no hook under an allocator or stdio function, every hook-reaching SD caller and yield point is a table row; plus the link-map provenance of the vendored SD stack. Fixture ELFs always; real-ELF cases need a build. |
+| `stack-bound` | Worst-case call depth over the same walk plus the exception chain, against the canonical image's DTCM stack zone less 2,048 B. Fixture ELFs always; real-ELF cases need a build. |
+| `itcm-placement` | The post-link ITCM checks, re-run over an existing optical build, plus the host-only tests of the LDF-library gate, the producer-yield pin and the `-flto` precondition. |
 | `fake-fidelity` | Every host fake's constants against the real framework headers, three ways: a listed constant must exist upstream with the same value, *every* enum member `fake/fnet.h` declares must match FNET's own (no name list, so a positional renumber cannot hide), and a fake must not invent a constant. Each kind is then re-run over a mutated copy of the fake, so the suite proves it can still see the defects it was written for. A fake with a wrong constant agrees with itself and with the tests asserting the same macro, so only an external reference catches it. |
 | `registry` | The guard on this table: fails when it, the `# Suites:` header in `scripts/test.sh` and that script's `case` arms disagree with the directories under `test/`. |
 | `sd-editor` | The SD-card web pages (status, DSP editor, replay manager, upgrade) as vitest suites at the repo root's `test/sd-editor/`, run with this repo as the vitest root; needs `pnpm` (resolved through the superproject when this repo is a submodule). |
@@ -437,13 +453,14 @@ firmware's own `scripts/test.sh` is the test entry point; the repo-root
 C suites.
 
 Every suite is host-only and self-contained except `itcm-placement`, which
-inspects the linked objects of a cross-build. It exits 3 with the build command
+inspects the linked objects of a cross-build (`producer-isolation` and
+`stack-bound` also read one, but skip their real-ELF cases without it). It exits 3 with the build command
 to run when no image is present, and reads
 `.pio/build/$AIUS_ITCM_ENV` (default `teensy41-optical`).
 
 Cross-build for the Teensy with `scripts/build.sh` (needs PlatformIO; see its
 header for the pinned-venv recipe). Both optical images must build with every
-bank fitting and all six ITCM guards passing:
+bank fitting and every post-link check passing:
 
 ```bash
 scripts/build.sh teensy41-optical

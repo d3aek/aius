@@ -889,6 +889,45 @@
         }
       }
     },
+    "/api/sd/mode": {
+      "post": {
+        "operationId": "setSdMode",
+        "description": "Selects the SDIO transfer mode for the next card mount: DMA (true) or FIFO (false). Takes X-Aius-SD-Auth. Not persisted: every boot starts in FIFO, so a watchdog reset during a DMA run reverts silently; read sd_diag.sd_mode from GET /api/status to confirm. Refused with 503 sd_busy while a file is open.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["dma"],
+                "additionalProperties": false,
+                "properties": { "dma": { "type": "boolean" } }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Mode recorded; the next mount uses it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["ok", "sd_mode"],
+                  "properties": {
+                    "ok": { "type": "boolean" },
+                    "sd_mode": { "type": "string", "enum": ["dma", "fifo"] }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/Error" },
+          "401": { "$ref": "#/components/responses/Error" },
+          "503": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
     "/sd/{resource}": {
       "parameters": [
         {
@@ -1944,6 +1983,13 @@
           "last_protocol_action",
           "last_primitive_us",
           "longest_primitive_us",
+          "sd_mode",
+          "sd_mode_requested",
+          "open_misses",
+          "absent_mounts",
+          "busy_timeouts",
+          "hook_calls",
+          "sd_window_nonyield_max_us",
           "root_state",
           "http_owned",
           "draining",
@@ -2009,6 +2055,41 @@
             "type": "integer",
             "minimum": 0,
             "description": "Longest single SD primitive since boot, across every job and every owner. It carries no attribution; replay_diag.longest_action is the counterpart that names the action."
+          },
+          "sd_mode": {
+            "type": "string",
+            "enum": ["dma", "fifo", "none"],
+            "description": "SDIO transfer mode of the mounted volume; none while no volume is mounted. A mode change drops the mount, so this reads the new mode only after the next mount."
+          },
+          "sd_mode_requested": {
+            "type": "string",
+            "enum": ["dma", "fifo"],
+            "description": "SDIO transfer mode the next mount uses (POST /api/sd/mode; not persisted, every boot starts fifo)."
+          },
+          "open_misses": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Failed primitives with no card error code (a missing file, for one): the mount is kept and driver_faults is untouched. Never a fault."
+          },
+          "absent_mounts": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Mount attempts that failed with no card inserted (card detect low). Never a fault; about one per second while the card is out."
+          },
+          "busy_timeouts": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "1 s busy-wait expiries in the vendored SDIO driver (BUSY_TIMEOUT_MICROS), the operational meaning of a DMA hang."
+          },
+          "hook_calls": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Every entry to the SD wait hook (between card commands), inside a window or not, whether or not a producer pass ran."
+          },
+          "sd_window_nonyield_max_us": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Longest stretch inside an SD window with no hook in it (window open to first hook, hook return to next hook, last hook to close); time inside a hook, nested pass included, is never counted. Reset by POST /api/clear."
           },
           "root_state": {
             "type": "integer",
@@ -2281,7 +2362,12 @@
           "tx_level_frames",
           "tx_high_water_frames",
           "runtime_epoch_max_us",
-          "runtime_epoch_budget_overruns"
+          "runtime_epoch_budget_overruns",
+          "producer_wait_passes",
+          "producer_point_passes",
+          "producer_pend_latency_max_us",
+          "producer_late_passes",
+          "stack_free_min_bytes"
         ],
         "properties": {
           "ingress_level_words": {
@@ -2471,6 +2557,31 @@
             "type": "integer",
             "minimum": 0,
             "description": "Epochs that exceeded the 25 ms budget."
+          },
+          "producer_wait_passes": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Nested producer passes run from the SD wait hook inside an SD window."
+          },
+          "producer_point_passes": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Nested producer passes run from a checkpoint yield point (every boundary except EPOCH_COMPLETE)."
+          },
+          "producer_pend_latency_max_us": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Longest wait from an unserved ingress commit to the next producer pass start, in microseconds. Reset by POST /api/clear."
+          },
+          "producer_late_passes": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Passes whose pend latency exceeded D (2,500 us). Reset by POST /api/clear."
+          },
+          "stack_free_min_bytes": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Since-boot floor of untouched DTCM stack (boot paint, scanned at 1 Hz). Not reset by POST /api/clear."
           }
         }
       },

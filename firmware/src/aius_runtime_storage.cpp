@@ -7,6 +7,8 @@
 
 #include "aius_runtime_storage.h"
 
+#include "aius_producer_yield.h"
+
 #if defined(ARDUINO)
 #include <Arduino.h>
 #endif
@@ -17,6 +19,9 @@
 
 #ifndef FLASHMEM
 #define FLASHMEM
+#endif
+#ifndef PROGMEM
+#define PROGMEM
 #endif
 
 namespace {
@@ -330,9 +335,14 @@ FLASHMEM bool route_action(AiusRuntimeStorage *service, const AiusSdAction *acti
 		break;
 	}
 
-	/* One driver primitive, its result retained for the next epoch. */
+	/* One driver primitive, its result retained for the next epoch. The SD
+	 * window lets every card wait inside it (mounts, probes and OTA staging
+	 * chunks included) run a pending producer pass through the SdFat hook
+	 * (aius-sample-rate-following.md Phase 4e). */
+	aius_producer_yield_window_open();
 	service->pending_event =
 		aius_sd_teensy_execute(&service->target, action);
+	aius_producer_yield_window_close();
 	service->event_present = true;
 	if (authoritative)
 		publish_http(service, AIUS_HTTP_SD_PROGRESS);
@@ -644,6 +654,41 @@ FLASHMEM bool aius_runtime_storage_diag_json(
 	                 (unsigned long)service->target.last_duration_us,
 	                 (unsigned long)service->target.longest_duration_us))
 		return false;
+	/* Phase 4e: the transfer mode, the two non-fault failure classes (a
+	 * not-found primitive and a mount with no card), the vendored driver's
+	 * 1 s busy-timeout expiries, and the SD wait hook's own record (every
+	 * hook entry, and the longest stretch inside a window with no hook in
+	 * it; POST /api/clear resets that watermark). */
+	{
+		AiusProducerYieldDiag yield;
+		aius_producer_yield_get_diag(&yield);
+		/* sd_mode is the MOUNTED volume's mode ("none" while unmounted),
+		 * sd_mode_requested the mode the next mount uses. A mounted
+		 * volume's mode equals the requested one because the only mode
+		 * setter (optical_main.cpp app_sd_set_mode) refuses with a file
+		 * open, and with none open aius_sd_teensy_set_mode drops the
+		 * mount, so a mode change always remounts before it is served. */
+		/* PROGMEM: flash, not DTCM .rodata. On the canonical slot-a
+		 * image this string as .rodata pushed the 1 KiB-aligned
+		 * _VectorsRam past 0x20008000, costing the stack zone 1,024 B
+		 * of padding. */
+		static const char format_sd_yield[] PROGMEM =
+			"\"sd_mode\":\"%s\",\"sd_mode_requested\":\"%s\","
+			"\"open_misses\":%lu,"
+			"\"absent_mounts\":%lu,\"busy_timeouts\":%lu,"
+			"\"hook_calls\":%lu,"
+			"\"sd_window_nonyield_max_us\":%lu,";
+		const char *requested = service->target.dma ? "dma" : "fifo";
+		if (!diag_append(output, capacity, length, format_sd_yield,
+		                 service->target.mounted ? requested : "none",
+		                 requested,
+		                 (unsigned long)service->target.open_misses,
+		                 (unsigned long)service->target.absent_mounts,
+		                 (unsigned long)service->target.busy_timeouts,
+		                 (unsigned long)yield.hook_calls,
+		                 (unsigned long)yield.window_nonyield_max_us))
+			return false;
+	}
 	/* Live ownership, so a status read taken during a stuck job says who
 	 * holds the volume rather than only what failed last. */
 	if (!diag_append(output, capacity, length,

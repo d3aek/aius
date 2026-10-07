@@ -122,6 +122,24 @@ def assert_one_shot_body(body):
             primitive_sites += len(PRIMITIVE.findall(fragment))
     assert primitive_sites == 17, "eligible primitive catalog is not exact"
 
+    # The mount mode is the adapter's stored mode, never a literal.
+    for fragment in case_fragments(clean, "BEGIN"):
+        assert re.search(r"\bSD\s*\.\s*begin\s*\([^)]*adapter\s*->\s*dma\s*\)", fragment), (
+            "BEGIN does not pass the stored mode"
+        )
+
+    # clearError() runs before the primitive in every eligible case, so the
+    # fault split reads only that primitive's error code.
+    for action, expected in ELIGIBLE.items():
+        for fragment in case_fragments(clean, action):
+            match = re.search(expected, fragment)
+            if not match:
+                continue
+            clear = re.search(r"\bSD\s*\.\s*clearError\s*\(", fragment)
+            assert clear and clear.start() < match.start(), (
+                f"clearError() does not precede the primitive in {action}"
+            )
+
     volume_reads = len(VOLUME_TYPE.findall(clean))
     assert volume_reads == 1, "volume type is not read exactly once"
     probe_reads = sum(
@@ -162,15 +180,35 @@ def test_source_and_mutation_sensitivity():
         (
             "duplicate primitive",
             lambda source: source.replace(
-                "SD.begin(BUILTIN_SDCARD)",
-                "SD.begin(BUILTIN_SDCARD), SD.begin(BUILTIN_SDCARD)",
+                "SD.begin(BUILTIN_SDCARD, adapter->dma)",
+                "SD.begin(BUILTIN_SDCARD, adapter->dma), SD.begin(BUILTIN_SDCARD, adapter->dma)",
                 1,
             ),
         ),
         (
             "missing primitive",
             lambda source: source.replace(
-                "SD.begin(BUILTIN_SDCARD)", "true", 1
+                "SD.begin(BUILTIN_SDCARD, adapter->dma)", "true", 1
+            ),
+        ),
+        (
+            "mode ignored",
+            lambda source: source.replace(
+                "SD.begin(BUILTIN_SDCARD, adapter->dma)",
+                "SD.begin(BUILTIN_SDCARD, false)",
+                1,
+            ),
+        ),
+        (
+            "clearError removed",
+            lambda source: source.replace("SD.clearError();", "", 1),
+        ),
+        (
+            "clearError after the primitive",
+            lambda source: source.replace(
+                "SD.clearError();\n\t\tconst uint32_t started = micros();\n\t\tconst bool success = SD.mkdir(action->path);",
+                "const uint32_t started = micros();\n\t\tconst bool success = SD.mkdir(action->path);\n\t\tSD.clearError();",
+                1,
             ),
         ),
         ("volume type outside the probe", append("SD.sdfs.vol()->fatType();")),

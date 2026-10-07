@@ -66,6 +66,9 @@ typedef struct {
 	size_t stored_length;
 	unsigned reboots;
 	unsigned clears;
+	unsigned sd_mode_calls;
+	bool sd_mode_dma;
+	bool sd_mode_busy;
 	unsigned stops;
 
 	/* What the last measure_start carried, and whether to accept it. */
@@ -307,6 +310,17 @@ static void fake_set_test_running(void *context, bool running)
 	Fake *fake = (Fake *)context;
 	record(fake, running ? "test_running:true" : "test_running:false");
 	fake->test_running = running;
+}
+
+static bool fake_sd_set_mode(void *context, bool dma)
+{
+	Fake *fake = (Fake *)context;
+	record(fake, "sd_set_mode");
+	if (fake->sd_mode_busy)
+		return false;
+	fake->sd_mode_calls++;
+	fake->sd_mode_dma = dma;
+	return true;
 }
 
 static void fake_clear_counters(void *context)
@@ -582,6 +596,7 @@ static AiusOpticalApp fake_app(Fake *fake)
 	app.replay_stop = fake_replay_stop;
 	app.set_test_running = fake_set_test_running;
 	app.clear_counters = fake_clear_counters;
+	app.sd_set_mode = fake_sd_set_mode;
 	app.request_reboot = fake_request_reboot;
 	app.write_usb_payload = fake_write_usb_payload;
 	app.upload_id = fake_upload_id;
@@ -938,6 +953,38 @@ static void test_golden_immediate_routes(void)
 	                                  "X-Aius-SD-Auth: token\r\n", NULL, -1),
 	                 200, "{\"ok\":true,\"rebooting\":true}");
 	assert(fixture.fake.reboots == 1u);
+
+	/* POST /api/sd/mode (Phase 4e, E3): auth-gated like the other control
+	 * routes; {"dma":<bool>} only; 503 sd_busy while a file is open. */
+	expect_immediate(dispatch_request(&fixture, "POST /api/sd/mode",
+	                                  "X-Aius-SD-Auth: token\r\n",
+	                                  "{\"dma\": true}", -1),
+	                 200, "{\"ok\":true,\"sd_mode\":\"dma\"}");
+	assert(fixture.fake.sd_mode_calls == 1u && fixture.fake.sd_mode_dma);
+	expect_immediate(dispatch_request(&fixture, "POST /api/sd/mode",
+	                                  "X-Aius-SD-Auth: token\r\n",
+	                                  "{\"dma\":false}", -1),
+	                 200, "{\"ok\":true,\"sd_mode\":\"fifo\"}");
+	assert(fixture.fake.sd_mode_calls == 2u && !fixture.fake.sd_mode_dma);
+	expect_immediate(dispatch_request(&fixture, "POST /api/sd/mode",
+	                                  "", "{\"dma\":true}", -1),
+	                 401, "{\"ok\":false,\"error\":\"sd_auth\"}");
+	expect_immediate(dispatch_request(&fixture, "POST /api/sd/mode",
+	                                  "X-Aius-SD-Auth: token\r\n",
+	                                  "{\"dma\":1}", -1),
+	                 400, "{\"ok\":false,\"error\":\"sd_mode_body\"}");
+	expect_immediate(dispatch_request(&fixture, "POST /api/sd/mode",
+	                                  "X-Aius-SD-Auth: token\r\n",
+	                                  "{\"dma\":true,\"x\":1}", -1),
+	                 400, "{\"ok\":false,\"error\":\"sd_mode_body\"}");
+	assert(fixture.fake.sd_mode_calls == 2u);
+	fixture.fake.sd_mode_busy = true;
+	expect_immediate(dispatch_request(&fixture, "POST /api/sd/mode",
+	                                  "X-Aius-SD-Auth: token\r\n",
+	                                  "{\"dma\":true}", -1),
+	                 503, "{\"ok\":false,\"error\":\"sd_busy\"}");
+	assert(fixture.fake.sd_mode_calls == 2u && !fixture.fake.sd_mode_dma);
+	fixture.fake.sd_mode_busy = false;
 }
 
 /* The negative control for the security half of defect 12.

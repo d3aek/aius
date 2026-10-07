@@ -228,6 +228,8 @@ static FLASHMEM AiusHttpRoute route_for(const uint8_t *path, size_t length,
 	}
 	if (token_equals(path, length, "/api/sd"))
 		return AIUS_HTTP_ROUTE_SD_STATUS;
+	if (token_equals(path, length, "/api/sd/mode"))
+		return AIUS_HTTP_ROUTE_SD_MODE;
 	if (has_prefix(path, length, "/sd/replays/") &&
 	    length > strlen("/sd/replays/")) {
 		request->replay_id = path + strlen("/sd/replays/");
@@ -506,6 +508,8 @@ FLASHMEM AiusHttpResult aius_http_parse(const uint8_t *data, size_t length,
 	    request->method != AIUS_HTTP_GET && request->method != AIUS_HTTP_DELETE)
 		return AIUS_HTTP_ERR_METHOD;
 	if (request->route == AIUS_HTTP_ROUTE_SD_STATUS && request->method != AIUS_HTTP_GET)
+		return AIUS_HTTP_ERR_METHOD;
+	if (request->route == AIUS_HTTP_ROUTE_SD_MODE && request->method != AIUS_HTTP_POST)
 		return AIUS_HTTP_ERR_METHOD;
 	if (request->route == AIUS_HTTP_ROUTE_SD_FILE &&
 	    request->method != AIUS_HTTP_GET && request->method != AIUS_HTTP_PUT &&

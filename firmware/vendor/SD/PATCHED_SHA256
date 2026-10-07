@@ -1,0 +1,4 @@
+# SHA-256 of every Aius-patched SD wrapper snapshot file.
+65d6936c97ff649406594e68a77e5cc541f38e726d084b6c638b5ed559d3990c  library.properties
+adeade1703c5dd3fb411aad17fbae06aad673c4d107b21c42369805893d5fdf9  src/SD.cpp
+f873e50584e8a16dd47cb9ab425d8030beb684acf8d3551dc371c22ec56daa9b  src/SD.h

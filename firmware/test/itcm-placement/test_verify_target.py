@@ -199,6 +199,53 @@ class LdfGateTests(unittest.TestCase):
         self.assertEqual((libraries, gated), (2, 2))
 
 
+class ProducerYieldPinTests(unittest.TestCase):
+    """Phase 4e: the producer-yield object keeps only its pinned set."""
+
+    FULL = {
+        ".text.aius_producer_yield_guard": 72,
+        ".text.aius_producer_yield_wait": 120,
+        ".text.aius_producer_yield_point": 92,
+        ".text.aius_producer_yield_visit_begin": 16,
+        ".text.aius_producer_yield_visit_end": 40,
+        ".text.nested_pass.constprop.0": 104,
+    }
+
+    def test_the_built_shape_passes_with_its_bytes(self) -> None:
+        self.assertEqual(
+            VERIFY.verify_producer_yield_sections(self.FULL), 444
+        )
+
+    def test_an_inlined_nested_pass_still_passes(self) -> None:
+        rows = dict(self.FULL)
+        del rows[".text.nested_pass.constprop.0"]
+        self.assertEqual(VERIFY.verify_producer_yield_sections(rows), 340)
+
+    def test_an_unpinned_function_fails_and_is_named(self) -> None:
+        rows = dict(self.FULL)
+        rows[".text.aius_producer_yield_configure"] = 40
+        with self.assertRaisesRegex(
+            VERIFY.VerificationError, "aius_producer_yield_configure"
+        ):
+            VERIFY.verify_producer_yield_sections(rows)
+
+    def test_a_missing_entry_point_fails(self) -> None:
+        rows = dict(self.FULL)
+        del rows[".text.aius_producer_yield_wait"]
+        with self.assertRaisesRegex(
+            VERIFY.VerificationError, "aius_producer_yield_wait"
+        ):
+            VERIFY.verify_producer_yield_sections(rows)
+
+    def test_the_object_parses_from_readelf(self) -> None:
+        text = sections(
+            *((name, size, "AX") for name, size in self.FULL.items())
+        )
+        parsed, comdat, clones = VERIFY.parse_itcm_sections(text)
+        self.assertEqual((comdat, clones), (0, 0))
+        self.assertEqual(VERIFY.verify_producer_yield_sections(parsed), 444)
+
+
 class RealTableTests(unittest.TestCase):
     """The shipped tables, checked for the internal consistency no synthetic
     scenario can speak for."""

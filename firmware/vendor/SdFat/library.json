@@ -1,0 +1,11 @@
+{
+  "name": "AiusSdFat",
+  "version": "2.1.2",
+  "description": "Aius snapshot of the Teensy framework SdFat 2.1.2 with the SDIO wait-hook and DTCM-only DMA patches",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/greiman/SdFat.git"
+  },
+  "frameworks": "arduino",
+  "platforms": "teensy"
+}

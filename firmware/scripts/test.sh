@@ -15,7 +15,7 @@
 #         usb-control, replay, replay-samples, tx-gate, tx-governor, tx-fill-sensor, tx-fill-witness, underrun-episodes, input-liveness, input-dark, event-ring, recorder, boot, boot-target, fault-target, ota,
 #         build-metadata, runtime, network-transport, sd, sd-target, optical-app,
 #         optical-cutover, status-body-bound, runtime-target, memory, itcm-placement, fake-fidelity,
-#         registry, sd-editor.
+#         sdfat-vendor, producer-yield, producer-isolation, stack-bound, registry, sd-editor.
 #
 # That list is not documentation: the `registry` suite fails when it, the suites
 # table in README.md, and the arms of the `case` below disagree with the
@@ -1220,6 +1220,7 @@ runtime-target)
 		"-I$fw_root/lib/aius_json/include" \
 		"-I$fw_root/lib/aius_runtime/include" \
 		"-I$fw_root/lib/aius_usb_control/include" \
+		"-I$fw_root/lib/aius_producer_yield/include" \
 		"-I$fw_root/src")
 	# aius_json is here because aius_optical_app.cpp's replay body reader is one
 	# of its three callers; the two config parsers are the others, and neither
@@ -1229,6 +1230,7 @@ runtime-target)
 		aius_http/src/aius_http_transaction aius_sd/src/aius_sd \
 		aius_usb_control/src/aius_usb_control \
 		aius_json/src/aius_json \
+		aius_producer_yield/src/aius_producer_yield \
 		aius_runtime/src/aius_runtime; do
 		object="$build_dir/runtime-target-$(basename "$portable").o"
 		"$cc" "${cflags[@]}" -Wpedantic "${runtime_target_inc[@]}" \
@@ -1324,6 +1326,44 @@ fake-fidelity)
 	# have, at the bit imxrt.h gives WDOG3. Exits 3 when the framework package is
 	# absent, so the native suite stays runnable off a toolchain host.
 	python3 "$fw_root/test/fake-fidelity/test_fake_fidelity.py"
+	;;
+sdfat-vendor)
+	# The vendored SdFat and SD snapshots (aius-sample-rate-following.md Phase
+	# 4e): upstream and patched SHA-256 source contract, the wait hook only in
+	# the yieldTimeout and ACMD41 loops, the DTCM-only DMA bounce, the volume
+	# serial accessor. The DTCM case needs host g++ and skips without it.
+	python3 "$fw_root/test/sdfat-vendor/test_sdfat_vendor_source.py"
+	;;
+producer-yield)
+	# The producer-yield library over a fake cycle clock and platform: guard
+	# truth table, pend stamp rules, the E5 ledger wrapper on every nested
+	# pass, the window non-yield stretch excluding pass time, clear_diag.
+	# The same build test/producer-yield/run.sh performs, inline so the
+	# registry sees the entry point.
+	producer_yield_out="$build_dir/producer-yield"
+	"$cc" -std=c11 -Wall -Wextra -Werror -O1 -g \
+		-fsanitize=address,undefined \
+		"-I$fw_root/lib/aius_producer_yield/include" \
+		"-I$fw_root/lib/aius_boot/include" \
+		"$fw_root/test/producer-yield/test_producer_yield.c" \
+		"$fw_root/lib/aius_producer_yield/src/aius_producer_yield.c" \
+		-o "$producer_yield_out"
+	"$producer_yield_out"
+	;;
+producer-isolation)
+	# The post-link walk (plan §Walk specification W1 to W8): fixture ELFs
+	# always; the real-ELF cases over AIUS_ISOLATION_ENVS (default
+	# teensy41-optical and teensy41-optical-slot-a) skip without a build.
+	# python3 without -I, which would hide the user site-packages holding
+	# pyelftools.
+	python3 "$fw_root/test/producer-isolation/test_fixtures.py"
+	python3 "$fw_root/test/producer-isolation/test_real_elf.py"
+	;;
+stack-bound)
+	# Call depth over the same resolved graph plus the exception chain against
+	# the canonical image's DTCM stack zone (AIUS_STACK_ENV, default
+	# teensy41-optical-slot-a); fixtures always, real-ELF cases need a build.
+	python3 "$fw_root/test/stack-bound/test_stack_bound.py"
 	;;
 registry)
 	# The guard on this file. Every other arm is hand-maintained, so a suite

@@ -39,6 +39,14 @@ void aius_dts_set_log_quiet(int quiet)
     g_log_quiet = quiet ? 1 : 0;
 }
 
+/* AIUS_DTS_LOG_STDERR: 1 (default) keeps the stderr body for the native dts
+ * suite and host tools; the optical images set 0 and carry an empty sink, so a
+ * malformed frame never reaches newlib stdio, Serial or yield() from the
+ * producer (aius-sample-rate-following.md Phase 4e, E14). */
+#ifndef AIUS_DTS_LOG_STDERR
+#define AIUS_DTS_LOG_STDERR 1
+#endif
+
 /* dcadec's logging sink. The vendored core reaches this via the dca_log macro
  * (obj->ctx passed through as `dca`). We run without a real context, so ctx is
  * NULL; surface only hard errors to stderr and stay silent otherwise. */
@@ -48,6 +56,7 @@ void dca_format_log(struct dcadec_context *dca, int level,
     (void)dca;
     (void)file;
     (void)line;
+#if AIUS_DTS_LOG_STDERR
     if (g_log_quiet)
         return;
     if ((level & ~DCADEC_LOG_ONCE) != DCADEC_LOG_ERROR)
@@ -58,6 +67,10 @@ void dca_format_log(struct dcadec_context *dca, int level,
     vfprintf(stderr, fmt, ap);
     fputc('\n', stderr);
     va_end(ap);
+#else
+    (void)level;
+    (void)fmt;
+#endif
 }
 
 struct AiusDtsDecoder {

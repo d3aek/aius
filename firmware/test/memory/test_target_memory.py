@@ -15,7 +15,12 @@ sys.modules[SPEC.name] = verify
 SPEC.loader.exec_module(verify)
 
 
-def fixture():
+ENV = "teensy41-optical-slot-a"
+
+
+def fixture(environment=ENV):
+    """A snapshot sitting exactly on `environment`'s floor."""
+    floor = verify.OCRAM_FREE_FLOORS[environment]
     sections = {
         9: (".bss", 0x20020000, 0x22000),
         11: (".bss.dma", 0x202000A0, 0x5FDE0),
@@ -30,15 +35,15 @@ def fixture():
             0x20021720, verify.DECODER_ARENA_BYTES, 9,
             "_ZN18AiusAudioProcessor14g_arena_memoryE",
         ),
-        verify.Symbol(0x2025FE80, 0, 12, "_heap_start"),
+        verify.Symbol(verify.OCRAM_END - floor, 0, 12, "_heap_start"),
         verify.Symbol(verify.OCRAM_END, 0, None, "_heap_end"),
     ]
     return sections, symbols
 
 
-def expect_failure(sections, symbols, needle):
+def expect_failure(sections, symbols, needle, environment=ENV):
     try:
-        verify.verify_snapshot(sections, symbols)
+        verify.verify_snapshot(sections, symbols, environment)
     except verify.VerificationError as error:
         assert needle in str(error), f"wrong failure: {error}"
         return
@@ -46,12 +51,44 @@ def expect_failure(sections, symbols, needle):
 
 
 def main():
-    sections, symbols = fixture()
-    assert verify.verify_snapshot(sections, symbols) == (131456, 0)
+    # One floor per optical env, each the 4e-start measurement; every env
+    # in OPTICAL_IMAGE_ENVS has one, and each passes exactly on it.
+    assert set(verify.OCRAM_FREE_FLOORS) == set(verify.OPTICAL_IMAGE_ENVS)
+    assert verify.OCRAM_FREE_FLOORS == {
+        "teensy41-optical": 131776,
+        "teensy41-optical-slot-a": 131744,
+        "teensy41-optical-slot-b": 131744,
+        "teensy41-optical-fault": 131776,
+    }
+    for environment, floor in verify.OCRAM_FREE_FLOORS.items():
+        assert floor >= verify.OCRAM_LINK_FLOOR_BYTES
+        env_sections, env_symbols = fixture(environment)
+        assert verify.verify_snapshot(
+            env_sections, env_symbols, environment
+        ) == (floor, 0, floor)
+        # Synthetic snapshot 1 B under this env's floor fails.
+        under = deepcopy(env_symbols)
+        under[2] = verify.Symbol(
+            verify.OCRAM_END - floor + 1, 0, 12, "_heap_start"
+        )
+        expect_failure(env_sections, under, "below its committed", environment)
 
+    sections, symbols = fixture()
+    floor = verify.OCRAM_FREE_FLOORS[ENV]
     no_empty_output = deepcopy(sections)
     del no_empty_output[12]
-    assert verify.verify_snapshot(no_empty_output, symbols) == (131456, 0)
+    assert verify.verify_snapshot(no_empty_output, symbols, ENV) == (
+        floor, 0, floor
+    )
+
+    # The plain env's floor is not the A/B envs': a slot-a link at the plain
+    # figure passes, the plain env at the slot-a figure fails.
+    plain_floor = verify.OCRAM_FREE_FLOORS["teensy41-optical"]
+    assert plain_floor > floor
+    expect_failure(sections, symbols, "below its committed", "teensy41-optical")
+
+    # An env with no entry fails, even with ample OCRAM.
+    expect_failure(sections, symbols, "no OCRAM floor", "teensy41-release")
 
     wrong_ingress = deepcopy(symbols)
     wrong_ingress[0] = verify.Symbol(
@@ -77,10 +114,9 @@ def main():
 
     low_headroom = deepcopy(symbols)
     low_headroom[2] = verify.Symbol(
-        verify.OCRAM_END - verify.COMMITTED_OCRAM_FREE_BYTES + 1,
-        0, 12, "_heap_start",
+        verify.OCRAM_END - floor + 1, 0, 12, "_heap_start",
     )
-    expect_failure(sections, low_headroom, "below committed")
+    expect_failure(sections, low_headroom, "below its committed")
 
     parsed = verify.parse_symbols(
         "  1: 20021720 0x35640 OBJECT GLOBAL DEFAULT 9 "

@@ -22,6 +22,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "aius_producer_yield.h"
+
 #define ARRAY_COUNT(values) (sizeof(values) / sizeof((values)[0]))
 #define CHECK(condition) check((condition), #condition, __LINE__)
 
@@ -288,6 +290,18 @@ struct SdFake {
 	 * the intermittent upload 500, staged so the diagnostic record can be
 	 * shown to tell it apart from the contention one. */
 	bool write_fails;
+	/* The vendored driver's error state: the code a failed primitive leaves
+	 * (clearError() zeroes it), DAT3 card detection, the 1 s busy-timeout
+	 * count, and the mode the last begin() asked for. */
+	uint8_t error_code;
+	bool card_detected;
+	uint32_t busy_timeouts;
+	unsigned clear_error_calls;
+	bool begin_dma;
+	/* Phase 4e: card primitives seen inside and outside the producer-yield
+	 * SD window (aius_runtime_storage.cpp's window around the execute). */
+	unsigned windowed_primitives;
+	unsigned unwindowed_primitives;
 };
 
 static SdFake g_sd;
@@ -298,6 +312,28 @@ static void sd_primitive(void)
 {
 	g_sd.primitive_calls++;
 	g_sd.primitive_calls_epoch++;
+	if (g_aius_producer_yield.window_depth != 0u)
+		g_sd.windowed_primitives++;
+	else
+		g_sd.unwindowed_primitives++;
+}
+
+/* The producer-yield platform half, faked: no pass ever runs here (no audio,
+ * no work pending), so the library only counts and keeps its window. */
+extern "C" {
+uint32_t aius_producer_yield_plat_cycles(void) { return 0u; }
+uint32_t aius_producer_yield_plat_ipsr(void) { return 0u; }
+uint32_t aius_producer_yield_plat_primask(void) { return 0u; }
+bool aius_producer_yield_plat_irq_software_on(void) { return true; }
+bool aius_producer_yield_plat_audio_ready(void) { return false; }
+bool aius_producer_yield_plat_recovery_safe(void) { return false; }
+bool aius_producer_yield_plat_work_pending(void) { return false; }
+void aius_producer_yield_plat_run_pass(void) {}
+uint16_t aius_producer_yield_plat_ledger_checkpoint(void) { return 0u; }
+void aius_producer_yield_plat_ledger_record(uint16_t checkpoint)
+{
+	(void)checkpoint;
+}
 }
 
 File::File() : valid_(false) {}
@@ -365,11 +401,34 @@ void File::close()
 	g_sd.file_open = false;
 }
 
-bool SDClass::begin(uint8_t chip_select)
+bool SDClass::begin(uint8_t chip_select, bool dma)
 {
 	(void)chip_select;
 	sd_primitive();
+	g_sd.begin_dma = dma;
 	return g_sd.begin_ok;
+}
+
+/* Not card primitives: they read or clear the driver's error state. */
+void SDClass::clearError()
+{
+	g_sd.clear_error_calls++;
+	g_sd.error_code = 0u;
+}
+
+uint8_t SDClass::sdErrorCode()
+{
+	return g_sd.error_code;
+}
+
+bool SDClass::cardDetected()
+{
+	return g_sd.card_detected;
+}
+
+uint32_t SDClass::busyTimeouts()
+{
+	return g_sd.busy_timeouts;
 }
 
 bool SDClass::mediaPresent()
@@ -1183,6 +1242,7 @@ static void reset_world(bool recovery_safe)
 
 	g_sd.begin_ok = true;
 	g_sd.media_present = true;
+	g_sd.card_detected = true;
 	g_sd.open_ok = true;
 	g_sd.remove_ok = true;
 
@@ -2676,6 +2736,7 @@ static void arm_root_storage(AiusRuntimeStorage *storage, size_t length,
 	g_sd.begin_ok = true;
 	g_sd.open_ok = true;
 	g_sd.media_present = true;
+	g_sd.card_detected = true;
 	CHECK(length <= sizeof(g_sd.data));
 	for (size_t i = 0; i < length; ++i)
 		g_sd.data[i] = (uint8_t)((i * 7u + 3u) & 0xffu);
@@ -3241,7 +3302,7 @@ static void test_storage_diagnostics(void)
 	AiusRuntimeStorage storage;
 	AiusSdJobRequest request;
 	AiusHttpEvent event;
-	char json[1024];
+	char json[2048];
 	size_t length;
 	uint32_t now_ms = 1u;
 
@@ -3405,7 +3466,16 @@ static void test_storage_diagnostics(void)
 		CHECK(strstr(json, "\"last_failure\":null}") != nullptr);
 		CHECK(strstr(json, "\"busy_refusals\":0") != nullptr);
 		CHECK(strstr(json, "\"mounts\":0") != nullptr);
+		/* Phase 4e keys: mode, the two non-fault classes, the driver's
+		 * busy timeouts and the wait hook's own record. */
+		CHECK(strstr(json, "\"sd_mode\":\"none\","
+		                   "\"sd_mode_requested\":\"fifo\",\"open_misses\":0,"
+		                   "\"absent_mounts\":0,\"busy_timeouts\":0,"
+		                   "\"hook_calls\":") != nullptr);
+		CHECK(strstr(json, "\"sd_window_nonyield_max_us\":") != nullptr);
 
+		g_sd.windowed_primitives = 0u;
+		g_sd.unwindowed_primitives = 0u;
 		g_sd.write_fails = true;
 		g_sd.exists_result = true;
 		g_sd.remove_ok = true;
@@ -3418,7 +3488,40 @@ static void test_storage_diagnostics(void)
 		                                     sizeof(json), &length));
 		CHECK(length == strlen(json));
 		CHECK(strstr(json, "\"last_failure\":{\"seq\":1,") != nullptr);
+		/* Every card primitive of the job (mount included) ran inside the
+		 * SD window, and the window closed after each. */
+		CHECK(g_sd.windowed_primitives > 0u);
+		CHECK(g_sd.unwindowed_primitives == 0u);
+		CHECK(g_aius_producer_yield.window_depth == 0u);
 		CHECK(strstr(json, "\"refused\":false") != nullptr);
+		{
+			/* The mode route's effect: the adapter records DMA and
+			 * sd_diag serves it; the next mount passes it to begin. */
+			char mode_json[2048];
+			size_t mode_length = 0u;
+			aius_sd_teensy_set_mode(&storage.target, true);
+			mode_json[0] = '\0';
+			CHECK(aius_runtime_storage_diag_json(
+				&storage, nullptr, mode_json, sizeof(mode_json),
+				&mode_length));
+			/* No file open, so the mount drops: requested dma,
+			 * nothing mounted until the next BEGIN. */
+			CHECK(!storage.target.mounted);
+			CHECK(strstr(mode_json, "\"sd_mode\":\"none\","
+			                        "\"sd_mode_requested\":\"dma\"") !=
+			      nullptr);
+			/* A mounted volume reports its mode. */
+			storage.target.mounted = true;
+			mode_length = 0u;
+			CHECK(aius_runtime_storage_diag_json(
+				&storage, nullptr, mode_json, sizeof(mode_json),
+				&mode_length));
+			CHECK(strstr(mode_json, "\"sd_mode\":\"dma\","
+			                        "\"sd_mode_requested\":\"dma\"") !=
+			      nullptr);
+			storage.target.mounted = false;
+			aius_sd_teensy_set_mode(&storage.target, false);
+		}
 		CHECK(strstr(json, "\"mounts_in_job\":1") != nullptr);
 		CHECK(strstr(json, "\"http_faults\":1") != nullptr);
 		/* AIUS_SD_PHASE_UPLOAD_WRITE is the 18th phase; the wire
@@ -3875,6 +3978,7 @@ static void test_epoch_traces(void)
 
 int main(void)
 {
+	aius_producer_yield_configure(600u, AIUS_PRODUCER_YIELD_LATE_US_DEFAULT);
 	test_cdc_adapter();
 	test_service_budget_selectivity();
 	test_usb_rx_quota();

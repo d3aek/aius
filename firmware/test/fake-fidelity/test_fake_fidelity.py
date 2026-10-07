@@ -149,12 +149,12 @@ CHECKS = [
     ),
     (
         "test/sd-target/fake/SD.h",
-        "libraries/SD/src/SD.h",
+        "vendor/SD/src/SD.h",
         ["BUILTIN_SDCARD"],
     ),
     (
         "test/runtime-target/fake/SD.h",
-        "libraries/SD/src/SD.h",
+        "vendor/SD/src/SD.h",
         ["BUILTIN_SDCARD"],
     ),
 ]
@@ -338,7 +338,9 @@ def read_fake(relative):
 
 
 def read_real(relative):
-    path = PKG / relative
+    # vendor/ paths are the linked copy under firmware/ (lib_ignore drops the
+    # framework's own SD and SdFat); everything else is the framework package.
+    path = (FW if relative.startswith("vendor/") else PKG) / relative
     if not path.is_file():
         raise FrameworkMissing(f"SKIP: {relative} absent")
     # FNET ships at least one header with a stray non-UTF-8 byte.

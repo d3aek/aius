@@ -2479,6 +2479,9 @@ def assert_audio_update_is_ingress_only(text):
         "aius_replay_service_discard_words",
         "audio_ingress_publish_live",
         "aius_audio_ingress_record_gap",
+        # Phase 4e pend stamp: an inline compare and two stores after the
+        # ingress commit, so the next producer pass can time the commit.
+        "aius_producer_yield_note_pend",
         # The input-fault cadence watermark (micros() between update() calls,
         # aius-output-jitter.md): one timestamp read and a max, no movement
         # of samples, so it is instrumentation rather than work.
@@ -5251,6 +5254,597 @@ static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
 
 
 # --------------------------------------------------------------------------
+# Producer-yield source guards (aius-sample-rate-following.md Phase 4e).
+# Read over every C/C++ source under firmware/src and firmware/lib, keyed by
+# firmware-relative path, because the post-link walk (producer-isolation)
+# cannot tell a windowed SD root from an unwindowed one in the binary
+# (CR3-B1), and its pinned libc row rests on the name guard below (CR4-B1).
+# --------------------------------------------------------------------------
+
+PRODUCER_YIELD_SOURCE_DIRS = ("src", "lib")
+PRODUCER_YIELD_SOURCE_SUFFIXES = (".c", ".cpp", ".h")
+PRODUCER_YIELD_LIB = "lib/aius_producer_yield/"
+PRODUCER_YIELD_SOURCE = "lib/aius_producer_yield/src/aius_producer_yield.c"
+SD_ADAPTER_SOURCE = "src/aius_sd_teensy.cpp"
+STORAGE_SOURCE = "src/aius_runtime_storage.cpp"
+OPTICAL_MAIN_SOURCE = "src/optical_main.cpp"
+
+# W2 windowed rows by source function: the storage execute (route_action,
+# which inlines into the W2 row `advance`) and the three raw scans.
+W2_WINDOWED_SOURCES = frozenset({
+    (STORAGE_SOURCE, "route_action"),
+    (OPTICAL_MAIN_SOURCE, "http_replay_list_json"),
+    (OPTICAL_MAIN_SOURCE, "app_replay_delete"),
+    (OPTICAL_MAIN_SOURCE, "app_read_directory"),
+})
+# The accepted unwindowed rows: the replay refill (round 1 S3) and the OTA
+# copy into PSRAM (CR-S9). Named so a window there fails with its reason.
+W2_UNWINDOWED_SOURCES = frozenset({
+    "replay_job_route",
+    "replay_job_advance",
+    "ota_copy_staged_to_psram",
+})
+# Every function outside the adapter whose code names SD., File or FsFile
+# is the source of a W2 row (W5): the four raw-access functions.
+W2_SD_NAMING_SOURCES = frozenset({
+    (OPTICAL_MAIN_SOURCE, "ota_copy_staged_to_psram"),
+    (OPTICAL_MAIN_SOURCE, "http_replay_list_json"),
+    (OPTICAL_MAIN_SOURCE, "app_replay_delete"),
+    (OPTICAL_MAIN_SOURCE, "app_read_directory"),
+})
+WINDOW_TOKEN = re.compile(
+    r"\baius_producer_yield_window_(?:open|close)\b|\bProducerSdWindow\b"
+)
+WINDOW_DECLARATION = re.compile(
+    r"\b(?:const\s+)?ProducerSdWindow\s+[A-Za-z_]\w*\s*;"
+)
+SD_NAMING = re.compile(r"\bSD\s*\.|\bFile\b|\bFsFile\b")
+# W5 (2)'s libc row guard: no SD file becomes a stdio descriptor and no event
+# responder is attached, so newlib's stream pointers and _write's Print call
+# stay the only indirect sites in the allocator and stdio closure.
+STDIO_FORBIDDEN_NAMES = (
+    "Print", "Stream", "EventResponder", "vdprintf", "dprintf",
+    "fopen", "fdopen", "funopen", "fopencookie",
+)
+STDIO_FORBIDDEN = re.compile(
+    r"\b(" + "|".join(STDIO_FORBIDDEN_NAMES) + r")\b"
+)
+QUALIFIED_DEFINITION = re.compile(
+    r"^[A-Za-z_][A-Za-z0-9_ \t*&<>,]*?\b((?:[A-Za-z_]\w*::)+~?[A-Za-z_]\w*)\s*\(",
+    re.MULTILINE,
+)
+YIELD_POINT_CALL = "aius_producer_yield_point"
+YIELD_POINT_GUARDED = re.compile(
+    r"if\s*\(\s*checkpoint\s*!=\s*AIUS_BOOT_CHECKPOINT_EPOCH_COMPLETE\s*\)"
+    r"\s*\(void\)\s*aius_producer_yield_point\s*\(\s*\)\s*;"
+)
+NESTED_PASS_SHAPE = re.compile(
+    r"\b(\w+)\s*=\s*aius_producer_yield_plat_ledger_checkpoint\s*\(\s*\)\s*;"
+    r".*?aius_producer_yield_plat_ledger_record\s*\(\s*"
+    r"AIUS_BOOT_CHECKPOINT_AUDIO\s*\)\s*;"
+    r"\s*aius_producer_yield_plat_run_pass\s*\(\s*\)\s*;"
+    r"\s*aius_producer_yield_plat_ledger_record\s*\(\s*\1\s*\)\s*;",
+    re.DOTALL,
+)
+
+
+def read_producer_yield_sources():
+    """firmware-relative path -> text for every C/C++ source the guards read."""
+    sources = {}
+    for directory in PRODUCER_YIELD_SOURCE_DIRS:
+        for path in sorted((FIRMWARE_ROOT / directory).rglob("*")):
+            if path.is_file() and path.suffix in PRODUCER_YIELD_SOURCE_SUFFIXES:
+                relative = path.relative_to(FIRMWARE_ROOT).as_posix()
+                sources[relative] = path.read_text(errors="replace")
+    return sources
+
+
+def all_function_definitions(text):
+    """function_definitions() plus qualified `Class::member` definitions, so a
+    member function naming SD cannot slip past the W5 source guard."""
+    definitions = dict(function_definitions(text))
+    clean = without_comments_and_literals(text)
+    for match in QUALIFIED_DEFINITION.finditer(clean):
+        opening = clean.find("(", match.start(1) + len(match.group(1)))
+        closing = matching_delimiter(clean, opening, "(", ")")
+        cursor = closing + 1
+        while cursor < len(clean) and clean[cursor] in " \t\r\n":
+            cursor += 1
+        if cursor >= len(clean) or clean[cursor] != "{":
+            continue
+        body_end = matching_delimiter(clean, cursor, "{", "}")
+        definitions[match.group(1)] = text[cursor + 1: body_end]
+    return definitions
+
+
+def _definitions_by_source(sources, skip=()):
+    for path, text in sorted(sources.items()):
+        if path.startswith(tuple(skip)):
+            continue
+        for name, body in all_function_definitions(text).items():
+            yield path, name, without_comments_and_literals(body)
+
+
+def assert_sd_window_only_in_w2_windowed_sources(sources):
+    misplaced = []
+    found = set()
+    for path, name, body in _definitions_by_source(
+        sources, skip=(PRODUCER_YIELD_LIB,)
+    ):
+        if not WINDOW_TOKEN.search(body):
+            continue
+        if (path, name) in W2_WINDOWED_SOURCES:
+            found.add((path, name))
+            continue
+        reason = (
+            " (an accepted UNWINDOWED SD root)"
+            if name in W2_UNWINDOWED_SOURCES else ""
+        )
+        misplaced.append(f"{path}:{name}{reason}")
+    assert not misplaced, (
+        "the SD window flag is set outside the W2 windowed sources: "
+        + ", ".join(misplaced)
+    )
+    missing = sorted(
+        f"{path}:{name}" for path, name in W2_WINDOWED_SOURCES - found
+    )
+    assert not missing, f"W2 windowed sources lost their SD window: {missing}"
+    storage = without_comments_and_literals(
+        all_function_definitions(sources[STORAGE_SOURCE])["route_action"]
+    )
+    opened = storage.find("aius_producer_yield_window_open(")
+    executed = storage.find("aius_sd_teensy_execute(")
+    closed = storage.find("aius_producer_yield_window_close(")
+    assert -1 < opened < executed < closed, (
+        "route_action must open the SD window before aius_sd_teensy_execute "
+        "and close it after"
+    )
+    main_definitions = all_function_definitions(sources[OPTICAL_MAIN_SOURCE])
+    for path, name in sorted(W2_WINDOWED_SOURCES):
+        if path != OPTICAL_MAIN_SOURCE:
+            continue
+        body = without_comments_and_literals(main_definitions[name])
+        declaration = WINDOW_DECLARATION.search(body)
+        first_sd = SD_NAMING.search(body)
+        assert declaration is not None, (
+            f"{name} names ProducerSdWindow but declares no window object"
+        )
+        assert first_sd is None or declaration.start() < first_sd.start(), (
+            f"{name} touches the card before its ProducerSdWindow is declared"
+        )
+    clean_main = without_comments_and_literals(sources[OPTICAL_MAIN_SOURCE])
+    assert re.search(
+        r"ProducerSdWindow\s*\(\s*\)\s*\{\s*aius_producer_yield_window_open"
+        r"\s*\(\s*\)\s*;\s*\}", clean_main
+    ) and re.search(
+        r"~\s*ProducerSdWindow\s*\(\s*\)\s*\{\s*aius_producer_yield_window_close"
+        r"\s*\(\s*\)\s*;\s*\}", clean_main
+    ), "ProducerSdWindow must open in its constructor and close in its destructor"
+
+
+def assert_no_yield_point_at_epoch_complete(sources):
+    callers = []
+    for path, name, body in _definitions_by_source(
+        sources, skip=(PRODUCER_YIELD_LIB,)
+    ):
+        if YIELD_POINT_CALL + "(" in body:
+            callers.append((path, name, body))
+    assert [(path, name) for path, name, _ in callers] == [
+        (OPTICAL_MAIN_SOURCE, "platform_checkpoint")
+    ], (
+        "aius_producer_yield_point must have exactly one caller, "
+        "platform_checkpoint (the 4e yield-root table): "
+        + ", ".join(f"{path}:{name}" for path, name, _ in callers)
+    )
+    body = callers[0][2]
+    assert body.count(YIELD_POINT_CALL + "(") == 1, (
+        "platform_checkpoint calls the yield point more than once"
+    )
+    assert YIELD_POINT_GUARDED.search(body), (
+        "platform_checkpoint's yield point is not guarded by "
+        "`checkpoint != AIUS_BOOT_CHECKPOINT_EPOCH_COMPLETE` (round 1 B2: "
+        "nothing runs after the EPOCH_COMPLETE commit)"
+    )
+
+
+def assert_sd_naming_functions_are_w2_sources(sources):
+    offenders = []
+    for path, name, body in _definitions_by_source(
+        sources, skip=(SD_ADAPTER_SOURCE, PRODUCER_YIELD_LIB)
+    ):
+        if SD_NAMING.search(body) and (path, name) not in W2_SD_NAMING_SOURCES:
+            offenders.append(f"{path}:{name}")
+    assert not offenders, (
+        "functions naming SD., File or FsFile outside aius_sd_teensy.cpp that "
+        "are not W2 row sources (add the row, or route the access through the "
+        "adapter): " + ", ".join(offenders)
+    )
+
+
+def assert_no_stdio_stream_names(sources):
+    offenders = []
+    for path, text in sorted(sources.items()):
+        clean = without_comments_and_literals(text)
+        for match in STDIO_FORBIDDEN.finditer(clean):
+            line = clean.count("\n", 0, match.start()) + 1
+            offenders.append(f"{path}:{line} {match.group(1)}")
+    assert not offenders, (
+        "a firmware source names a stdio stream or event-responder entry "
+        "(the W5 (2) pinned libc row rests on none doing so): "
+        + ", ".join(offenders)
+    )
+
+
+def assert_nested_pass_ledger_wrapper(sources):
+    library = sources[PRODUCER_YIELD_SOURCE]
+    definitions = function_definitions(library)
+    assert "nested_pass" in definitions, "nested_pass is missing"
+    nested = without_comments_and_literals(definitions["nested_pass"])
+    assert NESTED_PASS_SHAPE.search(nested), (
+        "nested_pass must save the ledger checkpoint, record AUDIO, run the "
+        "pass and record the saved checkpoint, adjacently (E5)"
+    )
+    assert "return" not in nested, "nested_pass has an early exit (E5)"
+    runners = []
+    for path, name, body in _definitions_by_source(sources):
+        count = body.count("aius_producer_yield_plat_run_pass(")
+        runners.extend([f"{path}:{name}"] * count)
+    assert runners == [f"{PRODUCER_YIELD_SOURCE}:nested_pass"], (
+        "the nested pass must run only inside nested_pass's ledger wrapper: "
+        + ", ".join(runners)
+    )
+    record = without_comments_and_literals(
+        function_definitions(sources[OPTICAL_MAIN_SOURCE])[
+            "aius_producer_yield_plat_ledger_record"
+        ]
+    )
+    recorded = record.find("aius_boot_record_checkpoint(")
+    committed = record.find("aius_boot_storage_teensy_commit(")
+    assert -1 < recorded < committed, (
+        "aius_producer_yield_plat_ledger_record must record and then commit "
+        "the retained ledger"
+    )
+
+
+STACK_BASE_MARKER = "uint32_t *stack_paint_base(void)"
+STACK_PAINT_MARKER = "void stack_paint(void)"
+STACK_SCAN_MARKER = "void stack_scan(uint32_t now_ms)"
+STACK_TRAP_BYTES = re.compile(r"\bkStackTrapBytes\s*=\s*32u?\s*;")
+STACK_BASE_SHAPE = re.compile(
+    r"&\s*_ebss\s*\)\s*\)?\s*&\s*~\s*\(\s*kStackTrapBytes\s*-\s*1u?\s*\)\s*\)"
+    r"\s*\+\s*kStackTrapBytes"
+)
+
+
+def assert_stack_paint_skips_the_mpu_trap(sources):
+    """The core's configure_cache() maps a 32 B NOACCESS MPU region over the
+    32 B block containing _ebss (cores/teensy4/startup.c:313-314), so a paint
+    or scan that touches &_ebss faults with PRIMASK set: a boot loop. Every
+    &_ebss in optical_main.cpp lives in stack_paint_base(), which rounds down
+    to the trap block and steps over it; the paint and the scan start there."""
+    text = sources[OPTICAL_MAIN_SOURCE]
+    clean = without_comments_and_literals(text)
+    assert STACK_TRAP_BYTES.search(clean), "kStackTrapBytes must be 32"
+    base = without_comments_and_literals(function_body(text, STACK_BASE_MARKER))
+    assert STACK_BASE_SHAPE.search(base), (
+        "stack_paint_base() must round _ebss down to the 32 B trap block and "
+        "step over it"
+    )
+    for marker in (STACK_PAINT_MARKER, STACK_SCAN_MARKER):
+        body = without_comments_and_literals(function_body(text, marker))
+        assert "_ebss" not in body, (
+            f"{marker} addresses _ebss directly: the MPU stack trap faults"
+        )
+        assert "stack_paint_base()" in body, (
+            f"{marker} must start at stack_paint_base()"
+        )
+    uses = len(re.findall(r"&\s*_ebss\b", clean))
+    assert uses == len(re.findall(r"&\s*_ebss\b", base)), (
+        "&_ebss is used outside stack_paint_base()"
+    )
+
+
+def assert_audio_service_run_is_bracketed(sources):
+    """Every regular producer pass is a visit (in-producer flag set, pend
+    disarmed); the only unbracketed aius_audio_service_run is the nested pass's
+    platform hook, which only nested_pass calls (ledger guard)."""
+    offenders = []
+    for path, text in sorted(sources.items()):
+        if path == OPTICAL_MAIN_SOURCE or path.startswith(
+            "lib/aius_audio_service/"
+        ):
+            continue
+        if call_count(text, "aius_audio_service_run"):
+            offenders.append(path)
+    assert not offenders, (
+        "aius_audio_service_run called outside optical_main.cpp: "
+        + ", ".join(offenders)
+    )
+    text = sources[OPTICAL_MAIN_SOURCE]
+    total = call_count(text, "aius_audio_service_run")
+    seen = 0
+    bracketed = re.compile(
+        r"aius_producer_yield_visit_begin\s*\(\s*\)\s*;\s*"
+        r"(?:const\s+AiusStatus\s+\w+\s*=\s*|\(void\)\s*)?"
+        r"aius_audio_service_run\s*\([^;]*\)\s*;\s*"
+        r"aius_producer_yield_visit_end\s*\(\s*\)\s*;"
+    )
+    for name, body in function_definitions(text).items():
+        clean = without_comments_and_literals(body)
+        calls = clean.count("aius_audio_service_run(")
+        if not calls:
+            continue
+        seen += calls
+        if name == "aius_producer_yield_plat_run_pass":
+            assert calls == 1, "plat_run_pass runs more than one pass"
+            continue
+        assert len(bracketed.findall(clean)) == calls, (
+            f"{name}: aius_audio_service_run not bracketed by "
+            "aius_producer_yield_visit_begin/visit_end"
+        )
+    assert seen == total, (
+        "an aius_audio_service_run call sits outside any recognised function "
+        "definition in optical_main.cpp"
+    )
+
+
+PRODUCER_YIELD_CHECKS = (
+    ("sd-window-only-in-w2-windowed-sources",
+     assert_sd_window_only_in_w2_windowed_sources),
+    ("no-yield-point-at-epoch-complete", assert_no_yield_point_at_epoch_complete),
+    ("sd-naming-functions-are-w2-sources",
+     assert_sd_naming_functions_are_w2_sources),
+    ("no-stdio-stream-names", assert_no_stdio_stream_names),
+    ("nested-pass-ledger-wrapper", assert_nested_pass_ledger_wrapper),
+    ("stack-paint-skips-the-mpu-trap", assert_stack_paint_skips_the_mpu_trap),
+    ("audio-service-run-is-bracketed", assert_audio_service_run_is_bracketed),
+)
+
+
+def _producer_yield_fixture():
+    storage = (
+        "namespace {\n"
+        "FLASHMEM bool route_action(AiusRuntimeStorage *service)\n{\n"
+        "\taius_producer_yield_window_open();\n"
+        "\tservice->pending_event =\n"
+        "\t\taius_sd_teensy_execute(&service->target, action);\n"
+        "\taius_producer_yield_window_close();\n"
+        "\treturn true;\n}\n"
+        "}\n"
+    )
+    main = (
+        "struct ProducerSdWindow {\n"
+        "\tProducerSdWindow() { aius_producer_yield_window_open(); }\n"
+        "\t~ProducerSdWindow() { aius_producer_yield_window_close(); }\n"
+        "};\n"
+        "static FLASHMEM int ota_copy_staged_to_psram(uint8_t *d)\n{\n"
+        "\tFile staged = SD.open(\"/x\");\n\treturn 0;\n}\n"
+        "static FLASHMEM size_t http_replay_list_json(uint8_t *b)\n{\n"
+        "\tconst ProducerSdWindow window;\n"
+        "\tFile directory = SD.open(\"/aius/replays\");\n\treturn 0;\n}\n"
+        "static FLASHMEM int app_replay_delete(void *, const char *id)\n{\n"
+        "\tconst ProducerSdWindow window;\n"
+        "\treturn SD.remove(id);\n}\n"
+        "static FLASHMEM int app_read_directory(void *, const char *p)\n{\n"
+        "\tif (!g_sd_ready)\n\t\treturn 1;\n"
+        "\tconst ProducerSdWindow window;\n"
+        "\tFile directory = SD.open(p);\n\treturn 0;\n}\n"
+        "static FLASHMEM void replay_job_route(void)\n{\n"
+        "\t/* SD. and File in a comment are not code. */\n"
+        "\taius_sd_teensy_execute(&g_runtime.storage.target, action);\n}\n"
+        "static FLASHMEM void platform_checkpoint(void *, uint16_t checkpoint)\n{\n"
+        "\taius_boot_record_checkpoint(&g_boot_ledger, checkpoint);\n"
+        "\tif (checkpoint != AIUS_BOOT_CHECKPOINT_EPOCH_COMPLETE)\n"
+        "\t\t(void)aius_producer_yield_point();\n}\n"
+        "static constexpr uintptr_t kStackTrapBytes = 32u;\n"
+        "static inline __attribute__((always_inline)) uint32_t *stack_paint_base(void)\n{\n"
+        "\treturn (uint32_t *)((((uintptr_t)&_ebss) & ~(kStackTrapBytes - 1u)) +\n"
+        "\t                    kStackTrapBytes);\n}\n"
+        "static FLASHMEM __attribute__((noinline)) void stack_paint(void)\n{\n"
+        "\tuint32_t *word = stack_paint_base();\n\t*word = 0u;\n}\n"
+        "static FLASHMEM void stack_scan(uint32_t now_ms)\n{\n"
+        "\tconst uint32_t *word = stack_paint_base();\n\t(void)word;\n}\n"
+        "static FLASHMEM bool platform_audio(void *, uint32_t now_ms)\n{\n"
+        "\taius_producer_yield_visit_begin();\n"
+        "\tconst AiusStatus status =\n"
+        "\t\taius_audio_service_run(&g_audio_service, g_audio_reset_sequence);\n"
+        "\taius_producer_yield_visit_end();\n"
+        "\treturn status == AIUS_OK;\n}\n"
+        "FLASHMEM void aius_producer_yield_plat_run_pass(void)\n{\n"
+        "\t(void)aius_audio_service_run(&g_audio_service, 0u);\n}\n"
+        "FLASHMEM void aius_producer_yield_plat_ledger_record(uint16_t c)\n{\n"
+        "\taius_boot_record_checkpoint(&g_boot_ledger, c);\n"
+        "\t(void)aius_boot_storage_teensy_commit(&g_boot_storage, &g_boot_ledger);\n"
+        "}\n"
+    )
+    library = (
+        "static void nested_pass(AiusProducerYieldState *s)\n{\n"
+        "\tuint16_t saved = aius_producer_yield_plat_ledger_checkpoint();\n"
+        "\ts->in_producer = 1u;\n"
+        "\taius_producer_yield_plat_ledger_record(AIUS_BOOT_CHECKPOINT_AUDIO);\n"
+        "\taius_producer_yield_plat_run_pass();\n"
+        "\taius_producer_yield_plat_ledger_record(saved);\n"
+        "\tproducer_leave(s);\n}\n"
+        "bool aius_producer_yield_point(void)\n{\n\treturn false;\n}\n"
+    )
+    adapter = (
+        "FLASHMEM AiusSdEvent aius_sd_teensy_execute(AiusSdTeensy *a)\n{\n"
+        "\tFile opened = SD.open(\"/x\");\n\treturn ok();\n}\n"
+    )
+    return {
+        STORAGE_SOURCE: storage,
+        OPTICAL_MAIN_SOURCE: main,
+        PRODUCER_YIELD_SOURCE: library,
+        SD_ADAPTER_SOURCE: adapter,
+        "lib/aius_other/src/other.c": "/* fopen and Print in a comment */\n"
+                                      "int other(void)\n{\n\treturn 0;\n}\n",
+    }
+
+
+def _mutated(sources, path, old, new):
+    assert sources[path].count(old) == 1, f"fixture mutation anchor {old!r}"
+    mutated = dict(sources)
+    mutated[path] = sources[path].replace(old, new)
+    return mutated
+
+
+def run_producer_yield_self_test():
+    good = _producer_yield_fixture()
+    for _, check in PRODUCER_YIELD_CHECKS:
+        _expect_pass(check, good, "producer-yield/good")
+
+    window = assert_sd_window_only_in_w2_windowed_sources
+    _expect_fail(window, _mutated(
+        good, OPTICAL_MAIN_SOURCE,
+        "\t/* SD. and File in a comment are not code. */\n",
+        "\tconst ProducerSdWindow window;\n",
+    ), "window/replay-refill", "accepted UNWINDOWED")
+    _expect_fail(window, _mutated(
+        good, OPTICAL_MAIN_SOURCE,
+        "\tFile staged = SD.open",
+        "\tconst ProducerSdWindow window;\n\tFile staged = SD.open",
+    ), "window/ota-copy", "ota_copy_staged_to_psram")
+    _expect_fail(window, _mutated(
+        good, OPTICAL_MAIN_SOURCE,
+        "\tconst ProducerSdWindow window;\n\tFile directory = SD.open(p);",
+        "\tFile directory = SD.open(p);",
+    ), "window/scan-lost", "lost their SD window")
+    _expect_fail(window, _mutated(
+        good, OPTICAL_MAIN_SOURCE,
+        "\tconst ProducerSdWindow window;\n\treturn SD.remove(id);",
+        "\tif (!SD.exists(id))\n\t\treturn 0;\n"
+        "\tconst ProducerSdWindow window;\n\treturn SD.remove(id);",
+    ), "window/declared-late", "before its ProducerSdWindow")
+    _expect_fail(window, _mutated(
+        good, STORAGE_SOURCE,
+        "\taius_producer_yield_window_close();\n\treturn true;",
+        "\treturn true;",
+    ), "window/storage-close-missing", "close it after")
+    _expect_fail(window, _mutated(
+        good, OPTICAL_MAIN_SOURCE,
+        "~ProducerSdWindow() { aius_producer_yield_window_close(); }",
+        "~ProducerSdWindow() {}",
+    ), "window/destructor-no-close", "destructor")
+
+    epoch = assert_no_yield_point_at_epoch_complete
+    _expect_fail(epoch, _mutated(
+        good, OPTICAL_MAIN_SOURCE,
+        "\tif (checkpoint != AIUS_BOOT_CHECKPOINT_EPOCH_COMPLETE)\n\t\t",
+        "\t",
+    ), "epoch/unguarded", "EPOCH_COMPLETE")
+    _expect_fail(epoch, _mutated(
+        good, OPTICAL_MAIN_SOURCE,
+        "checkpoint != AIUS_BOOT_CHECKPOINT_EPOCH_COMPLETE",
+        "checkpoint != AIUS_BOOT_CHECKPOINT_AUDIO",
+    ), "epoch/wrong-guard", "EPOCH_COMPLETE")
+    _expect_fail(epoch, _mutated(
+        good, OPTICAL_MAIN_SOURCE,
+        "\taius_sd_teensy_execute(&g_runtime.storage.target, action);\n}",
+        "\taius_sd_teensy_execute(&g_runtime.storage.target, action);\n"
+        "\t(void)aius_producer_yield_point();\n}",
+    ), "epoch/second-yield-root", "exactly one caller")
+
+    naming = assert_sd_naming_functions_are_w2_sources
+    _expect_fail(naming, _mutated(
+        good, OPTICAL_MAIN_SOURCE,
+        "\taius_sd_teensy_execute(&g_runtime.storage.target, action);\n}",
+        "\taius_sd_teensy_execute(&g_runtime.storage.target, action);\n"
+        "\t(void)SD.exists(\"/aius\");\n}",
+    ), "naming/raw-sd-in-refill", "replay_job_route")
+    _expect_fail(naming, _mutated(
+        good, "lib/aius_other/src/other.c",
+        "int other(void)\n{\n\treturn 0;",
+        "int other(void)\n{\n\tFsFile f;\n\treturn 0;",
+    ), "naming/fsfile-in-lib", "other")
+    _expect_fail(naming, dict(good, **{
+        "src/member.cpp": "FLASHMEM bool Owner::probe(void)\n{\n"
+                          "\treturn SD.mediaPresent();\n}\n",
+    }), "naming/member-function", "Owner::probe")
+
+    stdio = assert_no_stdio_stream_names
+    for name in STDIO_FORBIDDEN_NAMES:
+        _expect_fail(stdio, _mutated(
+            good, "lib/aius_other/src/other.c",
+            "\treturn 0;", f"\t(void){name};\n\treturn 0;",
+        ), f"stdio/{name}", name)
+
+    ledger = assert_nested_pass_ledger_wrapper
+    _expect_fail(ledger, _mutated(
+        good, PRODUCER_YIELD_SOURCE,
+        "\taius_producer_yield_plat_ledger_record(saved);\n", "",
+    ), "ledger/no-restore", "E5")
+    _expect_fail(ledger, _mutated(
+        good, PRODUCER_YIELD_SOURCE,
+        "\taius_producer_yield_plat_ledger_record(AIUS_BOOT_CHECKPOINT_AUDIO);\n"
+        "\taius_producer_yield_plat_run_pass();\n",
+        "\taius_producer_yield_plat_run_pass();\n"
+        "\taius_producer_yield_plat_ledger_record(AIUS_BOOT_CHECKPOINT_AUDIO);\n",
+    ), "ledger/record-after-pass", "E5")
+    _expect_fail(ledger, _mutated(
+        good, PRODUCER_YIELD_SOURCE,
+        "bool aius_producer_yield_point(void)\n{\n\treturn false;",
+        "bool aius_producer_yield_point(void)\n{\n"
+        "\taius_producer_yield_plat_run_pass();\n\treturn false;",
+    ), "ledger/unwrapped-pass", "only inside nested_pass")
+    _expect_fail(ledger, _mutated(
+        good, OPTICAL_MAIN_SOURCE,
+        "\t(void)aius_boot_storage_teensy_commit(&g_boot_storage, &g_boot_ledger);\n",
+        "",
+    ), "ledger/no-commit", "commit")
+
+    trap = assert_stack_paint_skips_the_mpu_trap
+    _expect_fail(trap, _mutated(
+        good, OPTICAL_MAIN_SOURCE,
+        "\tuint32_t *word = stack_paint_base();",
+        "\tuint32_t *word = (uint32_t *)&_ebss;",
+    ), "trap/paint-at-ebss", "_ebss directly")
+    _expect_fail(trap, _mutated(
+        good, OPTICAL_MAIN_SOURCE,
+        "\tconst uint32_t *word = stack_paint_base();",
+        "\tconst uint32_t *word = (const uint32_t *)&_ebss;",
+    ), "trap/scan-at-ebss", "_ebss directly")
+    _expect_fail(trap, _mutated(
+        good, OPTICAL_MAIN_SOURCE,
+        " +\n\t                    kStackTrapBytes);",
+        ");",
+    ), "trap/base-not-stepped", "step over it")
+    _expect_fail(trap, _mutated(
+        good, OPTICAL_MAIN_SOURCE,
+        "kStackTrapBytes = 32u;", "kStackTrapBytes = 4u;",
+    ), "trap/wrong-size", "must be 32")
+
+    visit = assert_audio_service_run_is_bracketed
+    _expect_fail(visit, _mutated(
+        good, OPTICAL_MAIN_SOURCE,
+        "\taius_producer_yield_visit_end();\n\treturn status",
+        "\treturn status",
+    ), "visit/end-missing", "platform_audio")
+    _expect_fail(visit, _mutated(
+        good, OPTICAL_MAIN_SOURCE,
+        "\taius_producer_yield_visit_begin();\n\tconst AiusStatus",
+        "\tconst AiusStatus",
+    ), "visit/begin-missing", "platform_audio")
+    _expect_fail(visit, _mutated(
+        good, OPTICAL_MAIN_SOURCE,
+        "\taius_sd_teensy_execute(&g_runtime.storage.target, action);\n}",
+        "\taius_sd_teensy_execute(&g_runtime.storage.target, action);\n"
+        "\t(void)aius_audio_service_run(&g_audio_service, 0u);\n}",
+    ), "visit/bare-call", "replay_job_route")
+    _expect_fail(visit, _mutated(
+        good, OPTICAL_MAIN_SOURCE,
+        "\t(void)aius_audio_service_run(&g_audio_service, 0u);\n}\n"
+        "FLASHMEM void aius_producer_yield_plat_ledger_record",
+        "\t(void)aius_audio_service_run(&g_audio_service, 0u);\n"
+        "\t(void)aius_audio_service_run(&g_audio_service, 0u);\n}\n"
+        "FLASHMEM void aius_producer_yield_plat_ledger_record",
+    ), "visit/double-nested-pass", "more than one pass")
+    _expect_fail(visit, dict(good, **{
+        "src/other.cpp": "FLASHMEM void other(void)\n{\n"
+                         "\t(void)aius_audio_service_run(&s, 0u);\n}\n",
+    }), "visit/other-file", "src/other.cpp")
+
+
+# --------------------------------------------------------------------------
 # Runner.
 # --------------------------------------------------------------------------
 
@@ -5282,6 +5876,7 @@ def main():
     run_helper_self_test()
     run_audio_cutover_self_test()
     run_self_test()
+    run_producer_yield_self_test()
     print("optical-cutover self-test (checks discriminate against synthetic input): PASS")
 
     text = OPTICAL_MAIN.read_text()
@@ -5299,6 +5894,10 @@ def main():
         # neither file can be checked through the other.
         run_checks("snapshot", OUTPUT_PATH_CHECKS, TX_SNAPSHOT.read_text())
         run_checks("transmit-module", TRANSMIT_MODULE_CHECKS, TX_MODULE.read_text())
+        # Phase 4e: read over every source under firmware/src and firmware/lib.
+        run_checks(
+            "producer-yield", PRODUCER_YIELD_CHECKS, read_producer_yield_sources()
+        )
     if args.group in ("absence", "all"):
         run_checks("absence", ABSENCE_CHECKS, text)
 

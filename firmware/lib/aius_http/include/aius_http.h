@@ -106,7 +106,12 @@ typedef enum {
 	 * readback fault on the scratch head asserts the head-compare halt on
 	 * REAL primitives. Unconditional ids, like every OTA id above. */
 	AIUS_HTTP_ROUTE_OTA_REHEARSE,
-	AIUS_HTTP_ROUTE_OTA_REHEARSE_FAULT
+	AIUS_HTTP_ROUTE_OTA_REHEARSE_FAULT,
+	/* POST /api/sd/mode {"dma": <bool>}: the SDIO transfer mode for the next
+	 * mount with no file open (aius-sample-rate-following.md Phase 4e, E3).
+	 * Auth-gated at dispatch; not persisted, so a reset reverts to FIFO.
+	 * Appended last so the START..REBOOT method range keeps its ids. */
+	AIUS_HTTP_ROUTE_SD_MODE
 } AiusHttpRoute;
 
 typedef enum {

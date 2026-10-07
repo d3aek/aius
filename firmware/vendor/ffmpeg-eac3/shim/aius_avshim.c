@@ -106,9 +106,19 @@ void aius_avshim_set_log(AiusAvLogFn fn)
     g_log_fn = fn;
 }
 
+/* AIUS_AVSHIM_LOG: 1 (default) keeps both log bodies for the native eac3
+ * suites; the optical images set 0 and carry two empty functions with no
+ * vsnprintf edge and no indirect call (no caller of aius_avshim_set_log exists
+ * in firmware/, so g_log_fn is always null there; aius-sample-rate-following.md
+ * Phase 4e, E14). */
+#ifndef AIUS_AVSHIM_LOG
+#define AIUS_AVSHIM_LOG 1
+#endif
+
 void av_log(void *avcl, int level, const char *fmt, ...)
 {
     (void)avcl;
+#if AIUS_AVSHIM_LOG
     if (!g_log_fn)
         return;
     char buf[256];
@@ -117,11 +127,16 @@ void av_log(void *avcl, int level, const char *fmt, ...)
     vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
     g_log_fn(level, buf);
+#else
+    (void)level;
+    (void)fmt;
+#endif
 }
 
 void avpriv_request_sample(void *avc, const char *msg, ...)
 {
     (void)avc;
+#if AIUS_AVSHIM_LOG
     if (!g_log_fn)
         return;
     char buf[256];
@@ -130,6 +145,9 @@ void avpriv_request_sample(void *avc, const char *msg, ...)
     vsnprintf(buf, sizeof(buf), msg, ap);
     va_end(ap);
     g_log_fn(AV_LOG_WARNING, buf);
+#else
+    (void)msg;
+#endif
 }
 
 /* ---- tx.c debug/CPU plumbing: quiet stubs ---------------------------------

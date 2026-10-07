@@ -19,48 +19,39 @@ INGRESS_BYTES = 16384
 # the same compile-time sum optical_main.cpp static_asserts (E-AC-3 plan
 # phase 4; was 131072 before the slot grew past the DTS need).
 DECODER_ARENA_BYTES = 218688
-# Regression ratchet, not the safety line. The real defect-26 guard is the
-# link-time ASSERT `_heap_end - _heap_start >= 0x20000` (128 KiB = NativeEthernet's
-# measured ~96 KiB boot mallocs plus a third headroom) in link/aius_teensy41.ld;
-# it retains 256 B of margin at this value. This ratchet only trips on a static
-# OCRAM regression below the committed baseline. Lowered from 131424 to 131392 on
-# 2026-08-01: the OTA app-dispatcher seam (`AiusOpticalAppOta ota;` in the DMAMEM
-# AiusOpticalAppDispatcher, added with the OTA route layer) costs 32 B of OCRAM,
-# consistent with the always-present recorder/replay/measure seams beside it. The
-# OTA-on image was hardware-verified to boot NativeEthernet (DHCP + HTTP) at this
-# free value, which directly proves the boot mallocs still succeed. Lowered again
-# to 131328 on 2026-08-01 (+64 B of deliberate alignment padding): the
-# SD-corruption regression fix pins g_runtime_storage and its interior
-# sd_transfer DMA buffer to 32-byte cache lines (aius_runtime_storage.h), so the
-# driver's cache maintenance can never straddle a neighbouring field again --
-# 64 B of padding is the price of making that placement robust instead of lucky.
-# Lowered to 131264 on 2026-08-03: the retained fnet_poll probe (AiusPollProbe,
-# 64 B in `.aius_retained_probe` inside the ROM-safe ORIGIN(RAM) window) is the
-# diagnostic vector for the periodic DHCP-T1 watchdog wedge (open-work
-# register); still 192 B above the defect-26 128 KiB heap-floor link ASSERT.
-# Lowered to 131232 on 2026-08-04: AiusDownmixConfig grew 16 B (the surround
-# decorrelation delay's value + state pointer, audio-quality roadmap item 4)
-# and two OCRAM-resident owners embed a config copy; the 4.6 KiB delay ring
-# itself is DTCM (inside AiusDspRuntimeConfig). Still 160 B above the
-# defect-26 floor.
-# Lowered to 131136 on 2026-08-16: the retained OTA dark-window forensic
-# stamp (64 B in `.aius_retained_ota`, last in the ROM-safe ORIGIN(RAM)
-# window, plus 32 B of section alignment measured post-link) -- the record a
-# bricked window carries into its WDOG reset (aius-ota-resilience.md
-# Phase 1). Still 64 B above the defect-26 floor.
-# Lowered to 131072 on 2026-08-16, later: the deferred-absorb staging seam
-# (aius-ota-resilience.md Phase 4a) -- the dispatcher's pending-chunk stash
-# and the transaction's settle-hook latch, 64 B after cache-line alignment.
-# This value IS the defect-26 128 KiB link-time floor: OCRAM margin is now
-# ZERO, and the next OCRAM byte must be funded (move something to DTCM/flash
-# or widen the floor with fresh NativeEthernet headroom measurements), not
-# ratcheted past.
-# Lowered to 131040 on 2026-08-16, latest: the A/B trial ledger (32 B in
-# `.aius_retained_ab`, the chooser/application contract at 0x20200120,
-# aius-ota-resilience.md Phase 3). Funded by lowering the defect-26 link
-# floor to 0x1FFE0 with the same-day bench boot as proof (~32 KiB of real
-# headroom over the ~96 KiB measured NativeEthernet demand remains).
-COMMITTED_OCRAM_FREE_BYTES = 131040
+# Regression ratchet, not the safety line. The defect-26 guard is the link-time
+# ASSERT `_heap_end - _heap_start >= 0x1FFE0` (131,040 B, link/aius_teensy41.ld:271;
+# NativeEthernet's measured ~96 KiB boot mallocs plus headroom), lowered from
+# 0x20000 on 2026-08-16 to fund the A/B trial ledger with a same-day bench boot
+# as proof. This table only trips on static OCRAM growth.
+#
+# One floor per PIOENV (aius-sample-rate-following.md Phase 4e, R4-B2, E12):
+# each is the OCRAM free measured on that env's link of the unchanged tree at
+# 4e start (aius d6f4f58, 2026-10-07; plan §Memory, "4e-start baseline"). The
+# A/B envs carry the 32 B `.aius_retained_ab` ledger in the content-sized
+# `.bss.aius_retained`, so their figure is not the plain env's. An env below
+# its own floor fails, and an env with no entry fails. A floor only ever rises
+# to a fresh measurement of that env; lowering one needs funding (move
+# something to DTCM or flash, or widen the link floor with fresh NativeEthernet
+# headroom measurements), so any OCRAM growth in any env fails the gate.
+#
+# History of the single constant this table replaced (each lowering funded):
+# 131424 -> 131392 (2026-08-01, OTA dispatcher seam, 32 B); -> 131328 (same day,
+# cache-line pinning of g_runtime_storage and its sd_transfer buffer, 64 B);
+# -> 131264 (2026-08-03, retained AiusPollProbe, 64 B); -> 131232 (2026-08-04,
+# AiusDownmixConfig +16 B in two OCRAM owners); -> 131136 (2026-08-16, retained
+# OTA dark-window stamp, 64 B plus 32 B alignment); -> 131072 (same day, the
+# deferred-absorb staging seam, 64 B); -> 131040 (same day, the A/B trial
+# ledger, funded by the 0x1FFE0 link floor). The plain image then measured
+# 131,776 B (736 B over the link floor), so the old "margin is zero" note was
+# stale by the time this table replaced it.
+OCRAM_LINK_FLOOR_BYTES = 0x1FFE0
+OCRAM_FREE_FLOORS = {
+    "teensy41-optical": 131776,
+    "teensy41-optical-slot-a": 131744,
+    "teensy41-optical-slot-b": 131744,
+    "teensy41-optical-fault": 131776,
+}
 
 SECTION_RE = re.compile(
     r"^\s*\[\s*(\d+)\]\s+(\S+)\s+\S+\s+"
@@ -146,9 +137,21 @@ def _section_for(
     return sections[symbol.section_index]
 
 
+def ocram_floor(environment: str) -> int:
+    """The env's committed OCRAM free floor; an env with no entry fails."""
+    if environment not in OCRAM_FREE_FLOORS:
+        raise VerificationError(
+            f"no OCRAM floor for env {environment!r}; add a fresh measurement "
+            "of its link to OCRAM_FREE_FLOORS in test/memory/verify_target.py"
+        )
+    return OCRAM_FREE_FLOORS[environment]
+
+
 def verify_snapshot(
-    sections: dict[int, tuple[str, int, int]], symbols: list[Symbol]
-) -> tuple[int, int]:
+    sections: dict[int, tuple[str, int, int]],
+    symbols: list[Symbol],
+    environment: str,
+) -> tuple[int, int, int]:
     ingress = _one_symbol(symbols, "g_audio_ingress_words")
     ingress_section = _section_for(ingress, sections)
     if ingress.size != INGRESS_BYTES:
@@ -200,6 +203,7 @@ def verify_snapshot(
             f".bss.aius_staging still consumes {staging_bytes} OCRAM bytes"
         )
 
+    floor = ocram_floor(environment)
     heap_start = _one_symbol(symbols, "_heap_start")
     heap_end = _one_symbol(symbols, "_heap_end")
     if not (
@@ -207,27 +211,29 @@ def verify_snapshot(
     ):
         raise VerificationError("OCRAM heap symbols lie outside OCRAM")
     ocram_free = heap_end.value - heap_start.value
-    if ocram_free < COMMITTED_OCRAM_FREE_BYTES:
+    if ocram_free < floor:
         raise VerificationError(
-            f"OCRAM free is {ocram_free} B, below committed "
-            f"{COMMITTED_OCRAM_FREE_BYTES} B floor"
+            f"OCRAM free is {ocram_free} B on {environment}, below its "
+            f"committed {floor} B floor"
         )
-    return ocram_free, staging_bytes
+    return ocram_free, staging_bytes, floor
 
 
-def verify(elf: Path, readelf: str) -> tuple[int, int]:
-    return verify_snapshot(_sections(readelf, elf), _symbols(readelf, elf))
+def verify(elf: Path, readelf: str, environment: str) -> tuple[int, int, int]:
+    return verify_snapshot(
+        _sections(readelf, elf), _symbols(readelf, elf), environment
+    )
 
 
-def _summary(ocram_free: int, staging_bytes: int) -> str:
-    delta = ocram_free - COMMITTED_OCRAM_FREE_BYTES
+def _summary(ocram_free: int, staging_bytes: int, floor: int) -> str:
+    delta = ocram_free - floor
     return (
         "audio target memory: PASS "
         f"(ingress={INGRESS_BYTES} B OCRAM, "
         f"decoder arena={DECODER_ARENA_BYTES} B DTCM, "
         f"recorder OCRAM staging={staging_bytes} B, "
         f"OCRAM free={ocram_free} B, "
-        f"baseline={COMMITTED_OCRAM_FREE_BYTES} B, delta={delta:+d} B)"
+        f"floor={floor} B, delta={delta:+d} B)"
     )
 
 
@@ -237,16 +243,21 @@ def verify_target(source, target, env) -> None:
     readelf = env.WhereIs("arm-none-eabi-readelf")
     if not readelf:
         raise VerificationError("arm-none-eabi-readelf is unavailable")
-    print(_summary(*verify(elf, str(readelf))))
+    print(_summary(*verify(elf, str(readelf), env.subst("$PIOENV"))))
 
 
 def _main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("elf", type=Path)
     parser.add_argument("--readelf", default="arm-none-eabi-readelf")
+    parser.add_argument(
+        "--env",
+        required=True,
+        help="PlatformIO environment whose OCRAM floor applies",
+    )
     args = parser.parse_args(argv)
     try:
-        print(_summary(*verify(args.elf.resolve(), args.readelf)))
+        print(_summary(*verify(args.elf.resolve(), args.readelf, args.env)))
     except (OSError, subprocess.CalledProcessError, VerificationError) as error:
         print(f"audio target memory: FAIL: {error}", file=sys.stderr)
         return 1

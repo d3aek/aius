@@ -1,0 +1,7 @@
+# SHA-256 of every Aius-patched SdFat snapshot file.
+1c5d5afa5b6b94f72339d886c9408d962c4c2df9314d3af629cc85ab56661a9f  library.properties
+7393d6d43006038e148f34ca61254ad91b0a095660bf5d0ed0d6cbcb8063fc94  src/FatLib/FatPartition.cpp
+99695ac142de5564c5ab3dabac357bbb6908269d5f01c3d1b7388741ca6b6e31  src/FatLib/FatPartition.h
+778798fb5b75126770d0f3626922586712507138ed0684e28d4f34da7d29c8a4  src/FsLib/FsVolume.h
+bccc859596646b0e7c4321b947efb73c14b55ce98b0d4003531571f069c2a44b  src/SdCard/SdioCard.h
+d8622447a2b1c4996272a36c61e0627b1a2af1c791b875105dae249b2d5230e8  src/SdCard/SdioTeensy.cpp

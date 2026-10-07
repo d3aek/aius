@@ -899,6 +899,50 @@ static FLASHMEM const AiusHttpApplicationResponse *dispatch_measure(
 		         "{\"ok\":true,\"state\":\"armed\",\"id\":\"%s\"}", id));
 }
 
+/* Parses {"dma":<bool>} with the replay body's grammar: one key, no duplicate,
+ * nothing trailing the closing brace. */
+static FLASHMEM bool sd_mode_body(const AiusHttpRequest *request, bool *dma)
+{
+	AiusJsonCursor cursor = { request->body, request->body_length, 0u };
+	const uint8_t *key;
+	size_t key_length;
+
+	if (request->body == NULL || !body_consume(&cursor, '{') ||
+	    !body_take_string(&cursor, &key, &key_length) ||
+	    !body_consume(&cursor, ':') ||
+	    !body_key_is(key, key_length, "dma"))
+		return false;
+	if (body_take_literal(&cursor, "true"))
+		*dma = true;
+	else if (body_take_literal(&cursor, "false"))
+		*dma = false;
+	else
+		return false;
+	if (!body_consume(&cursor, '}'))
+		return false;
+	aius_json_skip_whitespace(&cursor);
+	return aius_json_at_end(&cursor);
+}
+
+/* POST /api/sd/mode. The control-route auth gate already ran; an incomplete
+ * body is a 400 like every other small-body route. */
+static FLASHMEM const AiusHttpApplicationResponse *dispatch_sd_mode(
+	AiusOpticalAppDispatcher *dispatcher, const AiusHttpRequest *request)
+{
+	const AiusOpticalApp *app = &dispatcher->app;
+	bool dma = false;
+
+	if (app->sd_set_mode == NULL)
+		return http_json(dispatcher, 404, "{\"ok\":false}");
+	if (!request->body_complete || !sd_mode_body(request, &dma))
+		return http_error(dispatcher, 400, "sd_mode_body");
+	if (!app->sd_set_mode(app->context, dma))
+		return http_error(dispatcher, 503, "sd_busy");
+	return http_json(dispatcher, 200,
+	                 dma ? "{\"ok\":true,\"sd_mode\":\"dma\"}"
+	                     : "{\"ok\":true,\"sd_mode\":\"fifo\"}");
+}
+
 /* ------------------------------------------------------------------ */
 /* SD job responses                                                    */
 /* ------------------------------------------------------------------ */
@@ -2025,7 +2069,8 @@ static FLASHMEM bool route_is_control(AiusHttpRoute route)
 	       route == AIUS_HTTP_ROUTE_STOP ||
 	       route == AIUS_HTTP_ROUTE_CLEAR ||
 	       route == AIUS_HTTP_ROUTE_REBOOT ||
-	       route == AIUS_HTTP_ROUTE_MEASURE_START;
+	       route == AIUS_HTTP_ROUTE_MEASURE_START ||
+	       route == AIUS_HTTP_ROUTE_SD_MODE;
 }
 
 FLASHMEM const AiusHttpApplicationResponse *aius_optical_app_http_dispatch(
@@ -2093,6 +2138,8 @@ FLASHMEM const AiusHttpApplicationResponse *aius_optical_app_http_dispatch(
 	case AIUS_HTTP_ROUTE_CLEAR:
 		app->clear_counters(app->context);
 		return http_json(dispatcher, 200, "{\"ok\":true}");
+	case AIUS_HTTP_ROUTE_SD_MODE:
+		return dispatch_sd_mode(dispatcher, request);
 	case AIUS_HTTP_ROUTE_REBOOT:
 		/* The reset itself belongs to the runtime. Dispatch records the request
 		 * and returns; it never resets and never delays.

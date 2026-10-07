@@ -1,0 +1,4 @@
+# framework-arduinoteensy 1.162.0 SD wrapper snapshot baselines
+f0b58cf1cf38afdeebc45c3554a474833dbc704a8fcf29c09442da8ce4a3f35f  library.properties
+7a6a8d1a240e140de67197646111976ceedce6de83c09e2ca6583b00d07222a2  src/SD.cpp
+c8dac512046c7f8392ed48aef654f04bbb77d88bc7b4aa525109fdf98a26423d  src/SD.h
