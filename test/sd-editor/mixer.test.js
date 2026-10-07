@@ -364,6 +364,143 @@ describe('EQ channel tabs', () => {
   });
 });
 
+describe('touch steppers and the matrix strip', () => {
+  const STRIP_PATHS = { xo: 'matrix.lfe_crossover_hz', hr: 'matrix.headroom_linear', dly: 'matrix.surround_delay_ms' };
+  const stripInput = (key) => el(`strip:${key}`);
+  const buttonOf = (input, which) => input.parentElement.querySelector(`.stepper__btn--${which}`);
+  const down = (button) => button.dispatchEvent(new Event('pointerdown'));
+  const up = (button) => button.dispatchEvent(new Event('pointerup'));
+
+  beforeEach(async () => {
+    await boot();
+  });
+
+  it('decorate every number input once, with labelled buttons out of the tab order', () => {
+    const inputs = Array.from(document.querySelectorAll('input[type="number"]')).filter((input) => !input.closest('.bench-legacy'));
+    expect(inputs.length).toBeGreaterThan(30);
+    for (const input of inputs) {
+      expect(input.parentElement.querySelectorAll('.stepper__btn')).toHaveLength(2);
+      expect(input.inputMode).toBe('decimal');
+      for (const button of input.parentElement.querySelectorAll('.stepper__btn')) {
+        expect(button.type).toBe('button');
+        expect(button.tabIndex).toBe(-1);
+        expect(button.getAttribute('aria-label')).toMatch(/^(Increase|Decrease) \S/);
+      }
+    }
+    /* The editor still finds its error line through the input's parent. */
+    expect(fieldOf('matrix.lfe_crossover_hz').parentElement.querySelector('.field__error')).not.toBeNull();
+  });
+
+  it('strip writes each matrix field through the editor and stages an edit', async () => {
+    for (const [key, path] of Object.entries(STRIP_PATHS)) {
+      const input = stripInput(key);
+      expect(input.value).toBe(fieldOf(path).value);
+      const step = Number(input.step);
+      const next = String(Number((Number(input.value) + step).toFixed(3)));
+      input.value = next;
+      input.dispatchEvent(new Event('input'));
+      await settle();
+      expect(fieldOf(path).value).toBe(next);
+      expect(fieldOf(path).dataset.exact).toBe('');
+    }
+    expect(el('dirty-state').hidden).toBe(false);
+    expect(el('mixer-eqn').textContent).toContain(`low-passed at ${fieldOf(STRIP_PATHS.xo).value} Hz`);
+  });
+
+  it('strip follows a field rewritten with no event', async () => {
+    fieldOf(STRIP_PATHS.dly).value = '7.5';
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(stripInput('dly').value).toBe('7.5');
+  });
+
+  it('a press steps by the field step and writes the editor field', async () => {
+    const input = stripInput('xo');
+    const before = Number(fieldOf(STRIP_PATHS.xo).value);
+    const step = Number(input.step);
+    down(buttonOf(input, 'plus'));
+    up(buttonOf(input, 'plus'));
+    await settle();
+    expect(Number(fieldOf(STRIP_PATHS.xo).value)).toBe(before + step);
+    expect(input.value).toBe(fieldOf(STRIP_PATHS.xo).value);
+    down(buttonOf(input, 'minus'));
+    up(buttonOf(input, 'minus'));
+    await settle();
+    expect(Number(fieldOf(STRIP_PATHS.xo).value)).toBe(before);
+  });
+
+  it('a step clamps at max and at min', async () => {
+    const trim = fieldOf('input_channels.fc.gain_db');
+    trim.value = trim.max;
+    const plus = buttonOf(trim, 'plus');
+    down(plus);
+    up(plus);
+    expect(trim.value).toBe(trim.max);
+    trim.value = String(Number(trim.min) + 0.25);
+    const minus = buttonOf(trim, 'minus');
+    down(minus);
+    up(minus);
+    expect(trim.value).toBe(trim.min);
+  });
+
+  it('a hold repeats after the delay, firing input per step and one change on release', () => {
+    vi.useFakeTimers();
+    try {
+      const target = fieldOf('input_channels.fc.gain_db');
+      target.value = '-30';
+      const events = { input: 0, change: 0 };
+      target.addEventListener('input', () => (events.input += 1));
+      target.addEventListener('change', () => (events.change += 1));
+      const minus = buttonOf(target, 'minus');
+      down(minus);
+      expect(events.input).toBe(1);
+      vi.advanceTimersByTime(399);
+      expect(events.input).toBe(1);
+      vi.advanceTimersByTime(1 + 80 * 4);
+      expect(events.input).toBe(5);
+      expect(events.change).toBe(0);
+      up(minus);
+      expect(events.change).toBe(1);
+      vi.advanceTimersByTime(1000);
+      expect(events.input).toBe(5);
+      expect(Number(target.value)).toBe(-30 - 5 * Number(target.step));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('mirrors a stepper press on a linked EQ pair', async () => {
+    fieldOf('input_channels.fl.eq.0.type').value = 'peaking';
+    fieldOf('input_channels.fl.eq.0.type').dispatchEvent(new Event('change'));
+    await settle();
+    const gain = fieldOf('input_channels.fl.eq.0.gain_db');
+    gain.value = '1';
+    down(buttonOf(gain, 'plus'));
+    up(buttonOf(gain, 'plus'));
+    await settle();
+    expect(gain.value).toBe(String(1 + Number(gain.step)));
+    expect(fieldOf('input_channels.fr.eq.0.gain_db').value).toBe(gain.value);
+  });
+
+  it('disables the headroom stepper under clip-free and shows the resolved value', async () => {
+    el('matrix-clipfree').click();
+    await settle();
+    const input = stripInput('hr');
+    expect(input.disabled).toBe(true);
+    expect(buttonOf(input, 'plus').disabled).toBe(true);
+    expect(buttonOf(input, 'minus').disabled).toBe(true);
+    expect(input.value).toBe(fieldOf(STRIP_PATHS.hr).value);
+    expect(Number(input.value)).toBeCloseTo(0.366, 2);
+    const held = fieldOf(STRIP_PATHS.hr).value;
+    down(buttonOf(input, 'plus'));
+    up(buttonOf(input, 'plus'));
+    expect(fieldOf(STRIP_PATHS.hr).value).toBe(held);
+    el('matrix-clipfree').click();
+    await settle();
+    expect(input.disabled).toBe(false);
+    expect(buttonOf(input, 'plus').disabled).toBe(false);
+  });
+});
+
 describe('token dialog', () => {
   it('opens from the lock chip and closes once the token is saved', async () => {
     await boot();

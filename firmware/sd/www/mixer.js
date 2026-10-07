@@ -16,6 +16,10 @@
  * editor's DOM instead: the form fields (f:<path>), the bar needles
  * (bar-in-*, bar-out-*), the flow ends and the preset picker.
  *
+ * It also decorates every number input with a touch stepper (minus and plus
+ * buttons that hold-repeat) and builds the matrix strip of crossover,
+ * headroom and surround delay; both write only through the editor's fields.
+ *
  * Plain classic script, no imports, for the same reason as dsp-editor.js: the
  * card cannot reach a host application's module mounts.
  */
@@ -311,6 +315,184 @@
     for (const chip of $('mixer-presets').querySelectorAll('[data-preset]')) {
       chip.setAttribute('aria-pressed', String(origin === `preset: ${chip.dataset.preset}`));
       chip.disabled = $('preset-load').disabled;
+    }
+  }
+
+  /* ---- steppers ---------------------------------------------------------------
+   * Every number input on the page gets a minus and a plus button beside it.
+   * The input itself stays where the editor put it (its validator reads
+   * input.parentElement for the error line), so the buttons are siblings after
+   * it and the holder becomes a grid. A press steps by the field's own `step`
+   * and clamps to its `min`/`max`; a hold repeats. Each step writes the value,
+   * drops the exact-value memory and dispatches 'input', as a fader does; the
+   * release of a press that stepped dispatches one 'change'. */
+
+  const HOLD_DELAY_MS = 400;
+  const HOLD_REPEAT_MS = 80;
+  const CLICK_ECHO_MS = 400; /* a pointer press is followed by a click it must not repeat */
+  const CELL_LABELS = { type: 'Type', frequency_hz: 'Freq Hz', q: 'Q', gain_db: 'Gain dB' };
+
+  const decimalsOf = (number) => (String(number).split('.')[1] || '').length;
+
+  /* Steps `input` one `step` in `direction`; true when the value moved. */
+  function stepValue(input, direction) {
+    if (input.disabled || input.readOnly) return false;
+    const step = Number(input.step) > 0 ? Number(input.step) : 1;
+    const low = input.min === '' ? -Infinity : Number(input.min);
+    const high = input.max === '' ? Infinity : Number(input.max);
+    const raw = input.value.trim();
+    const current = raw === '' ? NaN : Number(raw);
+    const base = Number.isFinite(current) ? current : clamp(0, low, high);
+    const places = Math.max(decimalsOf(step), decimalsOf(base));
+    const next = clamp(Number((base + direction * step).toFixed(places)), low, high);
+    if (next === current) return false;
+    input.value = String(next);
+    if (input.dataset.field) input.dataset.exact = '';
+    input.dispatchEvent(new Event('input'));
+    return true;
+  }
+
+  function stepButton(input, direction) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `stepper__btn stepper__btn--${direction < 0 ? 'minus' : 'plus'}`;
+    button.tabIndex = -1;
+    button.textContent = direction < 0 ? '−' : '+';
+    const subject = input.dataset.label || input.getAttribute('aria-label') || 'value';
+    button.setAttribute('aria-label', `${direction < 0 ? 'Decrease' : 'Increase'} ${subject}`);
+
+    let delayTimer = 0;
+    let repeatTimer = 0;
+    let stepped = false;
+    let pointerSeq = false;
+    const step = () => {
+      if (stepValue(input, direction)) stepped = true;
+    };
+    const stop = () => {
+      clearTimeout(delayTimer);
+      clearInterval(repeatTimer);
+      delayTimer = 0;
+      repeatTimer = 0;
+      if (stepped) input.dispatchEvent(new Event('change'));
+      stepped = false;
+      setTimeout(() => {
+        pointerSeq = false;
+      }, CLICK_ECHO_MS);
+    };
+    button.addEventListener('pointerdown', (event) => {
+      if (event.button > 0 || button.disabled || delayTimer || repeatTimer) return;
+      event.preventDefault();
+      pointerSeq = true;
+      if (typeof button.setPointerCapture === 'function' && event.pointerId !== undefined) {
+        try {
+          button.setPointerCapture(event.pointerId);
+        } catch {
+          /* a synthetic pointer has nothing to capture */
+        }
+      }
+      step();
+      delayTimer = setTimeout(() => {
+        repeatTimer = setInterval(step, HOLD_REPEAT_MS);
+      }, HOLD_DELAY_MS);
+    });
+    for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) button.addEventListener(type, stop);
+    /* A click with no pointer press before it is the keyboard or assistive tech. */
+    button.addEventListener('click', () => {
+      if (pointerSeq) return;
+      step();
+      stop();
+    });
+    button.addEventListener('contextmenu', (event) => event.preventDefault());
+    return button;
+  }
+
+  const steppers = [];
+
+  /* The one place a number input becomes a stepper. */
+  function stepper(input) {
+    const holder = input.parentElement;
+    if (!holder || input.dataset.stepper) return;
+    input.dataset.stepper = 'true';
+    input.inputMode = 'decimal';
+    input.classList.add('stepper__input');
+    holder.classList.add('stepper');
+    input.after(stepButton(input, -1), stepButton(input, 1));
+    steppers.push(input);
+  }
+
+  /* A table cell has no caption of its own (the column head carries it), so
+   * where the table reflows into labelled bands the cell names itself. */
+  function labelEqCells() {
+    for (const input of document.querySelectorAll('.eq-table .field--cell [data-field]')) {
+      input.parentElement.dataset.col = CELL_LABELS[input.dataset.field.split('.').pop()] || '';
+    }
+  }
+
+  /* ---- matrix strip ------------------------------------------------------------
+   * Crossover, headroom and surround delay as steppers under the faders. Each
+   * is a view of the editor's exact-values field: its own input carries the
+   * same bounds, forwards every 'input'/'change' to that field, and follows the
+   * field back (value, disabled under clip-free, out-of-range). */
+
+  const STRIP = [
+    { key: 'xo', path: 'matrix.lfe_crossover_hz', label: 'LFE crossover', unit: 'Hz' },
+    { key: 'hr', path: 'matrix.headroom_linear', label: 'Headroom', unit: '×' },
+    { key: 'dly', path: 'matrix.surround_delay_ms', label: 'Surround delay', unit: 'ms' },
+  ];
+  const stripItems = [];
+
+  function buildStrip() {
+    const mount = $('mixer-strip');
+    for (const def of STRIP) {
+      const source = field(def.path);
+      if (!source) continue;
+      const item = document.createElement('div');
+      item.className = 'strip__item';
+      const caption = document.createElement('label');
+      caption.className = 'strip__label';
+      caption.textContent = `${def.label} (${def.unit})`;
+      const holder = document.createElement('div');
+      holder.className = 'strip__field';
+      const input = document.createElement('input');
+      input.type = 'number';
+      input.id = `strip:${def.key}`;
+      input.min = source.min;
+      input.max = source.max;
+      input.step = source.step;
+      input.setAttribute('aria-label', `${def.label} (${def.unit})`);
+      input.dataset.label = def.label;
+      caption.htmlFor = input.id;
+      const note = document.createElement('span');
+      note.className = 'strip__note';
+      holder.append(input);
+      item.append(caption, holder, note);
+      mount.append(item);
+      const forward = (type) => {
+        if (source.disabled) return;
+        source.value = input.value;
+        source.dataset.exact = '';
+        source.dispatchEvent(new Event(type));
+      };
+      input.addEventListener('input', () => forward('input'));
+      input.addEventListener('change', () => forward('change'));
+      stripItems.push({ def, source, input, holder, note });
+    }
+  }
+
+  function syncStrip() {
+    for (const { def, source, input, holder, note } of stripItems) {
+      if (document.activeElement !== input && input.value !== source.value) input.value = source.value;
+      input.disabled = source.disabled;
+      holder.dataset.invalid = String(Boolean(source.closest('.field--invalid')));
+      note.textContent = source.disabled && def.key === 'hr' ? 'resolved by clip-free' : '';
+    }
+  }
+
+  /* A stepper button is dead exactly when its input is, which changes with no
+   * event (the clip-free policy, a stage switch). */
+  function syncSteppers() {
+    for (const input of steppers) {
+      for (const button of input.parentElement.querySelectorAll('.stepper__btn')) button.disabled = input.disabled;
     }
   }
 
@@ -721,6 +903,8 @@
 
   function syncAll() {
     for (const entry of faders.values()) syncFader(entry);
+    syncStrip();
+    syncSteppers();
     const values = readValues();
     renderEquation(values);
     renderDial(values);
@@ -743,6 +927,7 @@
     for (const input of document.querySelectorAll('#input-channels [data-field], #output-eq [data-field]')) {
       parts.push(input.value);
     }
+    for (const input of steppers) parts.push(`${input.disabled}`);
     parts.push(String(document.querySelectorAll('.field--invalid').length));
     return parts.join(';');
   }
@@ -762,6 +947,11 @@
   buildEqTabs();
   activateTab('front', false);
   followCurveSelection();
+  buildStrip();
+  labelEqCells();
+  for (const input of document.querySelectorAll('input[type="number"]')) {
+    if (!input.closest('.bench-legacy')) stepper(input);
+  }
 
   /* An edit -- typed, a fader, the curve, a preset -- dispatches 'input' or
    * 'change' on a field. Those do not bubble, but a capture listener on the

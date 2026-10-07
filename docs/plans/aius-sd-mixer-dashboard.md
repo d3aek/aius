@@ -21,8 +21,9 @@ with bonded tabs. `index.html` stays as the classic editor.
 
 - **Posture**: checkpoint (owner, 2026-10-07): surface each decision and
   human-review gate as it arises.
-- **Status**: Phases 1, 1a, 2 and 4 shipped. Phase 3 round 1 is delivered
-  and waits on the owner's picks. Phases 5 (board limiter) and 6 (deploy) are
+- **Status**: Phases 1, 1a, 1b, 2 and 4 shipped; 1b awaits the owner's phone
+  check of the preview. Phase 3 round 1 is delivered and waits on the
+  owner's picks. Phases 5 (board limiter) and 6 (deploy) are
   BLOCKED on the user's word. Nothing from this plan is on the board.
 - **What landed** (all pushed):
 
@@ -133,6 +134,79 @@ Settled, user-directed unless marked:
   (a historical page list) and `CLAUDE.md`'s "12-file sync measured ~59 ms"
   (a dated measurement).
 
+### Phase 1b: Matrix strip and touch-first steppers ✓ SHIPPED
+
+Owner, 2026-10-07: LFE crossover, headroom and surround delay must be
+visible, as number inputs like the EQ ones, not sliders. Number inputs must
+be touch friendly, with larger increment and decrement controls packed for a
+touch-first interface. Placement and stepper layout were chosen by the
+owner; the rest are own calls.
+
+- outcome:
+  - **Matrix strip** (owner): a row of three steppers inside the matrix
+    panel, under the C/F/S/LFE faders: crossover Hz, headroom, surround
+    delay ms. Each writes through the editor's own `f:matrix.*` field with
+    an `input` or `change` event (Constraints). The folded "Exact values"
+    form stays, for the gains. While clip-free is on, the headroom stepper is
+    disabled and shows the resolved value, matching the clip-free chip (own
+    call).
+  - **Stepper** (owner: value, then a minus and a plus button on the right)
+    for every number input on the mixer page: the EQ tabs, the matrix strip
+    and the Exact values form. Own calls:
+    - each button is at least 44 by 44 px, and the value is typeable with
+      `inputmode="decimal"`;
+    - the browser's own spinners are hidden;
+    - each press steps by the field's `step` and clamps to its `min` and
+      `max`;
+    - holding a button repeats, after 400 ms and then every 80 ms; it fires
+      `input` per step and one `change` on release;
+    - buttons are `type="button"`, `aria-label`led, and excluded from
+      the tab order (the input keeps it).
+  - **Packing**: the EQ controls reflow so the steppers fit without sideways
+    scroll. At phone width each band becomes one row of labelled steppers
+    rather than a dense table row.
+  - `index.html` (the classic editor) is untouched; the steppers live only
+    in `mixer.js` and `mixer.css`.
+- seams: `firmware/sd/www/mixer.{html,css,js}`, `test/sd-editor/mixer.test.js`,
+  and the preview bundle (`src/apps/preview/content/aius-mixer/`).
+  `dsp-editor.js` runs unchanged.
+- targeted-proof:
+  - `mixer.test.js` cases:
+    - the strip writes each `f:matrix.*` field;
+    - a step clamps at `max`;
+    - a hold repeats and fires one `change`;
+    - a linked EQ pair mirrors a stepper press;
+    - headroom is disabled under clip-free.
+  - Chromium probes of the preview at 1920, 1440 and 390 px, with touch
+    emulation at 390:
+    - no sideways scroll;
+    - every stepper button measures at least 44 by 44 px;
+    - a trusted tap on plus changes the field;
+    - a press-and-hold on minus steps more than once.
+- Built (own calls, recorded at delivery):
+  - One `stepper(input)` helper in `mixer.js` decorates every
+    `input[type=number]` outside `.bench-legacy`, including the limiter form
+    and `#curve-q`. It adds the buttons as siblings rather than wrapping the
+    input, because `dsp-editor.js` `validateField` finds `.field__error`
+    through `input.parentElement`.
+  - The strip's mirror inputs forward `input`/`change` to the `f:matrix.*`
+    fields, and follow an eventless rewrite of them.
+  - The strip is a full-width row below the faders and readout, because the
+    fader column cannot hold three steppers.
+  - EQ bands are an auto-fill grid (`minmax(150px, 1fr)`, gap `12px 16px`),
+    2 steppers per row at phone width, because three 44 px steppers do not
+    fit in 350 px. Column headers become per-cell labels, and "Band N"
+    replaces the bare number.
+  - Under clip-free the headroom stepper reads "resolved by clip-free".
+- Proof gap: `playwright-inspect` cannot emulate touch (no `hasTouch` or
+  `isMobile` on its `BrowserNewContextOptions`,
+  `src/tools/playwright-inspect/src/playwright-inspect/Program.cs:161`), so
+  the 390 px tap and hold used trusted mouse input. The touch-only path
+  (`pointerdown` with capture, `contextmenu` suppressed,
+  `touch-action: manipulation`) is proven in vitest only; the owner's
+  phone check of the preview is the real-touch proof, and its feedback
+  becomes new work here.
+
 ### Phase 2: Vendor the fonts ✓ SHIPPED
 
 Settled by the owner, 2026-10-07: yes, vendor them.
@@ -226,8 +300,8 @@ tool `dsp_characterize.py` stays read-only.
 - Float drift, settled by the owner 2026-10-07: accepted. Any save moves an
   untouched float whose text the firmware decoder misrounds by one ulp (live:
   `matrix.lfe_gain_linear`), and a newly typed value by up to 5 ulps (the
-  acceptance was asked on "one ulp"; the corrected figure was reported to the
-  owner the same day). The classic editor already does the same. The
+  acceptance was asked on "one ulp"; the owner accepted the larger figure
+  the same day). The classic editor already does the same. The
   firmware fix is tracked in
   [`aius-open-work-register.md`](aius-open-work-register.md) §Open defects.
 - seams: `firmware/tools/`, and its usage line in `CONTRIBUTING.md`.

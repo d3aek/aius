@@ -532,6 +532,58 @@ body.bench::before {
 .bench .tabs__trim .field__reset { position: static; }
 .tabs__trim .field__error { min-height: 0; }
 
+/* ---- steppers and the matrix strip ------------------------------------------------------
+   The input keeps its place and the holder becomes a grid: value, minus, plus. Every
+   hit area is 44px; the browser's own spinners go. */
+.bench input.stepper__input::-webkit-outer-spin-button,
+.bench input.stepper__input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.bench input.stepper__input { -moz-appearance: textfield; appearance: textfield; min-width: 0; min-height: 44px; font-variant-numeric: tabular-nums; }
+.bench .stepper { display: grid; grid-template-columns: minmax(0, 1fr) 44px 44px; column-gap: 4px; row-gap: 5px; align-items: center; }
+.bench .stepper::before,
+.bench .stepper > * { grid-column: 1 / -1; }
+.bench .stepper > .stepper__input { grid-column: 1; }
+.bench .stepper > .stepper__btn { grid-column: auto; }
+.bench .stepper__btn {
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0;
+  border: 1px solid var(--aius-border-control);
+  border-radius: var(--bench-radius);
+  background: var(--aius-surface-input);
+  color: var(--aius-text-primary);
+  font: 600 20px/1 var(--bench-f-mono);
+  cursor: pointer;
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+.bench .stepper__btn:hover:not(:disabled) { border-color: var(--aius-accent-primary); background: var(--aius-surface-input); }
+.bench .stepper__btn:active:not(:disabled) { border-color: var(--aius-accent-warning); background: var(--bench-amber-fill); }
+.bench .stepper__btn:disabled { opacity: .35; cursor: not-allowed; }
+.bench .stepper__btn:focus-visible { outline: 3px solid var(--aius-accent-primary); outline-offset: 2px; }
+.bench .curve-q.stepper { display: inline-flex; align-items: center; gap: 4px; }
+.bench .tabs__trim .field--trim.stepper { display: grid; width: min(100%, 220px); }
+.bench .tabs__trim .field--trim.stepper input { width: auto; }
+.bench .tabs__trim .field--trim.stepper .field__reset { justify-self: start; }
+.bench .mixer__exact .field-grid { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); }
+
+.strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; margin-top: 14px; padding-top: 12px; border-top: 1px dashed var(--aius-border-strong); }
+.strip__item { display: grid; gap: 6px; align-content: start; padding: 10px; border: 1px solid var(--aius-border-strong); border-radius: 10px; background: var(--aius-surface-input); }
+.strip__label { font: 500 10px var(--bench-f-mono); text-transform: uppercase; letter-spacing: .06em; color: var(--aius-text-secondary); }
+.strip__note { min-height: 1.2em; font: 400 10px var(--bench-f-mono); color: var(--aius-text-muted); }
+.strip__field[data-invalid="true"] input { border-color: var(--aius-accent-danger); }
+
+/* An EQ band reflows from a table row into labelled steppers, two or three to a row. */
+.bench .eq-table--output { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px 16px; align-items: start; }
+.bench .eq-table__h { display: none; }
+.bench .eq-table__sec { grid-column: 1 / -1; padding-top: 8px; border-top: 1px dashed var(--aius-border-strong); font: 600 11px var(--bench-f-mono); letter-spacing: .08em; text-align: left; color: var(--aius-text-muted); }
+.eq-table__sec::before { content: "Band "; }
+.bench .eq-table .field--cell[data-col]::before { content: attr(data-col); display: block; margin-bottom: 4px; font: 500 10px var(--bench-f-mono); text-transform: uppercase; letter-spacing: .06em; color: var(--aius-text-muted); }
+.bench .eq-table__reset { justify-self: start; align-self: end; min-height: 36px; padding: 0 12px; }
+
 /* ---- limiter and live ---------------------------------------------------------------- */
 .bench .gr { font: 500 11px var(--bench-f-mono); }
 .bench .gr__track { height: 12px; border: 1px solid var(--aius-border-strong); background: var(--aius-surface-page); }
