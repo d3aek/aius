@@ -47,9 +47,7 @@ next handover.
   2026-10-06 run passed every criterion but ran 33.7 min polled and 0
   min unpolled; see Phase 4 §Device evidence 2026-10-06), then gate 7 at
   fill-write cadence (4a's moved bench proof); that needs the owner.
-  Phase 4c shipped. Phase 4d (B1): promote queued for owner approval;
-  re-check `git status` on `CLAUDE.md`, never from
-  memory.
+  Phases 4c and 4d shipped.
 - **Hook item moved.** `stop-guard.action-reverify` is item 11 of
   `src/tools/hook/docs/plans/hook-daemon-feature-backlog.md` (owner:
   plan, do not dispatch).
@@ -64,8 +62,7 @@ next handover.
 | `a10e2ff` | Phase J shipped; output-jitter Phases K and L planned; `measure_run.py --auth-file`, `replay` | three 10 s device replays, `governor_trims` 0 |
 | `c4c6200` | Phase 3 shipped on the capture; reducer underrun fixes; register update | reducer `--self-test` ok; capture reduced end to end |
 
-- **Uncommitted tree.** Clean apart from a landed Phase 4d promote, if
-  approved.
+- **Uncommitted tree.** Clean.
 - **Capture data** (scratch, reaped about 2026-10-12, so the design pass
   must read it before then):
   `.scratch/2682a96a-3760-4d00-b9e0-f71f66b336ba/capture-polled.jsonl`,
@@ -100,10 +97,6 @@ next handover.
     contain a TX underrun's gap, only the programme around it.
   - Phase 4's commit edits `CLAUDE.md` (the fill stamps),
     a protected file: write it via `the release-promotion step`.
-  - `aius_ota_sign.py sign` also needs `--image`, `--output` and
-    `--build-revision` (the 12-char HEAD, at most 32 chars, e.g.
-    `443a0ae5cb26`); `CLAUDE.md` shows only `--secret`.
-    The fix is planned in Phase 4 (CLAUDE.md promote).
   - Polling `/api/status` is not neutral: a render delays the AC-3
     producer and can trigger the underrun being measured. Note each poll
     instant against `underrun_episodes[].start_ms` when reading a capture.
@@ -2043,7 +2036,7 @@ failed; one suite behaves exactly as before. Proof: single clock (exit 0),
 clock plus tx-gate (exit 0), unknown plus clock (exit 1, clock still ran),
 registry green, shellcheck clean.
 
-### Phase 4d CLAUDE.md promote for the fill counters and signing form
+### Phase 4d CLAUDE.md promote for the fill counters and signing form ✓ SHIPPED 2026-10-07
 
 ```yaml
 phase: 4d
@@ -2054,10 +2047,10 @@ unit: parent-only
 ```
 
 The pending CLAUDE.md edits were this work's (owner, 2026-10-06) and are
-committed (`5d7c05d`). B1's promote is queued for owner approval
-(2026-10-06); once `git -C git_modules/aius status -- CLAUDE.md` shows
-it landed, review the diff against Phase 4a §B1, commit, and flip this
-phase. If the queue entry expired, re-run the promote from Phase 4a §B1.
+committed (`5d7c05d`). B1's promote landed on owner approval; the diff
+carries exactly B1's lines (fill stamps, the pending pad counter, the
+three write counters, the full signing form, `python3` for the flash
+tool).
 
 ### Phase 5 Interrogate the user: confirm autonomous calls
 
