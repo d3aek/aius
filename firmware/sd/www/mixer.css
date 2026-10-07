@@ -3,9 +3,38 @@
    bench palette (black, phosphor amber for the voice, signal teal for the
    path) and lays every stage out as one full-viewport grid of panels.
 
-   No web fonts are fetched: the page is served off the card and nothing on it
-   phones home. Archivo and IBM Plex Mono are used when installed locally;
-   otherwise the stacks fall back to the system faces. */
+   No web fonts are fetched: Archivo and IBM Plex Mono ship on the card under
+   fonts/ (SIL OFL 1.1, Latin subset), so nothing on the page phones home. */
+
+@font-face {
+  font-family: "Archivo";
+  font-style: normal;
+  font-weight: 100 900;
+  font-stretch: 62% 125%;
+  font-display: swap;
+  src: url("fonts/archivo-latin-wdth.woff2") format("woff2");
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("fonts/ibm-plex-mono-latin-400.woff2") format("woff2");
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("fonts/ibm-plex-mono-latin-500.woff2") format("woff2");
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("fonts/ibm-plex-mono-latin-600.woff2") format("woff2");
+}
 
 /* ---- tokens ---------------------------------------------------------------- */
 :root {

@@ -19,16 +19,20 @@ with bonded tabs. `index.html` stays as the classic editor.
 
 ## State: resume here
 
-- **Status**: Phase 1 DONE. Phases 1a, 2 (fonts), 3 (logos), 4 (limiter
-  tool) and 5 (board limiter) not started. Phase 6 (deploy) BLOCKED on the
-  user's word. Nothing from this plan is on the board.
+- **Posture**: checkpoint (owner, 2026-10-07): surface each decision and
+  human-review gate as it arises.
+- **Status**: Phases 1 and 2 shipped. Phase 3 round 1 and Phase 4 in flight.
+  Phase 1a waits on Phase 4 (both edit `CONTRIBUTING.md`). Phases 5 (board
+  limiter) and 6 (deploy) BLOCKED on the user's word. Nothing from this plan
+  is on the board.
 - **What landed** (all pushed):
 
   | Commit | Contents | Proof |
   | --- | --- | --- |
   | aius `4b68103` | `firmware/sd/www/mixer.{html,css,js}`, `test/sd-editor/mixer.test.js`, this plan, plans README entry | `pnpm exec vitest run --root git_modules/aius` from the repository root: 6 files, 387 tests green (21 in `mixer.test.js`); Chromium probes via `the repo tooling tool playwright-inspect` at 1920, 1440 and 390 px (see Phase 1) |
   | upstream repository `8da5b5556` | `git_modules/aius` pointer to `4b68103`; also carries `a974465`, another session's pushed aius docs commit | none beyond the aius row |
-  | aius, this edit | owner answers recorded, answered questions removed, state rewritten | `the repo tooling doc-index --validate-only` |
+  | aius `63b7ff8` | owner answers recorded, answered questions removed, state rewritten | `the repo tooling doc-index --validate-only` |
+  | aius, Phase 2 | `firmware/sd/www/fonts/` (Fontsource 5.3.0 woff2, Latin, 135 KB, plus OFL texts), `@font-face` in `mixer.css`, `THIRD-PARTY.md` entries | vitest 6 files, 387 tests; Chromium probe of the preview: both `document.fonts.check` true, 0 off-origin requests |
 
 - **Uncommitted tree state**: nothing in this submodule. Two transient
   folders sit on the the host application preview mount, gitignored by design
@@ -113,11 +117,17 @@ Settled, user-directed unless marked:
     /sd/www/index.html page"; it now also runs under `mixer.html`.
   - `CONTRIBUTING.md`, the SD pages list near line 70.
   - `CLAUDE.md` §Device access and OTA says "`aius-sd-sync.sh ...` (all 12
-    files, unconditionally)". The card tree is now 15 files, 17 after Phase 2.
-    CLAUDE.md is protected and changes only through `the release-promotion step`.
+    files, unconditionally)". The card tree grew by the mixer's 3 files,
+    Phase 2's 6 (`fonts/`: 4 woff2 plus 2 OFL texts) and Phase 3's favicon;
+    `aius-sd-sync.sh` uploads every file under `www/` (`find -type f`), so
+    drop the count rather than restate it. CLAUDE.md is protected and changes
+    only through `the release-promotion step`.
+  - `THIRD-PARTY.md`: the closing sentence "Each vendored tree keeps its
+    upstream licence file..." now follows Phase 2's fonts table; move it back
+    under the components table it describes.
 - targeted-proof: `the repo tooling doc-index --validate-only` clean.
 
-### Phase 2: Vendor the fonts
+### Phase 2: Vendor the fonts ✓ SHIPPED
 
 Settled by the owner, 2026-10-07: yes, vendor them.
 
@@ -160,12 +170,17 @@ The owner chose to enable the board's limiter (Phase 5). No committed tool can
 flip one config field with the token read from a file, and `CLAUDE.md` forbids
 a literal token on a command line or a scratch-script workaround.
 
-- outcome: a committed tool, either new as
-  `firmware/tools/dsp_config/aius_dsp_set.py` or added to
-  `firmware/tools/dsp_characterize/dsp_characterize.py`. It runs GET
+Settled by the owner, 2026-10-07: a standalone script, so the measurement
+tool `dsp_characterize.py` stays read-only.
+
+- outcome: a committed tool,
+  `firmware/tools/dsp_config/aius_dsp_set.py`. It runs GET
   `/api/dsp/config`, sets the named dotted paths, then PUTs the result with
   the current `config_generation` and `X-Aius-SD-Auth` read from
   `--auth-file`. It refuses on 409 or 400.
+- Still open before ship: wire `firmware/test/dsp-config/test_aius_dsp_set.py`
+  into `firmware/scripts/test.sh` the way the OTA client test is (near line
+  1198), so the suite runs it.
 - seams: `firmware/tools/`, and its usage line in `CONTRIBUTING.md`.
 - targeted-proof: a host unit test of the body it builds (only the named
   paths change, the generation is carried), plus `--dry-run` printing the
@@ -205,6 +220,13 @@ default-page question is decided at that time.
     page one click away.
   - The answer sets the extra seams below; delete this step once it is
     recorded.
+- **First, confirm the card takes a subdirectory.** `aius-sd-sync.sh`
+  PUTs `fonts/x.woff2` as `/sd/www/fonts%2Fx.woff2`. Unverified: whether the
+  firmware's SD PUT route decodes `%2F` and creates `fonts/`, and whether the
+  GET route serves `/sd/www/fonts/x.woff2`. Read the route in
+  `firmware/src/aius_optical_app.cpp` before the deploy; if either fails,
+  flatten the fonts into `www/` (rename, update `mixer.css` and
+  `build_preview.py`) rather than change the firmware.
 - outcome: the mixer files (plus the fonts, the favicon, and any menu edits
   from the answer) served from the card.
 - seams: the card's `/sd/www/` tree, additive only. The answer may add the
