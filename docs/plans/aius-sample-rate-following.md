@@ -38,8 +38,12 @@ replace wholesale on the next handover.
   without a live source, CR-B2 window storage, CR-B3 stdio yield;
   CR-S1 to S12; all folded into each clean-room block); clean-room
   closure HOLD on CR2-B1 (E-AC-3 log shim under the isolation walk) and
-  CR2-S1, both folded; 4f, 4g, 4h READY on their own contracts; a fresh
-  clean-room confirmation pending; implementation held by the owner. Phase 5 (confirm
+  CR2-S1, both folded; a fresh clean-room round 3 HOLD on CR3-B1 to B3
+  (the isolation walk: unwindowed SD roots, allocator and indirect
+  edges, linker veneers) and CR3-B4 (favicon 404), folded with the walk
+  rewritten as one specification (4e "Walk specification", W1 to W8,
+  E15) from the measured ELF; closure review pending; implementation
+  held by the owner. Phase 5 (confirm
   autonomous calls) holds E1 to E14, F1 to F13, G1 to G4, G6 to G10, H1
   to H4, H7 to H15 (H5 folded into H9; G5 and H6 follow from owner
   rulings).
@@ -56,8 +60,9 @@ replace wholesale on the next handover.
   calls wanting confirmation in Phase 5. Every device session (OTAs and
   source-off checks included) and anything destructive goes to the owner
   (ruling 2026-10-07).
-- **Next action.** One fresh clean-room `opus` `reviewer` confirms 4b and
-  4e to 4h READY; fold any finding. Then put the
+- **Next action.** The clean-room round 3 reviewer checks CR3 closed
+  against its disassembly; fold any finding; then one fresh clean-room
+  confirmation. Then put the
   Phase 5 confirmations to the owner (deferred until the contracts
   settle) and wait for "start".
 - **What landed this run** (aius commits; each followed by a upstream repository
@@ -80,7 +85,8 @@ replace wholesale on the next handover.
 | `17e0474` | prebuild round 4 (closure; 4f READY) folded and resolved; Phase 5 gains E12, F9, F10, G9, H12, H13 | reviser checked citations against source |
 | `e54ee82` | prebuild round 5 (closure, no blocker; 4f, 4g READY) written in: R4-N1 to N3, R5-S1 to S3; Phase 5 gains E13 | reviser checked citations against source |
 | `6e4eff8` | clean-room round (HOLD, CR-B1 to B3, CR-S1 to S12) folded; Phase 5 gains E14, F11 to F13, G10, H14, H15 and four corrections | edited yaml blocks parse; citations checked by the reviser |
-| this commit | clean-room closure (HOLD, CR2-B1 E-AC-3 log compiled out, CR2-S1 FAT check from the job's own BEGIN) folded; E14, H14 amended | all yaml blocks parse; citations checked by the reviser |
+| `15edf92` | clean-room closure (HOLD, CR2-B1 E-AC-3 log compiled out, CR2-S1 FAT check from the job's own BEGIN) folded; E14, H14 amended | all yaml blocks parse; citations checked by the reviser |
+| this commit | clean-room round 3 (HOLD, CR3-B1 to B4, CR3-S1 to S5) folded; isolation walk rewritten as W1 to W8; Phase 5 gains E15, F14, H16; E3, H4 corrected | prototype walk over the Oct 6 optical ELF: no forbidden symbol reached with declared targets; yaml parses |
 
 - **Uncommitted tree.** Clean after this commit. `firmware/sd/www/mixer.*`
   and `tools/aius_dsp_set.py` belong to another session (committed).
@@ -89,7 +95,12 @@ replace wholesale on the next handover.
   plan, do not dispatch).
 - **Evidence in scratch** (reaped about 2026-10-14): full session
   `.scratch/63e414f8-e0a8-416d-8629-cda946de784a/session-4a-full/`, the
-  underrun capture `underrun-0811/`, the B2 disassembly `optical.dis`.
+  underrun capture `underrun-0811/`, the B2 disassembly `optical.dis`;
+  and the prototype isolation walks behind 4e W1 to W8
+  (`walk_cr3.py`, `walk_declared.py`, `walk_sdroots.py`, `walk_scc.py`,
+  disassembly `opt.dis`) in
+  `.scratch/170d7fc3-409e-4126-8b10-6d8f8a95620b/`, a starting point
+  for the parent-wiring worker.
   Everything durable is in Phase 4 §Device evidence and Phase 4b.
 - **Editor diagnostics.** clangd reports missing `Arduino.h` and library
   headers under `firmware/`: an editor include-path gap only;
@@ -2058,7 +2069,7 @@ phase: 4b
 title: "Acceptance: HTTP and SD-card work never delays the live-input audio producer"
 status: planned
 depends-on: phase-4e, phase-4f, phase-4g, phase-4h
-prebuild-review: superseded (round 1 reviewed the B2 design below; each of 4e to 4h carries its own gate) # clean-room 2026-10-07: NOT READY via 4f's CR-B1, plus CR-S7, CR-S8, folded below
+prebuild-review: superseded (round 1 reviewed the B2 design below; each of 4e to 4h carries its own gate) # clean-room 2026-10-07: NOT READY via 4f's CR-B1, plus CR-S7, CR-S8, folded below; clean-room round 3 HOLD (CR3-B4; CR3-S1, CR3-S4; CR3-B1 to B3 via 4e to 4h) folded below
 outcome: >-
   During live input (optical AC-3 and PCM), no web UI load, file download,
   directory listing, card sync, status or meter poll, API request, DSP
@@ -2078,8 +2089,9 @@ targeted-proof:
   - "device (owner): polled (full /api/status at 1 Hz, 10 min or more, at least 95% of polls answered 200 and capture.py's 503 skips under 5%, per 4f F5 and F6) versus unpolled (10 min or more, no browser open, http_requests checked) sub-window spread p95 within 10 frames of each other"
   - "device (POST /api/clear at session start): ingress_high_water_words at most the derived alarm, (8 ms producer budget + D) x 96 words per ms + one 256-word chunk: 1,216 words at D = 2,000 us (the post-4f target), re-derived when 4f's measured DSP Apply parse stretch (4f F7) exceeds 2,000 us and sets D; producer_pend_latency_max_us at most D, with the three Applies inside the measured window; stack_free_min_bytes at least 2,048; sd_mode DMA at the end"
   - "device: fault deltas 0 across the runs, taken outside any card-out interval (the 4h card-swap step when it shares the session; sd_diag read just before each pull and just after the first successful remount): sd_diag driver_faults, protocol_faults and busy_timeouts, sd_flush.failures, www_cache.crc_faults, stall-witness events, pipeline crc rejects, tx_missed_fills (sd_diag.open_misses and absent_mounts are not faults)"
-  - "device (source off, /api/status tx_gate.open 0, at the session's start or in the card-swap step): a cold page load, 60 s of 1 Hz full status and one preset save give every request 200 at its first attempt and http_shed and sd_fifo_defers delta 0 (4f F11, CR-B1)"
-  - "device: content check: every plain /sd/www file downloaded byte-equal to the sync source, and every bundle, gzip-decoded, byte-equal to firmware/tools/www_bundle.py's inlined page for the synced sources, as 4g run 1 checks (the decoded bundle is the inlined page, not any one source file, CR-S8); GET /sd/aius/dsp.json and every saved preset under /sd/www/presets/ equal to their PUT bodies, and /api/status showing the PUT public config (config.json has no read route), once sd_flush.dirty is 0 and again after a reboot (read from the card)"
+  - "device (owner, PCM through the U24 bench loop per CLAUDE.md's bench-loop note, the mixer at unity, POST /api/clear at start, 10 min or more): full /api/status at 1 Hz with at least 95% answered 200, three DSP Applies each answered 200 with config_generation advancing, and underrun_episode_count and tx_underrun_frames delta 0; PCM has the smallest ring margin (128 to 225 frames, 4f F1), where round 2 B5's shedding lived (CR3-S1)"
+  - "device (source off, /api/status tx_gate.open 0, at the session's start or in the card-swap step): a cold page load, 60 s of 1 Hz full status and one preset save: no request answers 503, every request answers its expected status at its first attempt (200, except the browser's GET /favicon.ico, which answers 404: no page links an icon and no route serves one, CR3-B4), and http_shed and sd_fifo_defers delta 0 (4f F11, CR-B1)"
+  - "device: content check: every plain (non-bundle) file aius-sd-sync.sh uploads from firmware/sd/www/ downloaded byte-equal to its source (owner presets saved under /sd/www/presets/ have no sync source and are checked against their PUT bodies below, CR3-S4), and every bundle, gzip-decoded, byte-equal to firmware/tools/www_bundle.py's inlined page for the synced sources, as 4g run 1 checks (the decoded bundle is the inlined page, not any one source file, CR-S8); GET /sd/aius/dsp.json and every saved preset under /sd/www/presets/ equal to their PUT bodies, and /api/status showing the PUT public config (config.json has no read route), once sd_flush.dirty is 0 and again after a reboot (read from the card)"
   - "the promoted CLAUDE.md diff carries exactly the replacement paragraph below, with {ALARM} replaced by the ingress alarm this session derived from D; no foreign hunk reverted"
 acceptance-examples:
   - the index page's presets listing (the likely 20.9 ms dispatch of 2026-10-07) is served from the PSRAM manifest and touches no card
@@ -2718,6 +2730,29 @@ resolution.
   compare against `www_bundle.py`'s output for the synced sources, as
   4g run 1 does.
 
+**Clean-room round 3 (2026-10-07): HOLD** (CR3-B4; CR3-S1, CR3-S4; 4b
+also depends on 4e to 4h, which carried CR3-B1 to B3). Each item is
+followed by its resolution.
+
+- **CR3-B1 to B3 (4b part).** Resolved in 4e (§Walk specification);
+  4b's proofs are device proofs and do not change.
+- **CR3-B4 (blocker).** The source-off line required every request 200
+  at its first attempt, but a cold page load's `/favicon.ico` answers
+  404 (no page links an icon, no route serves one; the unknown-route
+  404 touches no card). Resolved with the proof text, as in 4f: no 503,
+  and every request its expected status, the favicon 404 excepted
+  (Phase 5 F14).
+- **CR3-S1.** The outcome and the CLAUDE.md text claim PCM, but every
+  device run in 4e to 4h and here played AC-3, and PCM has the smallest
+  margin. Resolved: a PCM segment through the U24 bench loop (1 Hz full
+  status at least 95% 200, three Applies 200, underrun delta 0). Like
+  every device step it is an owner session.
+- **CR3-S4.** "Every plain /sd/www file equal to the sync source" swept
+  in owner presets, which have no sync source. Resolved: the check
+  covers the plain files `aius-sd-sync.sh` uploads from
+  `firmware/sd/www/`; presets compare with their PUT bodies and bundles
+  with `www_bundle.py`'s output, as the line already says.
+
 ### Phase 4e Every SD-card wait runs the live-input producer (vendored SdFat, DMA SDIO)
 
 ```yaml
@@ -2725,7 +2760,7 @@ phase: 4e
 title: Every SD-card wait and checkpoint boundary runs pending live-input production
 status: planned
 depends-on: phase-4 (device session done 2026-10-07)
-prebuild-review: clean-room-folded # 2026-10-07: rounds 2 to 4 NOT READY and folded; round 5 closure found no blocker, its R4-N1 to N3 and R5-S1 to S3 written in; clean-room confirmation NOT READY (CR-B3; CR-S1, CR-S9, CR-S12) folded below; clean-room closure HOLD (CR2-B1) folded below; clean-room re-confirmation pending
+prebuild-review: clean-room-folded # 2026-10-07: rounds 2 to 4 NOT READY and folded; round 5 closure found no blocker, its R4-N1 to N3 and R5-S1 to S3 written in; clean-room confirmation NOT READY (CR-B3; CR-S1, CR-S9, CR-S12) folded below; clean-room closure HOLD (CR2-B1) folded below; clean-room round 3 HOLD (CR3-B1 to B3; CR3-S2, CR3-S5) folded below as one walk specification (W1 to W8) measured on the optical ELF; clean-room re-confirmation pending
 outcome: >-
   During live input the producer waits behind no card latency: every
   SD-card wait between card commands inside an SD job primitive, a mount
@@ -2752,7 +2787,7 @@ seams:
   - "firmware/src/optical_main.cpp: platform_checkpoint (yield point at every boundary except EPOCH_COMPLETE), app_read_directory, http_replay_list_json and app_replay_delete (windows), the replay refill execute (optical_main.cpp:8294, no window), AiusAudioProcessor::update (pend stamp), the strong aius_sdio_wait_hook (an object file, not an LDF archive, so it beats the weak one), the mode route callback, POST /api/clear resetting the new watermarks, audio_diag and sd_diag keys; no new retained object (E5) and no alignas on g_replay_transfer (E9)"
   - "firmware/test/memory/verify_target.py: the single COMMITTED_OCRAM_FREE_BYTES (stale 131,040, the 0x1FFE0 link floor, aius_teensy41.ld:271) becomes a floor table keyed by PIOENV with one entry per env in OPTICAL_IMAGE_ENVS (verify_target.py:265-273; verify_target passes $PIOENV, the CLI gains --env). Each entry is the OCRAM free measured on that env's link of the unchanged tree at 4e start, before any 4e edit, and recorded in §Memory: the A/B envs carry the 32 B .aius_retained_ab ledger (optical_main.cpp:4521-4537, under #if AIUS_AB_SLOT) in the content-sized .bss.aius_retained (aius_teensy41.ld:151-174), so the plain env's 131,776 B is not their figure. An env below its own floor, or an env with no entry, fails; a floor only ever rises to a new measurement (lowering one needs funding, the file's own rule), so any OCRAM growth in any env fails the gate (R4-B2). In the same edit parent-wiring (which owns firmware/test/memory/**, CR-S12) rewrites the stale comment at verify_target.py:54-57 (\"OCRAM margin is now ZERO\") and the history block through :63, stating the per-env floors and the 0x1FFE0 link floor (R4-N1)"
   - "firmware/lib/aius_http route POST /api/sd/mode, firmware/src/aius_optical_app.cpp dispatch, firmware/sd/www/openapi.json"
-  - "firmware/platformio.ini teensy41-optical: lib_deps symlinks to the two snapshots, lib_ignore of the framework SD and SdFat, -fstack-usage, -DAIUS_DTS_LOG_STDERR=0 and -DAIUS_AVSHIM_LOG=0 (both inherited by slot-a, slot-b and fault, which extend teensy41-optical's build_flags, platformio.ini:374-393)"
+  - "firmware/platformio.ini teensy41-optical: lib_deps symlinks to the two snapshots, lib_ignore of the framework SD and SdFat, -fstack-usage, a link map (-Wl,-Map to firmware.map in the build directory; the walk's library membership and the link half's provenance, W1, CR3-N1), -DAIUS_DTS_LOG_STDERR=0 and -DAIUS_AVSHIM_LOG=0 (both inherited by slot-a, slot-b and fault, which extend teensy41-optical's build_flags, platformio.ini:374-393)"
   - "firmware/lib/aius_dts/src/aius_dts.c dca_format_log: its stderr body (aius_dts.c:57-59) compiled only when AIUS_DTS_LOG_STDERR is nonzero, default 1, so the native dts suite and host tools keep the log and the optical images carry an empty sink (E14, CR-B3)"
   - "firmware/vendor/ffmpeg-eac3/shim/aius_avshim.c av_log and avpriv_request_sample: their bodies (the g_log_fn test, the vsnprintf into a 256 B stack buffer and the g_log_fn call, aius_avshim.c:109-133) compiled only when AIUS_AVSHIM_LOG is nonzero, default 1, so the native eac3 suites keep them and the optical images carry two empty functions with no vsnprintf edge and no indirect call; aius_avshim_set_log keeps its definition (no caller in firmware/) (E14, CR2-B1)"
   - "firmware/lib/aius_producer_yield: the window stretch clock behind sd_window_nonyield_max_us (window open and close, hook entry and return stamps; pass time excluded, CR-S1)"
@@ -2762,10 +2797,11 @@ targeted-proof:
   - "host: runtime-target (test.sh:1203-1255, which compiles aius_sd_teensy.cpp, aius_runtime_storage.cpp, aius_runtime_network_http.cpp and aius_optical_app.cpp against test/runtime-target/fake/SD.h): the fake gains begin(cs, dma), clearError, cardDetected and the new counters, and the suite stays green"
   - "host: fake-fidelity: both fake SD.h files are compared against firmware/vendor/SD/src/SD.h (the linked copy) instead of the framework libraries/SD/src/SD.h that lib_ignore drops (test_fake_fidelity.py:152, :157)"
   - "host: producer-yield (new): guard truth table over window or point, in-producer, IPSR, PRIMASK, IRQ_SOFTWARE enabled, audio ready, recovery-safe and work pending; the pend stamped only while the producer is idle (round 1 B1) and re-stamped at pass exit when ingress is non-empty (S3); every nested pass records AUDIO and commits the ledger before and restores the saved checkpoint after, on every path (E5); late-pass and latency watermarks against a fake cycle clock; on the same clock a window of 0.2 ms to a hook, a 7.6 ms nested pass, 0.3 ms to a second hook with no pass, and 0.1 ms to the close records sd_window_nonyield_max_us 0.3 ms, never a figure that includes the pass (CR-S1); clear_diag resets them"
-  - "host: producer-isolation (new): post-link call graph of teensy41-optical. From explicit producer roots (aius_audio_service_run, the enqueue sink, the codec vtable targets) no SdFat, SD, FNET, NativeEthernet, yield, aius_sdio_wait_hook or aius_producer_yield symbol is reachable. The walk stops at a declared libc leaf table and never descends into a leaf (so newlib's internal fp->_write indirect calls are never walked): malloc, free, __wrap_malloc, __real_malloc, abort, __assert_func and the formatting-only vsnprintf and snprintf. Leaves are reachable from producer roots only along an explicit allowlist of decode-path edges (ta_zalloc_size from core_filter, __assert_func, av_malloc_array through firmware/lib/aius_dts/src/aius_alloc_shim.c), and any other edge fails. No I/O stdio entry (fputs, fputc, fwrite, puts, printf, fprintf, vfprintf, fiprintf, _write) is reachable from a producer root; dca_format_log is in the image with an empty body and no stdio edge (E14, CR-B3). av_log and avpriv_request_sample, reached from aius_eac3_core_frame through the decoder compiled into its unit (aius_eac3_core.c:21-38; av_log at ac3dec.c:471-1724 and in eac3dec.c), are in the image with empty bodies: no vsnprintf edge and no indirect call through g_log_fn, so neither needs an allowlist entry or an indirect-branch exemption (E14, CR2-B1). __assert_func reaches stderr inside newlib and is accepted only as a terminal leaf: it ends in abort, which never returns (cores/teensy4/startup.c:828-831). Every caller chain of aius_sdio_wait_hook runs through vendored SdioTeensy wait loops back to a windowed root (storage execute, the three raw scans, mount) and through no malloc, free or stdio function, so a nested pass never interrupts an allocator or stdio caller. Every caller chain of aius_producer_yield_point starts at an entry of a declared yield-root table (4e: platform_checkpoint; 4f, 4g and 4h each add theirs) and runs through no malloc, free or stdio function; a caller outside the table fails. An indirect branch outside the root table fails"
-  - "host: producer-isolation, link half (S7): the linked SdioCard symbols come from firmware/vendor/SdFat (DWARF compile-unit path), not the framework copy, and aius_sdio_wait_hook resolves to the strong definition, whose body calls aius_producer_yield_wait"
-  - "host: stack-bound (new): call edges from the same post-link walk (SdFat block-device virtuals resolved to SdioCard, codec pointers from the root table), frames from -fstack-usage; symbols without a .su (libc, core) from a declared frame table, an unlisted one failing; the 512 B bounce frame counted under the hook; the deeper of two paths (loop, storage execute, SD wait, hook, pass; and HTTP dispatch, app_read_directory, SD.open, wait, hook, pass), plus the exception chain stacked on the same main stack (per NVIC preemption level among the enabled handlers, the ITCM update() audio ISR, DMA, SDHC, ENET and USB included, the deepest handler path from the same walk plus a 104 B FPU extended frame; handlers from a declared table of handler and priority, checked against every attachInterruptVector and NVIC_SET_PRIORITY call site, an unlisted site failing), plus 2,048 B, fits the DTCM stack zone (_estack minus _ebss) of the canonical teensy41-optical-slot-a image, recorded at 4e start (25,760 B on the plain image); a dynamic or unbounded frame on either path fails"
-  - "host: optical-cutover (yield-point and window placement, no window at the refill, no yield point at EPOCH_COMPLETE, the ledger wrapper around every nested pass), status-body-bound (new keys), boot and boot-target (no retained-region or ledger-layout change), memory (the per-env floor table: a synthetic snapshot 1 B under any env's floor fails, an env missing from the table fails, and every env's link of the 4e tree is at or above its 4e-start floor, so OCRAM free is unchanged in each; on the canonical teensy41-optical-slot-a image, ITCM growth at most 1,280 B over its 4a figure of 4,340 B free, DTCM statics growth at most 256 B), itcm-placement, fake-fidelity, runtime, runtime-target, audio-service, audio-ingress, http, optical-app, registry, sd-editor (openapi), dts and eac3 (the native builds keep each log body at its default 1, E14) green; both images build"
+  - "host: producer-isolation (new): the post-link walk of §Walk specification (W1 to W8) over teensy41-optical and teensy41-optical-slot-a: graph from direct branches with veneers resolved to their literal target (W1), roots from the producer, yield-root and computed SD-root tables (W2), the W3 leaf table with no edge allowlist, register-indirect sites from the W4 site table. It asserts W5: (1) producer roots (aius_audio_service_run, AiusAudioProcessor::consume_block) reach no SdFat, SD, FS.h File, FNET, NativeEthernet, usb_serial, Serial, yield, aius_sdio_wait_hook or aius_producer_yield symbol and no I/O stdio entry (fputs, fputc, fwrite, puts, printf, fprintf, vfprintf, fiprintf, _write and their _r forms); dca_format_log, av_log and avpriv_request_sample are in the image with empty bodies (E14, CR-B3, CR2-B1); (2) no allocator-family, I/O stdio, abort or __assert_func function is an ancestor of aius_sdio_wait_hook or aius_producer_yield_point (no hook under an allocator), and every address-taken ancestor of either is a member of a W4 row; (3) every hook-reaching SD caller is a row of the windowed or the accepted unwindowed SD-root table, and every direct caller of aius_producer_yield_point is a yield-root row (4e: platform_checkpoint; 4f, 4g and 4h add theirs); (4) every register-indirect site in a visited function is a W4 row at its recorded count, every vtable symbol is classified, and every cycle is a W6 row; anything unlisted fails. The window flag's placement is optical-cutover's source guard, not this suite's (CR3-B1)"
+  - "host: producer-isolation, link half (S7, CR3-N1): the optical ELF carries no .debug_info (only .debug_frame and .debug_line_str at 15edf92), so provenance comes from the link map: every input section defining an SdioCard, DedicatedSpiCard, FsFile or SDFile symbol comes from the libAiusSdFat.a or libAiusSD.a archive built from firmware/vendor (E4), none from the framework's SdFat or SD, and aius_sdio_wait_hook resolves to the strong definition in optical_main.cpp's object, whose body calls aius_producer_yield_wait"
+  - "host: stack-bound (new): call depth over the same resolved graph (W1 to W6). Frames from -fstack-usage; a symbol without a .su (libc, core) from a declared frame table, an unlisted one failing; a veneer adds no frame; a tail call is charged as a call (an overcount by the caller's frame); an indirect site is charged its deepest W4 target, FS.h File::read and File::openNextFile (cores/teensy4/FS.h:167, :216) resolving to SDFile's vtable entries and the SdFat block-device virtuals to SdioCard's and DedicatedSpiCard's (CR3-S2); a W6 recursion is charged at its bound; the 512 B bounce frame counted under the hook. The deepest of these paths: loop, storage execute, SD wait, hook, pass; HTTP dispatch, app_read_directory, SD.open or File::openNextFile, wait, hook, pass; and the two unwindowed roots (replay_job_advance, ota_copy_staged_to_psram), charged to the hook without a pass, since their hook call never runs one. Plus the exception chain stacked on the same main stack (per NVIC preemption level among the enabled handlers, the ITCM update() audio ISR, DMA, SDHC, ENET and USB included, the deepest handler path from the same walk plus a 104 B FPU extended frame). Handlers come from a declared table of handler and priority. Rows installed by aius code are checked against every attachInterruptVector and NVIC_SET_PRIORITY call site under firmware/src, firmware/lib and firmware/vendor (two at 15edf92: firmware/src/aius_network_teensy.cpp:292, firmware/src/optical_main.cpp:1228-1229); an unlisted site there fails. Rows installed inside the Teensy core and framework libraries (DMA channels, USB, ENET, the audio library's software interrupt) cite their install line in the pinned framework source, and the suite checks that line still exists; this scan does not prove a framework handler absent from the table, which the device floor (stack_free_min_bytes) backs (CR3-S5). The total plus 2,048 B fits the DTCM stack zone (_estack minus _ebss) of the canonical teensy41-optical-slot-a image, recorded at 4e start (25,760 B on the plain image); a dynamic or unbounded frame on any path fails"
+  - "host: producer-isolation and stack-bound walk fixtures (W8): three fixture ELFs the suite links from small C sources with the PlatformIO arm-none-eabi toolchain and a two-region link script (flash at 0x60000000, ITCM at 0, so the linker emits veneers), no committed binary. Veneer: a flash function calls an ITCM function through a __X_veneer and the ITCM function calls a stub named yield; isolation fails naming the edge and stack-bound counts the ITCM frame (a walk that stops at the veneer passes it, so this case fails such a walk). Indirect: a function-pointer call with no W4 row fails, the same with a row passes and is charged its deepest target, and an in-function ldr pc jump table is not a site. Allocator: a root calling __wrap_calloc and __wrap_realloc passes (leaves), a chain in which __wrap_malloc reaches a stub named aius_sdio_wait_hook fails W5 (2), and a two-function cycle with no W6 row fails"
+  - "host: optical-cutover (yield-point and window placement: the SD window flag set only in the source functions of the W2 windowed rows, never in replay_job_route or ota_copy_staged_to_psram, CR3-B1; no yield point at EPOCH_COMPLETE; every function in firmware/src and firmware/lib outside aius_sd_teensy.cpp whose code, comments excluded, names SD., File or FsFile is the source of a W2 row, four at 15edf92: ota_copy_staged_to_psram, http_replay_list_json, app_replay_delete, app_read_directory, W5, the ledger wrapper around every nested pass), status-body-bound (new keys), boot and boot-target (no retained-region or ledger-layout change), memory (the per-env floor table: a synthetic snapshot 1 B under any env's floor fails, an env missing from the table fails, and every env's link of the 4e tree is at or above its 4e-start floor, so OCRAM free is unchanged in each; on the canonical teensy41-optical-slot-a image, ITCM growth at most 1,280 B over its 4a figure of 4,340 B free, DTCM statics growth at most 256 B), itcm-placement, fake-fidelity, runtime, runtime-target, audio-service, audio-ingress, http, optical-app, registry, sd-editor (openapi), dts and eac3 (the native builds keep each log body at its default 1, E14) green; both images build"
   - "device run 1 (owner session, source off, DMA armed, POST /api/clear after arming): content check of every /sd/www file and /aius/dsp.json against the sync source; one full aius-sd-sync.sh; the /sd/www/presets/ and /sd/www/ listings; GET /sd/www/missing.js answers 404 with open_misses +1 and driver_faults and mounts unchanged; one card pull and reinsert (a DMA-mode remount, hook_calls advancing across it; sd_diag read just before the pull and just after the first successful remount, absent_mounts advancing about once per second while the card is out, and the interval's other counters recorded, not judged); driver_faults, protocol_faults and busy_timeouts delta 0 over the run outside that card-out interval, sd_mode DMA and sd_window_nonyield_max_us recorded; the source-off epoch rate recorded from /api/status loop_epoch read at the run's start and end against wall time (R4-N2); last, one OTA stage of the image 1 container and POST /api/ota/rehearse, whose copy into PSRAM and verify run in DMA mode (ota_dark rehearsal verdict COMPLETED; the reset reverts to FIFO)"
   - "device run 2 (owner, AC-3 playing, DMA armed, POST /api/clear after arming): ten web UI loads at least 5 s apart, one full sync and the editor open (full status at 1 Hz) give underrun_episode_count delta 0, producer_pend_latency_max_us at most 2,500, ingress_high_water_words at most 1,264, stack_free_min_bytes at least 2,048, producer_wait_passes above 0, the run 1 fault deltas 0, sd_mode still DMA at the end, and the playback epoch rate recorded from loop_epoch deltas over the polled segment against wall time (R4-N2); then an unpolled segment of 10 min or more (no browser open, http_requests checked) whose sub-window spread p95 is within 10 frames of Phase 4's unpolled baseline (10 frames, 2026-10-07), with clock.fill_trims recorded against the Phase 4 rate"
   - "decision gate (E7): B2 (Phase 4b, Fallback design) only on a content mismatch, driver_faults above 0 outside a card-out interval (absent_mounts is never a fault; a driver fault inside the interval, such as a contact bounce at insertion, is diagnosed first), busy_timeouts above 0 in DMA mode (the DMA hang: a 1 s BUSY_TIMEOUT_MICROS expiry), or a watchdog reset during a DMA run whose pv= is the SD or HTTP checkpoint. Stays on A-DMA and is fixed in 4e: pv= AUDIO (a guard or nested-pass defect), stack_free_min_bytes under 2,048, a timing miss with integrity intact (attributed by the counters to the stretch 4f or a new yield point closes). Any other reset is diagnosed before a verdict"
@@ -3049,9 +3085,11 @@ confirmation):
   reaches no malloc" is false and not
   needed. What matters is that a nested pass never interrupts an
   allocator or stdio caller: the hook is reachable only from vendored
-  SdFat wait loops under a windowed root, and SdFat never allocates or
-  prints there. The proof asserts that, plus an explicit allowlist of the
-  producer's decode-path edges to the libc leaves (E14).
+  SdFat wait loops, and no allocator or stdio function is on any chain
+  to it. The proof asserts that over §Walk specification (W5 (2)); the
+  decode-path edge allowlist first named here is withdrawn, since lazily
+  created decoders reach the allocator along 24 distinct edges, not
+  three (CR3-B2).
 - **E14, the DTS log is compiled out of the optical images; libc entry
   points are walk leaves (CR-B3).** `dca_format_log` writes hard decode
   errors with `fputs` and `vfprintf` to `stderr`
@@ -3094,6 +3132,178 @@ confirmation):
   exception class to a rule that is otherwise absolute, keeps a 256 B
   formatting frame under the producer in stack-bound for a log no one
   can read, and buys nothing while no setter exists.
+- **E15, one walk specification, measured on the image (CR3-B1 to B3).**
+  Three review rounds each found the static walk failing a correct
+  build on one unlisted edge class (stdio `yield`, the `av_log` shim,
+  then unwindowed SD callers, the allocator family, indirect sites and
+  veneers). §Walk specification below defines the graph, roots, leaves,
+  indirect sites, recursion and assertions once, and its tables are
+  seeded from a census of the optical ELF (W7), so every edge class the
+  producer actually reaches is classified before the build. Alternatives
+  rejected: treating every address-taken function as a possible
+  indirect target (W7: the closure grows to 1,854 functions, 540 of them
+  forbidden, so a correct build fails) and exempting sites whose targets
+  are address-taken only inside a decoder's units (gives stack-bound no
+  target set, and the service, sink and SD-stack sites are outside
+  decoder units).
+
+**Walk specification (E15; CR3-B1 to B3, CR3-S2).** One post-link walk
+serves producer-isolation, stack-bound and the yield-root checks 4f to
+4h extend. It reads `arm-none-eabi-objdump -d` of the linked ELF, its
+`.symtab` and the link map.
+
+- **W1, graph.** Nodes are symbol addresses (`STT_FUNC`), never names:
+  static functions share names (two `decoder_create`, one liba52 in
+  ITCM, one E-AC-3 in flash). Edges: `bl`, `b`, `b.w`, `b<cc>`, `cbz`
+  and `cbnz` whose target lies outside the containing symbol; a branch
+  into another symbol is a tail call and an edge like a call. A veneer
+  (`__<name>_veneer`: `ldr.w pc, [pc]` plus one literal word) is
+  replaced by an edge to the symbol at the literal with the Thumb bit
+  cleared; a veneer of any other shape fails. A literal-pool load (`ldr
+  rN, [pc, #imm]`) is not an edge; a literal word equal to a function
+  address with the Thumb bit set marks that function address-taken (W4
+  input), veneer literals excluded. A switch dispatch (`tbb`, `tbh`, or
+  `ldr pc, [rA, rB, lsl #2]` followed by an inline table) whose entries
+  all lie inside the symbol is intra-function; an entry outside fails.
+  Every other register write to `pc` (`blx rN`, `bx rN` with rN not
+  `lr`, `ldr pc` from a non-literal, `mov pc`) is an indirect site (W4).
+  Library membership of a function or data object comes from the link
+  map (`-Wl,-Map`, platformio seam), since the image has no
+  `.debug_info` (CR3-N1).
+- **W2, roots.** Producer roots: `aius_audio_service_run` and
+  `AiusAudioProcessor::consume_block` (the PCM sink,
+  `firmware/src/optical_main.cpp:2502`). Yield roots: the yield-root
+  table (4e: `platform_checkpoint`; 4f, 4g and 4h add rows). SD roots
+  are computed, then checked against two tables: every function outside
+  the SD stack (vendored SdFat and SD, FS.h `File`,
+  `aius_sd_teensy.cpp`) with an edge into it whose resolved closure
+  reaches `aius_sdio_wait_hook`. The windowed table holds the storage
+  execute (`advance` in `aius_runtime_storage.cpp`, around `:335`;
+  mounts, probes and OTA staging chunks included), `app_read_directory`,
+  `app_write_replay_list` (into which `http_replay_list_json` inlines)
+  and `app_replay_delete`. The accepted unwindowed table holds
+  `replay_job_advance` (into which `replay_job_route`'s execute at
+  `optical_main.cpp:8294` inlines; round 1 S3 forbids windowing the
+  refill) and `ota_copy_staged_to_psram` (`:5162`). Rows name linked
+  symbols, with `.isra`, `.part` and `.constprop` suffixes ignored; a
+  row matching no symbol, or a hook-reaching SD caller matching no row,
+  fails. Adapter calls with no card I/O (`aius_sd_teensy_init` from
+  `aius_runtime_storage_construct`, `aius_sd_teensy_invalidate_mount`
+  from `platform_replay`) never reach the hook and need no row.
+  `setup()` makes no SD call at 15edf92 (the first mount is a windowed
+  storage BEGIN), so the setup-time mount the review listed has no row
+  yet; one added later joins the unwindowed table. The binary cannot
+  tell the two tables apart, so the window flag's placement is
+  optical-cutover's source guard (CR3-B1).
+- **W3, leaves.** The forward walk never descends into: the allocator
+  family (`malloc`, `calloc`, `realloc`, `free` in plain, `__wrap_`,
+  `__real_` and `_r` forms), `abort` and `__assert_func` (terminal:
+  `abort` never returns, `cores/teensy4/startup.c:828-831`), and the
+  formatting-only `vsnprintf`, `snprintf` and their `_r` forms. A leaf
+  is reachable from a producer root along any edge; there is no edge
+  allowlist (CR3-B2 defect 1). The I/O stdio set is forbidden, not a
+  leaf (W5 (1)).
+- **W4, indirect sites: one declared site table** (CR3-B2 defect 2).
+  A row names a containing symbol, its site count at 15edf92 and one
+  target-set source; the function's sites share the union. A site
+  isolation or stack-bound visits with no row, or a changed count,
+  fails. Sources:
+  - **Registration rows**, each guarded by a source check that the
+    registration names exactly the listed functions: the service
+    callbacks (`firmware/lib/aius_audio_service/include/aius_audio_service.h:42-45`,
+    registered at `optical_main.cpp:2514-2516`; 7 sites in
+    `aius_audio_service_run`): `audio_clock_us`,
+    `audio_enter_reset_critical`, `audio_exit_reset_critical`. The PCM
+    sink (`firmware/lib/aius_codec_api/include/aius_codec.h:125`; 13
+    sites in `aius_pipeline_service_one`, `aius_a52_begin_access_unit`,
+    `aius_a52_decode_next_block`, `aius_dts_decode_access_unit` and
+    `aius_eac3_decode_access_unit`): `consume_block`. The E-AC-3 buffer
+    callback in `ff_get_buffer`: `provide_planes`
+    (`firmware/lib/aius_eac3/src/aius_eac3.c:103`, `:154`). The
+    AiusOpticalApp and runtime platform ops tables, wherever a
+    stack-bound path or the hook's reverse walk crosses them.
+  - **Library rows**: every function whose address is taken by an
+    object of the named library, per the link map. liba52 (`imdct.c`'s
+    `ifft128` and `ifft64`, `firmware/lib/aius_a52/a52/imdct.c:77-78`:
+    `ifft128_c`, `ifft64_c`); dcadec-core (`core_filter`'s interpolator
+    callbacks, `firmware/vendor/dcadec-core/interpolator.h:27-30`: eight
+    `interpolate_*`); ffmpeg-eac3 (`do_imdct`, `decode_audio_block`,
+    `aius_eac3_core_frame`, `ff_ac3dsp_downmix`, `reset_ctx`,
+    `ff_tx_init_subtx` and the tx codelets that call sub-transforms:
+    the DSP and tx pointers, 99 functions measured).
+  - **Empty rows**: `a52_block`'s `dynrngcall`
+    (`firmware/lib/aius_a52/a52/parse.c:636-637`) and `ta_free`'s
+    destructor (`firmware/vendor/dcadec-core/ta.c:52`). Their setters,
+    `a52_dynrng` and `ta_set_destructor`, are absent from the image (no
+    caller); the row asserts they stay absent.
+  - **Vtable rows**: every entry of the named vtables. FS.h `FileImpl`
+    calls (`File::read`, `File::openNextFile`,
+    `cores/teensy4/FS.h:167`, `:216`, inlined into the SD roots) resolve
+    to `_ZTV6SDFile`, the only `FileImpl` vtable linked (CR3-S2); SdFat
+    block-device and card calls to `_ZTV8SdioCard` and
+    `_ZTV16DedicatedSpiCard`; plus functions address-taken by vendored
+    SdFat or SD objects (the SD wrapper's date-time callback). Without
+    RTTI the image cannot name implementers, so every `_ZTV` symbol (17
+    at 15edf92) is classified in the table, and an unclassified one
+    fails.
+  A target set is walked like a direct edge: isolation follows into
+  it, stack-bound charges its deepest member.
+- **W5, assertions.** (1) Producer roots reach no forbidden symbol:
+  SdFat, SD, FS.h `File`, FNET, NativeEthernet, `usb_serial`, `Serial`,
+  `yield`, `aius_sdio_wait_hook`, `aius_producer_yield_*`, and the I/O
+  stdio entries (`fputs`, `fputc`, `fwrite`, `puts`, `printf`,
+  `fprintf`, `vfprintf`, `fiprintf`, `_write` and their `_r` forms).
+  (2) No hook under an allocator: the reverse closure of
+  `aius_sdio_wait_hook` and of `aius_producer_yield_point` (every
+  function that reaches either, walked without the leaf stop) holds no
+  allocator-family, I/O stdio, `abort` or `__assert_func` function; an
+  address-taken function in that closure must be a member of a W4 row,
+  and the reverse walk continues through the row's containing symbols,
+  so an indirect caller cannot hide. This holds for all roots, windowed
+  or not. (3) Every hook-reaching SD caller is a W2 row, and every
+  direct caller of `aius_producer_yield_point` is a yield-root row. (4)
+  The window flag is set only in the windowed rows' source functions
+  (optical-cutover source guard, with the guard that every
+  `firmware/src` and `firmware/lib` function naming `SD.`, `File` or
+  `FsFile` outside the adapter is a W2 row's source).
+- **W6, recursion.** Every strongly connected component in a walked
+  graph is a recursion row with a depth bound and its source; stack-bound
+  charges the bound times the deepest simple path through the component,
+  then the deepest exit. An undeclared cycle fails. One row at
+  15edf92: the ffmpeg tx component (44 functions under the ffmpeg-eac3
+  library row: `ff_tx_init_subtx`, codelet inits, and codelets calling
+  sub-transforms), bound 2. `ac3dec.c:220-223` requests only inverse
+  MDCTs of 128 and 256 points, whose init nests one FFT sub-transform
+  (`libavutil/tx_template.c:1244`) and whose power-of-two FFT codelets
+  nest none; a source guard holds every `av_tx_init` call in
+  `firmware/vendor/ffmpeg-eac3` to those two. `ff_tx_init_subtx`'s
+  frame is 1,632 B (`subw sp, sp, #1596` plus nine saved registers),
+  and lazy E-AC-3 decoder creation runs it on the producer path, so it
+  sits under a nested pass in stack-bound.
+- **W7, census** (the Oct 6 `firmware/.pio/build/teensy41-optical/firmware.elf`,
+  `arm-none-eabi-objdump -d` walked by a scratch script implementing
+  W1 to W6, E14's three log bodies treated as empty). 1,981 code
+  symbols in `.text.code` and `.text.itcm`, 171 veneers. From the two
+  producer roots: 65 nodes when the walk stops at veneers; 311 with
+  veneers resolved (256 functions, 55 veneers crossed, 68 tail-call
+  edges); 449 with W4's target sets (393 functions, 56 veneers). Without
+  E14 the same walk reaches 366 nodes, 8 of them I/O stdio. Leaf edges:
+  31 distinct caller and leaf pairs on direct edges (24 allocator, 3
+  `abort`, 4 `__assert_func`), 39 with W4 (eight more `abort` and
+  `__assert_func` edges from the dcadec interpolators and
+  `ff_tx_gen_compound_mapping`). Indirect sites: 40 in 18 functions on
+  direct edges, 75 in 48 with W4 (the tx codelets); 3 switch tables in
+  the producer closure (13 image-wide), not sites; 574 sites in 249
+  functions image-wide, 108 in 47 SD-stack functions. Address-taken:
+  518 functions. Forbidden symbols reached from producer roots with W4:
+  none. Cycles: the one tx component. SD boundary: 8 callers outside the
+  stack, 6 reaching card I/O (4 windowed, 2 unwindowed), 2 adapter
+  calls with none. 4e's first step re-runs the census on its own link
+  and seeds the tables from it.
+- **W8, fixtures.** The host case in the targeted proof (veneer,
+  indirect site, allocator edge, cycle) runs against ELFs the suite
+  links itself, so each walk rule has a failing case a narrower walk
+  would pass.
 
 **OTA and owner.** Two OTAs (image 1, then image 2 after the gate).
 Both runs are owner sessions (ruling above): run 1 source-off, ending
@@ -3109,8 +3319,15 @@ check.
   there, per the DMA investigation); the content check proves it.
 - The static stack bound covers the call paths the checker resolves, the
   frame table declares and the handler table lists (exception frames
-  included, R3-S4); recursion or `alloca` would escape it (none known).
-  The device floor is the second check.
+  included, R3-S4); a recursion is charged at its W6 bound, which rests
+  on the source guard over `av_tx_init`'s lengths, and `alloca` would
+  escape it (none known). A framework-installed handler missing from
+  the table escapes the source scan (CR3-S5). The device floor is the
+  second check.
+- The W4 registration and library rows rest on source guards and the
+  link map; a function pointer stored from outside its library's
+  objects through a path the guards do not read would widen a target set
+  unseen. The site-count check catches a new site, not a new target.
 - FIFO mode (the route or a reverted image) keeps the card-bound stretch;
   its cover is 4f's SD-start shedding plus the FIFO-mode deferral of
   every SD job's start and of each root job's primitives, the 4g fill and
@@ -3414,6 +3631,56 @@ followed by its resolution.
   `aius_avshim.c` in the seams and parent-wiring's paths; `eac3` in the
   targeted proof and green list (Phase 5 E14).
 
+**Clean-room round 3 (2026-10-07): HOLD** (CR3-B1 to B3; CR3-S2,
+CR3-S5). The reviewer walked the Oct 6 optical ELF with veneers
+resolved. Each item is followed by its resolution; the three blockers
+are resolved together by §Walk specification, whose tables were seeded
+from a census of the same ELF (W7) rather than item by item.
+
+- **CR3-B1 (blocker).** "Every caller chain of the hook back to a
+  windowed root" fails a correct build: the replay refill
+  (`optical_main.cpp:8294`) and `ota_copy_staged_to_psram` (`:5162`)
+  reach the hook through vendored wait loops with no window, and a
+  static walk cannot tell a windowed caller of `aius_sd_teensy_execute`
+  from the refill. Resolved: W2 computes hook-reaching SD callers and
+  checks them against a windowed and an accepted unwindowed table
+  (refill, OTA copy; `setup()` has no SD call, so a setup-time mount has
+  no row yet); W5 (2) checks "no hook under an allocator" for all roots;
+  the window flag's placement moved to optical-cutover's source guard.
+- **CR3-B2 (blocker).** The three-entry allowlist missed most of the 31
+  distinct allocator, `abort` and `__assert_func` edges (lazy decoder creation,
+  destroy paths, `av_fast_realloc`, `a52_init`), `calloc`, `realloc`
+  and the `__wrap_` forms were not leaves, and 18 producer functions
+  carry indirect sites the "root table" rule could not classify.
+  Resolved: W3 makes the whole allocator family plus `abort` and
+  `__assert_func` leaves with no allowlist; W4 picks one rule, a site
+  table with registration, library, empty and vtable rows, which also
+  gives stack-bound its target sets; W6 declares the one recursion the
+  library rows expose (the ffmpeg tx component, bound 2); W8 fixtures
+  (Phase 5 E15).
+- **CR3-B3 (blocker).** 171 linker veneers (`ldr.w pc, [pc]` plus a
+  literal) carry every flash to ITCM call; a walk stopping at them sees
+  65 nodes instead of 311 and passes a decoder that reached `Serial`.
+  Resolved: W1 resolves each veneer to its literal target in every walk
+  and in stack-bound (no frame); the veneer fixture fails a walk that
+  stops at veneers.
+- **CR3-S2.** Stack-bound named only the SdFat block-device virtuals;
+  the raw scans and the OTA copy dispatch through FS.h `FileImpl`.
+  Resolved: W4 vtable rows resolve `File::read` and
+  `File::openNextFile` (`cores/teensy4/FS.h:167`, `:216`) to `SDFile`,
+  the stack-bound line names it, and the unwindowed roots are charged
+  without a pass.
+- **CR3-S5.** The handler scan found only two aius call sites; DMA, USB
+  and ENET install inside core and framework code. Resolved: the
+  stack-bound line states the scan scope (aius sources) and gives
+  framework-installed rows a cited install line checked in the pinned
+  framework source; residual risk records what the scan cannot prove.
+- **CR3-N1 (found by this revision).** The link half's "DWARF
+  compile-unit path" cannot be read: the optical ELF has no
+  `.debug_info`. Resolved: a link map in the platformio seam; the link
+  half reads archive provenance from it (`libAiusSdFat.a`,
+  `libAiusSD.a`, E4), and W1's library membership uses the same map.
+
 ### Phase 4f HTTP is best-effort: shedding, render yields, lighter polling
 
 ```yaml
@@ -3421,7 +3688,7 @@ phase: 4f
 title: HTTP is best-effort (503 shedding, render yields, compact editor status, self-scheduled lighter polling)
 status: planned
 depends-on: phase-4e
-prebuild-review: clean-room-folded # 2026-10-07: rounds 2 to 4 NOT READY and folded; round 5 closure found no blocker, its R4-N1 to N3 and R5-S1 to S3 written in; clean-room confirmation NOT READY (CR-B1, CR-B2; CR-S2, CR-S3, CR-S11, CR-S12) folded below; clean-room re-confirmation pending
+prebuild-review: clean-room-folded # 2026-10-07: rounds 2 to 4 NOT READY and folded; round 5 closure found no blocker, its R4-N1 to N3 and R5-S1 to S3 written in; clean-room confirmation NOT READY (CR-B1, CR-B2; CR-S2, CR-S3, CR-S11, CR-S12) folded below; clean-room round 3 HOLD (CR3-B4; CR3-B1 to B3 via producer-isolation and stack-bound, resolved in 4e) folded below; clean-room re-confirmation pending
 outcome: >-
   No HTTP dispatch runs CPU work the transmit ring cannot absorb: while
   live input owns the ring (its gate flag set with the carrier locked), a
@@ -3456,7 +3723,7 @@ targeted-proof:
   - "host: sd-editor: per page, a 503 keeps the last values and pill; three consecutive failures show unreachable and one success clears it; polls never overlap and honour Retry-After clamped to 0.25 to 5 s; editor meters tick at 250 ms; the flow ends render from the brief body; a 503 on Apply retries; mixer.test.js stays green with the editor's new polling"
   - "host: rate-gate-capture: a 503 poll is a counted skip; over 5% skips fails the run; transport errors keep today's retry"
   - "host: stack-bound (render-append yield roots), producer-isolation (render-append roots in the yield-root table), runtime-target (aius_runtime_network_http.cpp and aius_optical_app.cpp against the fakes), memory (OCRAM free unchanged; on the canonical image ITCM growth at most 1,000 B, DTCM statics growth at most 256 B, of which the eight cost windows take 96 B, F12), registry and itcm-placement green; both images build"
-  - "device (owner session, source off, 4f image and synced www, before the AC-3 run; /api/status tx_gate.open 0 at start, else the U24 de-authorised per CLAUDE.md's bench-loop note and re-authorised with the mixer re-applied after): status.html and the editor page loaded and 60 s of 1 Hz full status, then POST /api/sd/mode to FIFO, one editor page load (its SD downloads and the presets listing), and back to DMA; every request answered 200, http_shed and sd_fifo_defers delta 0 (F11, CR-B1)"
+  - "device (owner session, source off, 4f image and synced www, before the AC-3 run; /api/status tx_gate.open 0 at start, else the U24 de-authorised per CLAUDE.md's bench-loop note and re-authorised with the mixer re-applied after): status.html and the editor page loaded and 60 s of 1 Hz full status, then POST /api/sd/mode to FIFO, one editor page load (its SD downloads and the presets listing), and back to DMA; no request answers 503 and every request answers its expected status at its first attempt (200, except the browser's GET /favicon.ico, which answers 404 since no page links an icon and no route serves one, CR3-B4), http_shed and sd_fifo_defers delta 0 (F11, CR-B1)"
   - "device (owner, AC-3, 4f image and synced www, POST /api/clear at start): polled (full /api/status at 1 Hz, at least 95% answered 200) versus unpolled sub-window spread p95 within 10 frames; the editor page open 10 min, with three DSP Applies of the largest shipped preset and one of a 12,288 B body built by dsp_model_pad.py from the owner's current model (its number and whitespace split recorded, R5-S3; GET /sd/aius/dsp.json saved first; every Apply answered 200 and config_generation advanced, else the run is void), then the saved model PUT back and GET /api/dsp/config compared to it (F10, R4-S8), gives underrun_episode_count delta 0; http_class_cost_us for the settings-parse class recorded (F7); producer_pend_latency_max_us at most D and ingress_high_water_words at most the alarm at D, where D is 2,000 us or the measured settings-parse cost if larger; http_shed per class and http_dispatch_max_us recorded (the editor load's GET /api/dsp/config inside the window, F13)"
 contract-artifact: spec-only
 fan-out: # ui-polling, http-admit and capture-tool concurrently; parent-wiring after http-admit's hook type lands
@@ -3850,6 +4117,28 @@ CR-B2). Each item is followed by its resolution.
 - **CR-S12 (4f part).** F4 cited `mixer.js:783`. Resolved: the form-sync
   timer is `firmware/sd/www/mixer.js:973`.
 
+**Clean-room round 3 (2026-10-07): HOLD** (CR3-B4; CR3-B1 to B3 through
+the producer-isolation and stack-bound suites in the green list). Each
+item is followed by its resolution.
+
+- **CR3-B1 to B3 (4f part, from 4e).** The render-append yield roots
+  join a walk that failed correct builds. Resolved in 4e (§Walk
+  specification): the appends are yield-root rows (W2), each direct
+  caller of `aius_producer_yield_point` must be one, and W5 (2) holds
+  for their chains; nothing else changes here.
+- **CR3-B4 (blocker).** The source-off device step required every
+  request answered 200, but no page under `firmware/sd/www/` links an
+  icon and no route serves `/favicon.ico`, so a cold page load's
+  favicon request answers 404 (the 2026-10-07 investigation recorded
+  it) and the proof failed a correct build. Resolved with the proof
+  text, not an icon: no request answers 503, and every request answers
+  its expected status at its first attempt, the favicon 404 excepted.
+  Shipping an icon or an empty-icon link in 4g's bundles would change
+  every page and rebuild the bundles to satisfy a proof, while the 404
+  is the unknown-route answer (`/favicon.ico` matches no route and is
+  not under `/sd/`, `firmware/lib/aius_http/src/aius_http.c:237-242`),
+  with no card access (Phase 5 F14).
+
 ### Phase 4g PSRAM web cache with gzip page bundles
 
 ```yaml
@@ -3857,7 +4146,7 @@ phase: 4g
 title: The web app is served from a CRC-checked PSRAM cache as gzip page bundles with ETag validation
 status: planned
 depends-on: phase-4f
-prebuild-review: clean-room-folded # 2026-10-07: rounds 2 to 4 NOT READY and folded; round 5 closure found no blocker, its R4-N1 to N3 and R5-S1 to S3 written in; clean-room confirmation NOT READY only via 4f's CR-B1, plus CR-S6, folded below; clean-room re-confirmation pending
+prebuild-review: clean-room-folded # 2026-10-07: rounds 2 to 4 NOT READY and folded; round 5 closure found no blocker, its R4-N1 to N3 and R5-S1 to S3 written in; clean-room confirmation NOT READY only via 4f's CR-B1, plus CR-S6, folded below; clean-room round 3 HOLD only via 4e's CR3-B1 to B3, plus CR3-S3 (shared with 4h), folded below; clean-room re-confirmation pending
 outcome: >-
   A web UI load reads no card once the cache is warm: every /sd/www file
   and the presets listing are served from a cache on PSRAM pad 2 whose
@@ -4166,6 +4455,20 @@ resolution.
   read-back inside each fill primitive, publish with no per-byte work;
   scheduler seam and a web-cache case (Phase 5 G10).
 
+**Clean-room round 3 (2026-10-07): HOLD** only via 4e's CR3-B1 to B3
+(producer-isolation and stack-bound in the green list); CR3-S3 is shared
+with 4h. Each item is followed by its resolution.
+
+- **CR3-B1 to B3 (4g part, from 4e).** Resolved in 4e (§Walk
+  specification): the send loop is a yield-root row (W2), and its 512 B
+  copy buffer is charged on the stack-bound path as before.
+- **CR3-S3 (4g part).** G9's serve-from-card precedence cancels fills
+  only, so an HTTP SD request arriving while a 4h flush owns the volume
+  still answers `503 sd_busy`, which a browser does not retry; on an
+  8 MiB fitment (no cache) every page load is a card read. Resolved as
+  a residual risk in 4h, which owns the flush (Phase 5 H16); G9 is
+  unchanged.
+
 ### Phase 4h Write-behind settings flush, card-swap hold, rename-gap recovery
 
 ```yaml
@@ -4173,7 +4476,7 @@ phase: 4h
 title: Settings writes complete into PSRAM and reach the card within seconds
 status: planned
 depends-on: phase-4g
-prebuild-review: clean-room-folded # 2026-10-07: rounds 2 to 4 NOT READY and folded; round 5 closure found no blocker, its R4-N1 to N3 and R5-S1 to S3 written in; clean-room confirmation NOT READY only via 4f's CR-B1, plus CR-S4, CR-S5, CR-S10, CR-S11, folded below; clean-room closure HOLD only via 4e's CR2-B1, plus CR2-S1, folded below; clean-room re-confirmation pending
+prebuild-review: clean-room-folded # 2026-10-07: rounds 2 to 4 NOT READY and folded; round 5 closure found no blocker, its R4-N1 to N3 and R5-S1 to S3 written in; clean-room confirmation NOT READY only via 4f's CR-B1, plus CR-S4, CR-S5, CR-S10, CR-S11, folded below; clean-room closure HOLD only via 4e's CR2-B1, plus CR2-S1, folded below; clean-room round 3 HOLD only via 4e's CR3-B1 to B3, plus CR3-S3 (shared with 4g), folded below; clean-room re-confirmation pending
 outcome: >-
   Every write during live input (DSP Apply, public config, preset save,
   import and delete, card-sync uploads) answers once its bytes are in the
@@ -4512,7 +4815,15 @@ set-aside journal named in `sd_diag.recover_aside` (R3-N4). In FIFO mode
 during live input settings stay in PSRAM until live input stops owning
 the ring (4f F9, F11), so a power cut in that window loses them, and OTA
 and reboot answer 409 until then. On an exFAT card the rename gap stays
-open (H14).
+open (H14). An HTTP SD request (a page miss, a listing, an upload)
+arriving while a flush job owns the volume answers `503 sd_busy`, as
+when any job owns it; a browser page load does not retry, so its
+resource fails. A flush starts only after a settings accept (H1's
+500 ms debounce) and holds the volume for about one REPLACE (about
+0.8 s at 115 epochs/s, H4), so the exposure is a page load within about
+1.3 s of an Apply or save; a warm cache serves pages without the card,
+but an 8 MiB fitment has no cache, so there every page load is exposed
+in that window (CR3-S3, Phase 5 H16).
 
 **Prebuild review round 2 (2026-10-07, `reviewer` `opus`): NOT READY.**
 
@@ -4760,6 +5071,22 @@ CR2-S1 is 4h's own. Each item is followed by its resolution.
   install-journal owns the adapter and `sd-target`, `sd-target` in the
   green list (Phase 5 H14).
 
+**Clean-room round 3 (2026-10-07): HOLD** only via 4e's CR3-B1 to B3
+(the accept and flush yield roots join that walk); CR3-S3 is shared
+with 4g. Each item is followed by its resolution.
+
+- **CR3-B1 to B3 (4h part, from 4e).** Resolved in 4e (§Walk
+  specification): the accept and flush yield points are yield-root rows
+  (W2) and W5 (2) covers their chains; nothing else changes here.
+- **CR3-S3 (4h part).** A page request during a flush answers `503
+  sd_busy` with no browser retry, worst on 8 MiB fitments with no cache.
+  Resolved: stated as a residual risk with its exposure window rather
+  than extending G9's precedence to flushes, since a flush is a
+  journalled REPLACE whose primitives should not be interleaved with a
+  download mid-file (Phase 5 H16).
+- **Phase 5 H4 correction.** H4's reversal said "`lib/aius_sd` REPLACE
+  and RECOVER only", contradicting H10 and H14. Resolved in Phase 5 H4.
+
 ### Phase 4c `test.sh` runs every `--suite` given ✓ SHIPPED 2026-10-06
 
 ```yaml
@@ -4834,8 +5161,11 @@ call, alternative, cost of reversing.
   stays in the field as the fallback to FIFO, which costs an extra OTA.
   Alternative: a compile-time switch (no route, one image per mode).
   Reversing: remove the route, its openapi entry and the mode callback
-  (the mode is not persisted, so there is no retained state), and ship
-  another OTA.
+  (the mode is not persisted, so there is no retained state), rewrite
+  the aius CLAUDE.md text 4b promotes, which names `POST /api/sd/mode`
+  as the FIFO field fallback, drop the 4f source-off device step's
+  switch to FIFO and back, and ship another OTA (corrected in clean-room
+  round 3).
 - **4e E4.** Vendored directories stay `SdFat` and `SD`; `library.json`
   names become `AiusSdFat` and `AiusSD` so `lib_ignore` drops the framework
   copies. Alternative: rename the directories. Reversing: renames plus the
@@ -4900,7 +5230,10 @@ call, alternative, cost of reversing.
   mapping only.
 - **4h H4.** The rename gap is closed by an install journal file.
   Alternative: encode the target path in the backup name. Reversing:
-  `lib/aius_sd` REPLACE and RECOVER only.
+  `lib/aius_sd` REPLACE and RECOVER, plus what H10 and H14 added: the
+  vendored SdFat unlink patch and its `PATCHED_SHA256`, the `sd_diag`
+  `recover_faults` and `recover_aside` keys, and BEGIN's volume-type
+  payload in `aius_sd_teensy.cpp` (corrected in clean-room round 3).
 - **4e E5.** A nested producer pass is attributed through the existing boot
   ledger: it records and commits checkpoint AUDIO before the pass and the
   enclosing checkpoint after, so `pv=` names AUDIO for a wedge inside it;
@@ -5176,6 +5509,38 @@ call, alternative, cost of reversing.
   (the size is set at once, so it guards nothing). Reversing: the
   journal create and the RECOVER read in `lib/aius_sd`, and the
   primitive count.
+- **4e E15.** The static walk has one specification (4e §Walk
+  specification, W1 to W8): veneers resolved to their literal target,
+  the whole allocator family plus `abort` and `__assert_func` as leaves
+  with no edge allowlist, SD callers checked against a windowed and an
+  accepted unwindowed table with the window flag's placement left to a
+  source guard, every indirect site a row of one declared site table
+  (registration, library, empty and vtable rows), declared recursion
+  bounds (the ffmpeg tx component at 2), a link map for library
+  membership and the link half (the ELF has no `.debug_info`), tables
+  seeded from a census of the optical ELF (clean-room round 3, CR3-B1 to
+  B3, CR3-S2, CR3-S5). Alternative: an indirect-site exemption for
+  targets address-taken only inside decoder units, or treating every
+  address-taken function as a target (measured: 1,854 functions, 540
+  forbidden, so it fails a correct build). Reversing: the producer-isolation
+  and stack-bound suites' tables and walker, the fixtures, and one
+  linker flag.
+- **4f F14.** The 4b and 4f source-off proofs accept the browser's
+  `/favicon.ico` 404 (no page links an icon, no route serves one, and
+  the unknown-route 404 reads no card) instead of shipping an icon
+  (clean-room round 3, CR3-B4). Alternative: an empty-icon `<link
+  rel="icon" href="data:,">` in each page, or a served icon in 4g's
+  bundles. Reversing: one line per page under `firmware/sd/www/`, a
+  `www_bundle.py` rebuild and the two proof lines.
+- **4h H16.** An HTTP SD request arriving while a 4h flush owns the
+  volume still answers `503 sd_busy`; this stays a residual risk (a
+  page load within about 1.3 s of an Apply or save, every such page
+  load on an 8 MiB fitment) rather than extending 4g G9's
+  serve-from-card precedence to flushes (clean-room round 3, CR3-S3).
+  Alternative: park the request at the SD_START arm until the flush
+  job ends, bounded by H13's 2,000 ms ceiling, as G9 parks it behind a
+  fill cancel. Reversing: one dispatch condition in
+  `aius_optical_app.cpp`, an optical-app case, and the residual line.
 
 ## Acceptance
 
