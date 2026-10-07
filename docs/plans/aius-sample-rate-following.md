@@ -47,15 +47,16 @@ replace wholesale on the next handover.
   contract revision are allowed.
 - **Orchestration posture: autonomous** (owner, 2026-10-06): resolve
   calls on their recommendation, record them with their why, and collect
-  calls wanting confirmation in Phase 5. Device sessions and anything
-  destructive go to the owner (pending the 4e interrogate step on
-  source-off runs).
+  calls wanting confirmation in Phase 5. Every device session (OTAs and
+  source-off checks included) and anything destructive goes to the owner
+  (ruling 2026-10-07).
 - **Next action.** Spawn one `opus` agent to revise the 4e to 4h and 4b
   contracts against each phase's "Prebuild review round 2" block (B1 to
   B6 and S1 to S17), then a fresh `opus` `reviewer` for round 3 given the
   round 2 list (the round 2 reviewer's context did not survive); repeat
-  until READY. Then put the Phase 4e interrogate step (source-off device
-  runs) and the Phase 5 confirmations to the owner, and wait for "start".
+  until READY. Then put the Phase 5 confirmations to the owner (deferred
+  until the contracts settle, since round 3 may change those calls) and
+  wait for "start".
 - **What landed this run** (aius commits; each followed by a upstream repository
   pointer bump; foreign commits from the mixer session omitted):
 
@@ -2729,17 +2730,8 @@ commit-checkpoint:
   coordination: owned-path sets are disjoint; host suites build one at a time
 ```
 
-**Interrogate the user: source-off device runs without the owner.**
-
-- **Question:** "May I OTA and run the source-off device checks (4e run
-  1, 4g run 1) myself, or should every device session wait for you?"
-- **Options:** (a) agents may OTA and run source-off checks alone, AC-3
-  runs still need the owner: faster, no audio is playing; (b) every
-  device session waits for the owner: today's posture, slower.
-- **Recommendation:** (a): no audio to interrupt, the rollback candidate
-  is preserved, and the FIFO-at-boot image keeps OTA rollback intact.
-- **Blocks:** 4e device run 1, 4g device run 1 (not the contract revision
-  or host work).
+**Owner ruling 2026-10-07: every device session waits for the owner,**
+including OTAs and the source-off checks (4e run 1, 4g run 1).
 
 Implements the owner's A-DMA direction and the prebuild findings that
 carry over (B1, B2 in part, S3, S4, S5, S6, S8; S1 and S7 are moot
