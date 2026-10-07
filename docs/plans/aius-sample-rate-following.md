@@ -55,9 +55,11 @@ replace wholesale on the next handover.
   rollback candidate** (2026-10-07): tag `fw-rollback-df966f17b370`,
   signed container and USB `recovery.hex` in LFS with steps in
   `firmware/releases/df966f17b370/README.md`.
-- **Hold before implementation** (owner, 2026-10-07): no implementer is
-  dispatched for 4e to 4h until the owner says start. Reviews and
-  contract revision are allowed.
+- **Implementation started** (owner "start", 2026-10-07), 4e first.
+  **No OTA deploy until the owner's go-ahead** (owner, 2026-10-07):
+  another bench round may be needed first, not on 2026-10-07. Builds,
+  signing and host suites proceed; staging, rehearsal and activation
+  wait.
 - **Orchestration posture: autonomous** (owner, 2026-10-06): resolve
   calls on their recommendation, record them with their why, and collect
   calls wanting confirmation in a closing interrogate phase (the owner
@@ -65,9 +67,10 @@ replace wholesale on the next handover.
   give each call its own line). Every device session (OTAs and
   source-off checks included) and anything destructive goes to the owner
   (ruling 2026-10-07).
-- **Next action.** Wait for the owner's "start", then dispatch 4e per
-  its fan-out (first step: measure per-env OCRAM floors before any
-  edit).
+- **Next action.** 4e in flight: per-env OCRAM floors and the canonical
+  image's ITCM, DTCM and stack-zone figures measured on the unchanged
+  tree first, then sdfat-vendor, sd-adapter, producer-yield and
+  link-checks, then parent-wiring.
 - **What landed this run** (aius commits; each followed by a upstream repository
   pointer bump; foreign commits from the mixer session omitted):
 
