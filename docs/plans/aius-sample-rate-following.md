@@ -2361,6 +2361,64 @@ rather than after." with the text below; the bench sentence that follows
 > when the owner accepts the interruption, state its cost first rather
 > than after.
 
+**Owner rulings 2026-10-07 (after the design).**
+
+- **Replay is out of scope.** Replay exists only for synthetic testing,
+  so the guarantee, the acceptance examples and the CLAUDE.md text cover
+  live input (optical AC-3 and PCM) only.
+- **Hold: discuss B2 before implementation.** The owner asked to discuss
+  moving the producer into an interrupt before any slice is dispatched.
+  This is 4b's first step (below).
+
+**Interrogate the user: the B2 execution-model change.** Present B2,
+the prebuild findings below and the alternatives (A, cooperative slicing,
+whose bound is one card primitive; B1, lock by exception) and record the
+owner's decision here. No slice is dispatched until it is recorded.
+
+**Prebuild review round 1 (2026-10-07, `reviewer` `opus`): NOT READY.**
+Each finding is plan work for the design revision after the discussion.
+
+- **B1, pend-latency metric.** It counts the producer's own run time (a
+  pend raised during a pass waits for the pass), so the device proof
+  fails with a perfect gate. Stamp only while the producer is idle; host
+  case.
+- **B2, recovery-safe.** Recovery-safe epochs never run AUDIO today; a
+  pended producer would run there, and a hang after the EPOCH_COMPLETE
+  ledger commit scores as a clean reset. The producer returns early in
+  recovery-safe, no yield after the commit, and a retained "producer
+  active" flag attributes a wedge to AUDIO. Changes no owner-visible
+  behaviour if done this way.
+- **S1.** Unmask and pend need DSB and ISB, or yields and AUDIO windows
+  can be no-ops; device counter of passes per AUDIO window.
+- **S2.** The REPLAY checkpoint already holds 1,060 µs locked, over the
+  500 µs target; time and yield per stage, and feed measured stretches
+  into the schedule model.
+- **S3.** The replay refill window runs the producer mid-REPLAY after the
+  source promotion; give refill a non-windowed execute (refill only runs
+  without a carrier).
+- **S4.** The 1,024-word ingress alarm has no margin; derive it from the
+  pass length plus the start-delay bound (about 1,152).
+- **S5.** Stack headroom (1,408 B over the floor) is unproven at the deep
+  window sites; a static `-fstack-usage` bound and those routes in the
+  device run.
+- **S6.** The isolation check cannot follow indirect calls (`enqueue`
+  through the sink pointer); explicit roots, fail on unresolved indirect
+  branches.
+- **S7.** Fill-sensor sampling becomes RX-locked, so the "sample between
+  a DMA crossing and its ISR" artefact arrives in runs; plant case with
+  swept phase and a device comparison against the Phase 4 baseline.
+- **S8.** Device run adds `sd_diag` driver and protocol fault deltas 0
+  and a content check of downloaded and synced files.
+- **S9.** Scope the CLAUDE.md text to live input (settled by the replay
+  ruling).
+- **Nits.** `note_pend` always-inline reading the cycle counter in ITCM,
+  gate library FLASHMEM, an owner for `test/itcm-placement`; atomic
+  `take_pend_us`; `g_http_service_overruns` and `cw=` join the
+  not-a-fault list; no windows inside IRQ_SOFTWARE-masked sections; the
+  gate latches parked after `ota_quiesce`; PROGMEM `audio_diag` format
+  strings; reconcile the `/api/replays` `sd_busy` table entry with the
+  code.
+
 ### Phase 4c `test.sh` runs every `--suite` given ✓ SHIPPED 2026-10-06
 
 ```yaml
