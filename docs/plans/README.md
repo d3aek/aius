@@ -151,6 +151,11 @@ after its phase lands sends the next reader to redo finished work.
   - impedance, return-path and mechanical feasibility, with a four-layer verdict
   - footprints, placement and impedance-controlled routing
   - DRC/DFM-clean Gerber package
+- **[Aius SD mixer dashboard](aius-sd-mixer-dashboard.md)**, last delivery
+  2026-10-07. The page is committed; deploy and four owner decisions are owed.
+  - full-width dashboard skin over the unchanged DSP editor
+  - fader mixer, live routing diagram, bonded EQ channel tabs
+  - logo explorations awaiting picks for SVG redraws
 
 ## Draft
 

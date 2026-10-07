@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#0a0c0b">
+  <title>aius mixer</title>
+  <!-- A second skin over the SAME editor: dsp-editor.js runs unchanged against
+       this page, so every id index.html carries is carried here too (the
+       mixer suite asserts it). replays.css and dsp-editor.css still lay out the
+       form the script builds; mixer.css re-points their tokens at the bench
+       palette and lays the stages out as one full-width dashboard grid. -->
+  <link rel="stylesheet" href="replays.css">
+  <link rel="stylesheet" href="dsp-editor.css">
+  <link rel="stylesheet" href="mixer.css">
+</head>
+<body class="bench">
+  <a class="skip" href="#dashboard-surface">Skip to the dashboard</a>
+
+  <header class="bench-nav">
+    <a class="logo" href="mixer.html" aria-label="aius mixer">
+      <span class="logo__dots" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></span>
+      <span class="logo__word">aius</span>
+    </a>
+    <nav class="bench-nav__links" aria-label="Device pages">
+      <a href="mixer.html" aria-current="page">DSP editor</a>
+      <a href="replays.html">Replay manager</a>
+      <a href="status.html">Device status</a>
+      <a href="upgrade.html">Firmware upgrade</a>
+    </nav>
+    <a class="bench-nav__alt" href="index.html">Classic editor</a>
+  </header>
+
+  <main id="main" class="bench-main">
+    <!-- The one action bar, sticky, and still the ONLY writer: a fader, a curve
+         drag or a keystroke stages a change on this page until Apply sends the
+         whole form as one generation bump. -->
+    <div id="action-bar" class="action-bar">
+      <div class="action-bar__group action-bar__state">
+        <span id="apply-state" class="pill">loading</span>
+        <span id="dirty-state" class="pill" hidden>no unapplied changes</span>
+        <span id="model-bytes" class="form-fact">--</span>
+      </div>
+      <!-- Where the effective MODEL came from. -->
+      <div class="action-bar__group facts">
+        <span class="facts__item"><span class="facts__key">Config</span><strong id="source">unknown</strong></span>
+        <span class="facts__item"><span class="facts__key">Gen</span><strong id="generation">--</strong></span>
+        <span class="facts__item"><span class="facts__key">Rate</span><strong id="sample-rate">--</strong></span>
+        <a class="facts__item facts__link" href="/api/dsp/config">json</a>
+      </div>
+      <div class="action-bar__group action-bar__actions">
+        <!-- The lock chip is the token's door: the field itself lives in the
+             dialog below, out of the bar until it is needed. -->
+        <button id="token-open" type="button" class="token-trigger" aria-haspopup="dialog" aria-controls="token-dialog" title="Mutating operations need the SD auth token">
+          <span id="token-lock" class="token-lock" data-state="locked">locked</span>
+        </button>
+        <button id="reload" type="button" class="secondary">Revert</button>
+        <button id="apply">Apply</button>
+      </div>
+    </div>
+
+    <dialog id="token-dialog" class="token-dialog" aria-labelledby="token-dialog-title">
+      <form method="dialog" class="token-dialog__body">
+        <h2 id="token-dialog-title" class="kicker">SD auth token</h2>
+        <p class="hint">Apply and the preset writes need it. Read it over USB with the <code>AIUS AUTH</code> command; saving keeps it in this browser.</p>
+        <label class="action-bar__token-field">Token
+          <input id="token" type="password" autocomplete="off" placeholder="from AIUS AUTH">
+        </label>
+        <div class="token-dialog__actions">
+          <button id="token-toggle" type="button" class="secondary">Save token</button>
+          <button id="token-close" type="submit" class="secondary">Close</button>
+        </div>
+      </form>
+    </dialog>
+
+    <div class="status-row status-card">
+      <p id="status" class="hint" role="status">Loading configuration...</p>
+      <p id="preview-note" class="hint hint--warn">Edits are staged on this page until Apply.</p>
+      <p id="errors" class="error-summary" role="alert" hidden></p>
+      <div id="stale" class="notice" hidden>
+        <span>The device moved to a newer generation than this page (HTTP 409). Nothing was written to SD and the active DSP is untouched. Reloading discards the edits on this page.</span>
+        <button id="stale-reload">Reload device config</button>
+      </div>
+    </div>
+
+    <!-- The view toggle is index.html's; this skin has one layout, but the
+         editor still writes the toggle's state. -->
+    <div class="bench-legacy" hidden>
+      <button id="view-editor" type="button" class="secondary" aria-pressed="false">Editor</button>
+      <button id="view-dashboard" type="button" class="secondary" aria-pressed="true">Dashboard</button>
+    </div>
+
+    <div id="dashboard-surface" class="dashboard-surface board" data-view="dashboard">
+
+      <!-- 00 SIGNAL: wire widths are the matrix weights from the form, box
+           fills are the editor's own needles, and the wires move only while
+           the transmit gate is open. -->
+      <section id="dashboard-input" class="board__cell board__cell--flow">
+        <figure class="panel flow" data-live="false" aria-labelledby="flow-kicker">
+          <div class="panel__head">
+            <h2 id="flow-kicker" class="kicker">00 / Signal</h2>
+            <span id="hero-led" class="led" data-state="unknown"></span>
+            <span id="input-source" class="flow-end" data-state="unknown">input: unknown</span>
+            <span id="strip-input-state" class="pill">waiting</span>
+          </div>
+          <svg id="flow-svg" class="flow__svg" viewBox="0 0 520 400" role="img" aria-labelledby="flow-title">
+            <title id="flow-title">Signal flow from the six decoded inputs, through the matrix, to L and R</title>
+            <defs>
+              <linearGradient id="flow-core-fill" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0" class="flow__core-stop-a"/>
+                <stop offset="1" class="flow__core-stop-b"/>
+              </linearGradient>
+              <filter id="flow-glow" x="-50%" y="-50%" width="200%" height="200%">
+                <feGaussianBlur stdDeviation="3" result="b"/>
+                <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+              </filter>
+            </defs>
+            <g id="flow-wires-in" class="flow__wires"></g>
+            <g id="flow-inputs" class="flow__in"></g>
+            <g transform="translate(200,110)">
+              <rect class="flow__core" width="170" height="180" rx="14" fill="url(#flow-core-fill)"/>
+              <text x="85" y="50" class="flow__brand">aius</text>
+              <text x="85" y="74" class="flow__sub">matrix &middot; eq &middot; limiter</text>
+              <g id="flow-stages" class="flow__stages" transform="translate(18,96)"></g>
+            </g>
+            <g id="flow-wires-out" class="flow__wires flow__wires--out"></g>
+            <g id="flow-outputs" class="flow__out"></g>
+          </svg>
+          <div class="flow__ends">
+            <span id="tx-gate" class="flow-end" data-state="unknown">output: unknown</span>
+          </div>
+          <!-- The editor runs the input needles here; the diagram's boxes are
+               their only display on this page. -->
+          <div class="bench-legacy" hidden><div id="bars-input" class="bars"></div></div>
+        </figure>
+      </section>
+
+      <!-- 01 MATRIX -->
+      <section id="dashboard-matrix" class="board__cell board__cell--matrix">
+        <div id="card-matrix" class="panel mixer">
+          <div class="section-title panel__head"><h2 class="kicker">01 / Matrix</h2></div>
+          <div class="mixer__presets" role="group" aria-label="Load a saved preset into the form">
+            <span id="mixer-presets" class="mixer__preset-chips"></span>
+            <span class="mixer__divider" aria-hidden="true"></span>
+            <button id="matrix-clipfree" type="button" class="chip chip--clipfree" aria-pressed="false"><span class="chip__key"></span><span>clip-free headroom</span></button>
+            <button id="mixer-layout-aware" type="button" class="chip chip--layout" aria-pressed="false"><span class="chip__key"></span><span>layout-aware</span></button>
+          </div>
+
+          <div class="mixer__body">
+            <div id="mixer-faders" class="faders" role="group" aria-label="Matrix faders"></div>
+            <div class="readout">
+              <pre id="mixer-eqn" class="eqn" aria-live="polite"></pre>
+              <div class="dial">
+                <div class="dial__row">
+                  <span>Centre vs. rest (weights)</span>
+                  <span id="mixer-ratio" class="dial__num">--</span>
+                </div>
+                <div class="dial__track"><div id="mixer-ratio-fill" class="dial__fill"></div><div class="dial__mid"></div></div>
+                <div class="dial__row dial__row--ends"><span>buried</span><span>balanced</span><span>forward</span></div>
+              </div>
+              <div class="mixer__meters">
+                <div class="mixer__meters-head">
+                  <span class="kicker kicker--sub">Output levels</span>
+                  <span id="strip-output-state" class="pill">waiting</span>
+                </div>
+                <div id="bars-output" class="bars"></div>
+              </div>
+              <p id="mixer-verdict" class="verdict">--</p>
+            </div>
+          </div>
+
+          <!-- The exact values are the model; the faders are a view of them.
+               Opens on its own when a value goes out of range. -->
+          <details id="mixer-exact" class="mixer__exact">
+            <summary>Exact values</summary>
+            <div id="matrix" class="form-mount"></div>
+          </details>
+
+          <!-- The routing canvas is index.html's editor for these fields; this
+               skin replaces it with the faders, and the script still draws
+               into it. -->
+          <div class="bench-legacy" hidden>
+            <canvas id="matrix-diagram" class="matrix-diagram" width="960" height="300"></canvas>
+            <span id="matrix-readout" class="curve-readout" hidden></span>
+            <p id="matrix-caption"></p>
+            <p id="matrix-status" role="status"></p>
+          </div>
+        </div>
+      </section>
+
+      <!-- 02 EQ: the stacked plot is index.html's, unchanged. The per-channel
+           table is regrouped by mixer.js into one tab per channel, linked to
+           the plot's legend. -->
+      <section id="dashboard-eq" class="board__cell board__cell--eq">
+        <div class="panel eq">
+          <div class="panel__head">
+            <h2 class="kicker">02 / EQ</h2>
+            <div id="curve-legend" class="legend" role="group" aria-label="EQ curve selection"></div>
+          </div>
+          <div class="eq__body">
+            <div class="eq__plot">
+              <div class="curve-wrap scope">
+                <canvas id="curve" class="curve" width="960" height="240" tabindex="0" role="application"
+                  aria-label="Stacked EQ magnitude plot. Drag a handle for frequency and gain, or hold Shift when starting a vertical drag to set Q. Arrow keys nudge frequency and gain, page up and page down select a section, delete removes it, and the wheel or Section Q box below also sets Q."></canvas>
+                <span id="curve-readout" class="curve-readout" hidden></span>
+              </div>
+              <div class="curve-controls">
+                <button id="curve-add" type="button" class="secondary">Add section</button>
+                <button id="curve-remove" type="button" class="secondary">Remove section</button>
+                <label class="curve-q">Q <input id="curve-q" type="number" min="0.1" max="20" step="0.05" aria-label="Selected section Q"></label>
+                <span id="curve-caption" class="visual-block__note"></span>
+              </div>
+              <p id="curve-status" class="hint" role="status">Drag a handle for frequency and gain, Shift-drag for Q, double-click to add a section.</p>
+            </div>
+
+            <div class="eq__channels">
+              <div id="eq-tablist" class="tabs" role="tablist" aria-label="EQ channel"></div>
+              <section id="card-input-channels" class="embedded-form tabs__panel">
+                <div class="section-title"><h3 id="eq-channel-title">Input EQ</h3></div>
+                <div id="input-channels" class="form-mount"></div>
+              </section>
+              <section id="card-output-eq" class="embedded-form tabs__panel" hidden>
+                <div class="section-title"><h3>Output EQ</h3></div>
+                <div id="output-eq" class="form-mount"></div>
+              </section>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 03 LIMITER -->
+      <section id="dashboard-limiter" class="board__cell board__cell--limiter">
+        <div id="card-limiter" class="panel">
+          <div class="section-title panel__head">
+            <h2 class="kicker">03 / Limiter</h2>
+            <span id="strip-limiter-state" class="pill">waiting</span>
+          </div>
+          <div class="gr">
+            <span class="gr__scale">-24</span>
+            <div class="gr__track"><div id="gr-fill" class="gr__fill"></div></div>
+            <span class="gr__scale">0 dB</span>
+            <strong id="gr-value" class="gr__value">--</strong>
+          </div>
+          <div class="scope scope--short"><canvas id="gr-history" class="gr__history" width="960" height="64"></canvas></div>
+          <div id="limiter" class="form-mount"></div>
+        </div>
+      </section>
+
+      <!-- 04 LIVE: the live panel IS the meters stage; its enable and dirty
+           marker mount in the head. -->
+      <section id="dashboard-output" class="board__cell board__cell--live">
+        <section id="card-meters" class="panel meters">
+          <div class="section-title panel__head"><h2 class="kicker">04 / Live</h2><span id="meter-state" class="pill">waiting</span></div>
+          <div class="status-grid spec-grid">
+            <div><span>Snapshot</span><strong id="meter-sequence">--</strong></div>
+            <div><span>Queue</span><strong id="meter-queue">--</strong></div>
+            <div><span>Latency</span><strong id="meter-latency">--</strong></div>
+            <div><span>Cycles last / max</span><strong id="meter-cycles">--</strong></div>
+            <div><span>DSP load</span><strong id="meter-load">--</strong></div>
+            <div><span>Peak load</span><strong id="meter-load-peak">--</strong></div>
+          </div>
+          <div id="meter-groups" class="meter-cards"></div>
+          <p id="meter-summary" class="hint">Meter data unavailable.</p>
+        </section>
+      </section>
+
+      <!-- 05 PRESETS: the chips above the faders load; save, import and
+           delete live here. -->
+      <section id="presets" class="board__cell board__cell--presets">
+        <div class="panel presets-card">
+          <div class="section-title panel__head"><h2 class="kicker">05 / Presets</h2><span id="preset-state" class="pill">idle</span></div>
+          <div class="controls presets-row">
+            <label class="preset-select-field">Preset
+              <select id="preset-select" aria-label="Saved presets"><option value="">no presets</option></select>
+            </label>
+            <button id="preset-load" type="button" class="secondary">Load</button>
+            <label class="preset-name-field">Save as <input id="preset-name" type="text" maxlength="27" autocomplete="off" spellcheck="false" placeholder="e.g. movie-night"></label>
+            <button id="preset-save" type="button">Save</button>
+            <details id="preset-menu" class="preset-menu">
+              <summary>More</summary>
+              <div class="preset-menu__body">
+                <input id="preset-file" type="file" accept=".json,application/json">
+                <button id="preset-upload" type="button" class="secondary">Import file as preset</button>
+                <button id="preset-download-selected" type="button" class="secondary">Download selected</button>
+                <button id="preset-download" type="button" class="secondary">Download current form</button>
+                <button id="preset-delete" type="button" class="danger">Delete selected</button>
+                <button id="preset-refresh" type="button" class="secondary">Refresh list</button>
+              </div>
+            </details>
+          </div>
+          <p id="preset-name-hint" class="hint">0 / 27 characters.</p>
+          <p class="hint preset-line">
+            <span id="preset-status" role="status">Reading presets...</span>
+            <span id="preset-origin" class="preset-origin"></span>
+          </p>
+          <p id="preset-errors" class="error-summary" role="alert" hidden></p>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <!-- sd-shared.js FIRST, then the editor, then the skin's adapter, which reads
+       the form the editor has built. -->
+  <script src="sd-shared.js"></script>
+  <script src="dsp-editor.js"></script>
+  <script src="mixer.js"></script>
+</body>
+</html>

@@ -1,0 +1,549 @@
+/* mixer.html: the bench dashboard. replays.css and dsp-editor.css still lay out
+   everything dsp-editor.js builds; this sheet re-points their tokens at the
+   bench palette (black, phosphor amber for the voice, signal teal for the
+   path) and lays every stage out as one full-viewport grid of panels.
+
+   No web fonts are fetched: the page is served off the card and nothing on it
+   phones home. Archivo and IBM Plex Mono are used when installed locally;
+   otherwise the stacks fall back to the system faces. */
+
+/* ---- tokens ---------------------------------------------------------------- */
+:root {
+  --aius-surface-page: #0a0c0b;
+  --aius-surface-raised: #131715;
+  --aius-surface-recessed: #181d1a;
+  --aius-surface-input: #0f1211;
+  --aius-surface-canvas: #0a0c0b;
+  --aius-surface-warning: color-mix(in srgb, #ffb627 12%, #131715);
+  --aius-surface-action: color-mix(in srgb, #3be0bd 16%, #131715);
+  --aius-surface-secondary-action: #181d1a;
+  --aius-surface-danger: color-mix(in srgb, #ff5d4f 14%, #131715);
+  --aius-border-strong: #232a26;
+  --aius-border-control: #2f3832;
+  --aius-border-subtle: #1a201d;
+  --aius-border-emphasis: #3a453e;
+  --aius-accent-primary: #3be0bd;
+  --aius-accent-info: #3be0bd;
+  --aius-accent-warning: #ffb627;
+  --aius-accent-danger: #ff5d4f;
+  --aius-text-primary: #ecefe9;
+  --aius-text-secondary: #b7beb8;
+  --aius-text-muted: #7d8780;
+  --aius-text-disabled: #4f5852;
+  --aius-text-warning: #ffd27a;
+  --aius-text-danger: #ff9d94;
+
+  --bench-amber-dim: #8a6418;
+  --bench-amber-ink: #120d00;
+  --bench-teal-dim: #1b6e5d;
+  --bench-core-a: #1b221e;
+  --bench-core-b: #0f1311;
+  --bench-thumb-a: #e9ece7;
+  --bench-thumb-b: #9aa29c;
+  --bench-grid-line: rgba(255, 255, 255, .025);
+  --bench-sheen: rgba(255, 255, 255, .04);
+  --bench-shadow: rgba(0, 0, 0, .8);
+  --bench-amber-fill: rgba(255, 182, 39, .1);
+  --bench-amber-wash: rgba(255, 182, 39, .06);
+  --bench-teal-fill: rgba(59, 224, 189, .08);
+  --bench-nav-glass: rgba(10, 12, 11, .86);
+
+  --bench-radius: 10px;
+  --bench-radius-lg: 16px;
+  --bench-gutter: clamp(10px, 1.2vw, 18px);
+  --bench-f-display: "Archivo", "Archivo Narrow", system-ui, sans-serif;
+  --bench-f-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* ---- base ------------------------------------------------------------------ */
+body.bench {
+  background: var(--aius-surface-page);
+  color: var(--aius-text-primary);
+  font-family: var(--bench-f-display);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* The faint schematic grid behind the panels. */
+body.bench::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(to right, var(--bench-grid-line) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--bench-grid-line) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+
+.bench code { font-family: var(--bench-f-mono); font-size: .9em; color: var(--aius-accent-primary); }
+.bench-main { position: relative; max-width: none; margin: 0; padding: 0; }
+
+.skip { position: absolute; left: -999px; top: 8px; z-index: 100; padding: 8px 12px; border-radius: 8px; background: var(--aius-accent-warning); color: var(--bench-amber-ink); }
+.skip:focus { left: 8px; }
+
+/* The one label style on the page: mono, uppercase, amber. */
+.kicker { margin: 0; font: 500 12px/1.2 var(--bench-f-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--aius-accent-warning); }
+.kicker--sub { font-size: 11px; color: var(--aius-text-muted); }
+
+/* ---- controls --------------------------------------------------------------
+   One pill vocabulary for every button the editor builds, so a stage reset, a
+   curve button and Apply read as one family. */
+.bench button,
+.bench .preset-menu > summary {
+  font: 500 12px/1 var(--bench-f-mono);
+  letter-spacing: .04em;
+  border-radius: 999px;
+  padding: 0 14px;
+  min-height: 32px;
+  color: var(--aius-text-primary);
+  background: var(--aius-surface-action);
+  border: 1px solid var(--aius-accent-primary);
+  transition: border-color .2s, background .2s, box-shadow .2s;
+}
+.bench button.secondary,
+.bench .preset-menu > summary { background: transparent; border-color: var(--aius-border-control); color: var(--aius-text-secondary); }
+.bench button.secondary:hover:not(:disabled) { border-color: var(--aius-text-secondary); color: var(--aius-text-primary); background: transparent; }
+.bench button.danger { background: var(--aius-surface-danger); border-color: var(--aius-accent-danger); color: var(--aius-text-danger); }
+.bench #apply { background: var(--aius-accent-warning); border-color: var(--aius-accent-warning); color: var(--bench-amber-ink); font-weight: 600; padding: 0 22px; }
+.bench #apply:hover:not(:disabled) { box-shadow: 0 0 0 5px var(--bench-amber-fill); background: var(--aius-accent-warning); }
+.bench input:not([type="range"]):not([type="checkbox"]),
+.bench select {
+  font-family: var(--bench-f-mono);
+  font-size: 12px;
+  background: var(--aius-surface-input);
+  border: 1px solid var(--aius-border-control);
+  border-radius: 8px;
+}
+.bench input[type="checkbox"] { accent-color: var(--aius-accent-primary); }
+.bench .field__reset { min-height: 0; padding: 2px 7px; font-size: 10px; border-radius: 999px; background: none; border-color: var(--aius-border-strong); color: var(--aius-text-disabled); }
+.bench .pill,
+.bench .token-lock,
+.bench .flow-end { font: 500 10px var(--bench-f-mono); letter-spacing: .06em; text-transform: uppercase; white-space: var(--aius-white-space-atomic); }
+.bench .hint { font: 400 11px/1.5 var(--bench-f-mono); }
+
+/* ---- nav --------------------------------------------------------------------- */
+.bench-nav { position: relative; z-index: 2; display: flex; align-items: center; gap: 22px; min-height: 44px; margin: 0; padding: 0 var(--bench-gutter); border-bottom: 1px solid var(--aius-border-strong); }
+.bench-nav__links { display: flex; gap: 20px; margin: 0; padding: 0; border: 0; flex-wrap: wrap; }
+.bench-nav__links a,
+.bench-nav__alt { padding: 0; border: 0; border-radius: 0; background: none; font: 500 11px var(--bench-f-mono); text-transform: uppercase; letter-spacing: .06em; color: var(--aius-text-secondary); text-decoration: none; }
+.bench-nav__links a:hover,
+.bench-nav__alt:hover { background: none; color: var(--aius-accent-warning); }
+.bench-nav__links a[aria-current="page"] { background: none; color: var(--aius-accent-warning); font-weight: 600; }
+.bench-nav__alt { margin-left: auto; }
+@media (max-width: 760px) { .bench-nav__links { display: none; } }
+
+.logo { display: inline-flex; align-items: center; gap: 9px; text-decoration: none; color: var(--aius-text-primary); }
+.logo__word { font-weight: 800; font-size: 20px; font-stretch: expanded; font-variation-settings: "wdth" 125; letter-spacing: -.03em; }
+.logo__dots { display: grid; grid-template-columns: repeat(3, 5px); gap: 3px; }
+.logo__dots i { width: 5px; height: 5px; border-radius: 50%; background: var(--aius-border-control); }
+.logo__dots i:nth-child(2) { background: var(--aius-accent-warning); box-shadow: 0 0 8px var(--aius-accent-warning); }
+.logo__dots i:nth-child(4),
+.logo__dots i:nth-child(6) { background: var(--bench-teal-dim); }
+
+/* ---- action bar ----------------------------------------------------------------
+   Full-bleed glass strip, sticky: state, model facts, token, actions. */
+.bench .action-bar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  margin: 0;
+  padding: 8px var(--bench-gutter);
+  border: 0;
+  border-bottom: 1px solid var(--aius-border-strong);
+  border-radius: 0;
+  background: var(--bench-nav-glass);
+  backdrop-filter: blur(14px) saturate(140%);
+  box-shadow: none;
+}
+.bench .action-bar__token-field { font: 500 10px var(--bench-f-mono); text-transform: uppercase; letter-spacing: .06em; }
+.bench .action-bar__token-field input { width: 140px; }
+.bench .action-bar input,
+.bench .action-bar button { height: 32px; }
+.bench .form-fact { font: 400 11px var(--bench-f-mono); }
+
+/* A phone scrolls past the bar: there it is a header, not a fixture. */
+@media (max-width: 720px) { .bench .action-bar { position: static; backdrop-filter: none; } }
+
+/* The lock chip doubles as the button that opens the token dialog. */
+.bench .token-trigger { min-height: 32px; padding: 0; border: 0; background: none; }
+.bench .token-trigger:hover:not(:disabled) { background: none; }
+.bench .token-trigger:hover .token-lock { border-color: var(--aius-text-primary); }
+.bench .token-trigger .token-lock { display: inline-flex; align-items: center; min-height: 28px; padding: 0 12px; }
+.bench .token-trigger:focus-visible { outline: 3px solid var(--aius-accent-primary); outline-offset: 2px; border-radius: 999px; }
+
+.token-dialog { width: min(420px, calc(100vw - 32px)); padding: 0; border: 1px solid var(--aius-border-control); border-radius: var(--bench-radius-lg); background: var(--aius-surface-raised); color: var(--aius-text-primary); box-shadow: 0 30px 80px -20px var(--bench-shadow); }
+.token-dialog::backdrop { background: var(--bench-nav-glass); }
+.token-dialog__body { display: grid; gap: 14px; margin: 0; padding: 18px; }
+.bench .token-dialog .action-bar__token-field { display: grid; gap: 6px; }
+.bench .token-dialog input { width: 100%; height: 34px; }
+.token-dialog__actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+.facts { gap: 0; }
+.facts__item { display: inline-flex; align-items: baseline; gap: 6px; padding: 0 12px; border-left: 1px solid var(--aius-border-strong); font: 500 11px var(--bench-f-mono); text-transform: uppercase; letter-spacing: .06em; color: var(--aius-text-muted); white-space: var(--aius-white-space-atomic); }
+.facts__item strong { color: var(--aius-text-primary); font-weight: 600; font-variant-numeric: tabular-nums; }
+.facts__link { color: var(--aius-accent-primary); text-decoration: none; }
+.facts__link:hover { text-decoration: underline; }
+
+/* The status line, the staged-edits reminder and the error summary: one slim
+   row under the bar, never a block of prose. */
+.status-row { display: flex; flex-wrap: wrap; gap: 4px 18px; align-items: baseline; padding: 8px var(--bench-gutter) 0; }
+.status-row .hint,
+.status-row .error-summary { margin: 0; font: 400 12px var(--bench-f-mono); }
+.status-row .notice { flex-basis: 100%; margin: 4px 0 0; border-radius: var(--bench-radius); }
+
+/* ---- the board ------------------------------------------------------------------
+   Twelve columns across the whole viewport, one panel per stage in signal
+   order. Each panel fills its cell so a row reads as one band. */
+.bench .board {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: var(--bench-gutter);
+  margin: 0;
+  padding: var(--bench-gutter);
+}
+.board__cell { display: grid; min-width: 0; grid-column: span 12; }
+.board__cell--flow { grid-column: span 4; }
+.board__cell--matrix { grid-column: span 8; }
+.board__cell--limiter { grid-column: span 4; }
+.board__cell--live { grid-column: span 5; }
+.board__cell--presets { grid-column: span 3; }
+@media (max-width: 1280px) {
+  .board__cell--flow { grid-column: span 5; }
+  .board__cell--matrix { grid-column: span 7; }
+  .board__cell--limiter,
+  .board__cell--live { grid-column: span 6; }
+  .board__cell--presets { grid-column: span 12; }
+}
+@media (max-width: 1080px) {
+  .board__cell--flow,
+  .board__cell--matrix { grid-column: span 12; }
+}
+@media (max-width: 720px) {
+  .board__cell--limiter,
+  .board__cell--live { grid-column: span 12; }
+}
+
+.panel {
+  min-width: 0;
+  margin: 0;
+  padding: 14px 16px 16px;
+  border: 1px solid var(--aius-border-control);
+  border-radius: var(--bench-radius-lg);
+  background: var(--aius-surface-raised);
+  box-shadow: 0 30px 60px -40px var(--bench-shadow), inset 0 1px 0 var(--bench-sheen);
+}
+.panel.card--invalid { border-color: var(--aius-accent-danger); }
+.bench .panel__head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; margin: 0 0 14px; padding-bottom: 10px; border-bottom: 1px solid var(--aius-border-strong); }
+.bench .stage-enable { font: 500 10px var(--bench-f-mono); text-transform: uppercase; letter-spacing: .06em; }
+.bench .stage-head__note { font-family: var(--bench-f-mono); font-size: 11px; }
+/* A bypassed stage is dimmed, not disabled: same contract as index.html. */
+.panel[data-stage="off"] .mixer__body,
+.panel[data-stage="off"] .gr,
+.panel[data-stage="off"] .scope,
+.panel[data-stage="off"] .form-mount { opacity: .5; }
+
+/* ---- signal-flow panel ------------------------------------------------------------ */
+.bench .flow {
+  display: block;
+  font-size: 12px;
+  color: var(--aius-text-muted);
+  background:
+    radial-gradient(ellipse at 55% 40%, var(--bench-amber-wash), transparent 60%),
+    var(--aius-surface-raised);
+}
+.flow__svg { display: block; width: 100%; height: auto; max-height: 360px; }
+.flow__core-stop-a { stop-color: var(--bench-core-a); }
+.flow__core-stop-b { stop-color: var(--bench-core-b); }
+.flow__core { stroke: var(--aius-border-control); }
+
+/* The input LED: lit and breathing while the receiver has carrier, steady on a
+   replay, dark otherwise. */
+.led { width: 8px; height: 8px; border-radius: 50%; background: var(--aius-border-control); }
+.led[data-state="carrier"] { background: var(--aius-accent-primary); box-shadow: 0 0 10px var(--aius-accent-primary); animation: led-blink 2.4s ease-in-out infinite; }
+.led[data-state="replay"] { background: var(--aius-accent-warning); box-shadow: 0 0 10px var(--aius-accent-warning); }
+.led[data-state="unreachable"] { background: var(--aius-accent-danger); }
+@keyframes led-blink { 50% { opacity: .35; } }
+.flow .panel__head .flow-end { margin-left: auto; }
+
+.flow__box { fill: var(--aius-surface-recessed); stroke: var(--aius-border-control); stroke-width: 1; }
+.flow__in text,
+.flow__out text { fill: var(--aius-text-secondary); text-anchor: middle; dominant-baseline: middle; font: 500 13px var(--bench-f-mono); }
+.flow__in .is-c .flow__box { stroke: var(--aius-accent-warning); fill: var(--bench-amber-fill); }
+.flow__in .is-c text { fill: var(--aius-accent-warning); font-weight: 600; }
+.flow__out .flow__box { stroke: var(--aius-accent-primary); fill: var(--bench-teal-fill); }
+.flow__out text { fill: var(--aius-accent-primary); font-weight: 600; }
+.flow__meter-track { fill: var(--aius-border-strong); }
+.flow__meter { fill: var(--aius-accent-primary); }
+.flow__meter[data-zone="warn"] { fill: var(--aius-accent-warning); }
+.flow__meter[data-zone="danger"] { fill: var(--aius-accent-danger); }
+
+.flow__wires path { fill: none; stroke: var(--aius-border-control); stroke-dasharray: 4 6; }
+.flow__wires path.is-c { stroke: var(--aius-accent-warning); filter: url(#flow-glow); }
+.flow__wires--out path { stroke: var(--aius-accent-primary); filter: url(#flow-glow); }
+.flow__wires path[data-muted="true"] { stroke-dasharray: 2 6; opacity: .4; filter: none; }
+/* The wires move only while the transmit gate passes audio. */
+.flow[data-live="true"] .flow__wires path { animation: flow-dash 1.6s linear infinite; }
+.flow[data-live="true"] .flow__wires path.is-c,
+.flow[data-live="true"] .flow__wires--out path { animation-duration: 1s; }
+.flow[data-live="true"] .flow__wires path[data-muted="true"] { animation: none; }
+@keyframes flow-dash { to { stroke-dashoffset: -20; } }
+
+.flow__brand { fill: var(--aius-text-primary); text-anchor: middle; font: 800 34px var(--bench-f-display); font-stretch: expanded; font-variation-settings: "wdth" 125; letter-spacing: -1px; }
+.flow__sub { fill: var(--aius-text-muted); text-anchor: middle; font: 10px var(--bench-f-mono); letter-spacing: 1.5px; text-transform: uppercase; }
+.flow__stage rect { fill: var(--aius-surface-page); stroke: var(--aius-border-control); }
+.flow__stage text { fill: var(--aius-text-muted); text-anchor: middle; dominant-baseline: middle; font: 500 9px var(--bench-f-mono); letter-spacing: .5px; }
+.flow__led { fill: var(--aius-border-control); }
+.flow__stage[data-on="true"] rect { stroke: var(--bench-teal-dim); }
+.flow__stage[data-on="true"] text { fill: var(--aius-text-primary); }
+.flow__stage[data-on="true"] .flow__led { fill: var(--aius-accent-primary); filter: url(#flow-glow); }
+
+.flow__ends { display: flex; gap: 10px; align-items: center; justify-content: flex-end; margin-top: 10px; }
+
+/* ---- level bars: the segmented meter. The editor builds the rows and runs
+   the needles; this only paints them. ------------------------------------------- */
+.bench .bar { grid-template-columns: minmax(70px, 120px) minmax(0, 1fr) 52px; gap: 8px; font: 500 11px var(--bench-f-mono); }
+.mixer__meters .bar { grid-template-columns: 90px minmax(0, 1fr) 52px; }
+.bench .bar__track { height: 9px; border: 1px solid var(--aius-border-strong); border-radius: 3px; background: var(--aius-surface-page); }
+.bench .bar__fill { background: repeating-linear-gradient(90deg, var(--aius-accent-primary) 0 6px, transparent 6px 8px); }
+.bench .bar__fill[data-zone="warn"] { background: repeating-linear-gradient(90deg, var(--aius-accent-warning) 0 6px, transparent 6px 8px); }
+.bench .bar__fill[data-zone="danger"] { background: repeating-linear-gradient(90deg, var(--aius-accent-danger) 0 6px, transparent 6px 8px); }
+
+/* ---- chips ------------------------------------------------------------------------- */
+.mixer__presets { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 16px; }
+.mixer__preset-chips { display: contents; }
+.mixer__divider { width: 1px; height: 22px; margin: 0 6px; background: var(--aius-border-control); }
+.mixer__none { font: 500 11px var(--bench-f-mono); color: var(--aius-text-muted); }
+
+.bench .chip {
+  display: inline-flex;
+  gap: 7px;
+  align-items: center;
+  min-height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--aius-border-control);
+  border-radius: 999px;
+  background: transparent;
+  font: 500 11px/1 var(--bench-f-mono);
+  color: var(--aius-text-secondary);
+  cursor: pointer;
+}
+.bench .chip:hover:not(:disabled) { border-color: var(--aius-text-secondary); color: var(--aius-text-primary); background: transparent; }
+.chip--layout { --chip-colour: var(--aius-accent-primary); }
+.mixer__presets .chip[aria-pressed="true"],
+.mixer__presets .chip--on { background: var(--chip-colour, var(--aius-accent-warning)); border-color: var(--chip-colour, var(--aius-accent-warning)); color: var(--bench-amber-ink); }
+.mixer__presets .chip--on .chip__key { background: var(--bench-amber-ink); }
+/* The curve legend keeps each cascade's own colour as its key. */
+.bench .legend { margin: 0 0 0 auto; gap: 6px; }
+.bench .legend .chip--on { color: var(--aius-text-primary); border-color: var(--chip-colour); background: color-mix(in srgb, var(--chip-colour) 16%, transparent); }
+
+/* ---- matrix ------------------------------------------------------------------------ */
+.mixer__body { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: clamp(16px, 2vw, 32px); align-items: stretch; }
+@media (max-width: 700px) { .mixer__body { grid-template-columns: minmax(0, 1fr); } }
+
+.faders { display: flex; gap: clamp(6px, .8vw, 12px); justify-content: center; }
+.fader {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  min-width: 54px;
+  padding: 10px 4px;
+  border: 1px solid var(--aius-border-strong);
+  border-radius: 10px;
+  background: var(--aius-surface-input);
+}
+.fader__name { font: 600 12px var(--bench-f-mono); color: var(--aius-text-primary); }
+.fader--c .fader__name { color: var(--aius-accent-warning); }
+.fader__val { min-width: 4ch; font: 500 12px var(--bench-f-mono); color: var(--aius-accent-primary); text-align: center; font-variant-numeric: tabular-nums; }
+.fader__sub { font: 400 10px var(--bench-f-mono); color: var(--aius-text-muted); font-variant-numeric: tabular-nums; min-height: 1.2em; }
+.fader__hint { max-width: 9ch; font: 500 9px/1.2 var(--bench-f-mono); text-transform: uppercase; letter-spacing: .06em; color: var(--aius-text-muted); text-align: center; }
+.fader[data-fixed="true"] { opacity: .55; }
+.fader[data-disabled="true"] { opacity: .45; }
+.fader[data-invalid="true"] { border-color: var(--aius-accent-danger); }
+
+.bench .fader input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  writing-mode: vertical-lr;
+  direction: rtl;
+  width: 28px;
+  height: 190px;
+  margin: 2px 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+.bench .fader input[type="range"]:disabled { cursor: not-allowed; }
+.fader input[type="range"]::-webkit-slider-runnable-track { width: 4px; background: var(--aius-border-control); border-radius: 2px; }
+.fader input[type="range"]::-moz-range-track { width: 4px; background: var(--aius-border-control); border-radius: 2px; }
+.fader input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 28px;
+  height: 14px;
+  margin-left: -12px;
+  border: 0;
+  border-radius: 3px;
+  background: linear-gradient(180deg, var(--bench-thumb-a), var(--bench-thumb-b));
+  box-shadow: 0 2px 6px var(--bench-shadow), inset 0 -2px 0 var(--bench-shadow);
+}
+.fader input[type="range"]::-moz-range-thumb { width: 28px; height: 14px; border: 0; border-radius: 3px; background: linear-gradient(180deg, var(--bench-thumb-a), var(--bench-thumb-b)); box-shadow: 0 2px 6px var(--bench-shadow); }
+.fader--c input[type="range"]::-webkit-slider-thumb { background: linear-gradient(180deg, var(--aius-text-warning), var(--aius-accent-warning)); }
+.fader--c input[type="range"]::-moz-range-thumb { background: linear-gradient(180deg, var(--aius-text-warning), var(--aius-accent-warning)); }
+.bench .fader input[type="range"]:focus-visible { outline: 3px solid var(--aius-accent-primary); outline-offset: 2px; border-radius: 6px; }
+@media (max-width: 560px) {
+  .faders { gap: 3px; }
+  .fader { flex: 1; min-width: 0; padding: 8px 1px; }
+  .bench .fader input[type="range"] { height: 150px; }
+  .fader__hint { display: none; }
+}
+
+.readout { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.eqn {
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--aius-border-strong);
+  border-radius: 10px;
+  background: var(--aius-surface-page);
+  font: 400 12px/1.9 var(--bench-f-mono);
+  color: var(--aius-text-secondary);
+  overflow-x: auto;
+  white-space: pre;
+}
+.eqn__lhs { color: var(--aius-accent-primary); font-weight: 600; }
+.eqn b { color: var(--aius-text-primary); font-weight: 600; font-variant-numeric: tabular-nums; }
+.eqn .eqn__v { color: var(--aius-accent-warning); }
+.eqn__c { color: var(--aius-text-muted); }
+
+.dial__row { display: flex; justify-content: space-between; gap: 12px; font: 500 12px var(--bench-f-mono); color: var(--aius-text-secondary); }
+.dial__row--ends { margin-top: 6px; font-size: 10px; color: var(--aius-text-muted); text-transform: uppercase; letter-spacing: .06em; }
+.dial__num { font-size: 14px; font-weight: 600; color: var(--aius-accent-warning); font-variant-numeric: tabular-nums; }
+.dial__track { position: relative; height: 12px; margin-top: 8px; overflow: hidden; border: 1px solid var(--aius-border-strong); border-radius: 999px; background: var(--aius-surface-page); }
+.dial__fill { position: absolute; top: 0; bottom: 0; left: 0; width: 50%; background: linear-gradient(90deg, var(--aius-accent-danger), var(--bench-amber-dim) 45%, var(--aius-accent-warning)); transition: width .25s ease; }
+.dial__mid { position: absolute; left: 50%; top: -2px; bottom: -2px; width: 1px; background: var(--aius-text-secondary); opacity: .4; }
+
+.mixer__meters { display: grid; gap: 6px; }
+.mixer__meters-head { display: flex; justify-content: space-between; align-items: center; }
+
+.verdict { padding-left: 12px; border-left: 3px solid var(--aius-accent-warning); font-size: 14px; font-weight: 600; line-height: 1.4; }
+.verdict[data-tone="ok"] { border-color: var(--aius-accent-primary); }
+.verdict[data-tone="bad"] { border-color: var(--aius-accent-danger); }
+
+.mixer__exact { margin-top: 14px; padding-top: 12px; border-top: 1px dashed var(--aius-border-strong); }
+.mixer__exact > summary { display: inline-flex; align-items: center; min-height: 28px; padding: 0 12px; border: 1px solid var(--aius-border-control); border-radius: 999px; font: 500 11px var(--bench-f-mono); color: var(--aius-text-secondary); cursor: pointer; list-style: none; }
+.mixer__exact > summary::-webkit-details-marker { display: none; }
+.mixer__exact > summary::before { content: "+"; margin-right: 8px; color: var(--aius-accent-warning); }
+.mixer__exact[open] > summary::before { content: "\2212"; }
+.mixer__exact > summary:focus-visible { outline: 3px solid var(--aius-accent-primary); outline-offset: 2px; }
+
+/* ---- forms inside panels ------------------------------------------------------------ */
+.bench .form-mount { margin-top: 12px; }
+.bench .field-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+.bench .field { padding: 8px; border: 1px solid var(--aius-border-strong); border-radius: 8px; background: var(--aius-surface-input); }
+.bench .field__label { font: 500 10px var(--bench-f-mono); text-transform: uppercase; letter-spacing: .04em; }
+.bench .eq-table .field { padding: 0; border: 0; background: none; }
+.bench .eq-table__h { font: 500 10px var(--bench-f-mono); text-transform: uppercase; letter-spacing: .06em; }
+.bench .embedded-form { margin: 0; padding: 0; border: 0; border-radius: 0; }
+.bench .embedded-form .section-title { margin: 12px 0 0; }
+.bench .embedded-form h3 { margin: 0; font: 500 11px var(--bench-f-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--aius-text-muted); }
+.bench .embedded-form .form-mount { margin-top: 10px; }
+
+/* ---- EQ panel: the plot beside the channel tabs ---------------------------------------- */
+.eq__body { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(360px, 1fr); gap: clamp(14px, 1.6vw, 24px); align-items: start; }
+@media (max-width: 1080px) { .eq__body { grid-template-columns: minmax(0, 1fr); } }
+.scope { overflow: hidden; border: 1px solid var(--aius-border-strong); border-radius: 10px; background: var(--aius-surface-canvas); }
+.bench canvas.curve { display: block; width: 100%; height: 300px; }
+.bench canvas.gr__history { display: block; width: 100%; height: 64px; margin: 0; }
+.scope--short { margin-top: 10px; }
+.bench .curve-controls { margin-top: 10px; gap: 10px; }
+.bench .curve-q { font: 500 10px var(--bench-f-mono); text-transform: uppercase; letter-spacing: .06em; }
+.bench .curve-q input { width: 76px; }
+.bench .visual-block__note { font: 400 11px var(--bench-f-mono); }
+.eq__plot .hint { margin-top: 6px; }
+@media (max-width: 650px) { .bench canvas.curve { height: 200px; } }
+
+/* The tab strip: one tab per channel plus the output. A dot says sections are
+   present behind it; red says one of its fields is out of range. */
+.tabs { display: flex; gap: 0; overflow-x: auto; border-bottom: 1px solid var(--aius-border-strong); }
+.bench .tabs__tab {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  min-height: 34px;
+  padding: 0 clamp(8px, 1vw, 14px);
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: none;
+  font: 500 12px/1 var(--bench-f-mono);
+  letter-spacing: .06em;
+  color: var(--aius-text-muted);
+}
+.bench .tabs__tab:hover:not(:disabled) { color: var(--aius-text-primary); background: none; }
+.bench .tabs__tab[aria-selected="true"] { color: var(--aius-accent-warning); border-bottom-color: var(--aius-accent-warning); }
+.bench .tabs__tab:focus-visible { outline: 3px solid var(--aius-accent-primary); outline-offset: -3px; }
+.tabs__mark { width: 6px; height: 6px; border-radius: 50%; background: transparent; }
+.tabs__tab[data-eq="true"] .tabs__mark { background: var(--aius-accent-primary); }
+.tabs__tab[data-invalid="true"] .tabs__mark { background: var(--aius-accent-danger); }
+/* A stereo pair's bond: linked shows one member's controls writing both. */
+.tabs__bond { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-bottom: 10px; }
+.tabs__bond-note { font: 400 11px var(--bench-f-mono); color: var(--aius-text-muted); }
+.chip--bond { --chip-colour: var(--aius-accent-primary); }
+.tabs__bond .chip--on { background: var(--chip-colour); border-color: var(--chip-colour); color: var(--bench-amber-ink); }
+.tabs__member { display: block; margin: 12px 0 6px; font: 600 11px var(--bench-f-mono); letter-spacing: .08em; color: var(--aius-accent-primary); }
+.tabs__group[data-linked="true"] .tabs__member { visibility: hidden; height: 0; margin: 0; }
+.tabs__channel + .tabs__channel { margin-top: 14px; padding-top: 4px; border-top: 1px dashed var(--aius-border-strong); }
+.tabs__trim { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.bench .tabs__trim .field--trim { display: flex; gap: 6px; align-items: center; padding: 0; border: 0; background: none; }
+.bench .tabs__trim .field--trim input { width: 90px; }
+.bench .tabs__trim .field__reset { position: static; }
+.tabs__trim .field__error { min-height: 0; }
+
+/* ---- limiter and live ---------------------------------------------------------------- */
+.bench .gr { font: 500 11px var(--bench-f-mono); }
+.bench .gr__track { height: 12px; border: 1px solid var(--aius-border-strong); background: var(--aius-surface-page); }
+.bench .gr__fill { background: repeating-linear-gradient(90deg, var(--aius-accent-warning) 0 6px, transparent 6px 8px); }
+
+.bench .spec-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+@media (max-width: 520px) { .bench .spec-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.bench .spec-grid > div { padding: 8px 10px; border: 1px solid var(--aius-border-strong); border-radius: 8px; background: var(--aius-surface-input); }
+.bench .spec-grid span { font: 500 10px var(--bench-f-mono); text-transform: uppercase; letter-spacing: .06em; }
+.bench .spec-grid strong { margin-top: 4px; font: 600 13px var(--bench-f-mono); font-variant-numeric: tabular-nums; }
+.bench .meter-cards { margin-top: 10px; gap: 8px; }
+.bench .meter-group { border: 1px solid var(--aius-border-strong); border-radius: 8px; background: var(--aius-surface-input); }
+.bench .meter-group__title { color: var(--aius-accent-warning); font-family: var(--bench-f-mono); }
+.bench .meter-cell__peak,
+.bench .meter-cell__rms { font-family: var(--bench-f-mono); }
+.bench .meters .hint { margin-top: 8px; }
+
+/* ---- presets --------------------------------------------------------------------------- */
+.bench .presets-row { margin-top: 0; gap: 8px; }
+.bench .presets-row label { font: 500 10px var(--bench-f-mono); text-transform: uppercase; letter-spacing: .06em; }
+.bench .presets-row input,
+.bench .presets-row select,
+.bench .presets-row button { height: 32px; }
+.bench .preset-select-field,
+.bench .preset-name-field { flex: 1 1 140px; }
+.bench .preset-menu[open] .preset-menu__body { border-radius: var(--bench-radius); }
+.bench .presets-card .hint { margin-top: 8px; }
+
+/* ---- preferences ------------------------------------------------------------------------ */
+@media (prefers-reduced-motion: reduce) {
+  .led[data-state="carrier"],
+  .flow[data-live="true"] .flow__wires path { animation: none; }
+  .dial__fill { transition: none; }
+  .bench button { transition: none; }
+}
+
+@media (forced-colors: active) {
+  .fader input[type="range"]:focus-visible,
+  .mixer__exact > summary:focus-visible,
+  .tabs__tab:focus-visible { outline: 3px solid Highlight; }
+  .tabs__tab[aria-selected="true"] { border-bottom-color: Highlight; }
+  .mixer__presets .chip[aria-pressed="true"],
+  .mixer__presets .chip--on { border: 3px solid Highlight; }
+}
