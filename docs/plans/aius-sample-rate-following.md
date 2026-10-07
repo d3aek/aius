@@ -34,11 +34,12 @@ replace wholesale on the next handover.
   criteria passed 2026-10-07; gate 7 at fill-write cadence (U24 bench) is
   its last proof, owner needed. Phases 4a, 4c, 4d DONE. Phase 4b
   (acceptance umbrella) and 4e to 4h PLANNED; contracts revised against
-  prebuild rounds 2 and 3 (round 3: all five NOT READY, R3-B1 to B6 and
-  R3-S1 to S13 resolved in each round 3 block; R3-N1 to N4 open);
-  implementation held by the owner. Phase 5 (confirm autonomous calls)
-  holds E1 to E11, F1 to F8, G1 to G4, G6, G7, H1 to H4, H7 to H10 (H5
-  folded into H9; G5 and H6 follow from design decisions).
+  prebuild rounds 2 to 4 (round 4 closure: 4f READY, the rest NOT READY;
+  R4-B1, R4-B2, R4-S1 to S8 and R3-N1 to N4 resolved in each round 4
+  block; R4-N1 to N3 open); implementation held by the owner. Phase 5
+  (confirm autonomous calls) holds E1 to E12, F1 to F10, G1 to G4, G6 to
+  G9, H1 to H4, H7 to H13 (H5 folded into H9; G5 and H6 follow from
+  design decisions).
 - **Board.** Runs `df966f17b370` (Phase 4a) in slot 1, deployed by OTA
   2026-10-06, healthy-boot self-commit. It is the owner's **fail-safe
   rollback candidate** (2026-10-07): tag `fw-rollback-df966f17b370`,
@@ -52,11 +53,11 @@ replace wholesale on the next handover.
   calls wanting confirmation in Phase 5. Every device session (OTAs and
   source-off checks included) and anything destructive goes to the owner
   (ruling 2026-10-07).
-- **Next action.** Round 4: an `opus` `reviewer` checks each round 3
-  resolution closes its item and adjudicates R3-N1 to N4; revise and
-  repeat until READY, then one clean-room confirmation. Then put the Phase 5 confirmations to the owner (deferred
-  until the contracts settle, since round 3 may change those calls) and
-  wait for "start".
+- **Next action.** Round 5: an `opus` `reviewer` checks each round 4
+  resolution closes its item and adjudicates R4-N1 to N3; revise and
+  repeat until READY, then one clean-room confirmation. Then put the
+  Phase 5 confirmations to the owner (deferred until the contracts
+  settle) and wait for "start".
 - **What landed this run** (aius commits; each followed by a upstream repository
   pointer bump; foreign commits from the mixer session omitted):
 
@@ -73,7 +74,8 @@ replace wholesale on the next handover.
 | `bdf9629` | re-plan: 4b umbrella, phases 4e to 4h | yaml fields checked by the author |
 | `ef2c57f` | prebuild round 2 folded into 4b, 4e to 4h and Phase 5; 4e interrogate step | none |
 | `6601355` | 4b and 4e to 4h contracts revised against round 2; Phase 5 gains E5 to E9, F5, F6, G6, G7, H7 to H10 | none |
-| this commit | prebuild round 3 (NOT READY) folded and resolved; Phase 5 gains G3, E10, E11, F7, F8 and nine corrections; R3-N1 to N4 open | reviewer citations checked against source by the reviser |
+| `881f57a` | prebuild round 3 (NOT READY) folded and resolved; Phase 5 gains G3, E10, E11, F7, F8 and nine corrections | reviewer citations checked against source by the reviser |
+| this commit | prebuild round 4 (closure; 4f READY) folded and resolved; Phase 5 gains E12, F9, F10, G9, H12, H13; R4-N1 to N3 open | reviser checked citations against source |
 
 - **Uncommitted tree.** Clean after this commit. `firmware/sd/www/mixer.*`
   and `tools/aius_dsp_set.py` belong to another session (committed).
@@ -2670,6 +2672,15 @@ followed by its resolution; the rest are listed under their phases.
   three Applies. Resolved: 4f F7 measures it; the 4b latency and ingress
   lines take D from that measurement when it exceeds 2,000 us.
 
+**Prebuild review round 4 (2026-10-07, `reviewer` `opus`, closure
+review): NOT READY** only because it depends on 4e to 4h; its R3-B1 and
+R3-S6 edits are confirmed closed and it carries no round 4 item of its
+own. The round 4 items are listed and resolved under 4e (R4-B2, R4-S7),
+4f (R4-S1, R4-S2, R4-S8), 4g (R3-N1) and 4h (R4-B1, R4-S3 to S6, R3-N2
+to N4). One bears on 4b's session: 4h's 5 s settings bound holds in DMA
+mode only (R4-S2), which 4b's device proof already asserts (`sd_mode`
+DMA at the end).
+
 ### Phase 4e Every SD-card wait runs the live-input producer (vendored SdFat, DMA SDIO)
 
 ```yaml
@@ -2702,7 +2713,7 @@ seams:
   - "firmware/src/aius_sd_teensy.cpp: aius_sd_teensy_execute BEGIN (mode-aware, still one primitive per case; a failed mount with cardDetected() false counts absent_mounts, not driver_faults), clearError() before every card primitive, driver_fault split (sdErrorCode() == 0 counts open_misses and keeps the mount; only sdErrorCode() != 0 counts driver_faults and invalidates), new aius_sd_teensy_set_mode"
   - "firmware/src/aius_runtime_storage.cpp: the SD window flag around the storage execute call (aius_runtime_storage.cpp:335, which OTA staging chunks also pass through)"
   - "firmware/src/optical_main.cpp: platform_checkpoint (yield point at every boundary except EPOCH_COMPLETE), app_read_directory, http_replay_list_json and app_replay_delete (windows), the replay refill execute (optical_main.cpp:8294, no window), AiusAudioProcessor::update (pend stamp), the strong aius_sdio_wait_hook (an object file, not an LDF archive, so it beats the weak one), the mode route callback, POST /api/clear resetting the new watermarks, audio_diag and sd_diag keys; no new retained object (E5) and no alignas on g_replay_transfer (E9)"
-  - "firmware/test/memory/verify_target.py: COMMITTED_OCRAM_FREE_BYTES raised from the stale 131,040 to the measured 131,776 (736 B over the 0x1FFE0 link floor, aius_teensy41.ld:271), so any OCRAM growth fails the gate"
+  - "firmware/test/memory/verify_target.py: the single COMMITTED_OCRAM_FREE_BYTES (stale 131,040, the 0x1FFE0 link floor, aius_teensy41.ld:271) becomes a floor table keyed by PIOENV with one entry per env in OPTICAL_IMAGE_ENVS (verify_target.py:265-273; verify_target passes $PIOENV, the CLI gains --env). Each entry is the OCRAM free measured on that env's link of the unchanged tree at 4e start, before any 4e edit, and recorded in §Memory: the A/B envs carry the 32 B .aius_retained_ab ledger (optical_main.cpp:4521-4537, under #if AIUS_AB_SLOT) in the content-sized .bss.aius_retained (aius_teensy41.ld:151-174), so the plain env's 131,776 B is not their figure. An env below its own floor, or an env with no entry, fails; a floor only ever rises to a new measurement (lowering one needs funding, the file's own rule), so any OCRAM growth in any env fails the gate (R4-B2)"
   - "firmware/lib/aius_http route POST /api/sd/mode, firmware/src/aius_optical_app.cpp dispatch, firmware/sd/www/openapi.json"
   - "firmware/platformio.ini teensy41-optical: lib_deps symlinks to the two snapshots, lib_ignore of the framework SD and SdFat, -fstack-usage"
 targeted-proof:
@@ -2714,7 +2725,7 @@ targeted-proof:
   - "host: producer-isolation (new): post-link call graph of teensy41-optical. From explicit producer roots (aius_audio_service_run, the enqueue sink, the codec vtable targets) no SdFat, SD, FNET, NativeEthernet, yield, aius_sdio_wait_hook or aius_producer_yield symbol is reachable; malloc, free, stdio and abort are reachable only along an explicit allowlist of decode-path edges (ta_zalloc_size and dca_format_log from core_filter, avpriv_request_sample from aius_eac3_core_frame, __assert_func, av_malloc_array through firmware/lib/aius_dts/src/aius_alloc_shim.c), and any other edge fails. Every caller chain of aius_sdio_wait_hook runs through vendored SdioTeensy wait loops back to a windowed root (storage execute, the three raw scans, mount) and through no malloc, free or stdio function, so a nested pass never interrupts an allocator or stdio caller. Every caller chain of aius_producer_yield_point starts at an entry of a declared yield-root table (4e: platform_checkpoint; 4f, 4g and 4h each add theirs) and runs through no malloc, free or stdio function; a caller outside the table fails. An indirect branch outside the root table fails"
   - "host: producer-isolation, link half (S7): the linked SdioCard symbols come from firmware/vendor/SdFat (DWARF compile-unit path), not the framework copy, and aius_sdio_wait_hook resolves to the strong definition, whose body calls aius_producer_yield_wait"
   - "host: stack-bound (new): call edges from the same post-link walk (SdFat block-device virtuals resolved to SdioCard, codec pointers from the root table), frames from -fstack-usage; symbols without a .su (libc, core) from a declared frame table, an unlisted one failing; the 512 B bounce frame counted under the hook; the deeper of two paths (loop, storage execute, SD wait, hook, pass; and HTTP dispatch, app_read_directory, SD.open, wait, hook, pass), plus the exception chain stacked on the same main stack (per NVIC preemption level among the enabled handlers, the ITCM update() audio ISR, DMA, SDHC, ENET and USB included, the deepest handler path from the same walk plus a 104 B FPU extended frame; handlers from a declared table of handler and priority, checked against every attachInterruptVector and NVIC_SET_PRIORITY call site, an unlisted site failing), plus 2,048 B, fits the DTCM stack zone (_estack minus _ebss) of the canonical teensy41-optical-slot-a image, recorded at 4e start (25,760 B on the plain image); a dynamic or unbounded frame on either path fails"
-  - "host: optical-cutover (yield-point and window placement, no window at the refill, no yield point at EPOCH_COMPLETE, the ledger wrapper around every nested pass), status-body-bound (new keys), boot and boot-target (no retained-region or ledger-layout change), memory (COMMITTED_OCRAM_FREE_BYTES 131,776 and OCRAM free unchanged; on the canonical teensy41-optical-slot-a image, ITCM growth at most 1,280 B over its 4a figure of 4,340 B free, DTCM statics growth at most 256 B), itcm-placement, fake-fidelity, runtime, runtime-target, audio-service, audio-ingress, http, optical-app, registry and sd-editor (openapi) green; both images build"
+  - "host: optical-cutover (yield-point and window placement, no window at the refill, no yield point at EPOCH_COMPLETE, the ledger wrapper around every nested pass), status-body-bound (new keys), boot and boot-target (no retained-region or ledger-layout change), memory (the per-env floor table: a synthetic snapshot 1 B under any env's floor fails, an env missing from the table fails, and every env's link of the 4e tree is at or above its 4e-start floor, so OCRAM free is unchanged in each; on the canonical teensy41-optical-slot-a image, ITCM growth at most 1,280 B over its 4a figure of 4,340 B free, DTCM statics growth at most 256 B), itcm-placement, fake-fidelity, runtime, runtime-target, audio-service, audio-ingress, http, optical-app, registry and sd-editor (openapi) green; both images build"
   - "device run 1 (owner session, source off, DMA armed, POST /api/clear after arming): content check of every /sd/www file and /aius/dsp.json against the sync source; one full aius-sd-sync.sh; the /sd/www/presets/ and /sd/www/ listings; GET /sd/www/missing.js answers 404 with open_misses +1 and driver_faults and mounts unchanged; one card pull and reinsert (a DMA-mode remount, hook_calls advancing across it; sd_diag read just before the pull and just after the first successful remount, absent_mounts advancing about once per second while the card is out, and the interval's other counters recorded, not judged); driver_faults, protocol_faults and busy_timeouts delta 0 over the run outside that card-out interval, sd_mode DMA and sd_window_nonyield_max_us recorded; last, one OTA stage of the image 1 container and POST /api/ota/rehearse, whose copy into PSRAM and verify run in DMA mode (ota_dark rehearsal verdict COMPLETED; the reset reverts to FIFO)"
   - "device run 2 (owner, AC-3 playing, DMA armed, POST /api/clear after arming): ten web UI loads at least 5 s apart, one full sync and the editor open (full status at 1 Hz) give underrun_episode_count delta 0, producer_pend_latency_max_us at most 2,500, ingress_high_water_words at most 1,264, stack_free_min_bytes at least 2,048, producer_wait_passes above 0, the run 1 fault deltas 0, and sd_mode still DMA at the end; then an unpolled segment of 10 min or more (no browser open, http_requests checked) whose sub-window spread p95 is within 10 frames of Phase 4's unpolled baseline (10 frames, 2026-10-07), with clock.fill_trims recorded against the Phase 4 rate"
   - "decision gate (E7): B2 (Phase 4b, Fallback design) only on a content mismatch, driver_faults above 0 outside a card-out interval (absent_mounts is never a fault; a driver fault inside the interval, such as a contact bounce at insertion, is diagnosed first), busy_timeouts above 0 in DMA mode (the DMA hang: a 1 s BUSY_TIMEOUT_MICROS expiry), or a watchdog reset during a DMA run whose pv= is the SD or HTTP checkpoint. Stays on A-DMA and is fixed in 4e: pv= AUDIO (a guard or nested-pass defect), stack_free_min_bytes under 2,048, a timing miss with integrity intact (attributed by the counters to the stretch 4f or a new yield point closes). Any other reset is diagnosed before a verdict"
@@ -2736,6 +2747,7 @@ fan-out: # sdfat-vendor, sd-adapter, producer-yield and link-checks concurrently
       - firmware/test/sd-target/**
       - firmware/test/fake-fidelity/**
       - firmware/test/runtime-target/**
+    handoff: firmware/test/runtime-target/** passes to parent-wiring once sd-adapter reports (R4-S7); sd-adapter adds the adapter API to the fake (begin(cs, dma), clearError, cardDetected, the counters), parent-wiring then adds what its storage window and mode route need and owns the suite's final green
   - name: producer-yield
     owned-paths:
       - firmware/lib/aius_producer_yield/**
@@ -2769,7 +2781,7 @@ commit-checkpoint:
   green: [sdfat-vendor, sd-target, runtime-target, producer-yield, producer-isolation, stack-bound, optical-cutover, status-body-bound, boot, boot-target, memory, itcm-placement, fake-fidelity, runtime, audio-service, audio-ingress, http, optical-app, registry, sd-editor]
   buildable: [teensy41-optical, teensy41-optical-slot-a]
   parent-commit: "feat(aius): SD-card waits run the audio producer (vendored SdFat, DMA SDIO) (Phase 4e)"
-  coordination: owned-path sets are disjoint; host suites build one at a time
+  coordination: owned-path sets are disjoint at any moment; runtime-target moves from sd-adapter to parent-wiring at sd-adapter's report and is never edited by both at once (R4-S7); host suites build one at a time
 ```
 
 **Owner ruling 2026-10-07: every device session waits for the owner,**
@@ -2827,8 +2839,10 @@ main loop and the producer stay mutually exclusive exactly as today.
   through the existing prev-boot capture (`capture_retained_boot_state`),
   instead of the checkpoint it nested in, and counts as an early
   watchdog reset as any non-EPOCH_COMPLETE stall does. No retained object
-  is added. Not for lack of OCRAM (131,776 B free is 736 B over the
-  `0x1FFE0` heap floor, `firmware/link/aius_teensy41.ld:271`; the
+  is added. Not for lack of OCRAM (the plain image's 131,776 B free is
+  736 B over the `0x1FFE0` heap floor,
+  `firmware/link/aius_teensy41.ld:271`, and the A/B images sit at most
+  that ledger's size lower, measured at 4e start, R4-B2; the
   "margin is zero" comment at `firmware/test/memory/verify_target.py:54-57`
   is stale): a new retained section changes the retained-region layout
   that the ORIGIN(RAM) and `0xC60` ASSERTs (`aius_teensy41.ld:244-249`)
@@ -2884,8 +2898,15 @@ main loop and the producer stay mutually exclusive exactly as today.
   most 256 B per phase; 4e records the canonical image's DTCM free over
   the `24,352` B stack-zone floor (`aius_teensy41.ld:285`) before it
   builds, and re-budgets before building if the four phases' 1,024 B do
-  not fit it. OCRAM growth is zero, enforced by raising
-  `COMMITTED_OCRAM_FREE_BYTES` to the measured 131,776 B (R3-B2).
+  not fit it. OCRAM growth is zero in every optical env, enforced by a
+  per-env floor table (R4-B2, superseding R3-B2's single 131,776 B
+  constant, which is the plain `teensy41-optical` figure and fails the
+  canonical slot-a link on an unchanged tree). 4e's first step, before
+  any edit, links each env in `OPTICAL_IMAGE_ENVS` (plain, slot-a,
+  slot-b, fault), reads its OCRAM free from the post-link summary and
+  records the four figures here and in the table. Ratchet rule: an entry
+  rises only to a fresh measurement of that env; nothing in 4e to 4h
+  lowers one.
 
 **Technical calls taken here** (autonomous; Phase 5 lists them for
 confirmation):
@@ -2938,7 +2959,8 @@ confirmation):
 - **E9, no `alignas(32)` on `g_replay_transfer`.** It is `DMAMEM`
   (`optical_main.cpp:452`, OCRAM). E2's bounce makes its alignment
   irrelevant to DMA, so the attribute buys nothing; up to 31 B of padding
-  would fit the 736 B OCRAM margin, but OCRAM growth stays zero (R3-B2).
+  would fit the OCRAM margin (736 B on the plain image, the A/B figures
+  measured at 4e start), but OCRAM growth stays zero (R4-B2).
   The storage transfer buffer already has it
   (`aius_runtime_storage.h:180`).
 - **E10, a mount with no card is not a fault (R3-B1).** With the card
@@ -2954,6 +2976,11 @@ confirmation):
 - **E11, ITCM budgets from the canonical image (R3-B3).** §Memory. The
   plain image overstated the shared headroom by 272 B; by 4h the old
   budgets (4,608 B) would fail the six-block ASSERT.
+- **E12, OCRAM floors per env, not one minimum (R4-B2).** One constant
+  set to the minimum across `OPTICAL_IMAGE_ENVS` would pass the A/B
+  envs, but would let the plain env grow by the ledger's difference
+  unnoticed. A floor per env holds "OCRAM growth zero" in every image
+  the gate already guards, at the cost of four numbers instead of one.
 - **Isolation argument (B2).** The decode paths do reach `malloc` and
   stdio (DTS `core_filter`, E-AC-3 `avpriv_request_sample`, the DTS
   allocator shim), so "the producer reaches no malloc" is false and not
@@ -2981,8 +3008,10 @@ check.
   The device floor is the second check.
 - FIFO mode (the route or a reverted image) keeps the card-bound stretch;
   its cover is 4f's SD-start shedding plus the FIFO-mode deferral of
-  every SD job's start and primitives, the 4g fill and 4h flush root jobs
-  included (4f F2, R3-S8).
+  every SD job's start and of each root job's primitives, the 4g fill and
+  4h flush included (4f F2, R3-S8). Since a FIFO card primitive costs
+  more than the ring margin, a root job in FIFO mode in practice waits
+  for silence (4f F9, R4-S2).
 - D is measured, not proven: a future long checkpoint body raises it, and
   `producer_late_passes` shows it.
 - Each nested pass costs two ledger commits (unmeasured, expected to be
@@ -3165,7 +3194,8 @@ check.
   B" and the E5/E9 "exactly on the heap-floor ASSERT" are wrong (tree
   131,776 B). Resolved: memory seam raises `COMMITTED_OCRAM_FREE_BYTES` to
   131,776 and asserts no change; E5 and E9 reasoning corrected, choices
-  kept (Phase 5 E5, E9 corrected).
+  kept (Phase 5 E5, E9 corrected). The single constant is superseded by
+  R4-B2 (per-env floors).
 - **R3-B3 (blocker, also 4f to 4h).** ITCM budgets from the plain image
   fail `ASSERT(_itcm_block_count <= 6)` by 4h. Resolved: §Memory budgets
   on the canonical image, 4e 1,280 B, 4f to 4h 1,000 B each (4,280 B of
@@ -3190,6 +3220,34 @@ check.
 - **R3-S13.** The outcome omitted the ACMD41 hook. Resolved: outcome
   wording.
 
+**Prebuild review round 4 (2026-10-07, `reviewer` `opus`, closure
+review): NOT READY** (R4-B2). R3-B1, R3-B3, R3-S1 to S5, R3-S8 and
+R3-S13 confirmed closed. Each item is followed by its resolution.
+
+- **R4-B2 (blocker).** `COMMITTED_OCRAM_FREE_BYTES` 131,776 is the plain
+  `teensy41-optical` figure, but the constant gates every env in
+  `OPTICAL_IMAGE_ENVS` (`firmware/test/memory/verify_target.py:265-273`),
+  and the A/B envs carry the 32 B `.aius_retained_ab` ledger
+  (`firmware/src/optical_main.cpp:4521-4537`) in the content-sized
+  retained section (`firmware/link/aius_teensy41.ld:151-174`), so the
+  canonical slot-a link fails on an unchanged tree. Resolved: the memory
+  seam becomes a per-env floor table measured at 4e start before any
+  edit, with a rise-only ratchet; memory proof line, §Memory, E5 and E9
+  text (Phase 5 E12; E2, E5, E9 margins qualified). Supersedes R3-B2's
+  constant.
+- **R4-S7.** sd-adapter owns `firmware/test/runtime-target/**`, but
+  parent-wiring's storage window and mode route compile in that suite.
+  Resolved: a `handoff` on sd-adapter passes the fake to parent-wiring at
+  sd-adapter's report; parent-wiring owns the final green; coordination
+  line.
+- **R4-N1 (open; found by the round 4 revision).**
+  `firmware/test/memory/verify_target.py:54-57` still says the OCRAM
+  margin is zero; the memory worker's floor-table edit corrects it.
+- **R4-N2 (open; found by the round 4 revision).** No phase states the
+  epoch period, yet F9's 500 ms, H4's 0.8 s and 4g's 17 s mount fill all
+  rest on about 8 ms per epoch inferred from 4g. State the period (or
+  its measured range) once in 4e and derive those figures from it.
+
 ### Phase 4f HTTP is best-effort: shedding, render yields, lighter polling
 
 ```yaml
@@ -3205,7 +3263,8 @@ outcome: >-
   audio_busy with Retry-After, a new SD job is refused the same way when
   its start cost exceeds the margin, and the full status render yields
   after every append, so its cost is one append and it is almost never
-  shed. The web UI treats a 503 as a silent skip, shows unreachable only
+  shed; in FIFO mode a root SD job waits for silence and an HTTP SD start
+  waits at most 500 ms before a 503. The web UI treats a 503 as a silent skip, shows unreachable only
   after three consecutive failures, schedules every poll after the
   previous answer, polls meters at 4 Hz, and the editor polls a compact
   status, so a 1 Hz full-status poll (at least 95% answered 200) no longer
@@ -3215,20 +3274,21 @@ outcome: >-
 unit: component-behind-interface
 seams:
   - "firmware/src/aius_runtime_network_http.cpp aius_runtime_http_service: an admission hook (AiusRuntimeHttpAdmit) consulted at the DISPATCH arm before aius_optical_app_http_dispatch and at the SD_START arm before a job starts"
-  - "firmware/src/optical_main.cpp: the admission callback (margin = aius_spdif_tx24_level minus the 128-frame underrun line; cost per route class = windowed maximum over the last 64 dispatches of the longest stretch between yield points, nested producer time subtracted; each class seeded at boot from a declared cost table until its first measurement, and not reset by POST /api/clear, F8), a yield point after every http_json_append in http_status_json and the http_*_json sections (added to the producer-isolation yield-root table), write_status_brief, an sd_fifo_defer() predicate that in FIFO mode defers the start and each primitive of every SD job while the margin is short (HTTP jobs and the 4g fill and 4h flush root jobs alike, F2), http_shed, http_dispatch_max_us and http_class_cost_us (the admission cost per class) counters"
+  - "firmware/src/optical_main.cpp: the admission callback (margin = aius_spdif_tx24_level minus the 128-frame underrun line; cost per route class = windowed maximum over the last 64 dispatches of the longest stretch between yield points, nested producer time subtracted; each class seeded at boot from a declared cost table until its first measurement, and not reset by POST /api/clear, F8), a yield point after every http_json_append in http_status_json and the http_*_json sections (added to the producer-isolation yield-root table), write_status_brief, the SD-start cost as one window per mode, each seeded at boot from the declared table and kept across POST /api/clear and a mode change (F2, R4-S1), an sd_fifo_defer() predicate that in FIFO mode defers the start of every SD job and each primitive of a root job (the 4g fill and 4h flush) while the margin is short; OTA staging chunk jobs are exempt, a started HTTP job's primitives are never deferred, and an HTTP SD start deferred for 500 ms answers 503 audio_busy with Retry-After (F2, F9, R4-S2), http_shed, http_dispatch_max_us, http_class_cost_us (the admission cost per class) and sd_fifo_defers counters"
   - "firmware/src/aius_optical_app.cpp aius_optical_app_http_dispatch: AIUS_HTTP_ROUTE_STATUS_BRIEF and the 503 audio_busy response"
   - "firmware/lib/aius_http aius_http.c: route /api/status/brief; aius_http_write_headers emits Retry-After on 503"
   - "firmware/sd/www/sd-shared.js (one shared poller), dsp-editor.js (METER_POLL_MS 250, pollStatus on /api/status/brief, Apply retried on 503 audio_busy), status.js, replays.js and upgrade.js (setInterval replaced by the shared poller), openapi.json (both 503 bodies on every sheddable route, /api/replays included)"
   - "firmware/tools/rate_gate_capture/capture.py http_get (capture.py:726-745): a 503 is a skipped sample, counted, not retried and not raised; the run fails only when skips exceed 5% of polls"
 targeted-proof:
   - "host: http: /api/status/brief parses; a 503 carries Retry-After; every other header set byte-identical"
-  - "host: optical-app: a fake margin source sheds each route class at its cost boundary; a status dispatch whose total time is 9 ms but whose longest stretch between yield points is 0.3 ms costs 0.3 ms (nested pass time excluded); one outlier ages out after 64 dispatches; at boot a class's first dispatch is judged against its seed; POST /api/clear leaves every class cost unchanged; control routes (start, stop, clear, reboot) and OTA routes never shed; an SD_START under margin answers 503 audio_busy with no job started; in FIFO mode with the margin short, sd_fifo_defer() holds a root job's start and its next primitive one epoch"
-  - "host: optical-cutover: every SD job start site and the primitive step consult sd_fifo_defer() (source guard, so 4g's fill and 4h's flush starts inherit it)"
+  - "host: optical-app: a fake margin source sheds each route class at its cost boundary; a status dispatch whose total time is 9 ms but whose longest stretch between yield points is 0.3 ms costs 0.3 ms (nested pass time excluded); one outlier ages out after 64 dispatches; at boot a class's first dispatch is judged against its seed; POST /api/clear leaves every class cost unchanged; control routes (start, stop, clear, reboot) and OTA routes never shed; an SD_START under margin answers 503 audio_busy with no job started; in FIFO mode with the margin short, sd_fifo_defer() holds a root job's start and its next primitive one epoch; an HTTP SD start held for 500 ms answers 503 audio_busy with Retry-After and starts no job; an OTA staging chunk job starts and steps with the margin short; a started HTTP download steps every epoch with the margin short; after POST /api/clear and after a switch to FIFO and back, the first SD start in each mode is judged against that mode's seed or its last window, never against 0 (R4-S1)"
+  - "host: optical-cutover: every SD job start site and the root-job primitive step consult sd_fifo_defer(), the OTA staging chunk start site does not (source guard, so 4g's fill and 4h's flush starts inherit it)"
+  - "host: dsp-config: firmware/tools/dsp_model_pad.py turns the committed live-model fixture into a body of exactly 12,288 B (AIUS_DSP_MODEL_MAX_JSON_BYTES) that the host parser accepts and parses to the same model as its input; an input it cannot pad to the limit fails the tool (F10, R4-S8)"
   - "host: optical-cutover: a yield point follows every http_json_append in the status sections; status-body-bound: the brief body stays under 512 B and the new keys fit the full body"
   - "host: sd-editor: per page, a 503 keeps the last values and pill; three consecutive failures show unreachable and one success clears it; polls never overlap and honour Retry-After clamped to 0.25 to 5 s; editor meters tick at 250 ms; the flow ends render from the brief body; a 503 on Apply retries; mixer.test.js stays green with the editor's new polling"
   - "host: rate-gate-capture: a 503 poll is a counted skip; over 5% skips fails the run; transport errors keep today's retry"
   - "host: stack-bound (render-append yield roots), producer-isolation (render-append roots in the yield-root table), runtime-target (aius_runtime_network_http.cpp and aius_optical_app.cpp against the fakes), memory (OCRAM free unchanged; on the canonical image ITCM growth at most 1,000 B, DTCM statics growth at most 256 B), registry and itcm-placement green; both images build"
-  - "device (owner, AC-3, 4f image and synced www, POST /api/clear at start): polled (full /api/status at 1 Hz, at least 95% answered 200) versus unpolled sub-window spread p95 within 10 frames; the editor page open 10 min, with three DSP Applies of the largest shipped preset and one of a synthetic 12,288 B model (AIUS_DSP_MODEL_MAX_JSON_BYTES), gives underrun_episode_count delta 0; http_class_cost_us for the settings-parse class recorded (F7); producer_pend_latency_max_us at most D and ingress_high_water_words at most the alarm at D, where D is 2,000 us or the measured settings-parse cost if larger; http_shed per class recorded"
+  - "device (owner, AC-3, 4f image and synced www, POST /api/clear at start): polled (full /api/status at 1 Hz, at least 95% answered 200) versus unpolled sub-window spread p95 within 10 frames; the editor page open 10 min, with three DSP Applies of the largest shipped preset and one of a 12,288 B body built by dsp_model_pad.py from the owner's current model (GET /sd/aius/dsp.json saved first; every Apply answered 200 and config_generation advanced, else the run is void), then the saved model PUT back and GET /api/dsp/config compared to it (F10, R4-S8), gives underrun_episode_count delta 0; http_class_cost_us for the settings-parse class recorded (F7); producer_pend_latency_max_us at most D and ingress_high_water_words at most the alarm at D, where D is 2,000 us or the measured settings-parse cost if larger; http_shed per class recorded"
 contract-artifact: spec-only
 fan-out: # ui-polling, http-admit and capture-tool concurrently; parent-wiring after http-admit's hook type lands
   - name: ui-polling
@@ -3253,6 +3313,10 @@ fan-out: # ui-polling, http-admit and capture-tool concurrently; parent-wiring a
     owned-paths:
       - firmware/tools/rate_gate_capture/capture.py
       - firmware/test/rate-gate-capture/**
+  - name: model-pad # F10: the 12,288 B Apply body for the F7 device run
+    owned-paths:
+      - firmware/tools/dsp_model_pad.py
+      - firmware/test/dsp-config/test_dsp_model_pad.py
   - name: parent-wiring # admission callback, render yields, brief writer, route dispatch, counters, openapi
     owned-paths:
       - firmware/src/optical_main.cpp
@@ -3273,7 +3337,7 @@ fan-out: # ui-polling, http-admit and capture-tool concurrently; parent-wiring a
       - firmware/README.md
 review-intensity: active
 commit-checkpoint:
-  green: [http, optical-app, optical-cutover, status-body-bound, sd-editor, rate-gate-capture, stack-bound, producer-isolation, runtime-target, memory, itcm-placement, registry]
+  green: [http, optical-app, optical-cutover, status-body-bound, sd-editor, rate-gate-capture, dsp-config, stack-bound, producer-isolation, runtime-target, memory, itcm-placement, registry]
   buildable: [teensy41-optical, teensy41-optical-slot-a]
   parent-commit: "feat(aius): HTTP is best-effort during playback (Phase 4f)"
   coordination: owned-path sets are disjoint; firmware/sd/www/mixer.html and mixer.js are tracked but owned by the mixer session and not edited (mixer.html inherits dsp-editor.js polling); ui-polling owns only mixer.test.js, to keep it green
@@ -3297,17 +3361,22 @@ the ring margin.
   start. Control and OTA routes are never shed: a control 503 would hide
   a state change, and OTA is excluded.
 - **F2, SD job start.** The start cost is a windowed maximum of
-  `sd_window_nonyield_max_us` per mode over the last 64 SD windows,
-  reset on a mode change and by `clear` (S10), so a FIFO-period or single
-  outlier ages out instead of shedding every start; in DMA mode it almost
-  never sheds. In FIFO mode it is the longest card primitive. HTTP SD
+  `sd_window_nonyield_max_us` over the last 64 SD windows, one window per
+  mode, so a single outlier ages out instead of shedding every start
+  (S10); in DMA mode it almost never sheds. In FIFO mode it is the
+  longest card primitive. Like the route classes (F8), each mode's
+  window is seeded at boot from the declared table and is never reset:
+  neither `POST /api/clear` nor a mode change empties it (a mode change
+  only selects the other mode's window), so the first SD start after a
+  clear or a switch to FIFO is judged against the seed or the last
+  measurement, never admitted at cost 0 (R4-S1). HTTP SD
   starts are admitted at the SD_START arm, but the 4g fill and 4h flush
   are root jobs the scheduler starts with no HTTP request, so admission
   never sees them (R3-S8). So in FIFO mode one predicate,
-  `sd_fifo_defer()`, defers every SD job's start and each next primitive
-  one epoch while the margin is short, root jobs included; 4g and 4h call
+  `sd_fifo_defer()`, defers every SD job's start, and each next primitive
+  of a root job, one epoch while the margin is short; 4g and 4h call
   it at their start sites (optical-cutover source guard). Shedding plus
-  this deferral is the FIFO fallback's cover.
+  this deferral is the FIFO fallback's cover; F9 bounds it.
 - **F3, the brief route.** `GET /api/status/brief` carries exactly the
   keys `renderFlowEnds` reads (`carrier`, `state`, `sample_rate`,
   `pipeline_diag.codec_pc`, `tx_gate.open`, `tx_gate.replay_running`)
@@ -3348,8 +3417,12 @@ the ring margin.
   after 4f and unmeasured. Admission already sheds it when the margin is
   short (a 503 on Apply retries, F4), so it threatens the latency
   watermark, not the ring. The device run Applies the largest shipped
-  preset and a synthetic 12,288 B model and records the class's
-  `http_class_cost_us`; D for 4f and 4b is 2,000 us or that cost if
+  preset and a 12,288 B body (F10) and records the class's
+  `http_class_cost_us`; an Apply that is not answered 200 parsed less
+  than the whole body and voids the measurement (R4-S8). The Applies
+  change what the room hears, so the run saves the owner's model first
+  and PUTs it back at the end (the owner runs every device session, so
+  this is a restore step, not a question); D for 4f and 4b is 2,000 us or that cost if
   larger, with the ingress alarm re-derived from it. Yields inside the
   parser (portable C, a callback per N tokens) become plan work only if
   the measured cost exceeds the 2.67 ms worst-phase margin.
@@ -3359,7 +3432,34 @@ the ring margin.
   leaves it; at boot each class starts from a declared seed (the class's
   estimated longest stretch, kept beside the class enum) that its first
   measurement replaces. `http_shed` and `http_dispatch_max_us` still
-  reset.
+  reset. The per-mode SD-start windows follow the same rule (F2, R4-S1).
+- **F9, the FIFO deferral is bounded where a client waits (R4-S2).** In
+  FIFO mode the SD-start cost is a whole card primitive (tens of ms)
+  against a margin of at most about 4.7 ms, so a deferral keyed on it
+  holds during live input until the input stops. That is right for the
+  root jobs (a 4g fill or 4h flush waits for silence; 4h states what that
+  does to its bound), and wrong where a client is waiting. So: OTA
+  staging chunk jobs are exempt at start and per primitive (F1 never
+  sheds OTA, and a held chunk would hang the staging PUT until the
+  client's timeout); a started HTTP job's primitives are never deferred
+  (its headers may be on the wire, so no 503 can follow, and a stall
+  mid-response is worse than its cost, admitted at its start); an HTTP SD
+  start held for 500 ms answers `503 audio_busy` with `Retry-After: 1`
+  and starts no job. `sd_fifo_defers` counts the held epochs.
+- **F10, the 12,288 B Apply body keeps the owner's sound (R4-S8).** A
+  model built from neutral sections cannot reach the limit: two EQ bands
+  per channel (`AIUS_DSP_MODEL_EQ_MAX`,
+  `firmware/lib/aius_dsp_config/include/aius_dsp_config.h:17`) and the
+  live model is 899 B
+  (`firmware/test/dsp-config/fixtures/dsp_config_live_2026-10-07.json`),
+  and neutral values would change what plays. So `dsp_model_pad.py` takes
+  the owner's current model and pads it to exactly 12,288 B with JSON
+  whitespace and, where the parser accepts them, longer spellings of the
+  same numbers, so the parser walks a full-size body that decodes to the
+  model already playing. A dsp-config host case proves the output parses
+  to the input's model at exactly the limit. Each PUT, the restore
+  included, carries `base_generation` from the board's current
+  `config_generation` when the model uses it.
 
 **OTA and owner.** One OTA plus a card sync of `firmware/sd/www/`. The
 device run needs the owner (AC-3).
@@ -3439,6 +3539,29 @@ only on R3-B3. Each item is followed by its resolution.
   `sd_fifo_defer()` for every SD job start and primitive, optical-cutover
   source guard (Phase 5 F2 amended).
 
+**Prebuild review round 4 (2026-10-07, `reviewer` `opus`, closure
+review): READY** with three should-fix items. R3-B3, R3-S1, R3-S5 to
+S8 confirmed closed. Each item is followed by its resolution.
+
+- **R4-S1 (F2).** The SD-start cost was still "reset on a mode change and
+  by clear", contradicting F8: after `POST /api/clear` or a FIFO switch
+  the first FIFO SD start was admitted at cost 0. Resolved: F2 one window
+  per mode, seeded at boot, kept across clear and mode change; seam and
+  optical-app case (Phase 5 F2 corrected).
+- **R4-S2 (F2).** FIFO cost (a card primitive, tens of ms) exceeds the
+  margin (at most about 4.7 ms), so every SD job start and primitive
+  deferred forever during live input, OTA staging chunks and in-flight
+  responses included. Resolved: F9, OTA staging exempt, started HTTP
+  jobs never deferred per primitive, an HTTP start held 500 ms answers
+  `503 audio_busy`; root jobs wait for silence, stated in 4e's residual
+  risks and 4h H8; optical-app and optical-cutover cases (Phase 5 F9).
+- **R4-S8 (F7).** The synthetic 12,288 B model must be valid and answered
+  200, or the parse exits early and under-measures; applying it during
+  AC-3 changes what the room hears. Resolved: F10 pads the owner's
+  current model to the limit (neutral sections cannot reach it), a
+  dsp-config host case and the model-pad worker; the device run voids on
+  a non-200 Apply and restores the saved model (Phase 5 F7 amended, F10).
+
 ### Phase 4g PSRAM web cache with gzip page bundles
 
 ```yaml
@@ -3457,24 +3580,25 @@ outcome: >-
   is one gzip bundle (its CSS and scripts inlined by the sync tool's build
   step) sent with Content-Encoding gzip, `Vary: Accept-Encoding`, a strong
   ETag and 304 on revalidation from a RAM manifest; the cache fills one
-  file per job after each mount, and an HTTP SD request refused because a
-  fill file is in flight pauses the fill until its retry has run, so a
-  sync during a fill completes; the cache follows every PUT, DELETE,
-  remount and card swap.
+  file per job after each mount, and an HTTP SD request that finds a fill
+  file in flight cancels it at its next primitive boundary and is served
+  from the card, the fill held until 2 s after the last HTTP SD job, so a
+  page load or a sync during a fill completes; the cache follows every
+  PUT, DELETE, remount and card swap.
 unit: component-behind-interface
 seams:
   - "firmware/tools/www_bundle.py (new) and firmware/tools/aius-sd-sync.sh (runs it, uploads <page>.html.gz beside the unmodified sources; retries a 503 honouring Retry-After for up to 15 s per file)"
   - "firmware/lib/aius_web_cache (new, portable C): aius_web_cache_place (pad-2 carve per fitment), _lookup, _lease and _release, _verify (chunk CRCs after a dcache flush-delete, with a yield callback), _fill_begin, _fill_chunk, _publish, _invalidate, _listing"
   - "firmware/lib/aius_http: request parse of If-None-Match and Accept-Encoding; aius_http_write_headers ETag, Content-Encoding and Vary: Accept-Encoding; 304 with no body"
-  - "firmware/src/aius_optical_app.cpp dispatch_sd and dispatch_sd_index: cache first (gzip negotiation, 304, verify before the headers, then per chunk copy to a 512 B stack buffer, CRC the copy, send the copy, a producer yield point every 8 chunks, added to the producer-isolation yield-root table; lease released by sd_settle, as the recorder data read does), the SD download job on a miss or a pre-header CRC fault; an HTTP SD request refused with 503 sd_busy while a fill file is in flight carries Retry-After from that file's remaining reads (1 to 5 s) and sets the fill hold; the presets listing from the manifest"
-  - "firmware/src/optical_main.cpp: the carve at setup, the fill scheduler (one CACHE_FILL job per file in the SD checkpoint; no next file starts while the fill hold is set, which a refusal sets to Retry-After + 1 s and every HTTP SD job completion extends to 2 s after it; each start through 4f's sd_fifo_defer(); 512 B reads copied to PSRAM, flush-delete, read-back CRC before publish), invalidation on upload completion, delete, remount and volume change, www_cache status keys (fill_holds included)"
-  - "firmware/lib/aius_sd (CACHE_FILL root job kind, one file) and firmware/sd/www/openapi.json"
+  - "firmware/src/aius_optical_app.cpp dispatch_sd and dispatch_sd_index: cache first (gzip negotiation, 304, verify before the headers, then per chunk copy to a 512 B stack buffer, CRC the copy, send the copy, a producer yield point every 8 chunks, added to the producer-isolation yield-root table; lease released by sd_settle, as the recorder data read does), the SD download job on a miss or a pre-header CRC fault; an HTTP SD request (page miss, upload, delete, listing) that finds a fill file in flight is not refused: it requests the fill's cancel, waits at the SD_START arm (as for an sd_fifo_defer() hold) until the fill stops at its next primitive boundary, then starts (G6, G9, R3-N1); the presets listing from the manifest"
+  - "firmware/src/optical_main.cpp: the carve at setup, the fill scheduler (one CACHE_FILL job per file in the SD checkpoint; web_cache_fill_cancel(), the one cancel entry used by an HTTP SD request here, by 4h's flush start and by 4h's H9 freeze, stops the in-flight file at its next primitive boundary, drops its unpublished entry and re-queues the file; no next file starts while the fill hold is set, which a cancel sets and every HTTP SD job completion extends to 2 s after it; each start through 4f's sd_fifo_defer(); 512 B reads copied to PSRAM, flush-delete, read-back CRC before publish), invalidation on upload completion, delete, remount and volume change, www_cache status keys (fill_holds and fill_cancels included)"
+  - "firmware/lib/aius_sd (CACHE_FILL root job kind, one file, cancellable at any primitive boundary: it only reads the card, so a cancel closes the file and writes nothing) and firmware/sd/www/openapi.json"
 targeted-proof:
   - "host: www-bundle (new): deterministic output (gzip mtime 0), every stylesheet and script of a page inlined in document order, closing script and style tags escaped, gzip round trip equals the inlined page, a missing asset fails the build, all five pages bundled (mixer.html included unconditionally, tracked since 4b68103), no inlined script reads document.currentScript.src; the sync tool retries a 503 per Retry-After and gives up after 15 s"
   - "host: web-cache (new): placement is the pad-2 tail from 0x70808000 on a 16 MiB fitment and absent on 8 MiB fitments, disjoint from the recorder ring and every aius_ota_staging_place result; fill, read-back and publish; verify calls the flush-delete hook for each chunk before its CRC; a flipped bit in any chunk fails verify and drops the entry; a lease holds an entry across invalidate while the replacement serves the next request; capacity full falls back to SD; the listing comes from the manifest"
   - "host: http: If-None-Match and Accept-Encoding parse (absent, gzip, q=0, lists); ETag, Content-Encoding and Vary headers; a 304 has no body"
-  - "host: sd (CACHE_FILL job, one file), optical-app (hit, miss, 304, gzip negotiated and plain fallback, a pre-header CRC fault falls back to the SD job, a mid-stream fault closes the connection and schedules a refill, an HTTP SD request refused during a fill answers 503 sd_busy with Retry-After from the in-flight file and its retry at Retry-After starts with no fill file started between, a fill file starts only once the hold has lapsed and 2 s have passed since the last HTTP SD job), optical-cutover (the fill start site consults sd_fifo_defer()), memory (no EXTMEM, no extmem heap, OCRAM free unchanged; on the canonical image ITCM growth at most 1,000 B, DTCM statics growth at most 256 B), stack-bound (the send loop with its 512 B copy buffer under a yield-point pass), producer-isolation (the send loop in the yield-root table), runtime-target (aius_optical_app.cpp and aius_runtime_storage.cpp against the fakes), status-body-bound (www_cache keys), sd-editor (openapi), itcm-placement and registry green; both images build"
-  - "device run 1 (source off, 4g image, synced www): every plain file and every decoded bundle equals the source and www_bundle.py output; a repeat load answers 304; a full aius-sd-sync.sh started right after a reboot (during the mount fill, about 17 s at one 512 B read per epoch) completes, with www_cache.fill_holds recorded; www_cache.crc_faults and stall-witness events delta 0; www_cache.entries equals the synced set"
+  - "host: sd (CACHE_FILL job, one file; a cancel at any primitive boundary closes the file, issues no write and leaves the job idle at the next step), optical-app (hit, miss, 304, gzip negotiated and plain fallback, a pre-header CRC fault falls back to the SD job, a mid-stream fault closes the connection and schedules a refill, a page miss and an upload PUT arriving while a fill file is in flight are not refused: the fill stops at its next primitive boundary, its entry stays unpublished and the file is re-queued, and the request's job starts the epoch after with no fill file started between; a fill file starts only once the hold has lapsed and 2 s have passed since the last HTTP SD job), optical-cutover (the fill start site consults sd_fifo_defer()), memory (no EXTMEM, no extmem heap, OCRAM free unchanged; on the canonical image ITCM growth at most 1,000 B, DTCM statics growth at most 256 B), stack-bound (the send loop with its 512 B copy buffer under a yield-point pass), producer-isolation (the send loop in the yield-root table), runtime-target (aius_optical_app.cpp and aius_runtime_storage.cpp against the fakes), status-body-bound (www_cache keys), sd-editor (openapi), itcm-placement and registry green; both images build"
+  - "device run 1 (source off, 4g image, synced www): every plain file and every decoded bundle equals the source and www_bundle.py output; a repeat load answers 304; a page load and a full aius-sd-sync.sh started right after a reboot (during the mount fill, about 17 s at one 512 B read per epoch) both complete, the page load with no retry, with www_cache.fill_holds and fill_cancels recorded; www_cache.crc_faults and stall-witness events delta 0; www_cache.entries equals the synced set"
   - "device run 2 (owner, AC-3): ten cold and warm page loads give underrun_episode_count delta 0 and no SD job primitive during the warm loads"
 contract-artifact: spec-only
 fan-out: # www-bundle, web-cache and http-cache-headers concurrently; parent-wiring after web-cache's header lands
@@ -3555,21 +3679,22 @@ waits run the producer.
   hold `sd_storage_idle()` false for about 1 MB of reads, and
   `aius-sd-sync.sh` gives up after four 503s 1 s apart
   (`firmware/tools/aius-sd-sync.sh:106-121`). So the fill is one
-  CACHE_FILL job per file. Nothing queues an HTTP SD request: one that
-  arrives while a fill file owns the volume answers `503 sd_busy` at once,
-  as today when a job owns it. So the refusal carries `Retry-After` from
-  the in-flight file's remaining reads (clamped 1 to 5 s) and sets a fill
-  hold of `Retry-After` + 1 s, and every HTTP SD job completion extends
-  the hold to 2 s after it; the scheduler starts no next file while the
-  hold is set. The retry therefore lands on an idle volume, and a sync
-  (a burst of PUTs) keeps the fill paused until it ends; the post-upload
-  refill is the same rule. The sync tool honours `503` with `Retry-After`
-  for up to 15 s per file, which covers one in-flight file. Without the
-  hold the round 2 design failed: the mount fill (about 1 MB at one 512 B
-  read per epoch, about 17 s) outlasts the 15 s limit, and every retry
-  could land on the next file. Why not let an upload body populate its
-  entry directly: 4h's staging already does that for every PUT, so doing
-  it here is work 4h replaces.
+  CACHE_FILL job per file, held off by HTTP and cancelled by it. An HTTP
+  SD request that arrives while a fill file owns the volume is not
+  refused (round 3 had it answer `503 sd_busy` with `Retry-After`, which
+  a browser page load does not retry, R3-N1): it cancels the fill file
+  (G9), waits at the SD_START arm for the one epoch the cancel takes, and
+  starts; the cancel sets the fill hold, and every HTTP SD job
+  completion extends the hold to 2 s after it, so the scheduler starts
+  no next file while HTTP is active. A sync (a burst of PUTs) keeps the
+  fill paused until it ends, and the post-upload refill is the same rule.
+  The sync tool still honours `503` with `Retry-After` for up to 15 s per
+  file, for a volume owned by a job that is not a fill (and 4h's staging
+  full). Without the hold the round 2 design failed: the mount fill
+  (about 1 MB at one 512 B read per epoch, about 17 s) outlasts the 15 s
+  limit, and every retry could land on the next file. Why not let an
+  upload body populate its entry directly: 4h's staging already does
+  that for every PUT, so doing it here is work 4h replaces.
 - **G8, fill starts in FIFO mode (R3-S8).** Each CACHE_FILL start and
   primitive goes through 4f's `sd_fifo_defer()`, so in FIFO mode a fill
   waits while the ring margin is short; in DMA mode the predicate passes.
@@ -3583,6 +3708,15 @@ waits run the producer.
   `www_cache.crc_faults` and schedules a refill. `Vary: Accept-Encoding`
   goes on every cacheable response, since one URL has gzip and plain
   representations.
+- **G9, a fill file is cancellable (R3-N1, R4-S3).** A CACHE_FILL job
+  only reads the card into PSRAM, so stopping it at a primitive boundary
+  loses nothing: the file closes, its unpublished entry is dropped and
+  the file is re-queued. One entry point, `web_cache_fill_cancel()`,
+  serves every consumer that must not wait out a whole file (about 3 s
+  for `dsp-editor.js` at 512 B per epoch): an HTTP SD request here, and
+  in 4h the flush start (H8) and the OTA and reboot SD-writes freeze
+  (H9). Serving from the card first makes a page load during a fill
+  cost one epoch, not a refusal.
 
 **OTA and owner.** One OTA plus a card sync (bundles). Run 1 is
 source-off; run 2 needs the owner.
@@ -3647,7 +3781,8 @@ caching across pages.
   Resolved: G6 fill hold (`Retry-After` from the in-flight file, hold
   `Retry-After` + 1 s, extended 2 s past each HTTP SD job), seams and an
   optical-app refuse-then-retry case with no fill file between (Phase 5
-  G6 amended).
+  G6 amended). The refusal half is superseded by G9 (R3-N1, round 4):
+  the request cancels the fill instead; the hold stays.
 - **R3-B3 (4g part).** Resolved: 1,000 B on the canonical image (4e
   §Memory), memory proof line.
 - **R3-S1 (4g part).** Resolved: runtime-target in the green list, owned
@@ -3660,11 +3795,27 @@ caching across pages.
   the green list and parent-wiring paths.
 - **Phase 5 G3 (missing).** Resolved: G3 listed in Phase 5. **G4
   (wrong alternative).** Resolved: Phase 5 G4 names flash embedding or P2.
-- **R3-N1 (open; found by the round 3 revision).** A browser page load
-  that misses the cache during a fill gets `503 sd_busy` from
-  `dispatch_sd`; pages do not retry the way the sync tool does, and no
-  item covers it. Round 4 settles it (page retry, a fill hold like R3-B4,
-  or serve-from-card precedence).
+- **R3-N1 (found by the round 3 revision; resolved in round 4).** A
+  browser page load that misses the cache during a fill gets `503
+  sd_busy` from `dispatch_sd`; pages do not retry the way the sync tool
+  does, and no item covers it. Resolved: serve-from-card precedence, G9
+  (see round 4).
+
+**Prebuild review round 4 (2026-10-07, `reviewer` `opus`, closure
+review): NOT READY** on the R3-N1 contract line only; R3-B4 and R3-B3
+confirmed closed. Each item is followed by its resolution.
+
+- **R3-N1 adjudicated: serve from the card first.** A page request that
+  misses the cache while a fill file is in flight cancels the fill at its
+  next primitive boundary (cache only), starts the download job, sets the
+  fill hold and re-queues the file. Resolved: G9 and the rewritten G6
+  (every HTTP SD request, uploads included, takes the same path, so no
+  fill-caused `503 sd_busy` remains), outcome, the dispatch, scheduler
+  and `lib/aius_sd` seams, sd and optical-app cases, run 1 adds a page
+  load during the mount fill (Phase 5 G6 corrected, G9).
+- **R4-S3 (4g part).** 4h's freeze could not stop a fill file. Resolved:
+  `web_cache_fill_cancel()` is the one cancel entry 4h's flush start and
+  freeze call (G9; 4h H9).
 
 ### Phase 4h Write-behind settings flush, card-swap hold, rename-gap recovery
 
@@ -3681,7 +3832,9 @@ outcome: >-
   a background flush, its card waits running the producer (4e). A
   settings file (`/aius/dsp.json`, `/aius/config.json`, a preset) flushes
   ahead of queued sync uploads and is verified on the card within 5 s of
-  its accept when no sync file is mid-flush; a sync burst drains in the
+  its accept when no sync file is mid-flush and the card runs in DMA mode
+  (in FIFO mode during live input a flush waits for silence, 4f F9); a
+  sync burst drains in the
   background, recorded but unbounded. Apply is heard at accept; the latest
   write per path wins, a DELETE is a tombstone, each flushed file is read
   back from the card (SdFat's sector cache dropped first) and
@@ -3690,24 +3843,26 @@ outcome: >-
   Pending writes are held across a card swap and written only to the card
   they were accepted for, until it returns or the owner discards them;
   OTA activation, rehearsal and reboot answer 409 until the queue is
-  drained, re-checked where the reset is taken; and a power cut anywhere
+  drained, re-checked before the SD-writes freeze and again immediately
+  before the one-way step, so a write accepted at any point before it is
+  never lost across the reset; and a power cut anywhere
   inside REPLACE leaves the old or the new file with its clusters intact.
 unit: component-behind-interface
 seams:
   - "firmware/lib/aius_sd_overlay (new, portable C): put (latest wins, versioned), tombstone, lookup for GET and listings, shadows(path) for the reload skip, flush scheduler (500 ms debounce, settings class (/aius/dsp.json, /aius/config.json, /www/presets/) before sync class, oldest first within a class, one file at a time), read-back verify, volume hold and discard, drain query, status; remount and volume-change invalidation and the post-mount refill act on clean entries only, so a dirty, flushing, held or tombstoned entry is never dropped or overwritten from a card file (H11)"
   - "firmware/lib/aius_sd: REPLACE writes the temp file, syncs and verifies it, then an install journal (/aius/.install-journal, two 512 B sectors preallocated at creation: sector 0 the BEGIN record with target, backup and temp names, temp length and CRC; sector 1 zero until the INSTALL record is written once before the second rename; each record with its own CRC, no sector rewritten once it holds a valid record, no truncate) and removes it after the backup; a RECOVER root job at mount, before CONFIG_LOAD, keyed on the last valid record and the existence and first clusters of target, backup and temp (H10)"
   - "firmware/vendor/SdFat (4e's snapshot): unlink one directory entry without freeing its cluster chain (RECOVER's primitive for a half-done rename), recorded in NOTICE.md and the sdfat-vendor PATCHED_SHA256"
-  - "firmware/src/optical_main.cpp: app_store_dsp_config and app_store_public_config accept into the overlay (g_dsp_apply_pending and g_staged_generation at accept); platform_publish_config acknowledges without applying any path the overlay shadows (B6); 4g's remount and volume-change invalidation and refill routed through the overlay's clean-only rule (H11); the flush job in the SD checkpoint, started through 4f's sd_fifo_defer(), FatPartition::cacheClear before each read-back; sd_settle_http_write no longer arms Apply; volume identity at mount; discard queues SD_STEP_LOAD_CONFIG for the inserted card; coalesced USAGE_REFRESH; the drain gate at the routes and again in service_ota_activation, service_ota_rehearsal and the g_reboot_requested service, each as the first step after the HTTP drain wait and before any one-way step (the recorder park, optical_main.cpp:9921 and :10077), latching an SD-writes freeze (no fill or flush job starts) and waiting for any in-flight SD job before the direct-SD copy (:9943, :10098); an abandoned activation or rehearsal sets OTA_ACTIVATION_FAULT_FLUSH_PENDING (activation_fault flush_pending); the accept and flush yield points in the producer-isolation yield-root table; the sd_flush status object (also in /api/status/brief)"
+  - "firmware/src/optical_main.cpp: app_store_dsp_config and app_store_public_config accept into the overlay (g_dsp_apply_pending and g_staged_generation at accept); platform_publish_config acknowledges without applying any path the overlay shadows (B6); 4g's remount and volume-change invalidation and refill routed through the overlay's clean-only rule (H11); the flush job in the SD checkpoint, started through 4f's sd_fifo_defer() and, when a 4g fill file is in flight, after web_cache_fill_cancel() stops it at its next primitive boundary (4g G9), FatPartition::cacheClear before each read-back; sd_settle_http_write no longer arms Apply; volume identity at mount; discard queues SD_STEP_LOAD_CONFIG for the inserted card; coalesced USAGE_REFRESH; the drain gate at the routes and again in service_ota_activation, service_ota_rehearsal and the g_reboot_requested service, each as the first step after the HTTP drain wait and before any one-way step (the recorder park, optical_main.cpp:9921 and :10077; the reset in service_reboot_request, :9850-9851), latching an SD-writes freeze (no SD job starts: an HTTP SD request answers 503 sd_busy; an in-flight 4g fill file is cancelled through web_cache_fill_cancel()) and waiting for any other in-flight SD job under the freeze's own ceiling, AIUS_SD_FREEZE_MS 2,000 ms from the latch (not the 500 ms AIUS_REBOOT_DRAIN_MS armed at the route's epoch, :9794, :9895); then, in the same call, the drain query again immediately before aius_recorder_bank_park (before reset_application in the reboot service), abandoning and unfreezing if a write was accepted during the wait (R4-B1); an activation or rehearsal abandoned on the drain sets OTA_ACTIVATION_FAULT_FLUSH_PENDING (activation_fault ota_flush_pending, beside the existing names at :4737-4746), one abandoned on the freeze ceiling sets OTA_ACTIVATION_FAULT_SD_BUSY (ota_sd_busy); a reboot whose freeze ceiling expires resets as today's ceiling does (the drain already passed, so no settings write is in flight); the accept and flush yield points in the producer-isolation yield-root table; the sd_flush status object (also in /api/status/brief); sd_diag recover_faults and recover_aside (the set-aside journal's name, empty when none)"
   - "firmware/src/aius_optical_app.cpp dispatch_store, dispatch_sd_upload and sd_delete: 200 at accept, 503 sd_busy only when staging is full; POST /api/sd/pending/discard (authed); 409 sd_flush_pending on OTA activate, OTA rehearse and POST /api/reboot"
-  - "firmware/lib/aius_http (route), firmware/sd/www/openapi.json, firmware/sd/www/dsp-editor.js (pending versus saved from sd_flush), firmware/tools/ota/aius_ota_flash.py (waits out 409 sd_flush_pending up to 30 s; after activate, reports activation_fault flush_pending as an abandoned activation, not a success)"
+  - "firmware/lib/aius_http (route), firmware/sd/www/openapi.json, firmware/sd/www/dsp-editor.js (pending versus saved from sd_flush), firmware/tools/ota/aius_ota_flash.py (waits out 409 sd_flush_pending up to 30 s; after activate, reports activation_fault ota_flush_pending or ota_sd_busy as an abandoned activation, not a success)"
 targeted-proof:
   - "host: sd-overlay (new): latest wins per path; a tombstone hides a file from GET and listings until flushed; a flush of version N with N+1 accepted flushes N+1 next; a settings entry flushes before an older sync entry; a read-back CRC mismatch retries, then counts a failure and keeps the entry dirty; a volume mismatch holds every entry and writes nothing; discard drops them; staging full answers busy; shadows(path) is true for dirty, flushing, held and tombstoned entries only; the drain query is true only when nothing is dirty, flushing or held; one USAGE_REFRESH per burst; POST /api/clear resets max_settings_latency_ms and sync_drain_ms; a preset PUT to /www/presets/<name>.json is settings class; a remount or volume change with a held dsp.json and a held preset drops and refills only clean entries, and a refill reading an older card file never replaces a dirty, flushing, held or tombstoned entry"
-  - "host: sd: BEGIN is written and synced after the temp file verifies and before the first rename, INSTALL before the second, the journal removed after the backup, on every REPLACE path, faults included; RECOVER from the last valid record: none valid with no backup or journal-pattern temp present removes the journal; none valid with either present renames the journal aside (.install-journal.bad), keeps every file and counts recover_faults; BEGIN: target and backup on one first cluster unlinks the backup entry only, a backup entry with first cluster 0 (rename 1's new entry before its copy) unlinks that entry, target missing renames the backup back, then the temp is removed; INSTALL with the temp present: target on the temp's first cluster unlinks the temp entry only, a target entry with first cluster 0 is unlinked, then with the target absent the temp (length and CRC checked against BEGIN, else the backup renamed back) is renamed to target and the backup removed; INSTALL with no temp: target present removes the backup; orphan .tmp files not named by a valid record are removed; the power-cut model covers each rename step (new entry created with first cluster 0, entry copied, old entry removed, in every sector-write order) and every primitive, plus a torn journal sector (any prefix of new bytes over old, and garbage) at each record write, and every case leaves the old or the new file with its cluster chain allocated"
+  - "host: sd: BEGIN is written and synced after the temp file verifies and before the first rename, INSTALL before the second, the journal removed after the backup, on every REPLACE path, faults included; a REPLACE of an N-sector file takes exactly the pinned primitive count (temp write and verify read, journal create, preallocate, BEGIN, INSTALL, two renames, two removes, read-back), about 90 for a 12,288 B dsp.json (R3-N2); RECOVER from the last valid record: none valid and no backup-pattern file present removes the journal and any journal-pattern temp silently and counts nothing (the temp is written and verified before BEGIN, so no rename ran; R4-S4); none valid with a backup-pattern file present renames the journal aside (.install-journal.bad), keeps every file and counts recover_faults; BEGIN, while the target exists: target and backup on one first cluster unlinks the backup entry only, and a backup entry with first cluster 0 (rename 1's new entry before its copy) unlinks that entry; BEGIN with the target missing renames the backup back whatever its first cluster (an empty original legitimately sits on cluster 0, R4-S5); then the temp is removed; INSTALL with the temp present: target on the temp's first cluster unlinks the temp entry only and removes the backup (R4-S6b); a target entry with first cluster 0 is unlinked, then with the target absent the temp (length and CRC checked against BEGIN, else the backup renamed back) is renamed to target and the backup removed; target on a different nonzero chain renames the journal aside, keeps every file and counts recover_faults (R4-S6c); INSTALL with no temp: target present removes the backup; orphan .tmp files not named by a valid record are removed, except in a RECOVER that set a journal aside, which keeps every file (R4-S6a); the power-cut model covers each rename step (new entry created with first cluster 0, entry copied, old entry removed, in every sector-write order) and every primitive, plus a torn journal sector (any prefix of new bytes over old, and garbage) at each record write, and every case leaves the old or the new file with its cluster chain allocated"
   - "host: sdfat-vendor: the unlink-entry patch frees no cluster; PATCHED_SHA256 updated"
-  - "host: optical-app: PUT /api/dsp/config answers 200 at accept and arms Apply; GET /sd/aius/dsp.json returns the accepted bytes before the flush; GET /api/dsp/config (serialised from the model, write_dsp_config) returns the new model once config_generation advances; a preset delete leaves the manifest listing at once; discard needs the token; OTA activate, OTA rehearse and POST /api/reboot answer 409 sd_flush_pending while anything is dirty, flushing or held; a PUT accepted after the route check makes service_ota_activation, service_ota_rehearsal and the reboot service refuse without resetting, before the recorder park (the recorder stays live) and with activation_fault flush_pending set; once the re-check passes, no fill or flush job starts and the direct-SD copy waits for an in-flight SD job to finish"
-  - "host: optical-cutover: platform_publish_config consults the overlay before writing g_config or g_pending_dsp_model; a shadowed path is acknowledged and not applied; the flush job start consults sd_fifo_defer(); the drain re-check precedes aius_recorder_bank_park in both OTA services"
-  - "host: ota (test_ota_flash_client.py: the 409 wait, and activation_fault flush_pending reported as abandoned), http, status-body-bound (sd_flush), sd-editor (dsp-editor pending and saved states; openapi), stack-bound (accept and flush roots), producer-isolation (accept and flush roots in the yield-root table), runtime-target (aius_optical_app.cpp and aius_runtime_storage.cpp against the fakes), memory (OCRAM free unchanged; on the canonical image ITCM growth at most 1,000 B, DTCM statics growth at most 256 B), registry and itcm-placement green; both images build"
-  - "device (owner, AC-3): one full sync with one Apply during it (its latency recorded, not bounded); once sd_flush.dirty is 0, POST /api/clear, then three Applies, two preset saves and one preset delete: underrun_episode_count delta 0 throughout, sd_flush.max_settings_latency_ms at most 5,000, sd_flush.sync_drain_ms recorded, sd_flush.failures 0; once drained, and again after a reboot, GET /sd/aius/dsp.json and every saved preset (GET /sd/www/presets/...) equal their PUT bodies and /api/status shows the PUT public config (config.json has no read route)"
+  - "host: optical-app: PUT /api/dsp/config answers 200 at accept and arms Apply; GET /sd/aius/dsp.json returns the accepted bytes before the flush; GET /api/dsp/config (serialised from the model, write_dsp_config) returns the new model once config_generation advances; a preset delete leaves the manifest listing at once; discard needs the token; OTA activate, OTA rehearse and POST /api/reboot answer 409 sd_flush_pending while anything is dirty, flushing or held; a PUT accepted after the route check makes service_ota_activation, service_ota_rehearsal and the reboot service refuse without resetting, before the recorder park (the recorder stays live) and with activation_fault ota_flush_pending set; once the first re-check passes, no SD job starts (an HTTP SD request answers 503 sd_busy), an in-flight fill file is cancelled at its next primitive and the direct-SD copy waits for any other in-flight SD job; a PUT /api/dsp/config accepted 200 during that wait makes the final re-check fail, so each service abandons before aius_recorder_bank_park (before the reset in the reboot service), unfreezes, sets ota_flush_pending, and the PUT then flushes and reads back from the card (R4-B1); an in-flight SD job outlasting AIUS_SD_FREEZE_MS abandons activation and rehearsal with ota_sd_busy and the recorder live, while the reboot service resets; an in-flight 4g fill file no longer abandons the activation (R4-S3)"
+  - "host: optical-cutover: platform_publish_config consults the overlay before writing g_config or g_pending_dsp_model; a shadowed path is acknowledged and not applied; the flush job start consults sd_fifo_defer() and calls web_cache_fill_cancel() when a fill file is in flight; in both OTA services the first drain re-check precedes the freeze latch and a second drain query is the statement immediately before aius_recorder_bank_park, with no epoch return between them; in the reboot service the second drain query immediately precedes tx_gate_actuate and reset_application (R4-B1)"
+  - "host: ota (test_ota_flash_client.py: the 409 wait, and activation_fault ota_flush_pending and ota_sd_busy each reported as abandoned), http, status-body-bound (sd_flush; sd_diag recover_faults and recover_aside at its longest name), sd-editor (dsp-editor pending and saved states; openapi), stack-bound (accept and flush roots), producer-isolation (accept and flush roots in the yield-root table), runtime-target (aius_optical_app.cpp and aius_runtime_storage.cpp against the fakes), memory (OCRAM free unchanged; on the canonical image ITCM growth at most 1,000 B, DTCM statics growth at most 256 B), registry and itcm-placement green; both images build"
+  - "device (owner, AC-3, sd_mode DMA asserted at start and end): one full sync with one Apply during it (its latency recorded, not bounded); once sd_flush.dirty is 0, POST /api/clear, then three Applies, two preset saves and one preset delete: underrun_episode_count delta 0 throughout, sd_flush.max_settings_latency_ms at most 5,000, sd_flush.sync_drain_ms recorded, sd_flush.failures 0; once drained, and again after a reboot, GET /sd/aius/dsp.json and every saved preset (GET /sd/www/presets/...) equal their PUT bodies and /api/status shows the PUT public config (config.json has no read route)"
   - "device (owner's hands, source off): card pulled, an Apply and a preset saved (held, sd_flush.held true); the same card reinserted: GET /api/dsp/config still the Apply's model and config_generation not advanced by the reload, the held preset (GET /sd/www/presets/...) still the saved body after the post-mount refill, then flushed and GET /sd/aius/dsp.json and the preset equal to their PUT bodies; sd_diag absent_mounts recorded and fault deltas taken outside the card-out intervals; pulled again, an Apply and a preset saved, a different card inserted: nothing written to it and the running model still the Apply's; discard: dropped, the inserted card's dsp.json applied and its files serve"
 contract-artifact: spec-only
 fan-out: # sd-overlay, install-journal, ota-tool and ui-pending concurrently; parent-wiring after sd-overlay's header lands
@@ -3788,8 +3943,13 @@ tombstone, with the same per-chunk CRC.
 - **H4, rename gap by journal.** The backup name
   (`/aius/.backup-<id>-<seq>.bak`, `firmware/src/aius_optical_app.cpp:356`)
   does not say which file it backs up, so recovery needs a record that
-  does; the journal costs about 5 card calls per REPLACE, off the
-  response path under write-behind.
+  does. Cost (R3-N2): a REPLACE is three passes over the file's sectors
+  (temp write, temp verify read, read-back) plus journal create,
+  preallocate, BEGIN, INSTALL, two renames and two removes, about 90
+  primitives for a 12,288 B `dsp.json` and about 0.8 s at one per epoch,
+  off the response path under write-behind. With the 500 ms debounce and
+  the 1 s start window that is about 2.3 s, inside H8's 5 s bound; the sd
+  suite pins the count.
 - **H5, OTA.** Activate and rehearse refuse with `409 sd_flush_pending`
   while anything is dirty, flushing or held (a held entry needs the card
   back or a discard first); the flash tool waits up to 30 s for the drain.
@@ -3813,7 +3973,12 @@ tombstone, with the same per-chunk CRC.
   `firmware/sd/www/dsp-editor.js:401`; R3-S9) before sync uploads, oldest
   first within a class. The flush job starts through 4f's
   `sd_fifo_defer()`, so in FIFO mode it waits while the ring margin is
-  short (R3-S8).
+  short (R3-S8); since a FIFO primitive costs more than the margin, in
+  FIFO mode during live input a flush in practice waits for silence and
+  the 5 s bound is a DMA-mode bound (4f F9, R4-S2). A fill file in flight
+  never delays a flush: the flush start cancels it through 4g's
+  `web_cache_fill_cancel()` (about 3 s for `dsp-editor.js` would
+  otherwise break the bound).
   A sync of about 600 KB is thousands of one-per-epoch primitives with
   read-back, so no fixed bound fits it; the 5,000 ms bound applies to
   settings writes accepted with no sync file mid-flush, and a settings
@@ -3831,14 +3996,31 @@ tombstone, with the same per-chunk CRC.
   `:10098`), so a re-check there would leave the recorder parked until
   reboot, and a flush job holding the adapter's file open would share
   the volume with the copy (round 3 refuted S16). Once the re-check
-  passes, an SD-writes freeze is latched (no 4g fill or 4h flush job
-  starts) and the copy waits for any in-flight SD job; a freeze that
-  outlasts the existing drain ceiling abandons too. The activation
-  already answered 200, so an abandon sets
-  `OTA_ACTIVATION_FAULT_FLUSH_PENDING` (`activation_fault`
-  `flush_pending` in the OTA status), and `aius_ota_flash.py` reports it
-  as an abandoned activation (R3-S10). The flash tool waits up to 30 s
-  for the drain before activating (H5).
+  passes, an SD-writes freeze is latched: no SD job starts (an HTTP SD
+  request answers `503 sd_busy`, as when a job owns the volume), an
+  in-flight 4g fill file is cancelled at its next primitive (4g G9), and
+  the service waits for any other in-flight SD job under the freeze's
+  own ceiling, `AIUS_SD_FREEZE_MS` 2,000 ms from the latch (R4-S3; the
+  500 ms `AIUS_REBOOT_DRAIN_MS`, `optical_main.cpp:9794`, is armed at the
+  route's epoch and has usually expired by now, so a 4g fill in flight
+  after a sync abandoned nearly every activation). The wait spans epochs,
+  and the HTTP checkpoint keeps accepting PUTs into the overlay meanwhile
+  while the frozen scheduler never flushes them (R4-B1). So, in the same
+  call that finds the volume idle, the drain query runs again as the
+  statement immediately before `aius_recorder_bank_park` (before
+  `reset_application` in the reboot service), with no epoch return
+  between; if a write arrived, the service abandons and unfreezes, and
+  the write flushes. The activation already answered 200, so an abandon
+  on the drain sets `OTA_ACTIVATION_FAULT_FLUSH_PENDING`
+  (`activation_fault` `ota_flush_pending`, in the `ota_` form of the
+  existing names, `optical_main.cpp:4737-4746`) and one on the freeze
+  ceiling sets `OTA_ACTIVATION_FAULT_SD_BUSY` (`ota_sd_busy`), and
+  `aius_ota_flash.py` reports either as an abandoned activation (R3-S10).
+  A reboot whose freeze ceiling expires still runs the final drain query
+  and then resets, as `service_reboot_request` honours its ceiling today:
+  the drain already passed, so the in-flight job carries no settings
+  write. The flash tool waits up to 30 s for the drain before activating
+  (H5).
   `POST /api/reboot` gets the same `409 sd_flush_pending` gate. An entry
   whose flush keeps failing or that is held stays non-drained, so the
   owner discards it first (`POST /api/sd/pending/discard`): losing it is
@@ -3860,10 +4042,23 @@ tombstone, with the same per-chunk CRC.
   the last valid record and the existence and first clusters of the three
   names, and while the temp exists it never removes the backup unless
   the target already holds the temp's chain (the full table is the sd
-  proof line). No valid record is a no-op only when no backup or temp
-  exists; otherwise the journal is renamed aside, every file kept and
-  `recover_faults` counted, since a torn BEGIN with a backup present
-  means the journal was damaged after a rename ran.
+  proof line). With no valid record, the temp alone proves nothing (it
+  is written and verified before BEGIN), so a journal and temp with no
+  backup are removed silently; only a backup present (rename 1 always
+  creates the backup name first) means the journal was damaged after a
+  rename ran, and then the journal is renamed aside, every file kept and
+  `recover_faults` counted (R4-S4). The BEGIN rule that unlinks a backup
+  entry on cluster 0 applies only while the target exists: with the
+  target gone, a completed rename 1 of an empty original also leaves the
+  backup on cluster 0, so it is renamed back (R4-S5). INSTALL with the
+  target already on the temp's chain unlinks the temp entry and removes
+  the backup, so no `.bak` leaks into a later false fault; INSTALL with
+  the target on a different nonzero chain cannot arise from the protocol
+  and is a kept-files fault; and orphan `.tmp` removal is skipped in a
+  RECOVER that set a journal aside, since the temp may be the new file
+  (R4-S6). `sd_diag` publishes `recover_faults` and `recover_aside` (the
+  set-aside journal's name) so the owner sees a fault without a card
+  reader (R3-N4).
 - **H11, a card reload refills clean entries only (R3-B5).** 4g drops
   cache entries on remount and volume change and refills after each
   mount; 4h stores dirty, flushing, held and tombstoned entries in the
@@ -3883,7 +4078,13 @@ changes, and held entries are lost on any power cycle or watchdog reset
 leaves entries dirty and served from PSRAM; OTA and reboot refuse until
 a discard, and a power cycle returns the card's older file; `sd_flush`
 shows it, with no audio effect. The power-cut model is host-only; no
-device power-cut test is planned.
+device power-cut test is planned. A RECOVER that renames a journal
+aside keeps every file and counts `recover_faults`; which of the kept
+files is current needs a manual look at the card, guided by the
+set-aside journal named in `sd_diag.recover_aside` (R3-N4). In FIFO mode
+during live input settings stay in PSRAM until the input stops (4f F9),
+so a power cut in that window loses them, and OTA and reboot answer 409
+until then.
 
 **Prebuild review round 2 (2026-10-07, `reviewer` `opus`): NOT READY.**
 
@@ -3940,7 +4141,7 @@ device power-cut test is planned.
 - S16 resolved: H9 re-check in both OTA services and the reboot service,
   reboot route gated, host case for a PUT after the route check (Phase
   5 H9); the re-check placement refuted in round 3, superseded by the
-  round 3 S16 resolution and R3-S10.
+  round 3 S16 resolution and R3-S10, and that in turn by R4-B1.
 - S17 resolved: H10 phase byte and first-cluster compare, entry-only
   unlink in the vendored SdFat (install-journal owns it), orphan `.tmp`,
   no-op journal, power cut modelled inside a rename (Phase 5 H10);
@@ -3956,6 +4157,9 @@ device power-cut test is planned.
   volume with the copy. Resolved: H9 re-check first after the HTTP drain
   wait, before the park, then an SD-writes freeze and a wait for the
   in-flight job; optical-app and optical-cutover cases (Phase 5 H9).
+  Superseded by R4-B1 (the wait spans epochs, so a second drain query
+  sits immediately before the park) and R4-S3 (the freeze's own
+  ceiling).
 - **Refuted: round 2 S17.** A cut mid phase-byte rewrite after rename 1
   leaves a bad CRC, and "bad CRC is a no-op" leaves the target missing.
   Resolved by R3-B6.
@@ -3989,15 +4193,69 @@ device power-cut test is planned.
   `Retry-After` rule and the 15 s limit.
 - **Phase 5 H9.** Three service re-checks, not two; H5's 30 s wait
   folded in. Resolved in Phase 5.
-- **R3-N2 (open; found by the round 3 revision).** H4's "about 5 card
-  calls per REPLACE" predates the two journal writes and the temp verify;
-  re-derive it and the 5 s settings bound it feeds.
-- **R3-N3 (open).** Phase 5 H9 says all three services re-check "before
-  the recorder park", but the reboot service has no park; it should read
-  "before any one-way step".
-- **R3-N4 (open).** No residual-risk line covers RECOVER renaming a
-  journal aside and counting `recover_faults`, which needs a manual look
-  at the card; add one to 4h's residual risks.
+- **R3-N2 (found by the round 3 revision; resolved in round 4).** H4's
+  "about 5 card calls per REPLACE" predates the two journal writes and
+  the temp verify; re-derive it and the 5 s settings bound it feeds.
+  Resolved: H4 count (about 90 primitives, about 0.8 s), sd case pins it.
+- **R3-N3 (resolved in round 4).** Phase 5 H9 says all three services
+  re-check "before the recorder park", but the reboot service has no
+  park; it should read "before any one-way step". Resolved: Phase 5 H9
+  corrected, with the R4-B1 second query.
+- **R3-N4 (resolved in round 4).** No residual-risk line covers RECOVER
+  renaming a journal aside and counting `recover_faults`, which needs a
+  manual look at the card. Resolved: residual-risk line, `sd_diag`
+  `recover_faults` and `recover_aside` (H10, seam, status-body-bound).
+
+**Prebuild review round 4 (2026-10-07, `reviewer` `opus`, closure
+review): NOT READY** (R4-B1, R3-N2 to N4). R3-B5, R3-B6 (H11), R3-S9
+to S12 confirmed closed; R3-S11 closed with the R4-S5 edge. Each item is
+followed by its resolution.
+
+- **R4-B1 (blocker, H9).** The round 3 S16 race is back: re-check, then
+  freeze, then wait for the in-flight SD job, which moves one primitive
+  per epoch, so the wait spans epochs while the HTTP checkpoint still
+  accepts PUTs into the overlay; the frozen scheduler never flushes
+  them, and park, copy and reset follow, losing the PUT. Resolved with
+  the first of the reviewer's two fixes: a second drain query in the
+  same call, immediately before `aius_recorder_bank_park` (before the
+  reset in the reboot service); optical-app case for a PUT accepted
+  during the wait, optical-cutover placement guard (Phase 5 H9
+  corrected, H12). Why not the second fix (the freeze makes store and
+  upload routes answer `409 sd_flush_pending`): one check at the one-way
+  point closes every interleaving however long the wait runs, while the
+  route refusal would need every write route to consult the freeze and
+  would refuse an editor Apply mid-OTA, a new failure the UI has no
+  handling for. Supersedes round 3's S16 resolution.
+- **R4-S3 (H9 freeze).** The in-flight wait was bounded by the 500 ms
+  drain ceiling armed at the route's epoch; a 4g fill in flight (about
+  3 s for `dsp-editor.js`) abandoned activation as `flush_pending`,
+  routinely after a sync. Resolved: the freeze cancels a fill file at
+  its next primitive (4g G9), has its own 2,000 ms ceiling from the
+  latch, and abandons with `ota_sd_busy`; a reboot resets on expiry as
+  today; seam, optical-app case, ota case (Phase 5 H13).
+- **R4-S4 (H10).** "No valid record with a temp present" counted a fault
+  though no rename ran. Resolved: only a backup present counts; journal
+  and temp otherwise removed silently; H10, sd case (Phase 5 H10
+  corrected).
+- **R4-S5 (H10).** The cluster-0 backup rule unlinked the only copy of an
+  empty original after a completed rename 1. Resolved: the rule applies
+  only while the target exists; H10, sd case.
+- **R4-S6 (H10 table gaps).** (a) orphan `.tmp` removal after a
+  set-aside journal, (b) a leaked `.bak` in the INSTALL
+  target-holds-temp branch, (c) INSTALL with the target on another
+  nonzero chain undefined. Resolved: (a) skipped, (b) backup removed,
+  (c) kept-files fault; H10, sd case.
+- **R3-N2, R3-N3, R3-N4.** Adjudicated as the reviewer proposed;
+  resolved in place above.
+- **R4-S2 (4h part).** A flush in FIFO mode during live input waits for
+  silence. Resolved: outcome, H8 and residual risks state it; the device
+  run asserts `sd_mode` DMA, and H8's flush start also cancels a fill
+  file so the 5 s bound holds (4g G9).
+- **R4-N3 (open; found by the round 4 revision).** RECOVER on a REPLACE
+  of a path that never existed removes the verified temp: the card
+  returns to "no file", which the outcome allows, but the new file is
+  lost. Decide whether a verified temp with no prior target is installed
+  instead.
 
 ### Phase 4c `test.sh` runs every `--suite` given ✓ SHIPPED 2026-10-06
 
@@ -4058,7 +4316,8 @@ call, alternative, cost of reversing.
   in-place dcache maintenance. Alternative: flush and invalidate 32 B
   aligned whole lines in the driver. Reversing: the vendored driver,
   plus `alignas(32)` on `g_replay_transfer`, which E9 leaves off (up to
-  31 B of the 736 B OCRAM margin).
+  31 B of the OCRAM margin: 736 B on the plain image, the A/B figures
+  measured at 4e start, R4-B2).
 - **4e E3.** DMA is armed at runtime by a new authed `POST /api/sd/mode`
   (not persisted); image 1 boots FIFO, image 2 boots DMA, and the route
   stays in the field as the fallback to FIFO, which costs an extra OTA.
@@ -4077,13 +4336,17 @@ call, alternative, cost of reversing.
   table, or shedding control routes too. Reversing: the admission
   callback only.
 - **4f F2.** An SD job start costs the windowed maximum of
-  `sd_window_nonyield_max_us` per mode over the last 64 SD windows, reset
-  on a mode change and by `clear` (round 2 S10); in FIFO mode that is the
-  longest card primitive, and `sd_fifo_defer()` defers every SD job's
-  start and next primitive while the margin is short, the 4g fill and 4h
-  flush root jobs included (R3-S8). Alternative: one fixed start cost for
-  both modes, and admission only at the HTTP SD_START arm. Reversing: the
-  admission callback, the predicate and its call sites.
+  `sd_window_nonyield_max_us` over the last 64 SD windows, one window per
+  mode (round 2 S10), each seeded at boot from the declared table and
+  kept across `POST /api/clear` and a mode change, as F8 keeps the route
+  classes (corrected in round 4, R4-S1: the reset on clear and mode
+  change admitted the first FIFO start at cost 0); in FIFO mode that is
+  the longest card primitive, and `sd_fifo_defer()` defers every SD
+  job's start, and each next primitive of the 4g fill and 4h flush root
+  jobs, while the margin is short (R3-S8; bounded by F9). Alternative:
+  one fixed start cost for both modes, and admission only at the HTTP
+  SD_START arm. Reversing: the admission callback, the seed entries, the
+  predicate and its call sites.
 - **4f F3.** `GET /api/status/brief` carries exactly the keys
   `renderFlowEnds` reads (plus `sd_flush` from 4h); `status.html` keeps the
   full body. Alternative: a trimmed full body for all pages. Reversing: one
@@ -4101,7 +4364,7 @@ call, alternative, cost of reversing.
   PSRAM pad 2 (absent on 8 MiB fitments), shared with 4h's overlay and
   staging. Alternative: halving the recorder ring to free pad 1 (P2), or
   embedding the www set in flash (OCRAM is not viable: 2 MiB against
-  512 KiB of OCRAM with a 736 B margin). Reversing: the placement
+  512 KiB of OCRAM with under 1 KiB of margin). Reversing: the placement
   function and fill sizing.
 - **4h H1.** 500 ms debounce, flush start within 1 s, one file per job.
   Alternative: flush at once, or batch several files per job. Reversing:
@@ -4126,7 +4389,8 @@ call, alternative, cost of reversing.
   enclosing checkpoint after, so `pv=` names AUDIO for a wedge inside it;
   no new retained object. Alternative: a new retained
   `.aius_retained_audio` input section after `.aius_retained_ab` (32 B,
-  which the 736 B OCRAM margin covers; the real constraint is the
+  which the OCRAM margin covers, 736 B on the plain image and the A/B
+  figures measured at 4e start; the real constraint is the
   retained-window ASSERTs, ORIGIN(RAM) and `0xC60`,
   `firmware/link/aius_teensy41.ld:244-249`, and the boot ledger layout
   that boot-target pins). Reversing: the two ledger calls, plus a
@@ -4139,21 +4403,27 @@ call, alternative, cost of reversing.
   change, and a split of `waitTimeout` so the FIFO data loops
   (`readData`, `writeData`) carry no hook (round 2 S1), with their
   sdfat-vendor cases.
-- **4e E7.** The fallback verdict: only a content mismatch, a driver fault
-  (`sdErrorCode() != 0`), a busy timeout in DMA mode or a watchdog reset
-  at the SD or HTTP checkpoint in DMA mode sends the work to B2; a stack
-  floor breach or an AUDIO wedge is a 4e defect fixed on A-DMA.
-  Alternative: any fault or reset falls back. Reversing: plan text only.
+- **4e E7.** The fallback verdict: only a content mismatch,
+  `driver_faults` above 0 outside a card-out interval (a primitive with
+  `sdErrorCode() != 0`; `absent_mounts` and `open_misses` are never
+  faults, and a driver fault inside the interval is diagnosed first), a
+  `busy_timeouts` rise in DMA mode, or a watchdog reset in a DMA run
+  whose `pv=` is the SD or HTTP checkpoint sends the work to B2; a stack
+  floor under 2,048 B, a `pv=` AUDIO wedge or a timing miss with
+  integrity intact is a 4e defect fixed on A-DMA; any other reset is
+  diagnosed before a verdict (corrected in round 4 to match the E7
+  body). Alternative: any fault or reset falls back. Reversing: plan
+  text only.
 - **4e E8.** D is 2,500 us in 4e (alarm 1,264 words; the unsliced status
   render is about 2.1 ms) and 2,000 us from 4f on (alarm 1,216).
   Alternative: keep 2,000 us in 4e and drop full-status polling from run 2.
   Reversing: proof thresholds only.
 - **4e E9.** `g_replay_transfer` does not get `alignas(32)`: E2's bounce
   makes its alignment irrelevant to DMA, and OCRAM growth stays zero.
-  Alternative: align it; up to 31 B of padding fits the 736 B OCRAM
-  margin, so it needs no funding, only `COMMITTED_OCRAM_FREE_BYTES`
-  lowered by the measured padding. Reversing: one attribute and that
-  constant.
+  Alternative: align it; up to 31 B of padding fits the OCRAM margin
+  (736 B on the plain image, the A/B figures measured at 4e start), so
+  it needs no funding, only each env's floor in the E12 table lowered by
+  its measured padding. Reversing: one attribute and those floors.
 - **4f F5.** Admission cost is the class's longest non-yielding stretch
   with nested producer time subtracted, as a windowed maximum over the
   last 64 dispatches; the polled-vs-unpolled proofs require at least 95%
@@ -4163,16 +4433,19 @@ call, alternative, cost of reversing.
 - **4f F6.** `capture.py` records a 503 as a skipped sample and continues;
   the run fails only when skips exceed 5%. Alternative: retry the 503
   inside the poll tick. Reversing: `http_get` and its tests.
-- **4g G6.** The cache fills one file per CACHE_FILL job, a pending HTTP SD
-  request starts before the next file, the post-upload refill waits 2 s
-  after the last upload, and `aius-sd-sync.sh` honours `503` with
-  Retry-After for up to 15 s per file. Round 3 (R3-B4): nothing queues an
-  HTTP SD request, so the refusal itself carries `Retry-After` from the
-  in-flight file's remaining reads (1 to 5 s) and holds the fill for
-  `Retry-After` + 1 s, extended to 2 s after each HTTP SD job.
-  Alternative: an upload body populates its cache entry directly, or a
-  queue that parks the refused request until the file ends. Reversing:
-  the fill scheduler, the hold and the sync tool's retry loop.
+- **4g G6.** A fill hold keeps the cache fill off the volume while HTTP
+  uses it: the fill is one CACHE_FILL job per file, no next file starts
+  while the hold is set, and every HTTP SD job completion extends the
+  hold to 2 s after it, so a sync keeps the fill paused and the
+  post-upload refill follows the same rule. An HTTP SD request that finds
+  a fill file in flight cancels it (G9) and starts, and the cancel sets
+  the hold (round 4, R3-N1; round 3's refusal with `Retry-After` from the
+  in-flight file is superseded). `aius-sd-sync.sh` still honours `503`
+  with `Retry-After` for up to 15 s per file, for busy states that are
+  not a fill. Alternative: an upload body populates its cache entry
+  directly, or the round 3 refusal with `Retry-After` that a browser page
+  load does not retry. Reversing: the fill scheduler, the hold and the
+  sync tool's retry loop.
 - **4g G7.** Every CRC check reads the chip: chunks are
   `arm_dcache_flush_delete`d before the fill read-back and before the
   pre-header verify, and each chunk is copied to a stack buffer, CRC'd
@@ -4189,23 +4462,31 @@ call, alternative, cost of reversing.
   start. Reversing: the scheduler's class order and two status keys.
 - **4h H9.** `POST /api/reboot` joins OTA activation and rehearsal behind
   `409 sd_flush_pending`, and all three services (activation, rehearsal,
-  reboot) re-check the drain as their first step, before the recorder
-  park, then freeze SD writes and wait for an in-flight job before the
-  copy; an abandoned activation reports `flush_pending`; an entry that
-  keeps failing or is held needs a discard first; `aius_ota_flash.py`
-  waits up to 30 s for the drain (H5). Alternative: gate OTA only and let
-  reboot lose pending writes; a different flash-tool wait. Reversing: the
-  reboot gate, the three service re-checks, the fault code and the tool's
-  wait.
+  reboot) re-check the drain as their first step after the HTTP drain
+  wait, before any one-way step (the recorder park in the two OTA
+  services, the reset in the reboot service; R3-N3), then freeze SD
+  writes and wait for an in-flight job, then query the drain again
+  immediately before that one-way step (R4-B1, H12); an abandoned
+  activation reports `ota_flush_pending` (or `ota_sd_busy`, H13); an
+  entry that keeps failing or is held needs a discard first;
+  `aius_ota_flash.py` waits up to 30 s for the drain (H5). Alternative:
+  gate OTA only and let reboot lose pending writes; a different
+  flash-tool wait. Reversing: the reboot gate, the three services' two
+  drain queries, the fault codes and the tool's wait.
 - **4h H10.** RECOVER reads the last valid of two write-once journal
   records (BEGIN, INSTALL), each with its own CRC, and the existence and
   first clusters of target, backup and temp; it never removes the backup
-  while the temp exists unless the target holds the temp's chain, unlinks
-  only the directory entry of a half-renamed name (a vendored SdFat
-  patch), and renames aside a journal with no valid record when a backup
-  or temp exists. Alternative: copy the file to a fresh name before
-  removing either. Reversing: `lib/aius_sd` REPLACE and RECOVER and one
-  vendor patch.
+  while the temp exists unless the target holds the temp's chain (and
+  then removes it, R4-S6), unlinks only the directory entry of a
+  half-renamed name (a vendored SdFat patch; a cluster-0 backup only
+  while the target exists, R4-S5), and renames aside a journal with no
+  valid record only when a backup exists, removing journal and temp
+  silently otherwise (corrected in round 4, R4-S4: the temp predates
+  BEGIN); a set-aside journal, or INSTALL with the target on a foreign
+  chain, keeps every file, orphan temps included, and is published in
+  `sd_diag`. Alternative: copy the file to a fresh name before removing
+  either. Reversing: `lib/aius_sd` REPLACE and RECOVER and one vendor
+  patch.
 - **4g G3.** The full CRC verify of every chunk runs before the headers,
   on top of G7's per-chunk CRC at send, so a fault found before the
   headers still falls back to the SD download job. Alternative: the
@@ -4220,17 +4501,63 @@ call, alternative, cost of reversing.
   accessor and a status key.
 - **4e E11.** ITCM budgets come from the canonical image's 4,340 B: 4e
   1,280 B, 4f, 4g and 4h 1,000 B each (60 B spare). Alternative: another
-  split of the same 4,280 B, or a seventh FlexRAM block (32 KiB of DTCM
-  stack). Reversing: plan text and the memory proof lines.
+  split of the same 4,280 B, or moving existing ITCM code that does not
+  run in the producer to `FLASHMEM` to widen the shared budget. A
+  seventh FlexRAM block is not viable: the link refuses it
+  (`ASSERT(_itcm_block_count <= 6)`, `firmware/link/aius_teensy41.ld:277`),
+  and its 32 KiB out of DTCM would leave 25,760 B minus 32,768 B, below
+  the 24,352 B stack-zone floor (corrected in round 4). Reversing: plan
+  text and the memory proof lines.
 - **4f F7.** The DSP Apply parse is measured on the device (largest
   preset and a 12,288 B model), and D for 4f and 4b becomes that cost
-  when it exceeds 2,000 us, with the ingress alarm re-derived. Alternative:
+  when it exceeds 2,000 us, with the ingress alarm re-derived; a non-200
+  Apply voids the measurement, and the run saves the owner's model first
+  and PUTs it back after (round 4, R4-S8; the body is F10). Alternative:
   yield points inside the parser now. Reversing: proof thresholds, or a
   parser callback if the owner prefers the lower D.
 - **4f F8.** Admission class costs are seeded at boot from a declared
   table and are not reset by `POST /api/clear`. Alternative: reset on
   clear and accept unchecked first dispatches. Reversing: the seed table
   and one line in the clear handler.
+- **4e E12.** The OCRAM gate keeps one floor per env in
+  `OPTICAL_IMAGE_ENVS`, each measured at 4e start on the unchanged tree,
+  rise-only (R4-B2). Alternative: one constant at the minimum across the
+  envs (lets the plain env grow by the A/B ledger's difference
+  unnoticed). Reversing: `verify_target.py`'s table and its memory cases.
+- **4f F9.** FIFO deferral exempts OTA staging chunk jobs, never defers a
+  started HTTP job's primitives, and answers an HTTP SD start held for
+  500 ms with `503 audio_busy` and `Retry-After: 1`; root jobs (fill,
+  flush) wait for silence in FIFO mode during live input (R4-S2).
+  Alternative: defer starts and primitives of every job without bound
+  (round 3), or a 503 after N epochs for in-flight jobs too, which can
+  only close a connection mid-response. Reversing: `sd_fifo_defer()`'s
+  exemptions and one timer.
+- **4f F10.** The F7 device run's 12,288 B Apply body is the owner's
+  current model padded with whitespace and longer equal-value number
+  spellings by a committed `firmware/tools/dsp_model_pad.py`, so what
+  plays does not change, and the run restores the saved model (R4-S8).
+  Alternative: a model from neutral sections (cannot reach 12,288 B with
+  two EQ bands per channel, and changes the sound). Reversing: the tool,
+  its dsp-config case and one proof line.
+- **4g G9.** Any HTTP SD request, the 4h flush start and the H9 freeze
+  cancel an in-flight CACHE_FILL file at its next primitive boundary
+  through one `web_cache_fill_cancel()` and re-queue it (R3-N1, R4-S3).
+  Alternative: cancel for page misses only, leaving uploads on round 3's
+  `503 sd_busy` with `Retry-After`. Reversing: one dispatch condition and
+  the cancel entry, plus G6's refusal path restored.
+- **4h H12.** The H9 race with writes accepted during the freeze wait is
+  closed by a second drain query immediately before the one-way step
+  (R4-B1). Alternative: the freeze makes store and upload routes answer
+  `409 sd_flush_pending` (every write route consults the freeze; an
+  editor Apply mid-OTA is refused). Reversing: one query per service and
+  its optical-cutover guard.
+- **4h H13.** The SD-writes freeze has its own ceiling,
+  `AIUS_SD_FREEZE_MS` 2,000 ms from the latch, and an activation or
+  rehearsal that hits it abandons with `ota_sd_busy` while a reboot
+  resets as its ceiling does today (R4-S3). Alternative: reuse the
+  500 ms route-epoch drain ceiling and report `ota_flush_pending`
+  (abandoned nearly every activation after a sync), or a longer ceiling.
+  Reversing: one constant, one fault code and the flash tool's report.
 
 ## Acceptance
 
