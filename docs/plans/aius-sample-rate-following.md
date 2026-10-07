@@ -2426,6 +2426,95 @@ rather than after." with the text below; the bench sentence that follows
   writes through the PSRAM cache, or an async flush to SD, remove the
   write paths (DSP Apply, presets, uploads) from the audio's way.
 
+**Write-path investigation 2026-10-07 (read-only).**
+
+- **Write paths during playback.** DSP Apply (`PUT /api/dsp/config`,
+  REPLACE `/aius/dsp.json`, up to 36 SdFat calls), public config (about
+  13), preset save and import (12 + n/512), preset delete (2), card sync
+  (22 files, about 1,612 writes and 290 metadata calls). Each answers
+  200 only after the rename commit, and each commit also runs a
+  USAGE_REFRESH (a FAT scan, 29 ms seen). Recorder, ledger and fault
+  records never touch the SD.
+- **FIFO waits.** Card programming busy waits call `yield()`; every read
+  wait spins, including the FAT and directory reads inside `rename`,
+  `remove`, `close`, `mkdir` and `exists`.
+- **Write-behind design.** A PUT completes into a PSRAM overlay (one
+  dirty entry per path, CRC per 512 B chunk), the next GET serves the
+  overlay, and a flush job replays the REPLACE install from the same
+  bytes. Latest write per path wins (slider drags write nothing; Apply
+  is the only writer); a DELETE is a tombstone; USAGE_REFRESH coalesced.
+  Apply arms at PSRAM accept, not at SD commit. The presets listing comes
+  from the overlay (removing the 20.9 ms scan). A volume-ID check stops a
+  swapped card being written. `/api/status` gains an `sd_flush` object.
+- **When the flush may run.** Margin-gated during playback is not safe
+  (one call can spin up to 100 ms). Flushing only with no carrier needs no
+  priority mechanism, at the cost of a lost-write window of the whole
+  session on a power cut. Flushing during playback needs A-DMA or B2.
+- **Load shedding.** Check ring level (`aius_spdif_tx24_level`) or
+  ingress backlog at HTTP DISPATCH (`aius_runtime_network_http.cpp`);
+  answer an immediate 503 `busy` with Retry-After when the estimated
+  cost exceeds the margin. Bounds CPU stretches of known length (status
+  render, parse), not card calls. UI: a 503 is a silent skip keeping last
+  values; "unreachable" only after several consecutive failures; move
+  `status.js` and `replays.js` to self-scheduled polls.
+- **Card sync.** PUT bodies stage into PSRAM and become the cache entry
+  by pointer swap; staging full answers 503 (the script already retries).
+- **PSRAM placement.** About 1.2 MB worst case. OTA staging aliases pad
+  1 below the recorder ring's top; pad 2 has 8.35 MB free. Options: P1,
+  everything on pad 2 with per-chunk CRC and read-back checks; P2, halve
+  the recorder ring to 4 MiB to free pad 1. Either way OTA activation and
+  rehearsal drain the dirty queue first or refuse with 409.
+- **Existing gap found.** A power cut between REPLACE's two renames
+  leaves no target file; there is no boot-time `.bak` recovery.
+- **Size.** Write-behind, shedding and UI about 1,000 to 1,500 lines
+  plus tests, on top of the cache and bundling.
+
+**DMA investigation 2026-10-07 (read-only; A-DMA feasible with
+conditions).**
+
+- **Yields.** In DMA mode every transfer and ready wait yields; only the
+  command phase spins (under about 20 µs per op). CMD12 is hardware
+  auto-stop. Card init (`SD.begin`, ACMD41 up to 1 s) and error paths do
+  not yield: a remount is the remaining long stretch (boot mount 582 ms).
+  A failed OPEN of a missing file currently forces a remount; invalidate
+  only on `sdErrorCode() != 0`.
+- **Mount.** `SD.begin` hardcodes FIFO; mount with `SD.begin` then
+  `SD.sdfs.begin(SdioConfig(DMA_SDIO))` (or implement presence and sizes
+  on `sdfs`), else the 1 Hz presence probe re-inits every second.
+- **yield() callers.** `main` after `loop`, init-only `delay()`, USB
+  serial (incl. NativeEthernet debug prints from inside FNET calls, and
+  from the PIT ISR when `AIUS_NET_POLL_SINGLE_CONTEXT=0`), the CDC
+  adapter, SdFat. Guard: a window flag set only around
+  `aius_sd_teensy_execute` and the three raw scans (not replay refill);
+  run one pass only if the window is set, not already in the producer,
+  IPSR 0, PRIMASK 0, IRQ_SOFTWARE enabled, audio ready, not recovery-safe,
+  and a commit is pending. C linkage override of the weak `yield`.
+- **Data integrity.** SdFat's caches sit in DTCM (uncached): safe. User
+  buffers in OCRAM need dcache flush before WRITE and flush-delete around
+  READ, 32 B aligned whole lines; `g_replay_transfer` needs `alignas(32)`;
+  the OTA copy into PSRAM must stay FIFO or bounce. No extra DTCM stack
+  over FIFO's existing bounce.
+- **Prebuild findings.** B1 and S3 apply (same fixes); B2 partly (hook
+  returns in recovery-safe; keep the "producer active" flag; the
+  post-commit hazard is gone because the window is closed at `main`'s
+  yield); S5 applies (producer `enqueue` about 4.37 KB nested over the SD
+  chain, about 0.8 to 1 KB over today against 1,408 B headroom; needs a
+  `-fstack-usage` bound); S7 largely not (commits stay RX-asynchronous);
+  S1 not (no NVIC); S4, S6, S8 apply.
+- **Performance.** Single-sector CMD17/CMD24: downloads and sync slower
+  but yielding; moot for cached web files.
+- **Device check.** One OTA of an image with DMA runtime-armed by an
+  authed POST (FIFO at boot keeps self-commit and OTA rollback safe);
+  counters `sd_mode`, `sd_window_nonyield_max_us`, yields per op,
+  producer passes in windows, pend latency, stack free, remounts, fault
+  deltas. Run 1 source off: content check of every `/sd/www` file, one
+  sync, listings. Run 2 AC-3 playing: page loads and a sync, underrun 0.
+- **Bound.** About 1.1 to 2 ms steady state (REPLAY 1,060 µs, status
+  render unless sliced, unmeasured dispatch parses) against B2's 0.62 ms;
+  inside the 4.7 ms margin. Residual: remount and error-path waits; DMA
+  reliability on this card; stack nesting. Vendoring SdFat would let
+  yields reach ACMD41 and `waitTimeout`, closing most of the remount gap.
+
 **Interrogate the user: the B2 execution-model change.** Present B2,
 the prebuild findings below and the alternatives (A, cooperative slicing,
 whose bound is one card primitive; B1, lock by exception) and record the
