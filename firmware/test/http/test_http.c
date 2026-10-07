@@ -678,8 +678,45 @@ static void test_sd_mode_route(void)
 	                               &request) == AIUS_HTTP_ERR_METHOD);
 }
 
+/* Phase 4f: /api/status/brief routes (GET only, distinct from /api/status),
+ * and only a 503 gains Retry-After. */
+static void test_status_brief_and_retry_after(void)
+{
+	static const char get[] = "GET /api/status/brief HTTP/1.0\r\n\r\n";
+	static const char post[] = "POST /api/status/brief HTTP/1.0\r\n\r\n";
+	static const char full[] = "GET /api/status HTTP/1.0\r\n\r\n";
+	AiusHttpRequest request;
+	uint8_t headers[256];
+	size_t length;
+
+	assert(aius_http_parse((const uint8_t *)get, strlen(get), &request) ==
+	       AIUS_HTTP_OK);
+	assert(request.route == AIUS_HTTP_ROUTE_STATUS_BRIEF);
+	assert(aius_http_parse((const uint8_t *)post, strlen(post), &request) ==
+	       AIUS_HTTP_ERR_METHOD);
+	assert(aius_http_parse((const uint8_t *)full, strlen(full), &request) ==
+	       AIUS_HTTP_OK);
+	assert(request.route == AIUS_HTTP_ROUTE_STATUS);
+
+	length = aius_http_write_headers(headers, sizeof(headers), 503,
+	                                 "application/json", 5, 0u);
+	assert(length != 0);
+	headers[length] = 0;
+	assert(strcmp((const char *)headers,
+	              "HTTP/1.0 503 Service Unavailable\r\n"
+	              "Content-Type: application/json\r\n"
+	              "Content-Length: 5\r\n"
+	              "Retry-After: 1\r\n"
+	              "Connection: close\r\n\r\n") == 0);
+	length = aius_http_write_headers(headers, sizeof(headers), 200,
+	                                 "application/json", 5, 0u);
+	headers[length] = 0;
+	assert(strstr((const char *)headers, "Retry-After") == NULL);
+}
+
 int main(void)
 {
+	test_status_brief_and_retry_after();
 	test_sd_mode_route();
 	AiusHttpRequest request;
 	test_sd_auth_header();

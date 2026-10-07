@@ -334,6 +334,7 @@ void aius_producer_yield_plat_ledger_record(uint16_t checkpoint)
 {
 	(void)checkpoint;
 }
+
 }
 
 File::File() : valid_(false) {}
@@ -809,6 +810,12 @@ static bool platform_udp(void *context, const AiusRuntimeBudget *budget,
 	return g_platform.udp_ok;
 }
 
+/* Checkpoint 7 is where optical_main.cpp's platform_replay runs the SD
+ * lifecycle (root starts behind sd_fifo_defer(), the commit arm, the orphan
+ * staging drop); a case that models that composition installs it here.
+ * reset_world() clears it. */
+static void (*g_replay_hook)(void);
+
 static bool platform_replay(void *context, const AiusRuntimeBudget *budget,
                             uint32_t now_ms)
 {
@@ -816,6 +823,8 @@ static bool platform_replay(void *context, const AiusRuntimeBudget *budget,
 	CHECK(context == g_platform.expected_context);
 	record_budget(budget, AIUS_BOOT_CHECKPOINT_REPLAY);
 	g_platform.replay_calls++;
+	if (g_replay_hook != nullptr)
+		g_replay_hook();
 	return g_platform.replay_ok;
 }
 
@@ -914,6 +923,15 @@ struct AppFake {
 	unsigned recorder_acquires;
 	unsigned recorder_releases;
 	unsigned recorder_release_slot;
+	/* Round 4: PUT /api/dsp/config accepted as an upload (store_accept) arms
+	 * a staging, modelled after optical_main.cpp's g_sd_commit_target /
+	 * g_sd_commit_writing / g_sd_http_job_seen by staging_service(). */
+	bool store_accept;
+	bool staged;
+	bool stage_writing;
+	bool stage_seen;
+	unsigned stage_commits;
+	unsigned stage_drops;
 };
 
 static AppFake g_app;
@@ -1011,7 +1029,11 @@ static AiusOpticalAppStoreResult app_store_dsp_config(void *context,
 	(void)context;
 	(void)body;
 	(void)length;
-	return AIUS_OPTICAL_APP_STORE_OK;
+	if (!g_app.store_accept)
+		return AIUS_OPTICAL_APP_STORE_OK;
+	g_app.staged = true;
+	g_app.stage_writing = false;
+	return AIUS_OPTICAL_APP_STORE_ACCEPTED;
 }
 
 static AiusOpticalAppReplayResult app_replay_start(void *context, const char *id,
@@ -1216,6 +1238,7 @@ static void reset_world(bool recovery_safe)
 	memset(&g_net, 0, sizeof(g_net));
 	memset(&g_app, 0, sizeof(g_app));
 	memset(&g_publish, 0, sizeof(g_publish));
+	g_replay_hook = nullptr;
 
 	g_cdc.expected_context = &g_cdc;
 	/* platform_ops() ran before the memsets above cleared the fake. */
@@ -3976,6 +3999,393 @@ static void test_epoch_traces(void)
 	}
 }
 
+/* ------------------------------------------------------------------ */
+/* 11. Phase 4f admission arms, driven by test-owned link-time hooks  */
+/* ------------------------------------------------------------------ */
+
+/* The seam's admission hooks are link-time (weak defaults in
+ * aius_runtime_network_http.cpp); these strong definitions replace them for
+ * the whole binary, so they admit everything until admit_reset() arms them
+ * and every earlier case keeps the default behaviour. */
+static struct {
+	bool armed;
+	unsigned shed_notes;    /* aius_runtime_http_note_shed() calls */
+	AiusHttpAdmitVerdict route_verdict;
+	AiusHttpAdmitVerdict sd_verdict;
+	unsigned sd_defer_left; /* DEFER this many SD_START consults, then sd_verdict */
+	bool use_portable;      /* judge SD starts with the real F9 decision */
+	AiusOpticalAdmission admission;
+	uint32_t now_ms;
+	unsigned route_queries, sd_queries;
+	AiusHttpRoute last_route;
+	AiusSdJobKind last_job;
+} g_admit;
+
+extern "C" void aius_runtime_http_note_shed(void)
+{
+	g_admit.shed_notes++;
+}
+
+extern "C" AiusHttpAdmitVerdict aius_runtime_http_admit(const AiusHttpAdmitQuery *q)
+{
+	CHECK(q != nullptr);
+	if (!g_admit.armed)
+		return AIUS_HTTP_VERDICT_ADMIT;
+	if (q->kind == AIUS_HTTP_ADMIT_ROUTE) {
+		g_admit.route_queries++;
+		g_admit.last_route = q->route;
+		CHECK(q->sd_job == nullptr);
+		return g_admit.route_verdict;
+	}
+	g_admit.sd_queries++;
+	CHECK(q->sd_job != nullptr);
+	g_admit.last_job = q->sd_job->kind;
+	if (g_admit.use_portable) {
+		AiusOpticalAdmitSample sample;
+		memset(&sample, 0, sizeof(sample));
+		sample.live_owns_ring = true;
+		sample.fifo_mode = true;
+		sample.level_frames = 0u;
+		sample.now_ms = g_admit.now_ms;
+		/* As optical_main.cpp's hook: a re-consult exactly while the
+		 * seam still holds the start (F-S2). */
+		switch (aius_optical_admission_sd_start(
+			&g_admit.admission, q->sd_job, &sample,
+			g_runtime.network_http.deferred_start_present)) {
+		case AIUS_OPTICAL_ADMIT_VERDICT_SHED:
+			return AIUS_HTTP_VERDICT_SHED;
+		case AIUS_OPTICAL_ADMIT_VERDICT_DEFER:
+			return AIUS_HTTP_VERDICT_DEFER;
+		default:
+			return AIUS_HTTP_VERDICT_ADMIT;
+		}
+	}
+	if (g_admit.sd_defer_left != 0u) {
+		g_admit.sd_defer_left--;
+		return AIUS_HTTP_VERDICT_DEFER;
+	}
+	return g_admit.sd_verdict;
+}
+
+static void admit_reset(void)
+{
+	reset_world(false);
+	memset(&g_admit, 0, sizeof(g_admit));
+	aius_optical_admission_init(&g_admit.admission);
+	g_admit.armed = true;
+}
+
+/* optical_main.cpp's root start gate, at checkpoint 7: sd_lifecycle_service()
+ * consults sd_fifo_defer() (here `hold`) before it starts a root job. */
+static struct {
+	bool hold;
+	bool started;
+} g_root_gate;
+
+static void root_gate_service(void)
+{
+	AiusSdJobRequest request;
+
+	if (g_root_gate.started || g_root_gate.hold)
+		return;
+	memset(&request, 0, sizeof(request));
+	request.kind = AIUS_SD_JOB_PROBE;
+	g_root_gate.started =
+		aius_runtime_teensy_start_storage_job(&g_runtime, &request);
+}
+
+/* optical_main.cpp's sd_settle_http_write() then sd_drop_orphan_staging(), at
+ * checkpoint 7, on the fake's staging; the orphan decision is the real
+ * portable aius_optical_app_sd_staging_orphaned(). */
+static void staging_service(void)
+{
+	const AiusRuntimeStorage &storage = g_runtime.storage;
+
+	if ((storage.http_owned || storage.draining) && !storage.terminal_seen) {
+		g_app.stage_seen = true;
+		if (g_app.staged && storage.job.kind == AIUS_SD_JOB_UPLOAD)
+			g_app.stage_writing = true;
+	} else if (g_app.stage_seen && storage.terminal_seen) {
+		g_app.stage_seen = false;
+		if (g_app.stage_writing) {
+			if (storage.job.state == AIUS_SD_DONE)
+				g_app.stage_commits++;
+			g_app.stage_writing = false;
+			g_app.staged = false;
+		}
+	}
+	if (g_app.staged && !g_app.stage_writing && !g_app.stage_seen &&
+	    aius_optical_app_sd_staging_orphaned(
+		    &g_runtime.network_http.http,
+		    g_runtime.network_http.deferred_start_present,
+		    g_runtime.storage_action_present)) {
+		g_app.staged = false;
+		g_app.stage_drops++;
+	}
+}
+
+static void admit_send(const char *request)
+{
+	g_net.client_pending = true;
+	g_net.rx = (const uint8_t *)request;
+	g_net.rx_length = strlen(request);
+	g_net.rx_offset = 0u;
+}
+
+static void test_http_admission(void)
+{
+	static const char *const keys[] = {
+		"admit.route-shed",       "admit.route-admit",
+		"admit.sd-start-shed",    "admit.defer-then-admit",
+		"admit.defer-500ms-shed", "admit.root-start-gated",
+		"admit.http-steps-not-deferred", "admit.root-started-not-deferred",
+		"admit.teardown-drops-staging", "admit.deferred-upload-commits"
+	};
+	static const char *const download_request =
+		"GET /sd/www/data.bin HTTP/1.1\r\nHost: aius\r\n\r\n";
+	static const char *const dsp_put_request =
+		"PUT /api/dsp/config HTTP/1.1\r\nHost: aius\r\n"
+		"X-Aius-SD-Auth: token\r\nContent-Type: application/json\r\n"
+		"Content-Length: 2\r\n\r\n{}";
+	uint32_t now_ms;
+
+	validate_unique_keys("registry.admit", keys, ARRAY_COUNT(keys), 10u);
+
+	current_key = "admit.route-shed";
+	admit_reset();
+	now_ms = 1u;
+	bring_online(&now_ms);
+	g_admit.route_verdict = AIUS_HTTP_VERDICT_SHED;
+	admit_send(kStatusRequest);
+	drive_epochs(&now_ms, 12u);
+	CHECK(g_admit.route_queries == 1u);
+	CHECK(g_admit.last_route == AIUS_HTTP_ROUTE_STATUS);
+	CHECK(g_app.status_calls == 0u);
+	CHECK(sink_contains("HTTP/1.0 503"));
+	CHECK(sink_contains("Retry-After: 1"));
+	CHECK(sink_contains("{\"ok\":false,\"error\":\"audio_busy\"}"));
+	CHECK(g_admit.shed_notes == 1u);
+	CHECK(g_runtime.network_http.http_requests == 1u);
+
+	current_key = "admit.route-admit";
+	admit_reset();
+	now_ms = 1u;
+	bring_online(&now_ms);
+	g_admit.route_verdict = AIUS_HTTP_VERDICT_DEFER; /* ROUTE DEFER == ADMIT */
+	admit_send(kStatusRequest);
+	drive_epochs(&now_ms, 12u);
+	CHECK(g_app.status_calls == 1u);
+	CHECK(sink_contains("HTTP/1.0 200 OK"));
+	CHECK(!sink_contains("Retry-After"));
+	CHECK(g_admit.shed_notes == 0u);
+
+	current_key = "admit.sd-start-shed";
+	admit_reset();
+	now_ms = 1u;
+	bring_online(&now_ms);
+	memcpy(g_sd.data, "hello-sd", 8u);
+	g_sd.data_length = 8u;
+	g_admit.sd_verdict = AIUS_HTTP_VERDICT_SHED;
+	admit_send(download_request);
+	drive_epochs(&now_ms, 30u);
+	CHECK(g_admit.sd_queries == 1u);
+	CHECK(g_admit.last_job == AIUS_SD_JOB_DOWNLOAD);
+	CHECK(g_sd.open_calls == 0u);
+	CHECK(g_sd.primitive_calls == 0u);
+	CHECK(sink_contains("HTTP/1.0 503"));
+	CHECK(sink_contains("Retry-After: 1"));
+	CHECK(sink_contains("audio_busy"));
+	CHECK(!sink_contains("hello-sd"));
+	CHECK(g_admit.shed_notes == 1u);
+
+	current_key = "admit.defer-then-admit";
+	admit_reset();
+	now_ms = 1u;
+	bring_online(&now_ms);
+	memcpy(g_sd.data, "hello-sd", 8u);
+	g_sd.data_length = 8u;
+	g_admit.sd_verdict = AIUS_HTTP_VERDICT_ADMIT;
+	g_admit.sd_defer_left = 5u;
+	admit_send(download_request);
+	drive_epochs(&now_ms, 50u);
+	CHECK(g_admit.sd_queries == 6u);
+	CHECK(sink_contains("HTTP/1.0 200 OK"));
+	CHECK(sink_contains("hello-sd"));
+	CHECK(g_sd.open_calls == 1u);
+	CHECK(g_admit.shed_notes == 0u);
+
+	current_key = "admit.defer-500ms-shed";
+	/* The real F9 decision on the fake clock: FIFO, live, level 0. The 503
+	 * comes at 500 ms of clock time, here after 20 epochs of 25 ms; no job
+	 * started before it. */
+	admit_reset();
+	now_ms = 1u;
+	bring_online(&now_ms);
+	g_admit.use_portable = true;
+	admit_send(download_request);
+	{
+		unsigned epochs = 0u;
+		uint32_t first_ms = 0u;
+		while (g_admit.sd_queries == 0u && epochs++ < 30u) {
+			g_admit.now_ms = now_ms;
+			CHECK(run_epoch(now_ms++));
+		}
+		CHECK(g_admit.sd_queries == 1u);
+		first_ms = g_admit.now_ms;
+		now_ms = first_ms;
+		for (unsigned i = 0; i < 19u; ++i) {
+			now_ms += 25u;
+			g_admit.now_ms = now_ms;
+			CHECK(run_epoch(now_ms));
+		}
+		CHECK(g_admit.now_ms - first_ms == 475u);
+		CHECK(g_admit.shed_notes == 0u);
+		CHECK(!sink_contains("HTTP/1.0 503"));
+		now_ms += 25u;
+		g_admit.now_ms = now_ms;
+		CHECK(run_epoch(now_ms));
+		CHECK(g_admit.shed_notes == 1u);
+		drive_epochs(&now_ms, 12u);
+		CHECK(sink_contains("HTTP/1.0 503"));
+		CHECK(sink_contains("Retry-After: 1"));
+		CHECK(sink_contains("audio_busy"));
+		CHECK(g_sd.open_calls == 0u);
+		CHECK(g_admit.admission.sd_fifo_defers == 20u);
+		CHECK(g_admit.admission.shed[AIUS_OPTICAL_ADMIT_SD_START_FIFO] == 1u);
+	}
+
+	current_key = "admit.root-start-gated";
+	/* Round 4: the only root hold is the composition's start gate. While it
+	 * holds no root job starts and the card is untouched; once it opens the
+	 * job starts, and with the gate holding again it steps every epoch to its
+	 * end rather than parking as ROOT_RUNNING (which would answer every SD
+	 * route sd_busy for the session). */
+	admit_reset();
+	g_root_gate.hold = true;
+	g_root_gate.started = false;
+	g_replay_hook = root_gate_service;
+	now_ms = 1u;
+	drive_epochs(&now_ms, 4u);
+	CHECK(!g_root_gate.started);
+	CHECK(g_sd.primitive_calls == 0u);
+	CHECK(g_runtime.storage.root_state != AIUS_RUNTIME_STORAGE_ROOT_RUNNING);
+	g_root_gate.hold = false;
+	CHECK(run_epoch(now_ms++));
+	CHECK(g_root_gate.started);
+	CHECK(g_sd.primitive_calls == 1u);
+	g_root_gate.hold = true;
+	{
+		unsigned epochs = 0u;
+		while (g_runtime.storage.root_state ==
+		               AIUS_RUNTIME_STORAGE_ROOT_RUNNING &&
+		       epochs < 8u) {
+			CHECK(run_epoch(now_ms++));
+			epochs++;
+		}
+		CHECK(g_runtime.storage.root_state ==
+		      AIUS_RUNTIME_STORAGE_ROOT_COMPLETE);
+		CHECK(epochs <= 3u);
+		CHECK(g_sd.primitive_calls >= 2u);
+	}
+	g_replay_hook = nullptr;
+
+	current_key = "admit.http-steps-not-deferred";
+	/* A started HTTP job steps every epoch to its 200. */
+	admit_reset();
+	now_ms = 1u;
+	bring_online(&now_ms);
+	memcpy(g_sd.data, "hello-sd", 8u);
+	g_sd.data_length = 8u;
+	admit_send(download_request);
+	drive_epochs(&now_ms, 40u);
+	CHECK(sink_contains("HTTP/1.0 200 OK"));
+	CHECK(sink_contains("hello-sd"));
+
+	current_key = "admit.root-started-not-deferred";
+	/* Round 4: a started root job steps one primitive every epoch, with no
+	 * consult, and completes. */
+	{
+		static AiusRuntimeStorage storage;
+		const AiusRuntimeBudget *budget =
+			aius_runtime_budget(AIUS_BOOT_CHECKPOINT_SD);
+		AiusSdJobRequest request;
+		AiusHttpEvent event;
+		unsigned epochs = 0u;
+
+		admit_reset();
+		arm_root_storage(&storage, AIUS_RUNTIME_STORAGE_PUBLISH_CAPACITY,
+		                 true);
+		g_publish.max_length = AIUS_RUNTIME_STORAGE_PUBLISH_CAPACITY;
+		request = config_load_request(AIUS_RUNTIME_STORAGE_PUBLISH_CAPACITY);
+		now_ms = 1u;
+		CHECK(aius_runtime_storage_start_root_job(&storage, &request,
+		                                          now_ms++));
+		CHECK(aius_runtime_storage_service(&storage, budget, now_ms++,
+		                                   nullptr, &event));
+		CHECK(g_sd.primitive_calls == 1u);
+		while (storage.root_state == AIUS_RUNTIME_STORAGE_ROOT_RUNNING &&
+		       epochs < 64u) {
+			g_sd.primitive_calls_epoch = 0u;
+			CHECK(aius_runtime_storage_service(&storage, budget, now_ms++,
+			                                   nullptr, &event));
+			CHECK(g_sd.primitive_calls_epoch <= 1u);
+			epochs++;
+		}
+		CHECK(storage.root_state == AIUS_RUNTIME_STORAGE_ROOT_COMPLETE);
+		CHECK(g_sd.primitive_calls > 2u);
+		CHECK(g_publish.calls == 1u);
+	}
+
+	current_key = "admit.teardown-drops-staging";
+	/* Round 4: a PUT /api/dsp/config arms its staging and its upload start
+	 * is held (DEFER) for as long as the margin is short; the staging stays
+	 * armed throughout. A network teardown drops the held start, and the
+	 * next checkpoint 7 disarms the staging, which no write will settle. */
+	admit_reset();
+	now_ms = 1u;
+	bring_online(&now_ms);
+	g_app.store_accept = true;
+	g_replay_hook = staging_service;
+	g_admit.sd_verdict = AIUS_HTTP_VERDICT_ADMIT;
+	g_admit.sd_defer_left = 1000u;
+	admit_send(dsp_put_request);
+	drive_epochs(&now_ms, 30u);
+	CHECK(g_admit.sd_queries > 5u);
+	CHECK(g_runtime.network_http.deferred_start_present);
+	CHECK(g_app.staged);
+	CHECK(g_app.stage_drops == 0u);
+	CHECK(g_sd.open_calls == 0u);
+	g_net.link = AIUS_NETWORK_TEENSY_LINK_DOWN;
+	drive_epochs(&now_ms, 6u);
+	CHECK(!g_runtime.network_http.deferred_start_present);
+	CHECK(!g_app.staged);
+	CHECK(g_app.stage_drops == 1u);
+	CHECK(g_app.stage_commits == 0u);
+	CHECK(g_sd.open_calls == 0u);
+	g_replay_hook = nullptr;
+
+	current_key = "admit.deferred-upload-commits";
+	/* The same upload held five consults then admitted: never dropped (not
+	 * at the arming epoch in DISPATCH, nor while held, nor while the
+	 * admitted start is queued), and it commits. */
+	admit_reset();
+	now_ms = 1u;
+	bring_online(&now_ms);
+	g_app.store_accept = true;
+	g_replay_hook = staging_service;
+	g_admit.sd_verdict = AIUS_HTTP_VERDICT_ADMIT;
+	g_admit.sd_defer_left = 5u;
+	admit_send(dsp_put_request);
+	drive_epochs(&now_ms, 60u);
+	CHECK(g_admit.sd_queries == 6u);
+	CHECK(g_app.stage_drops == 0u);
+	CHECK(g_app.stage_commits == 1u);
+	CHECK(!g_app.staged);
+	CHECK(sink_contains("HTTP/1.0 200 OK"));
+	g_replay_hook = nullptr;
+	g_admit.armed = false; /* later cases see the admit-all default again */
+}
+
 int main(void)
 {
 	aius_producer_yield_configure(600u, AIUS_PRODUCER_YIELD_LATE_US_DEFAULT);
@@ -3991,6 +4401,7 @@ int main(void)
 	test_storage_diagnostics();
 	test_teardown_ordering();
 	test_epoch_traces();
+	test_http_admission();
 	printf("ok runtime-target oracle\n");
 	return 0;
 }

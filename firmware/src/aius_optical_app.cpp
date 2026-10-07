@@ -853,7 +853,7 @@ static FLASHMEM const AiusHttpApplicationResponse *dispatch_recorder(
 				http_immediate(dispatcher, 200, kContentBinary, data,
 				               length);
 			dispatcher->recorder_lease_active = true;
-			dispatcher->recorder_lease_slot = resolved_slot;
+			dispatcher->recorder_lease_slot = (uint8_t)resolved_slot;
 			dispatcher->http_response.sd_settle = recorder_read_settle;
 			dispatcher->http_response.sd_settle_ctx = dispatcher;
 			return response;
@@ -2073,14 +2073,32 @@ static FLASHMEM bool route_is_control(AiusHttpRoute route)
 	       route == AIUS_HTTP_ROUTE_SD_MODE;
 }
 
+static FLASHMEM const AiusHttpApplicationResponse *http_dispatch_route(
+	AiusOpticalAppDispatcher *dispatcher, const AiusHttpRequest *request);
+
+/* Phase 4f F5: the optional begin/end pair brackets the whole route decision,
+ * so the composition's meter sees every stretch the dispatch runs. */
 FLASHMEM const AiusHttpApplicationResponse *aius_optical_app_http_dispatch(
 	AiusOpticalAppDispatcher *dispatcher, const AiusHttpRequest *request)
 {
 	const AiusOpticalApp *app;
+	const AiusHttpApplicationResponse *response;
 	if (dispatcher == NULL || !dispatcher->valid || request == NULL)
 		return NULL;
 	app = &dispatcher->app;
 	dispatcher->http_dispatches++;
+	if (app->dispatch_begin != NULL)
+		app->dispatch_begin(app->context);
+	response = http_dispatch_route(dispatcher, request);
+	if (app->dispatch_end != NULL)
+		app->dispatch_end(app->context, request->route, request->method);
+	return response;
+}
+
+static FLASHMEM const AiusHttpApplicationResponse *http_dispatch_route(
+	AiusOpticalAppDispatcher *dispatcher, const AiusHttpRequest *request)
+{
+	const AiusOpticalApp *app = &dispatcher->app;
 	/* Before the switch rather than inside each of the four arms: the refusal
 	 * must reach the client without the effect having happened, and one gate
 	 * cannot be forgotten by a fifth control route added later. */
@@ -2098,6 +2116,13 @@ FLASHMEM const AiusHttpApplicationResponse *aius_optical_app_http_dispatch(
 		return http_serialized(dispatcher, kContentJson,
 		                       app->write_status(app->context, dispatcher->body,
 		                                         dispatcher->body_capacity));
+	case AIUS_HTTP_ROUTE_STATUS_BRIEF:
+		if (app->write_status_brief == NULL)
+			break;
+		return http_serialized(dispatcher, kContentJson,
+		                       app->write_status_brief(app->context,
+		                                               dispatcher->body,
+		                                               dispatcher->body_capacity));
 	case AIUS_HTTP_ROUTE_EVENTS:
 		return http_serialized(dispatcher, kContentJson,
 		                       app->write_events(app->context, request->cursor,
@@ -2256,4 +2281,310 @@ FLASHMEM const AiusUsbApplicationResponse *aius_optical_app_usb_dispatch(
 		break;
 	}
 	return usb_error(dispatcher, AIUS_USB_ERROR_INTERNAL);
+}
+
+/* ------------------------------------------------------------------ */
+/* Admission (Phase 4f)                                                */
+/* ------------------------------------------------------------------ */
+
+#ifndef PROGMEM
+#define PROGMEM
+#endif
+
+/* F8: each class's declared seed, the estimated longest stretch (us) its
+ * dispatch runs between yield points, judged until the first measurement.
+ * PROGMEM: flash, not DTCM .rodata (4e §Memory, the .data cliff). */
+static const uint16_t kAdmitSeedUs[AIUS_OPTICAL_ADMIT_CLASSES] PROGMEM = {
+	600u,   /* STATUS: one append after the per-append yields */
+	200u,   /* BRIEF: one short snprintf */
+	400u,   /* METERS */
+	600u,   /* EVENTS: one page */
+	2000u,  /* SETTINGS: a body parse with no yield point (F7) */
+	1500u,  /* DIRECTORY: one raw directory read between card waits */
+	500u,   /* SD start, DMA: one window stretch between hooks */
+	20000u  /* SD start, FIFO: a whole card primitive */
+};
+
+#define ADMIT_COUNT_MASK 0x1fu
+#define ADMIT_OLDEST_SHIFT 5u
+
+static FLASHMEM void admit_seed(AiusOpticalCostWindow *window, uint16_t seed)
+{
+	for (unsigned i = 0; i < AIUS_OPTICAL_ADMIT_SLOTS; i++)
+		window->slot[i] = seed;
+	window->count = 0u;
+	window->seeded = 1u;
+	window->opened_ms = 0u;
+}
+
+/* F-B1: every whole 2,000 ms since the current bucket opened retires it over
+ * the oldest completed one and opens an empty one, so a window ages in wall
+ * time whether or not its class adds samples. Five or more periods, or every
+ * slot aged to 0, leave no measurement in the window: it returns to its seed
+ * (F8, R4-S1). A seeded window has no bucket open and does not age. */
+static FLASHMEM void admit_age(AiusOpticalCostWindow *w, unsigned klass,
+                               uint32_t now_ms)
+{
+	uint32_t periods;
+	unsigned oldest;
+	uint16_t any = 0u;
+
+	if (w->seeded != 0u)
+		return;
+	periods = (uint32_t)(now_ms - w->opened_ms) / AIUS_OPTICAL_ADMIT_BUCKET_MS;
+	if (periods == 0u)
+		return;
+	if (periods >= AIUS_OPTICAL_ADMIT_SLOTS) {
+		admit_seed(w, kAdmitSeedUs[klass]);
+		return;
+	}
+	oldest = (unsigned)(w->count >> ADMIT_OLDEST_SHIFT) & 3u;
+	for (uint32_t p = 0; p < periods; p++) {
+		w->slot[oldest] = w->slot[AIUS_OPTICAL_ADMIT_SLOTS - 1u];
+		oldest = (oldest + 1u) & 3u;
+		w->slot[AIUS_OPTICAL_ADMIT_SLOTS - 1u] = 0u;
+	}
+	for (unsigned i = 0; i < AIUS_OPTICAL_ADMIT_SLOTS; i++)
+		any |= w->slot[i];
+	if (any == 0u) {
+		admit_seed(w, kAdmitSeedUs[klass]);
+		return;
+	}
+	w->count = (uint8_t)(oldest << ADMIT_OLDEST_SHIFT);
+	w->opened_ms += periods * AIUS_OPTICAL_ADMIT_BUCKET_MS;
+}
+
+FLASHMEM void aius_optical_admission_age(AiusOpticalAdmission *admission,
+                                         uint32_t now_ms)
+{
+	if (admission == NULL)
+		return;
+	for (unsigned c = 0; c < AIUS_OPTICAL_ADMIT_CLASSES; c++)
+		admit_age(&admission->window[c], c, now_ms);
+}
+
+FLASHMEM void aius_optical_admission_init(AiusOpticalAdmission *admission)
+{
+	if (admission == NULL)
+		return;
+	memset(admission, 0, sizeof(*admission));
+	for (unsigned c = 0; c < AIUS_OPTICAL_ADMIT_CLASSES; c++)
+		admit_seed(&admission->window[c], kAdmitSeedUs[c]);
+}
+
+FLASHMEM void aius_optical_admission_clear(AiusOpticalAdmission *admission)
+{
+	if (admission == NULL)
+		return;
+	memset(admission->shed, 0, sizeof(admission->shed));
+	admission->dispatch_max_us = 0u;
+	admission->sd_fifo_defers = 0u;
+}
+
+FLASHMEM AiusOpticalAdmitClass aius_optical_admit_route_class(
+	AiusHttpRoute route, AiusHttpMethod method)
+{
+	switch (route) {
+	case AIUS_HTTP_ROUTE_STATUS:
+		return method == AIUS_HTTP_GET ? AIUS_OPTICAL_ADMIT_STATUS
+		                               : AIUS_OPTICAL_ADMIT_NONE;
+	case AIUS_HTTP_ROUTE_STATUS_BRIEF:
+		return method == AIUS_HTTP_GET ? AIUS_OPTICAL_ADMIT_BRIEF
+		                               : AIUS_OPTICAL_ADMIT_NONE;
+	case AIUS_HTTP_ROUTE_METERS:
+		return method == AIUS_HTTP_GET ? AIUS_OPTICAL_ADMIT_METERS
+		                               : AIUS_OPTICAL_ADMIT_NONE;
+	case AIUS_HTTP_ROUTE_EVENTS:
+		return method == AIUS_HTTP_GET ? AIUS_OPTICAL_ADMIT_EVENTS
+		                               : AIUS_OPTICAL_ADMIT_NONE;
+	case AIUS_HTTP_ROUTE_DSP_CONFIG:
+	case AIUS_HTTP_ROUTE_CONFIG_PUBLIC:
+		/* The GET is a one-shot serialise a 503 would turn into a failed
+		 * page load (F13); only the PUT parse is a class. */
+		return method == AIUS_HTTP_PUT ? AIUS_OPTICAL_ADMIT_SETTINGS
+		                               : AIUS_OPTICAL_ADMIT_NONE;
+	case AIUS_HTTP_ROUTE_REPLAYS:
+		return method == AIUS_HTTP_GET ? AIUS_OPTICAL_ADMIT_DIRECTORY
+		                               : AIUS_OPTICAL_ADMIT_NONE;
+	default:
+		return AIUS_OPTICAL_ADMIT_NONE;
+	}
+}
+
+FLASHMEM void aius_optical_admission_record(AiusOpticalAdmission *admission,
+                                            AiusOpticalAdmitClass klass,
+                                            uint32_t us, uint32_t now_ms)
+{
+	AiusOpticalCostWindow *w;
+	uint16_t v;
+	unsigned count, oldest;
+
+	if (admission == NULL || (unsigned)klass >= AIUS_OPTICAL_ADMIT_CLASSES)
+		return;
+	w = &admission->window[klass];
+	admit_age(w, (unsigned)klass, now_ms);
+	v = us > 0xffffu ? (uint16_t)0xffffu : (uint16_t)us;
+	if (w->seeded != 0u) {
+		/* F8: the first measurement replaces the seed in every slot and
+		 * opens the first bucket. */
+		for (unsigned i = 0; i < AIUS_OPTICAL_ADMIT_SLOTS; i++)
+			w->slot[i] = v;
+		w->seeded = 0u;
+		w->count = 1u;
+		w->opened_ms = now_ms;
+		return;
+	}
+	count = w->count & ADMIT_COUNT_MASK;
+	oldest = (unsigned)(w->count >> ADMIT_OLDEST_SHIFT) & 3u;
+	if (count >= AIUS_OPTICAL_ADMIT_BUCKET) {
+		/* Retire the full current bucket over the oldest completed one;
+		 * the next bucket opens with this sample. */
+		w->slot[oldest] = w->slot[AIUS_OPTICAL_ADMIT_SLOTS - 1u];
+		oldest = (oldest + 1u) & 3u;
+		count = 0u;
+		w->opened_ms = now_ms;
+	}
+	if (count == 0u || v > w->slot[AIUS_OPTICAL_ADMIT_SLOTS - 1u])
+		w->slot[AIUS_OPTICAL_ADMIT_SLOTS - 1u] = v;
+	count++;
+	w->count = (uint8_t)(count | (oldest << ADMIT_OLDEST_SHIFT));
+}
+
+FLASHMEM void aius_optical_admission_note_dispatch(
+	AiusOpticalAdmission *admission, AiusHttpRoute route,
+	AiusHttpMethod method, uint32_t us, uint32_t now_ms)
+{
+	if (admission == NULL)
+		return;
+	if (us > admission->dispatch_max_us)
+		admission->dispatch_max_us = us;
+	aius_optical_admission_record(admission,
+	                              aius_optical_admit_route_class(route, method),
+	                              us, now_ms);
+}
+
+FLASHMEM uint32_t aius_optical_admission_cost_us(
+	const AiusOpticalAdmission *admission, AiusOpticalAdmitClass klass)
+{
+	uint16_t cost = 0u;
+	if (admission == NULL || (unsigned)klass >= AIUS_OPTICAL_ADMIT_CLASSES)
+		return 0u;
+	for (unsigned i = 0; i < AIUS_OPTICAL_ADMIT_SLOTS; i++)
+		if (admission->window[klass].slot[i] > cost)
+			cost = admission->window[klass].slot[i];
+	return cost;
+}
+
+FLASHMEM bool aius_optical_admission_short(
+	const AiusOpticalAdmission *admission, AiusOpticalAdmitClass klass,
+	const AiusOpticalAdmitSample *sample)
+{
+	int64_t margin, need;
+	if (admission == NULL || sample == NULL || !sample->live_owns_ring ||
+	    (unsigned)klass >= AIUS_OPTICAL_ADMIT_CLASSES)
+		return false;
+	margin = (int64_t)sample->level_frames - AIUS_OPTICAL_ADMIT_UNDERRUN_FRAMES;
+	need = ((int64_t)aius_optical_admission_cost_us(admission, klass) *
+	                AIUS_OPTICAL_ADMIT_FRAMES_PER_MS + 999) / 1000 +
+	       AIUS_OPTICAL_ADMIT_GUARD_FRAMES;
+	return margin < need;
+}
+
+FLASHMEM AiusOpticalAdmitVerdict aius_optical_admission_route(
+	AiusOpticalAdmission *admission, AiusHttpRoute route,
+	AiusHttpMethod method, const AiusOpticalAdmitSample *sample)
+{
+	AiusOpticalAdmitClass klass = aius_optical_admit_route_class(route, method);
+	if (klass == AIUS_OPTICAL_ADMIT_NONE || admission == NULL || sample == NULL)
+		return AIUS_OPTICAL_ADMIT_VERDICT_ADMIT;
+	/* F-B1: a shed adds no sample, so the window ages here too. */
+	admit_age(&admission->window[klass], (unsigned)klass, sample->now_ms);
+	if (!aius_optical_admission_short(admission, klass, sample))
+		return AIUS_OPTICAL_ADMIT_VERDICT_ADMIT;
+	admission->shed[klass]++;
+	return AIUS_OPTICAL_ADMIT_VERDICT_SHED;
+}
+
+FLASHMEM bool aius_optical_admission_sd_fifo_defer(
+	AiusOpticalAdmission *admission, const AiusOpticalAdmitSample *sample)
+{
+	if (admission == NULL || sample == NULL || !sample->fifo_mode ||
+	    admission->bringup_loaded == 0u)
+		return false;
+	admit_age(&admission->window[AIUS_OPTICAL_ADMIT_SD_START_FIFO],
+	          AIUS_OPTICAL_ADMIT_SD_START_FIFO, sample->now_ms);
+	if (!aius_optical_admission_short(admission,
+	                                  AIUS_OPTICAL_ADMIT_SD_START_FIFO, sample))
+		return false;
+	admission->sd_fifo_defers++;
+	return true;
+}
+
+FLASHMEM void aius_optical_admission_note_bringup_loaded(
+	AiusOpticalAdmission *admission)
+{
+	if (admission != NULL)
+		admission->bringup_loaded = 1u;
+}
+
+FLASHMEM bool aius_optical_app_sd_staging_orphaned(
+	const AiusHttpTransaction *http, bool start_held, bool start_queued)
+{
+	if (http == NULL || start_held || start_queued)
+		return false;
+	return http->state != AIUS_HTTP_TX_DISPATCH &&
+	       http->state != AIUS_HTTP_TX_SD_START &&
+	       http->state != AIUS_HTTP_TX_SD_TRANSFER;
+}
+
+FLASHMEM bool aius_optical_app_sd_job_is_ota_staging(const AiusSdJobRequest *job)
+{
+	static const char kName[] PROGMEM = AIUS_OPTICAL_APP_OTA_STAGED_NAME;
+	size_t length, name = sizeof(kName) - 1u;
+	if (job == NULL || job->kind != AIUS_SD_JOB_UPLOAD ||
+	    job->target_path == NULL)
+		return false;
+	length = strlen(job->target_path);
+	return length >= name &&
+	       memcmp(job->target_path + length - name, kName, name) == 0;
+}
+
+FLASHMEM AiusOpticalAdmitVerdict aius_optical_admission_sd_start(
+	AiusOpticalAdmission *admission, const AiusSdJobRequest *job,
+	const AiusOpticalAdmitSample *sample, bool reconsult)
+{
+	AiusOpticalAdmitClass klass;
+	if (admission == NULL || sample == NULL ||
+	    aius_optical_app_sd_job_is_ota_staging(job))
+		return AIUS_OPTICAL_ADMIT_VERDICT_ADMIT;
+	klass = sample->fifo_mode ? AIUS_OPTICAL_ADMIT_SD_START_FIFO
+	                          : AIUS_OPTICAL_ADMIT_SD_START_DMA;
+	admit_age(&admission->window[klass], (unsigned)klass, sample->now_ms);
+	/* F-S2: the timer belongs to the held start; a first consult is a
+	 * different start (a teardown may have dropped the held one). */
+	if (!reconsult)
+		admission->defer_timing = 0u;
+	if (sample->fifo_mode) {
+		/* sd_fifo_defer()'s predicate; the held epoch is counted only
+		 * when the verdict is DEFER. */
+		if (!aius_optical_admission_short(admission, klass, sample)) {
+			admission->defer_timing = 0u;
+			return AIUS_OPTICAL_ADMIT_VERDICT_ADMIT;
+		}
+		if (admission->defer_timing == 0u) {
+			admission->defer_timing = 1u;
+			admission->defer_started_ms = sample->now_ms;
+		}
+		if ((uint32_t)(sample->now_ms - admission->defer_started_ms) <
+		    AIUS_OPTICAL_ADMIT_SD_DEFER_MS) {
+			admission->sd_fifo_defers++;
+			return AIUS_OPTICAL_ADMIT_VERDICT_DEFER;
+		}
+	} else if (!aius_optical_admission_short(admission, klass, sample)) {
+		admission->defer_timing = 0u;
+		return AIUS_OPTICAL_ADMIT_VERDICT_ADMIT;
+	}
+	admission->defer_timing = 0u;
+	admission->shed[klass]++;
+	return AIUS_OPTICAL_ADMIT_VERDICT_SHED;
 }

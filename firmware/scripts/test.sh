@@ -390,6 +390,16 @@ dsp-config)
 	# The committed DSP-config setter's PUT body, refusals and --wait, over a fake
 	# transport and a real live GET fixture.
 	python3 "$fw_root/test/dsp-config/test_aius_dsp_set.py"
+	# Phase 4f F10: dsp_model_pad.py pads the live model to exactly the
+	# 12,288 B Apply limit; the dump harness (compiled like test_dsp_config.c)
+	# proves the padded body parses to the input's model.
+	"$cc" "${cflags[@]}" "-I$fw_root/lib/aius_dsp_config/include" \
+		"-I$fw_root/lib/aius_json/include" \
+		"$fw_root/test/dsp-config/dsp_model_dump.c" \
+		"$fw_root/lib/aius_dsp_config/src/aius_dsp_config.c" \
+		"$fw_root/lib/aius_json/src/aius_json.c" \
+		-lm -o "$build_dir/dsp-model-dump"
+	python3 "$fw_root/test/dsp-config/test_dsp_model_pad.py" "$fw_root"
 	;;
 arena)
 	compile_and_run arena "$src/aius_arena.c" "$fw_root/test/arena/test_arena.c"

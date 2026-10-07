@@ -252,6 +252,33 @@ returns an `UPLOAD` job, and the client's 200 is withheld until that write
 commits. One job runs at a time and neither owner preempts the other — a boot
 load that lands mid-upload waits, so a config can be late but never lost.
 
+### HTTP is best-effort during playback
+
+Since aius-sample-rate-following Phase 4f no HTTP dispatch runs CPU work the
+transmit ring cannot absorb. While live input owns the ring (`live_owns_ring()`
+in `optical_main.cpp`: the ring's gate flag set with the carrier locked), a
+route in an admission class (full status, `GET /api/status/brief`, meters,
+events, the settings `PUT` parses, `GET /api/replays`) whose cost exceeds the
+ring margin answers an immediate `503 audio_busy` with `Retry-After: 1`, and an
+HTTP SD job start is refused the same way. A class's cost is its longest
+stretch between yield points with nested producer passes excluded, a bucketed
+maximum seeded at boot and kept across `POST /api/clear`. A bucket closes after
+16 samples or 2,000 ms of `millis()`, so an outlier ages out within about 10 s
+even while its class is shed, and a window aged out empty returns to its seed.
+In FIFO mode `sd_fifo_defer()` holds a root SD job's start while the margin is
+short (never before bring-up's first `/aius/dsp.json` load has ended, found or
+not, so the card's `config.json` and `dsp.json` load while live; once started a
+root job runs to its end and may cost a dropout), and an HTTP SD start waits at
+most 500 ms before its 503 (a shed settings `PUT` disarms its staged upload, as
+does a network teardown that drops a held start); OTA
+staging and control routes are never shed. With no live input nothing is shed
+or deferred. The status render yields after every append (`status_append`, and
+`diag_append` in the storage `sd_diag` section), so its cost is one append.
+`/api/status` publishes `http_shed`, `http_shed_class`, `http_class_cost_us`,
+`http_dispatch_max_us` and `sd_fifo_defers`. The portable decisions live in
+`aius_optical_app.cpp` (admission); the runtime seam calls the link-time hook
+`aius_runtime_http_admit()`, defined in `optical_main.cpp`.
+
 ### Provisioning the card, and the token you must keep
 
 The device serves its own control surface from the card, and every write to it
@@ -335,7 +362,8 @@ straight out of the audio path's headroom. Three rules, all enforced:
   audio ISR. `enqueue()` uses about 4 kB of frame at the bounded AUDIO
   checkpoint; the ISR now only publishes ingress. Since Phase 4e a nested
   producer pass also runs on the main stack under an SD wait or a checkpoint
-  yield point; `stack-bound` proves the deepest path plus 2,048 B fits the
+  yield point (and, since Phase 4f, a status render append); `stack-bound`
+  proves the deepest path plus 2,048 B fits the
   zone, and `audio_diag.stack_free_min_bytes` is the device floor (boot
   paint, 1 Hz scan).
 - **Nine post-link ITCM checks**, in `test/itcm-placement/verify_target.py` and

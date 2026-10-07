@@ -172,7 +172,7 @@ function createDevice(options = {}) {
       return stub.files ? jsonResponse(200, { ok: true, files: stub.files, truncated: stub.truncated }) : jsonResponse(503, { ok: false, error: 'sd_busy' });
     }
     if (url === '/api/replays/status') {
-      return stub.status ? jsonResponse(200, stub.status) : jsonResponse(503, { ok: false, error: 'unavailable' });
+      return stub.status ? jsonResponse(200, stub.status) : jsonResponse(500, { ok: false, error: 'unavailable' });
     }
     if (url === '/api/replays/start') return stub.startResult;
     if (url === '/api/replays/stop') return jsonResponse(200, { ok: true, state: 'stopped' });
@@ -457,6 +457,9 @@ describe('Aius SD replay manager — polling', () => {
     expect(el('state').textContent).toBe('playing');
 
     device.status = null;
+    await vi.advanceTimersByTimeAsync(2500);
+    await settle();
+    expect(el('state').textContent).toBe('playing');
     await vi.advanceTimersByTimeAsync(1000);
     await settle();
 
@@ -709,8 +712,26 @@ describe('Aius SD replay manager — meters', () => {
 
     expect(el('state').textContent).toBe('playing');
     expect(el('active').textContent).toBe('film-51');
+    expect(el('meter-state').textContent).not.toBe('unreachable');
+    await vi.advanceTimersByTimeAsync(500);
+    await settle();
     expect(el('meter-state').textContent).toBe('unreachable');
     expect(el('meter-summary').textContent).toContain('HTTP 500');
+    expect(el('playback-grid').dataset.stale).toBeUndefined();
+  });
+
+  it('treats a 503 on any poll as a silent skip that keeps the last values and pills', async () => {
+    device = await boot({
+      files: [completeFile('film-51', 4194304)],
+      status: Object.assign({}, DEFAULT_STATUS, { state: 'playing', id: 'film-51' }),
+    });
+    globalThis.fetch = vi.fn(async () => jsonResponse(503, { ok: false, error: 'audio_busy' }));
+    await vi.advanceTimersByTimeAsync(30000);
+    await settle();
+
+    expect(el('state').textContent).toBe('playing');
+    expect(el('meter-state').textContent).not.toBe('unreachable');
+    expect(el('library-state').textContent).not.toBe('unreachable');
     expect(el('playback-grid').dataset.stale).toBeUndefined();
   });
 

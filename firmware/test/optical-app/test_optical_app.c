@@ -3724,9 +3724,10 @@ static void test_route_coverage(void)
 		  "\"gr_threshold_db\":0,"
 		  "\"gr_hold_blocks\":1,\"postroll_blocks\":188}", -1 },
 		{ "GET /api/recorder/data?offset=0&length=8&generation=0",
-		  "X-Aius-SD-Auth: token\r\n", NULL, -1 }
+		  "X-Aius-SD-Auth: token\r\n", NULL, -1 },
+		{ "GET /api/status/brief", NULL, NULL, -1 }
 	};
-	bool seen[AIUS_HTTP_ROUTE_RECORDER_DATA + 1u];
+	bool seen[AIUS_HTTP_ROUTE_STATUS_BRIEF + 1u];
 	memset(seen, 0, sizeof(seen));
 	fixture_init(&fixture);
 
@@ -3738,9 +3739,12 @@ static void test_route_coverage(void)
 		assert(response->status >= 200u && response->status < 600u);
 		assert(response->content_type != NULL);
 		assert(response->body_length == 0u || response->body != NULL);
-		assert(fixture.request.route <= AIUS_HTTP_ROUTE_RECORDER_DATA);
+		assert(fixture.request.route <= AIUS_HTTP_ROUTE_STATUS_BRIEF);
 		seen[fixture.request.route] = true;
 	}
+	/* Phase 4f: the brief route is dispatched (404 without the optional
+	 * writer, which this fixture leaves unwired). */
+	assert(seen[AIUS_HTTP_ROUTE_STATUS_BRIEF]);
 	/* AIUS_HTTP_ROUTE_UNKNOWN never survives the parser, so the inventory is
 	 * every other enumerator. */
 	for (unsigned route = AIUS_HTTP_ROUTE_HOME;
@@ -3751,8 +3755,487 @@ static void test_route_coverage(void)
 	}
 }
 
+/* ------------------------------------------------------------------ */
+/* Phase 4f: brief route, dispatch meter hooks, admission decisions     */
+/* ------------------------------------------------------------------ */
+
+static struct {
+	unsigned brief_calls, begins, ends;
+	AiusHttpRoute end_route;
+	AiusHttpMethod end_method;
+} g_4f;
+
+static size_t fake_write_brief(void *context, uint8_t *body, size_t capacity)
+{
+	(void)context;
+	g_4f.brief_calls++;
+	return (size_t)snprintf((char *)body, capacity, "{\"carrier\":1}");
+}
+
+static void fake_dispatch_begin(void *context)
+{
+	(void)context;
+	assert(g_4f.begins == g_4f.ends);
+	g_4f.begins++;
+}
+
+static void fake_dispatch_end(void *context, AiusHttpRoute route,
+                              AiusHttpMethod method)
+{
+	(void)context;
+	g_4f.ends++;
+	g_4f.end_route = route;
+	g_4f.end_method = method;
+}
+
+static void test_status_brief_and_dispatch_hooks(void)
+{
+	Fixture fixture;
+	memset(&g_4f, 0, sizeof(g_4f));
+	fixture_init(&fixture);
+	/* Optional: absent, the route answers 404 and no hook is required. */
+	expect_immediate(dispatch_get(&fixture, "GET /api/status/brief"), 404,
+	                 "{\"ok\":false}");
+	fixture.dispatcher.app.write_status_brief = fake_write_brief;
+	fixture.dispatcher.app.dispatch_begin = fake_dispatch_begin;
+	fixture.dispatcher.app.dispatch_end = fake_dispatch_end;
+	expect_immediate(dispatch_get(&fixture, "GET /api/status/brief"), 200,
+	                 "{\"carrier\":1}");
+	assert(g_4f.brief_calls == 1u);
+	assert(g_4f.begins == 1u && g_4f.ends == 1u);
+	assert(g_4f.end_route == AIUS_HTTP_ROUTE_STATUS_BRIEF);
+	assert(g_4f.end_method == AIUS_HTTP_GET);
+	expect_immediate(dispatch_get(&fixture, "GET /api/status"), 200,
+	                 "{\"body\":\"status\"}");
+	assert(g_4f.begins == 2u && g_4f.ends == 2u);
+	assert(g_4f.end_route == AIUS_HTTP_ROUTE_STATUS);
+	/* A refused control route is still bracketed (its stretch is metered). */
+	(void)dispatch_request(&fixture, "POST /api/clear", NULL, NULL, -1);
+	assert(g_4f.begins == 3u && g_4f.ends == 3u);
+	assert(g_4f.end_route == AIUS_HTTP_ROUTE_CLEAR);
+}
+
+static AiusOpticalAdmitSample admit_sample(bool live, uint32_t level,
+                                           bool fifo, uint32_t now_ms)
+{
+	AiusOpticalAdmitSample s;
+	memset(&s, 0, sizeof(s));
+	s.live_owns_ring = live;
+	s.level_frames = level;
+	s.fifo_mode = fifo;
+	s.now_ms = now_ms;
+	return s;
+}
+
+/* level at which `cost_us` is exactly admitted: 128 + ceil(cost * 48 / 1000) + 48. */
+static uint32_t admit_level(uint32_t cost_us)
+{
+	return 128u + (cost_us * 48u + 999u) / 1000u + 48u;
+}
+
+static void test_admission_classes(void)
+{
+	static const struct { AiusHttpRoute route; AiusHttpMethod method;
+	                      AiusOpticalAdmitClass klass; } classes[] = {
+		{ AIUS_HTTP_ROUTE_STATUS, AIUS_HTTP_GET, AIUS_OPTICAL_ADMIT_STATUS },
+		{ AIUS_HTTP_ROUTE_STATUS_BRIEF, AIUS_HTTP_GET, AIUS_OPTICAL_ADMIT_BRIEF },
+		{ AIUS_HTTP_ROUTE_METERS, AIUS_HTTP_GET, AIUS_OPTICAL_ADMIT_METERS },
+		{ AIUS_HTTP_ROUTE_EVENTS, AIUS_HTTP_GET, AIUS_OPTICAL_ADMIT_EVENTS },
+		{ AIUS_HTTP_ROUTE_DSP_CONFIG, AIUS_HTTP_PUT, AIUS_OPTICAL_ADMIT_SETTINGS },
+		{ AIUS_HTTP_ROUTE_CONFIG_PUBLIC, AIUS_HTTP_PUT, AIUS_OPTICAL_ADMIT_SETTINGS },
+		{ AIUS_HTTP_ROUTE_REPLAYS, AIUS_HTTP_GET, AIUS_OPTICAL_ADMIT_DIRECTORY },
+	};
+	/* F13: never shed, whatever the margin. */
+	static const struct { AiusHttpRoute route; AiusHttpMethod method; } never[] = {
+		{ AIUS_HTTP_ROUTE_DSP_CONFIG, AIUS_HTTP_GET },
+		{ AIUS_HTTP_ROUTE_SD_FILE, AIUS_HTTP_GET },
+		{ AIUS_HTTP_ROUTE_REPLAYS_STATUS, AIUS_HTTP_GET },
+		{ AIUS_HTTP_ROUTE_RECORDER, AIUS_HTTP_GET },
+		{ AIUS_HTTP_ROUTE_RECORDER_DATA, AIUS_HTTP_GET },
+		{ AIUS_HTTP_ROUTE_RECORDER_CONFIG, AIUS_HTTP_PUT },
+		{ AIUS_HTTP_ROUTE_START, AIUS_HTTP_POST },
+		{ AIUS_HTTP_ROUTE_STOP, AIUS_HTTP_POST },
+		{ AIUS_HTTP_ROUTE_CLEAR, AIUS_HTTP_POST },
+		{ AIUS_HTTP_ROUTE_REBOOT, AIUS_HTTP_POST },
+		{ AIUS_HTTP_ROUTE_SD_MODE, AIUS_HTTP_POST },
+		{ AIUS_HTTP_ROUTE_REPLAYS, AIUS_HTTP_DELETE },
+		{ AIUS_HTTP_ROUTE_OTA, AIUS_HTTP_GET },
+		{ AIUS_HTTP_ROUTE_OTA_IMAGE, AIUS_HTTP_PUT },
+		{ AIUS_HTTP_ROUTE_OTA_ACTIVATE, AIUS_HTTP_POST },
+		{ AIUS_HTTP_ROUTE_HOME, AIUS_HTTP_GET },
+	};
+	AiusOpticalAdmission a;
+	AiusOpticalAdmitSample s;
+
+	aius_optical_admission_init(&a);
+	for (size_t i = 0; i < ARRAY_LENGTH(classes); ++i) {
+		AiusOpticalAdmitClass k = classes[i].klass;
+		uint32_t cost = aius_optical_admission_cost_us(&a, k);
+		uint32_t level;
+		assert(aius_optical_admit_route_class(classes[i].route,
+		                                      classes[i].method) == k);
+		/* At boot the first dispatch is judged against the seed. */
+		assert(cost > 0u);
+		level = admit_level(cost);
+		s = admit_sample(true, level, false, 0u);
+		assert(aius_optical_admission_route(&a, classes[i].route,
+		                                    classes[i].method, &s) ==
+		       AIUS_OPTICAL_ADMIT_VERDICT_ADMIT);
+		s = admit_sample(true, level - 1u, false, 0u);
+		assert(aius_optical_admission_route(&a, classes[i].route,
+		                                    classes[i].method, &s) ==
+		       AIUS_OPTICAL_ADMIT_VERDICT_SHED);
+		/* F11: the gate flag clear (or set with the carrier unlocked, a
+		 * replay) is no ownership: level 0 admits. live_owns_ring is the
+		 * composition's one predicate, so both states arrive here as false. */
+		s = admit_sample(false, 0u, false, 0u);
+		assert(aius_optical_admission_route(&a, classes[i].route,
+		                                    classes[i].method, &s) ==
+		       AIUS_OPTICAL_ADMIT_VERDICT_ADMIT);
+		/* Live at level 0: every sheddable class sheds. */
+		s = admit_sample(true, 0u, false, 0u);
+		assert(aius_optical_admission_route(&a, classes[i].route,
+		                                    classes[i].method, &s) ==
+		       AIUS_OPTICAL_ADMIT_VERDICT_SHED);
+	}
+	assert(a.shed[AIUS_OPTICAL_ADMIT_SETTINGS] == 4u);
+	assert(a.shed[AIUS_OPTICAL_ADMIT_STATUS] == 2u);
+	/* The measured cost moves the boundary: 0.3 ms of longest stretch (a 9 ms
+	 * dispatch whose nested passes the meter excluded) replaces the seed. */
+	aius_optical_admission_note_dispatch(&a, AIUS_HTTP_ROUTE_STATUS,
+	                                     AIUS_HTTP_GET, 300u, 0u);
+	assert(aius_optical_admission_cost_us(&a, AIUS_OPTICAL_ADMIT_STATUS) == 300u);
+	s = admit_sample(true, admit_level(300u), false, 0u);
+	assert(aius_optical_admission_route(&a, AIUS_HTTP_ROUTE_STATUS,
+	                                    AIUS_HTTP_GET, &s) ==
+	       AIUS_OPTICAL_ADMIT_VERDICT_ADMIT);
+
+	for (size_t i = 0; i < ARRAY_LENGTH(never); ++i) {
+		assert(aius_optical_admit_route_class(never[i].route, never[i].method) ==
+		       AIUS_OPTICAL_ADMIT_NONE);
+		s = admit_sample(true, 0u, true, 0u);
+		assert(aius_optical_admission_route(&a, never[i].route,
+		                                    never[i].method, &s) ==
+		       AIUS_OPTICAL_ADMIT_VERDICT_ADMIT);
+	}
+	/* An unlisted route's stretch still raises the watermark (F13). */
+	aius_optical_admission_note_dispatch(&a, AIUS_HTTP_ROUTE_DSP_CONFIG,
+	                                     AIUS_HTTP_GET, 4321u, 0u);
+	assert(a.dispatch_max_us == 4321u);
+
+	/* F8: POST /api/clear keeps every cost, resets the counters. */
+	{
+		uint32_t before[AIUS_OPTICAL_ADMIT_CLASSES];
+		for (unsigned c = 0; c < AIUS_OPTICAL_ADMIT_CLASSES; ++c)
+			before[c] = aius_optical_admission_cost_us(&a, (AiusOpticalAdmitClass)c);
+		a.sd_fifo_defers = 9u;
+		aius_optical_admission_clear(&a);
+		for (unsigned c = 0; c < AIUS_OPTICAL_ADMIT_CLASSES; ++c) {
+			assert(aius_optical_admission_cost_us(&a, (AiusOpticalAdmitClass)c) ==
+			       before[c]);
+			assert(a.shed[c] == 0u);
+		}
+		assert(a.dispatch_max_us == 0u && a.sd_fifo_defers == 0u);
+	}
+	assert(sizeof(a.window) == 128u); /* F12, F-B1: eight 16 B windows */
+}
+
+/* F12: an outlier stays the cost for at least 64 and at most 79 further
+ * samples (gone after the 80th), from both bucket edges. */
+static void test_admission_outlier_window(void)
+{
+	for (unsigned edge = 0; edge < 2u; ++edge) {
+		AiusOpticalAdmission a;
+		unsigned lead = edge == 0u ? 0u : AIUS_OPTICAL_ADMIT_BUCKET - 1u;
+		unsigned gone_after = edge == 0u ? 80u : 65u;
+		aius_optical_admission_init(&a);
+		/* Fill whole buckets of 100 us so the outlier lands at a bucket
+		 * edge: the first sample replaces the seed. */
+		for (unsigned i = 0; i < 4u * AIUS_OPTICAL_ADMIT_BUCKET + lead; ++i)
+			aius_optical_admission_record(&a, AIUS_OPTICAL_ADMIT_METERS, 100u, 0u);
+		aius_optical_admission_record(&a, AIUS_OPTICAL_ADMIT_METERS, 9000u, 0u);
+		for (unsigned k = 1; k <= 90u; ++k) {
+			aius_optical_admission_record(&a, AIUS_OPTICAL_ADMIT_METERS, 100u, 0u);
+			uint32_t cost = aius_optical_admission_cost_us(&a,
+			                                               AIUS_OPTICAL_ADMIT_METERS);
+			if (k <= 64u)
+				assert(cost == 9000u);
+			if (k < gone_after)
+				assert(cost == 9000u);
+			else
+				assert(cost == 100u);
+		}
+	}
+	/* Saturation at 65,535 us. */
+	{
+		AiusOpticalAdmission a;
+		aius_optical_admission_init(&a);
+		aius_optical_admission_record(&a, AIUS_OPTICAL_ADMIT_EVENTS, 200000u, 0u);
+		assert(aius_optical_admission_cost_us(&a, AIUS_OPTICAL_ADMIT_EVENTS) ==
+		       65535u);
+	}
+}
+
+static void test_admission_sd_start(void)
+{
+	AiusOpticalAdmission a;
+	AiusOpticalAdmitSample s;
+	AiusSdJobRequest download, ota;
+	uint32_t dma_seed, fifo_seed;
+
+	memset(&download, 0, sizeof(download));
+	download.kind = AIUS_SD_JOB_DOWNLOAD;
+	download.target_path = "/aius/www/index.html";
+	memset(&ota, 0, sizeof(ota));
+	ota.kind = AIUS_SD_JOB_UPLOAD;
+	ota.target_path = "/aius/" AIUS_OPTICAL_APP_OTA_STAGED_NAME;
+	assert(aius_optical_app_sd_job_is_ota_staging(&ota));
+	assert(!aius_optical_app_sd_job_is_ota_staging(&download));
+
+	aius_optical_admission_init(&a);
+	dma_seed = aius_optical_admission_cost_us(&a, AIUS_OPTICAL_ADMIT_SD_START_DMA);
+	fifo_seed = aius_optical_admission_cost_us(&a, AIUS_OPTICAL_ADMIT_SD_START_FIFO);
+	assert(dma_seed > 0u && fifo_seed > dma_seed);
+
+	/* DMA under margin: 503 at once, no job. */
+	s = admit_sample(true, admit_level(dma_seed) - 1u, false, 0u);
+	assert(aius_optical_admission_sd_start(&a, &download, &s, false) ==
+	       AIUS_OPTICAL_ADMIT_VERDICT_SHED);
+	assert(a.shed[AIUS_OPTICAL_ADMIT_SD_START_DMA] == 1u);
+	s = admit_sample(true, admit_level(dma_seed), false, 0u);
+	assert(aius_optical_admission_sd_start(&a, &download, &s, false) ==
+	       AIUS_OPTICAL_ADMIT_VERDICT_ADMIT);
+
+	/* Not owning the ring: FIFO at level 0 neither defers nor sheds. */
+	s = admit_sample(false, 0u, true, 0u);
+	assert(!aius_optical_admission_sd_fifo_defer(&a, &s));
+	assert(aius_optical_admission_sd_start(&a, &download, &s, false) ==
+	       AIUS_OPTICAL_ADMIT_VERDICT_ADMIT);
+
+	/* F-B2: bring-up. FIFO is the boot mode and live input owns the ring
+	 * with the margin short, yet PROBE, then LOAD_CONFIG, then LOAD_DSP each
+	 * start (no hold, none counted); an HTTP SD start is still deferred. The
+	 * latch is set when LOAD_DSP ends, whatever it found, and kept by clear;
+	 * from then on a root start is held. */
+	s = admit_sample(true, 0u, true, 0u);
+	assert(!aius_optical_admission_sd_fifo_defer(&a, &s)); /* PROBE */
+	assert(!aius_optical_admission_sd_fifo_defer(&a, &s)); /* LOAD_CONFIG */
+	assert(!aius_optical_admission_sd_fifo_defer(&a, &s)); /* LOAD_DSP */
+	assert(a.sd_fifo_defers == 0u);
+	assert(aius_optical_admission_sd_start(&a, &download, &s, false) ==
+	       AIUS_OPTICAL_ADMIT_VERDICT_DEFER);
+	a.sd_fifo_defers = 0u;
+	a.defer_timing = 0u;
+	aius_optical_admission_note_bringup_loaded(&a); /* LOAD_DSP ended */
+	aius_optical_admission_clear(&a);
+	assert(a.bringup_loaded != 0u);
+
+	/* Round 4: an armed upload staging is orphaned only when the transaction
+	 * can no longer start its write. */
+	{
+		static AiusHttpTransaction tx;
+		memset(&tx, 0, sizeof(tx));
+		tx.state = AIUS_HTTP_TX_IDLE; /* a teardown re-inited it */
+		assert(aius_optical_app_sd_staging_orphaned(&tx, false, false));
+		assert(!aius_optical_app_sd_staging_orphaned(&tx, true, false));
+		assert(!aius_optical_app_sd_staging_orphaned(&tx, false, true));
+		assert(!aius_optical_app_sd_staging_orphaned(NULL, false, false));
+		tx.state = AIUS_HTTP_TX_DISPATCH;    /* the arming epoch */
+		assert(!aius_optical_app_sd_staging_orphaned(&tx, false, false));
+		tx.state = AIUS_HTTP_TX_SD_START;
+		assert(!aius_optical_app_sd_staging_orphaned(&tx, false, false));
+		tx.state = AIUS_HTTP_TX_SD_TRANSFER;
+		assert(!aius_optical_app_sd_staging_orphaned(&tx, false, false));
+		tx.state = AIUS_HTTP_TX_RECEIVE;     /* the next request */
+		assert(aius_optical_app_sd_staging_orphaned(&tx, false, false));
+	}
+
+	/* FIFO, short, after bring-up: a root job's start is held. */
+	assert(aius_optical_admission_sd_fifo_defer(&a, &s));
+	assert(aius_optical_admission_sd_fifo_defer(&a, &s));
+	assert(a.sd_fifo_defers == 2u);
+	/* DMA mode never defers. */
+	s = admit_sample(true, 0u, false, 0u);
+	assert(!aius_optical_admission_sd_fifo_defer(&a, &s));
+
+	/* An HTTP start held 500 ms of clock time answers 503, whether 20 or 500
+	 * consults ran in that time (R4-N2). */
+	for (unsigned step = 25u; step != 0u; step = step == 25u ? 1u : 0u) {
+		uint32_t t0 = 1000u, t;
+		aius_optical_admission_init(&a);
+		for (t = t0; t < t0 + 500u; t += step) {
+			s = admit_sample(true, 0u, true, t);
+			assert(aius_optical_admission_sd_start(&a, &download, &s,
+			                                       t != t0) ==
+			       AIUS_OPTICAL_ADMIT_VERDICT_DEFER);
+		}
+		assert(a.sd_fifo_defers == 500u / step);
+		s = admit_sample(true, 0u, true, t0 + 500u);
+		assert(aius_optical_admission_sd_start(&a, &download, &s, true) ==
+		       AIUS_OPTICAL_ADMIT_VERDICT_SHED);
+		assert(a.shed[AIUS_OPTICAL_ADMIT_SD_START_FIFO] == 1u);
+		/* SHED restarts the timer: the next start defers afresh. */
+		s = admit_sample(true, 0u, true, t0 + 600u);
+		assert(aius_optical_admission_sd_start(&a, &download, &s, false) ==
+		       AIUS_OPTICAL_ADMIT_VERDICT_DEFER);
+	}
+
+	/* OTA staging chunks start with the margin short, in either mode (F9). */
+	s = admit_sample(true, 0u, true, 0u);
+	assert(aius_optical_admission_sd_start(&a, &ota, &s, false) ==
+	       AIUS_OPTICAL_ADMIT_VERDICT_ADMIT);
+	s = admit_sample(true, 0u, false, 0u);
+	assert(aius_optical_admission_sd_start(&a, &ota, &s, false) ==
+	       AIUS_OPTICAL_ADMIT_VERDICT_ADMIT);
+
+	/* R4-S1: one window per mode, kept across clear and a mode change, so the
+	 * first start after either is judged against the seed or the last
+	 * window, never 0. */
+	aius_optical_admission_init(&a);
+	assert(a.bringup_loaded == 0u); /* init (boot) clears the latch */
+	aius_optical_admission_note_bringup_loaded(&a);
+	aius_optical_admission_record(&a, AIUS_OPTICAL_ADMIT_SD_START_FIFO, 30000u, 0u);
+	aius_optical_admission_clear(&a);
+	assert(aius_optical_admission_cost_us(&a, AIUS_OPTICAL_ADMIT_SD_START_FIFO) ==
+	       30000u);
+	assert(aius_optical_admission_cost_us(&a, AIUS_OPTICAL_ADMIT_SD_START_DMA) ==
+	       dma_seed);
+	s = admit_sample(true, admit_level(dma_seed) - 1u, false, 0u);
+	assert(aius_optical_admission_sd_start(&a, &download, &s, false) ==
+	       AIUS_OPTICAL_ADMIT_VERDICT_SHED);
+	s = admit_sample(true, admit_level(30000u) - 1u, true, 0u);
+	assert(aius_optical_admission_sd_fifo_defer(&a, &s));
+	s = admit_sample(true, admit_level(30000u), true, 0u);
+	assert(!aius_optical_admission_sd_fifo_defer(&a, &s));
+
+	/* F-S2: the timer belongs to the held start. A teardown drops the held
+	 * start 300 ms in; the next start's first consult restarts the timer, so
+	 * it is held its own 500 ms instead of shedding at once. */
+	aius_optical_admission_init(&a);
+	s = admit_sample(true, 0u, true, 1000u);
+	assert(aius_optical_admission_sd_start(&a, &download, &s, false) ==
+	       AIUS_OPTICAL_ADMIT_VERDICT_DEFER);
+	s = admit_sample(true, 0u, true, 1300u);
+	assert(aius_optical_admission_sd_start(&a, &download, &s, true) ==
+	       AIUS_OPTICAL_ADMIT_VERDICT_DEFER);
+	s = admit_sample(true, 0u, true, 1600u); /* a different start */
+	assert(aius_optical_admission_sd_start(&a, &download, &s, false) ==
+	       AIUS_OPTICAL_ADMIT_VERDICT_DEFER);
+	s = admit_sample(true, 0u, true, 2099u);
+	assert(aius_optical_admission_sd_start(&a, &download, &s, true) ==
+	       AIUS_OPTICAL_ADMIT_VERDICT_DEFER);
+	assert(a.shed[AIUS_OPTICAL_ADMIT_SD_START_FIFO] == 0u);
+	s = admit_sample(true, 0u, true, 2100u);
+	assert(aius_optical_admission_sd_start(&a, &download, &s, true) ==
+	       AIUS_OPTICAL_ADMIT_VERDICT_SHED);
+	assert(a.shed[AIUS_OPTICAL_ADMIT_SD_START_FIFO] == 1u);
+}
+
+/* F-B1: a window ages in wall time. A shed class adds no sample, yet regains
+ * admission once its outlier's buckets age out on the fake clock (a bucket
+ * closes 2,000 ms after it opened; the outlier's slot is overwritten at the
+ * fifth close, 10 s after its bucket opened). */
+static void test_admission_time_ageing(void)
+{
+	AiusOpticalAdmission a;
+	AiusOpticalAdmitSample s;
+	const uint32_t level = admit_level(300u);
+	uint32_t seed;
+	unsigned admitted_at = 0u;
+
+	aius_optical_admission_init(&a);
+	seed = aius_optical_admission_cost_us(&a, AIUS_OPTICAL_ADMIT_SETTINGS);
+	/* First measurement at t=0 opens a bucket; a 5 ms parse lands at 100. */
+	aius_optical_admission_note_dispatch(&a, AIUS_HTTP_ROUTE_DSP_CONFIG,
+	                                     AIUS_HTTP_PUT, 300u, 0u);
+	aius_optical_admission_note_dispatch(&a, AIUS_HTTP_ROUTE_DSP_CONFIG,
+	                                     AIUS_HTTP_PUT, 5000u, 100u);
+	/* One admitted 300 us parse in the second bucket, [2000, 4000). */
+	aius_optical_admission_note_dispatch(&a, AIUS_HTTP_ROUTE_DSP_CONFIG,
+	                                     AIUS_HTTP_PUT, 300u, 2500u);
+	assert(aius_optical_admission_cost_us(&a, AIUS_OPTICAL_ADMIT_SETTINGS) ==
+	       5000u);
+	/* Every later PUT is shed (no sample) until the outlier ages out. */
+	for (uint32_t t = 3000u; t <= 10000u; t += 100u) {
+		AiusOpticalAdmitVerdict v;
+		s = admit_sample(true, level, false, t);
+		v = aius_optical_admission_route(&a, AIUS_HTTP_ROUTE_DSP_CONFIG,
+		                                 AIUS_HTTP_PUT, &s);
+		if (v == AIUS_OPTICAL_ADMIT_VERDICT_ADMIT && admitted_at == 0u)
+			admitted_at = t;
+		if (t < 10000u)
+			assert(v == AIUS_OPTICAL_ADMIT_VERDICT_SHED);
+	}
+	assert(admitted_at == 10000u);
+	/* The later bucket's measurement is the cost, not the seed or 0. */
+	assert(aius_optical_admission_cost_us(&a, AIUS_OPTICAL_ADMIT_SETTINGS) ==
+	       300u);
+	assert(a.shed[AIUS_OPTICAL_ADMIT_SETTINGS] == (10000u - 3000u) / 100u);
+	/* Once every bucket has aged out empty the window returns to its seed
+	 * (never judged against 0, R4-S1): the 300 us bucket closed at 4000 and
+	 * is overwritten at the fifth close after it, 12000. */
+	aius_optical_admission_age(&a, 11999u);
+	assert(aius_optical_admission_cost_us(&a, AIUS_OPTICAL_ADMIT_SETTINGS) ==
+	       300u);
+	aius_optical_admission_age(&a, 12000u);
+	assert(aius_optical_admission_cost_us(&a, AIUS_OPTICAL_ADMIT_SETTINGS) ==
+	       seed);
+	assert(a.window[AIUS_OPTICAL_ADMIT_SETTINGS].seeded == 1u);
+
+	/* A saturated 65,535 us stretch (more than the 2,048-frame ring can
+	 * cover) ages out the same way, with the class shed throughout. */
+	aius_optical_admission_init(&a);
+	aius_optical_admission_record(&a, AIUS_OPTICAL_ADMIT_EVENTS, 200000u, 500u);
+	assert(aius_optical_admission_cost_us(&a, AIUS_OPTICAL_ADMIT_EVENTS) ==
+	       65535u);
+	for (uint32_t t = 600u; t < 10500u; t += 250u) {
+		s = admit_sample(true, 2048u, false, t);
+		assert(aius_optical_admission_route(&a, AIUS_HTTP_ROUTE_EVENTS,
+		                                    AIUS_HTTP_GET, &s) ==
+		       AIUS_OPTICAL_ADMIT_VERDICT_SHED);
+	}
+	s = admit_sample(true, 2048u, false, 10500u);
+	assert(aius_optical_admission_route(&a, AIUS_HTTP_ROUTE_EVENTS,
+	                                    AIUS_HTTP_GET, &s) ==
+	       AIUS_OPTICAL_ADMIT_VERDICT_ADMIT);
+	assert(aius_optical_admission_cost_us(&a, AIUS_OPTICAL_ADMIT_EVENTS) ==
+	       600u); /* the EVENTS seed */
+
+	/* The SD-start windows age the same way through their consults. */
+	aius_optical_admission_init(&a);
+	aius_optical_admission_record(&a, AIUS_OPTICAL_ADMIT_SD_START_DMA, 60000u, 0u);
+	s = admit_sample(true, 2048u, false, 9999u);
+	assert(aius_optical_admission_sd_start(&a, NULL, &s, false) ==
+	       AIUS_OPTICAL_ADMIT_VERDICT_SHED);
+	s = admit_sample(true, 2048u, false, 10000u);
+	assert(aius_optical_admission_sd_start(&a, NULL, &s, false) ==
+	       AIUS_OPTICAL_ADMIT_VERDICT_ADMIT);
+}
+
+/* F-S5: an outlier that is the class's first measurement (it replaces the
+ * seed in all five slots) is an outlier at a bucket's first position: it
+ * stays the cost for 79 further samples and is gone at the 80th. */
+static void test_admission_first_measurement_outlier(void)
+{
+	AiusOpticalAdmission a;
+	aius_optical_admission_init(&a);
+	aius_optical_admission_record(&a, AIUS_OPTICAL_ADMIT_BRIEF, 9000u, 0u);
+	for (unsigned k = 1; k <= 90u; ++k) {
+		uint32_t cost;
+		aius_optical_admission_record(&a, AIUS_OPTICAL_ADMIT_BRIEF, 100u, 0u);
+		cost = aius_optical_admission_cost_us(&a, AIUS_OPTICAL_ADMIT_BRIEF);
+		assert(cost == (k < 80u ? 9000u : 100u));
+	}
+}
+
 int main(void)
 {
+	RUN_TEST(test_status_brief_and_dispatch_hooks);
+	RUN_TEST(test_admission_classes);
+	RUN_TEST(test_admission_outlier_window);
+	RUN_TEST(test_admission_sd_start);
+	RUN_TEST(test_admission_time_ageing);
+	RUN_TEST(test_admission_first_measurement_outlier);
 	RUN_TEST(test_init_validation);
 	RUN_TEST(test_golden_immediate_routes);
 	RUN_TEST(test_control_routes_are_authenticated);

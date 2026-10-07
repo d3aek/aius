@@ -85,8 +85,14 @@ FLASHMEM void note_job_start(AiusRuntimeStorage *service,
 
 /* Appends one formatted fragment, same contract as the status serializer's own
  * helper: it advances `*length` only on a complete write, so a body that runs
- * out of capacity is refused rather than truncated mid-object. */
-FLASHMEM __attribute__((format(printf, 4, 5))) bool diag_append(
+ * out of capacity is refused rather than truncated mid-object.
+ *
+ * Phase 4f: aius_runtime_storage_diag_json is a section of the status render,
+ * so like optical_main.cpp's status_append each append ends at a yield point
+ * and the render's admission cost stays one append (F5). noinline: it is a
+ * render-append yield-root row (producer-isolation W5 (3), stack-bound's
+ * render chain). */
+FLASHMEM __attribute__((noinline, format(printf, 4, 5))) bool diag_append(
 	char *output, size_t capacity, size_t *length, const char *format, ...)
 {
 	va_list arguments;
@@ -98,6 +104,7 @@ FLASHMEM __attribute__((format(printf, 4, 5))) bool diag_append(
 	written = vsnprintf(output + *length, capacity - *length, format,
 	                    arguments);
 	va_end(arguments);
+	(void)aius_producer_yield_point();
 	if (written < 0 || (size_t)written >= capacity - *length)
 		return false;
 	*length += (size_t)written;
@@ -604,7 +611,11 @@ FLASHMEM bool aius_runtime_storage_service(
 	                    AIUS_RUNTIME_STORAGE_ROOT_RUNNING) &&
 	           !service->terminal_seen) {
 		/* No HTTP action this epoch: advance the ownerless job -- a
-		 * drain or a root-initiated job -- by one primitive. */
+		 * drain or a root-initiated job -- by one primitive. Phase 4f
+		 * F2/F9: never deferred here. sd_fifo_defer() holds a root job
+		 * only at its start gate (optical_main.cpp); a started job steps
+		 * every epoch to its end, as a started HTTP job does, so it
+		 * never parks as ROOT_RUNNING with every SD route on sd_busy. */
 		(void)advance(service, now_ms, false);
 	}
 

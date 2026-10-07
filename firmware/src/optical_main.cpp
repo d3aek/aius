@@ -2993,6 +2993,115 @@ static FLASHMEM uint16_t put_recovery_status(uint8_t *payload)
 	return legacy_length;
 }
 
+/* ------------------------------------------------------------------ */
+/* Phase 4f: HTTP is best-effort (aius-sample-rate-following.md)       */
+/*                                                                     */
+/* The decisions are portable (aius_optical_app.cpp, admission); this  */
+/* is the composition half: one ownership predicate, one sample, the   */
+/* runtime seam's admission callback, sd_fifo_defer() and the meter.   */
+/* ------------------------------------------------------------------ */
+
+/* DTCM .bss: eight 16 B cost windows (five slots, position, seeded flag and
+ * the bucket's open stamp, F-B1), per-class shed counts, the dispatch
+ * watermark, sd_fifo_defers and F9's timer. Seeded by setup(). */
+static AiusOpticalAdmission g_http_admission;
+
+/* F-S1: defined beside sd_settle_http_write(), whose staging it disarms. */
+static void sd_disarm_shed_staging(const AiusSdJobRequest *job);
+
+/* F11, CR-B1: the one place ownership is derived. The ring's own gate flag
+ * (set at the executed open, cleared at close; fill() counts underruns under
+ * it) with the latched carrier: with the carrier locked the gate opens only
+ * on live input, so flag set and carrier unlocked is a replay. */
+static FLASHMEM bool live_owns_ring(void)
+{
+	return g_aius_spdif_tx24.gate_open != 0u && g_tx_gate_carrier;
+}
+
+/* Every admission decision's inputs, read once. fifo_mode is the adapter's
+ * mode, which equals the mounted mode whenever a volume is mounted (4e D-S1). */
+static FLASHMEM AiusOpticalAdmitSample admit_sample(void)
+{
+	AiusOpticalAdmitSample sample;
+	sample.live_owns_ring = live_owns_ring();
+	sample.fifo_mode = !g_runtime.storage.target.dma;
+	sample.level_frames = aius_spdif_tx24_level(&g_aius_spdif_tx24);
+	sample.now_ms = millis();
+	return sample;
+}
+
+/* The runtime seam's link-time admission hook (aius_runtime_network_http.h,
+ * overriding its weak admit-all default): ROUTE sheds a short class (F1,
+ * F13), SD_START defers or sheds (F2, F9). Each SHED is counted per class
+ * here, at the verdict, so the seam's class-less aius_runtime_http_note_shed()
+ * keeps its weak no-op (one call per SHED verdict, the same count).
+ *
+ * An SD_START consult is a re-consult of the held start exactly when the seam
+ * still holds one (deferred_start_present, cleared by a teardown), so F9's
+ * timer restarts for any other start (F-S2). A shed SD_START never reaches the
+ * storage service, so the staging its upload armed is disarmed here (F-S1). */
+extern "C" FLASHMEM AiusHttpAdmitVerdict aius_runtime_http_admit(
+	const AiusHttpAdmitQuery *query)
+{
+	const AiusOpticalAdmitSample sample = admit_sample();
+	const bool sd_start = query->kind == AIUS_HTTP_ADMIT_SD_START;
+	const AiusOpticalAdmitVerdict verdict =
+		sd_start
+			? aius_optical_admission_sd_start(
+				&g_http_admission, query->sd_job, &sample,
+				g_runtime.network_http.deferred_start_present)
+			: aius_optical_admission_route(&g_http_admission, query->route,
+			                               query->method, &sample);
+	if (verdict == AIUS_OPTICAL_ADMIT_VERDICT_SHED) {
+		if (sd_start)
+			sd_disarm_shed_staging(query->sd_job);
+		return AIUS_HTTP_VERDICT_SHED;
+	}
+	if (verdict == AIUS_OPTICAL_ADMIT_VERDICT_DEFER)
+		return AIUS_HTTP_VERDICT_DEFER;
+	return AIUS_HTTP_VERDICT_ADMIT;
+}
+
+/* http_shed: every SHED verdict, the per-class counts summed (the seam's
+ * class-less aius_runtime_http_note_shed() would count the same events). */
+static FLASHMEM uint32_t admission_shed_total(void)
+{
+	uint32_t total = 0u;
+	for (unsigned c = 0; c < AIUS_OPTICAL_ADMIT_CLASSES; c++)
+		total += g_http_admission.shed[c];
+	return total;
+}
+
+/* F2: in FIFO mode, hold a root SD job's start (the lifecycle start site and
+ * the replay refill start) one epoch while live input owns the ring and the
+ * FIFO start cost exceeds the margin; false whenever live_owns_ring() is
+ * false. OTA staging and HTTP jobs never come here (F9). Only the start is
+ * held: a started job steps every epoch to its end, which in FIFO may cost a
+ * dropout. F-B2: false until bring-up's first LOAD_DSP step has ended
+ * (g_http_admission's bringup_loaded latch, set in sd_step_complete()), so
+ * PROBE, LOAD_CONFIG and LOAD_DSP all start while live (FIFO is the boot
+ * mode; the 2026-08-16 starvation). */
+static FLASHMEM bool sd_fifo_defer(void)
+{
+	const AiusOpticalAdmitSample sample = admit_sample();
+	return aius_optical_admission_sd_fifo_defer(&g_http_admission, &sample);
+}
+
+/* F2: one sample per epoch into the mounted mode's SD-start window, the
+ * longest SD window segment between hooks since the last epoch. F-S3: POST
+ * /api/sd/mode takes this sample before it switches (app_sd_set_mode), so the
+ * segments taken under the old mode are charged to the old mode's window. */
+static FLASHMEM void admission_sd_window_sample(void)
+{
+	const uint32_t us = aius_producer_yield_window_take_max_us();
+	if (us != 0u)
+		aius_optical_admission_record(
+			&g_http_admission,
+			g_runtime.storage.target.dma ? AIUS_OPTICAL_ADMIT_SD_START_DMA
+			                             : AIUS_OPTICAL_ADMIT_SD_START_FIFO,
+			us, millis());
+}
+
 static FLASHMEM bool http_json_append(char *body, size_t capacity, size_t *length,
 	                           const char *format, ...)
 {
@@ -3003,6 +3112,28 @@ static FLASHMEM bool http_json_append(char *body, size_t capacity, size_t *lengt
 	int written = vsnprintf(body + *length, capacity - *length, format,
 	                        arguments);
 	va_end(arguments);
+	if (written < 0 || (size_t)written >= capacity - *length)
+		return false;
+	*length += (size_t)written;
+	return true;
+}
+
+/* Phase 4f: the status render's append. Every append in http_status_json and
+ * its http_*_json sections is this one, and each ends at a yield point, so the
+ * render's admission cost (F5) is one append and a pending producer pass runs
+ * between appends. noinline: it is the render's one yield-root row
+ * (producer-isolation W5 (3)) and stack-bound's hook for the render chain. */
+static FLASHMEM __attribute__((noinline)) bool status_append(
+	char *body, size_t capacity, size_t *length, const char *format, ...)
+{
+	if (*length >= capacity)
+		return false;
+	va_list arguments;
+	va_start(arguments, format);
+	int written = vsnprintf(body + *length, capacity - *length, format,
+	                        arguments);
+	va_end(arguments);
+	(void)aius_producer_yield_point();
 	if (written < 0 || (size_t)written >= capacity - *length)
 		return false;
 	*length += (size_t)written;
@@ -3358,8 +3489,8 @@ static FLASHMEM bool http_net_diag_generation(char *output, size_t capacity,
 	                                          const AiusNetworkTeensyDiag *diag)
 {
 	if (diag == nullptr)
-		return http_json_append(output, capacity, length, ",\"%s\":null", key);
-	if (!http_json_append(output, capacity, length,
+		return status_append(output, capacity, length, ",\"%s\":null", key);
+	if (!status_append(output, capacity, length,
 	                      ",\"%s\":{\"generation\":%lu,"
 	                      "\"stack_started_ms\":%lu,\"netif_init\":%u,"
 	                      "\"stack_start_blocking_ms\":%u,"
@@ -3379,57 +3510,57 @@ static FLASHMEM bool http_net_diag_generation(char *output, size_t capacity,
 	                      (unsigned)diag->link_at_stack_start,
 	                      (unsigned)diag->link_up_source))
 		return false;
-	if (!http_json_append(output, capacity, length, "\"link_up_ms\":"))
+	if (!status_append(output, capacity, length, "\"link_up_ms\":"))
 		return false;
 	if (!(diag->link_up_source != AIUS_NETWORK_TEENSY_LINK_UP_NONE
-		      ? http_json_append(output, capacity, length, "%lu",
+		      ? status_append(output, capacity, length, "%lu",
 		                         (unsigned long)diag->link_up_ms)
-		      : http_json_append(output, capacity, length, "null")))
+		      : status_append(output, capacity, length, "null")))
 		return false;
-	if (!http_json_append(output, capacity, length,
+	if (!status_append(output, capacity, length,
 	                      ",\"link_callbacks\":%u,\"link_callback_up_ms\":",
 	                      (unsigned)diag->link_callbacks))
 		return false;
 	if (!(diag->link_callback_up_seen
-		      ? http_json_append(output, capacity, length, "%lu",
+		      ? status_append(output, capacity, length, "%lu",
 		                         (unsigned long)diag->link_callback_up_ms)
-		      : http_json_append(output, capacity, length, "null")))
+		      : status_append(output, capacity, length, "null")))
 		return false;
 	/* What released the receive-readiness gate, and when. This is the field
 	 * that says whether the gate did its job -- COUNTER means a frame arrived
 	 * and DHCP started on evidence, DEADLINE means nothing arrived inside the
 	 * bound and DHCP started anyway -- and without it the gap between link-up
 	 * and dhcp_start_ms is unattributed. */
-	if (!http_json_append(output, capacity, length,
+	if (!status_append(output, capacity, length,
 	                      ",\"rx_ready_source\":%u,\"rx_ready_ms\":",
 	                      (unsigned)diag->rx_ready_source))
 		return false;
 	if (!((diag->rx_ready_source == AIUS_NETWORK_TEENSY_RX_READY_COUNTER ||
 	       diag->rx_ready_source == AIUS_NETWORK_TEENSY_RX_READY_DEADLINE)
-		      ? http_json_append(output, capacity, length, "%lu",
+		      ? status_append(output, capacity, length, "%lu",
 		                         (unsigned long)diag->rx_ready_ms)
-		      : http_json_append(output, capacity, length, "null")))
+		      : status_append(output, capacity, length, "null")))
 		return false;
-	if (!http_json_append(output, capacity, length, ",\"dhcp_start_ms\":"))
+	if (!status_append(output, capacity, length, ",\"dhcp_start_ms\":"))
 		return false;
 	if (!(diag->dhcp_started_seen
-		      ? http_json_append(output, capacity, length, "%lu",
+		      ? status_append(output, capacity, length, "%lu",
 		                         (unsigned long)diag->dhcp_start_ms)
-		      : http_json_append(output, capacity, length, "null")))
+		      : status_append(output, capacity, length, "null")))
 		return false;
-	if (!http_json_append(output, capacity, length,
+	if (!status_append(output, capacity, length,
 	                      ",\"dhcp_state_at_start\":%u,\"end_reason\":%u,",
 	                      (unsigned)diag->dhcp_state_at_start,
 	                      (unsigned)diag->end_reason))
 		return false;
-	if (!http_json_append(output, capacity, length, "\"end_ms\":"))
+	if (!status_append(output, capacity, length, "\"end_ms\":"))
 		return false;
 	if (!(diag->end_reason != AIUS_NETWORK_TEENSY_END_NONE
-		      ? http_json_append(output, capacity, length, "%lu",
+		      ? status_append(output, capacity, length, "%lu",
 		                         (unsigned long)diag->end_ms)
-		      : http_json_append(output, capacity, length, "null")))
+		      : status_append(output, capacity, length, "null")))
 		return false;
-	if (!http_json_append(output, capacity, length,
+	if (!status_append(output, capacity, length,
 	                      ",\"dhcp_state_at_end\":%u,\"link_at_end\":%u,"
 	                      "\"link_live_at_end\":%u,\"frames_valid\":%s,",
 	                      (unsigned)diag->dhcp_state_at_end,
@@ -3437,21 +3568,21 @@ static FLASHMEM bool http_net_diag_generation(char *output, size_t capacity,
 	                      (unsigned)diag->link_live_at_end,
 	                      diag->frames_valid ? "true" : "false"))
 		return false;
-	if (!http_json_append(output, capacity, length, "\"tx_frames\":"))
+	if (!status_append(output, capacity, length, "\"tx_frames\":"))
 		return false;
 	if (!(diag->frames_valid
-		      ? http_json_append(output, capacity, length, "%lu",
+		      ? status_append(output, capacity, length, "%lu",
 		                         (unsigned long)diag->tx_frames)
-		      : http_json_append(output, capacity, length, "null")))
+		      : status_append(output, capacity, length, "null")))
 		return false;
-	if (!http_json_append(output, capacity, length, ",\"rx_frames\":"))
+	if (!status_append(output, capacity, length, ",\"rx_frames\":"))
 		return false;
 	if (!(diag->frames_valid
-		      ? http_json_append(output, capacity, length, "%lu",
+		      ? status_append(output, capacity, length, "%lu",
 		                         (unsigned long)diag->rx_frames)
-		      : http_json_append(output, capacity, length, "null")))
+		      : status_append(output, capacity, length, "null")))
 		return false;
-	return http_json_append(output, capacity, length, "}");
+	return status_append(output, capacity, length, "}");
 }
 
 /* The `net_diag` object appended to GET /api/status: three live reads taken
@@ -3558,7 +3689,7 @@ static FLASHMEM bool http_audio_diag_json(char *output, size_t capacity,
 	 * since-boot stack paint floor (never cleared). */
 	AiusProducerYieldDiag yield;
 	aius_producer_yield_get_diag(&yield);
-	return http_json_append(
+	return status_append(
 		output, capacity, length,
 		format_audio_diag,
 		(unsigned long)ingress.level_words,
@@ -3718,7 +3849,7 @@ static FLASHMEM bool http_clock_json(char *output, size_t capacity,
 	aius_audio_ingress_get_diag(&g_audio_ingress, &ingress);
 	NVIC_ENABLE_IRQ(IRQ_SOFTWARE);
 
-	if (!http_json_append(
+	if (!status_append(
 		output, capacity, length, format_clock,
 		g_tx_gate_carrier ? "true" : "false",
 		g_clock_carrier_ready ? "true" : "false",
@@ -3770,11 +3901,11 @@ static FLASHMEM bool http_clock_json(char *output, size_t capacity,
 		return false;
 	const AiusTxFillSnapshot fill = aius_tx_fill_sensor_snapshot(&g_tx_fill_sensor);
 	if (!(fill.fill_level_valid
-		      ? http_json_append(output, capacity, length, "%ld",
+		      ? status_append(output, capacity, length, "%ld",
 		                         (long)fill.fill_level_q4)
-		      : http_json_append(output, capacity, length, "null")))
+		      : status_append(output, capacity, length, "null")))
 		return false;
-	if (!http_json_append(
+	if (!status_append(
 		output, capacity, length, format_fill,
 		(unsigned long)fill.fill_subwindow_spread_frames,
 		(unsigned long)fill.fill_windows,
@@ -3797,7 +3928,7 @@ static FLASHMEM bool http_clock_json(char *output, size_t capacity,
 		const AiusUnderrunEpisode *episode =
 			aius_underrun_episode(&g_underrun_episodes,
 			                      held - 1u - index);
-		if (!http_json_append(
+		if (!status_append(
 			output, capacity, length, format_episode,
 			index == 0u ? "" : ",",
 			(unsigned long)episode->start_ms,
@@ -3806,7 +3937,7 @@ static FLASHMEM bool http_clock_json(char *output, size_t capacity,
 			(unsigned)episode->gate_open))
 			return false;
 	}
-	return http_json_append(output, capacity, length, "]}");
+	return status_append(output, capacity, length, "]}");
 }
 
 /* Boot-lottery discriminator (aius-open-work-register.md §Open defects --
@@ -3851,7 +3982,7 @@ static FLASHMEM bool http_clock_regs_json(char *output, size_t capacity,
 		"\"spdif_out_master\":%u,"
 		"\"tx_fills\":%lu,"
 		"\"relocks\":%lu}";
-	return http_json_append(
+	return status_append(
 		output, capacity, length,
 		format_clk_regs,
 		(unsigned long)SPDIF_SCR,
@@ -3930,7 +4061,7 @@ static FLASHMEM bool http_input_diag_json(char *output, size_t capacity,
 	const uint32_t now_ms = millis();
 	const AiusInputDark &dark = g_input_dark;
 
-	if (!http_json_append(
+	if (!status_append(
 		output, capacity, length, format_head,
 		(unsigned long)g_sis_biterr_events,
 		(unsigned long)g_sis_symerr_events,
@@ -3951,7 +4082,7 @@ static FLASHMEM bool http_input_diag_json(char *output, size_t capacity,
 	 * current ladder phase and how long it has run, the open interval
 	 * with its entry snapshot, then the per-phase watermark rows and the
 	 * newest recorded intervals oldest-first. */
-	if (!http_json_append(
+	if (!status_append(
 		output, capacity, length, format_dark,
 		(unsigned long)AIUS_INPUT_DARK_ALERT_MS,
 		(unsigned long)AIUS_INPUT_DARK_RECORD_MIN_MS,
@@ -3968,7 +4099,7 @@ static FLASHMEM bool http_input_diag_json(char *output, size_t capacity,
 		return false;
 	for (uint32_t phase = 0u; phase < AIUS_INPUT_DARK_CLOSED_PHASES; phase++) {
 		const AiusInputDarkWatermark &watermark = dark.phases[phase];
-		if (!http_json_append(
+		if (!status_append(
 			output, capacity, length, format_phase,
 			phase == 0u ? "" : ",", (unsigned)phase,
 			(unsigned long)watermark.max_ms,
@@ -3977,7 +4108,7 @@ static FLASHMEM bool http_input_diag_json(char *output, size_t capacity,
 			(unsigned long)watermark.last_at_ms))
 			return false;
 	}
-	if (!http_json_append(output, capacity, length, "],\"dark_intervals\":["))
+	if (!status_append(output, capacity, length, "],\"dark_intervals\":["))
 		return false;
 	const uint32_t held = dark.interval_count < AIUS_INPUT_DARK_RECORD_DEPTH
 		? dark.interval_count
@@ -3986,7 +4117,7 @@ static FLASHMEM bool http_input_diag_json(char *output, size_t capacity,
 		/* Oldest first: the accessor counts back from the newest. */
 		const AiusInputDarkInterval *interval =
 			aius_input_dark_interval(&dark, held - 1u - index);
-		if (!http_json_append(
+		if (!status_append(
 			output, capacity, length, format_interval,
 			index == 0u ? "" : ",",
 			(unsigned long)interval->start_ms,
@@ -4001,7 +4132,7 @@ static FLASHMEM bool http_input_diag_json(char *output, size_t capacity,
 			(unsigned)interval->exit.gate))
 			return false;
 	}
-	return http_json_append(output, capacity, length, "]}");
+	return status_append(output, capacity, length, "]}");
 }
 
 /* The previous boot's retained forensics, HTTP-readable (they were CDC-only
@@ -4012,7 +4143,7 @@ static FLASHMEM bool http_input_diag_json(char *output, size_t capacity,
 static FLASHMEM bool http_prev_boot_json(char *output, size_t capacity,
                                          size_t *length)
 {
-	return http_json_append(
+	return status_append(
 		output, capacity, length,
 		",\"prev_boot\":{"
 		"\"final_checkpoint\":%u,"
@@ -4028,7 +4159,7 @@ static FLASHMEM bool http_fault_record_json(char *output, size_t capacity,
                                             size_t *length)
 {
 	if (!g_fault_record_valid) {
-		return http_json_append(output, capacity, length,
+		return status_append(output, capacity, length,
 		                        ",\"fault_record\":null");
 	}
 	/* PROGMEM: flash, not DTCM .rodata (see http_input_diag_json). */
@@ -4043,7 +4174,7 @@ static FLASHMEM bool http_fault_record_json(char *output, size_t capacity,
 		"\"xpsr\":\"0x%08lX\","
 		"\"temp_c\":%.1f,"
 		"\"uptime_s\":%lu}";
-	return http_json_append(
+	return status_append(
 		output, capacity, length,
 		format_fault_record,
 		(unsigned long)g_fault_record.ipsr,
@@ -4080,7 +4211,7 @@ static FLASHMEM bool http_poll_probe_json(char *output, size_t capacity,
 		"\"prev_reent\":%lu,"
 		"\"maxd\":%lu,"
 		"\"reent\":%lu}";
-	return http_json_append(
+	return status_append(
 		output, capacity, length,
 		format_poll_probe,
 		(unsigned long)aius_poll_probe.wedge_seen,
@@ -4182,7 +4313,7 @@ static FLASHMEM bool http_pipeline_diag_json(char *output, size_t capacity,
 		"\"reclassify_count\":%lu,"
 		"\"squelched_frames\":%lu,"
 		"\"pcm_confirmed\":%u}";
-	return http_json_append(output, capacity, length,
+	return status_append(output, capacity, length,
 	                        format_pipeline_diag,
 	                        (unsigned)klass,
 	                        (unsigned)codec_pc,
@@ -4240,7 +4371,7 @@ static FLASHMEM bool http_stall_diag_json(char *output, size_t capacity,
 		"\"pc\":\"%08lx\",\"lr\":\"%08lx\","
 		"\"flexspi_intr\":\"%08lx\",\"flexspi2_intr\":\"%08lx\","
 		"\"flexspi2_sts1\":\"%08lx\"}";
-	return http_json_append(
+	return status_append(
 		output, capacity, length,
 		format_stall_diag,
 		(unsigned long)g_stall_events, (unsigned long)g_stall_last_us,
@@ -4274,7 +4405,7 @@ static FLASHMEM bool http_replay_diag_json(char *output, size_t capacity,
 		"\"last_fault_offset_bytes\":%lu,"
 		"\"last_fault_loops\":%lu,"
 		"\"last_fault_at_ms\":%lu}";
-	return http_json_append(output, capacity, length,
+	return status_append(output, capacity, length,
 	                        format_replay_diag,
 	                        (unsigned long)g_replay_diag.jobs,
 	                        (unsigned long)g_replay_diag.faults,
@@ -4332,7 +4463,7 @@ static FLASHMEM bool http_boot_fuse_json(char *output, size_t capacity,
 {
 	const AiusBootFuse fuse = aius_boot_teensy_boot_fuse();
 
-	return http_json_append(output, capacity, length,
+	return status_append(output, capacity, length,
 	                        ",\"boot_fuse_0x6e0\":{\"word\":\"0x%08lx\","
 	                        "\"read\":%s,\"sec_image_offset\":%u,"
 	                        "\"sec_image_size\":%u}",
@@ -4378,7 +4509,7 @@ static FLASHMEM bool http_net_diag_json(char *output, size_t capacity,
 		"\"fnet_heap_valid\":%s,"
 		"\"fnet_heap_free_b\":%lu,"
 		"\"fnet_heap_largest_b\":%lu";
-	if (!http_json_append(output, capacity, length,
+	if (!status_append(output, capacity, length,
 	                      format_net_diag,
 	                      (unsigned)aius_network_teensy_link(network),
 	                      (unsigned)aius_network_teensy_link_live(network),
@@ -4399,7 +4530,7 @@ static FLASHMEM bool http_net_diag_json(char *output, size_t capacity,
 	if (!http_net_diag_generation(output, capacity, length, "current",
 	                              aius_network_teensy_diag(network)))
 		return false;
-	return http_json_append(output, capacity, length, "}");
+	return status_append(output, capacity, length, "}");
 }
 
 /* SYSRESETREQ through the ROM, the recovery-safe reset the reboot verb and OTA
@@ -5552,7 +5683,7 @@ static FLASHMEM bool http_ota_diag_json(char *output, size_t capacity,
 		"\"rehearsal\":\"%s\",\"rehearsal_fault\":%u,"
 		"\"rehearsal_fault_injected\":%s,\"rehearsal_dark_us\":%lu,"
 		"\"rehearsal_max_step_us\":%lu}";
-	return http_json_append(output, capacity, length,
+	return status_append(output, capacity, length,
 		format_ota_diag,
 		(unsigned)progress.state,
 		(unsigned long)staged, (unsigned long)total,
@@ -5601,7 +5732,7 @@ static FLASHMEM bool http_ota_dark_json(char *output, size_t capacity,
 	                                    size_t *length)
 {
 	if (!g_ota_dark_report_valid)
-		return http_json_append(output, capacity, length,
+		return status_append(output, capacity, length,
 		                        ",\"ota_dark\":null");
 	/* PROGMEM: flash, not DTCM .rodata (see http_input_diag_json). */
 	static const char format_ota_dark[] PROGMEM =
@@ -5612,7 +5743,7 @@ static FLASHMEM bool http_ota_dark_json(char *output, size_t capacity,
 		"\"steps_taken\":%lu,\"steps_total\":%lu,"
 		"\"image_digest_prefix\":\"%02x%02x%02x%02x%02x%02x%02x%02x\","
 		"\"dark_window_cycles\":%llu}";
-	return http_json_append(output, capacity, length,
+	return status_append(output, capacity, length,
 		format_ota_dark,
 		(unsigned)g_ota_dark_report.state,
 		(unsigned)g_ota_dark_report.phase,
@@ -5655,7 +5786,7 @@ static FLASHMEM bool http_ab_json(char *output, size_t capacity,
 {
 #if AIUS_AB_SLOT
 	if (g_ab_enabled)
-		return http_json_append(output, capacity, length,
+		return status_append(output, capacity, length,
 			",\"ab\":{\"slot\":%u,\"record_valid\":%s,"
 			"\"active_slot\":%u,\"pending_slot\":%u,"
 			"\"sequence\":%lu,\"trial_budget\":%u,"
@@ -5675,7 +5806,7 @@ static FLASHMEM bool http_ab_json(char *output, size_t capacity,
 			g_ab_ledger.fell_back != 0u ? "true" : "false",
 			g_ab_rollback_observed ? "true" : "false");
 #endif
-	return http_json_append(output, capacity, length, ",\"ab\":null");
+	return status_append(output, capacity, length, ",\"ab\":null");
 }
 
 /* present: this build carries OTA and the seam is installed. */
@@ -6050,8 +6181,9 @@ static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
 		dsp_apply_pending ? g_pending_dsp_origin : g_dsp_model_origin;
 	/* PROGMEM: flash, not DTCM .rodata (see http_input_diag_json). */
 	static const char format_status[] PROGMEM =
-		"{\"version\":%u,\"state\":%u,\"carrier\":%u,\"format\":%u,\"sample_rate\":%lu,\"blocks\":%lu,\"overruns\":%lu,\"source\":\"%s\",\"model_origin\":\"%s\",\"dsp_config_pending\":%u,\"dsp_staged_generation\":%lu,\"sd_present\":%u,\"sd_filesystem\":\"%s\",\"sd_total_bytes\":%llu,\"sd_used_bytes\":%llu,\"sd_free_bytes\":%llu,\"config_valid\":%u,\"config_error_code\":%u,\"config_error\":\"%s\",\"config_error_count\":%lu,\"network_mode\":\"%s\",\"ip\":\"%u.%u.%u.%u\",\"link\":%u,\"network_restarts\":%lu,\"dhcp_pending\":%u,\"dhcp_discovers\":%lu,\"dhcp_updates\":%lu,\"reset_source\":%lu,\"http_server_rebinds\":%lu,\"cpu_temp_c\":%.2f,\"cpu_temp_valid\":%u,\"cpu_temp_max_c\":%.2f,\"cpu_temp_age_ms\":%lu,\"build_revision\":\"%s\",\"build_utc\":\"%s\",\"event_sequence\":%lu,\"event_overflows\":%lu,\"network_drops\":%lu,\"network_budget_overruns\":%lu,\"http_requests\":%lu,\"http_rejections\":%lu,\"http_client_drops\":%lu,\"http_service_overruns\":%lu,\"network_state\":%u,\"recovery_safe\":%u,\"network_last_fault\":%u,\"last_checkpoint\":%u,\"network_generation\":%lu,\"boot_generation\":%lu,\"watchdog_early_resets\":%u,\"loop_epoch\":%lu,\"psram_mb\":%u,\"psram_pad2_mb\":%u,\"tx_gate\":{\"open\":%u,\"carrier_locked\":%u,\"replay_running\":%u}}";
-	int written = snprintf((char *)body, capacity,
+		"{\"version\":%u,\"state\":%u,\"carrier\":%u,\"format\":%u,\"sample_rate\":%lu,\"blocks\":%lu,\"overruns\":%lu,\"source\":\"%s\",\"model_origin\":\"%s\",\"dsp_config_pending\":%u,\"dsp_staged_generation\":%lu,\"sd_present\":%u,\"sd_filesystem\":\"%s\",\"sd_total_bytes\":%llu,\"sd_used_bytes\":%llu,\"sd_free_bytes\":%llu,\"config_valid\":%u,\"config_error_code\":%u,\"config_error\":\"%s\",\"config_error_count\":%lu,\"network_mode\":\"%s\",\"ip\":\"%u.%u.%u.%u\",\"link\":%u,\"network_restarts\":%lu,\"dhcp_pending\":%u,\"dhcp_discovers\":%lu,\"dhcp_updates\":%lu,\"reset_source\":%lu,\"http_server_rebinds\":%lu,\"cpu_temp_c\":%.2f,\"cpu_temp_valid\":%u,\"cpu_temp_max_c\":%.2f,\"cpu_temp_age_ms\":%lu,\"build_revision\":\"%s\",\"build_utc\":\"%s\",\"event_sequence\":%lu,\"event_overflows\":%lu,\"network_drops\":%lu,\"network_budget_overruns\":%lu,\"http_requests\":%lu,\"http_rejections\":%lu,\"http_client_drops\":%lu,\"http_service_overruns\":%lu,\"network_state\":%u,\"recovery_safe\":%u,\"network_last_fault\":%u,\"last_checkpoint\":%u,\"network_generation\":%lu,\"boot_generation\":%lu,\"watchdog_early_resets\":%u,\"loop_epoch\":%lu,\"psram_mb\":%u,\"psram_pad2_mb\":%u,\"tx_gate\":{\"open\":%u,\"carrier_locked\":%u,\"replay_running\":%u}";
+	size_t length = 0u;
+	if (!status_append((char *)body, capacity, &length,
 		format_status,
 		status[0], status[2], status[3] & 1u, status[23],
 		(unsigned long)aius_net_get_u32(status + 25),
@@ -6111,16 +6243,15 @@ static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
 		 * here: re-reading pllLocked() at request time could disagree with
 		 * the pad within one poll. */
 		g_tx_gate_open ? 1u : 0u, g_tx_gate_carrier ? 1u : 0u,
-		g_tx_gate_replay ? 1u : 0u);
-	if (written <= 0 || (size_t)written >= capacity)
+		g_tx_gate_replay ? 1u : 0u))
 		return 0;
 	/* The diagnostic object joins the same body rather than a second route:
 	 * it is read beside link, ip and network_state, and a separate route would
-	 * be a second snapshot of state that moves between requests. It is
-	 * appended by rewinding over the closing brace the literal above wrote and
-	 * re-closing after, so no existing key moves and the format string stays
-	 * one reviewable literal. */
-	size_t length = (size_t)written - 1u;
+	 * be a second snapshot of state that moves between requests. The head
+	 * literal above leaves the top-level object open (Phase 4f: no rewind,
+	 * every write is a status_append) and the render's last append closes
+	 * it, so no existing key moves and the format string stays one
+	 * reviewable literal. */
 	if (!http_net_diag_json((char *)body, capacity, &length, network))
 		return 0;
 	/* The storage service's own failure record, and the live upload progress
@@ -6174,7 +6305,7 @@ static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
 		return 0;
 	/* The full per-checkpoint wall-time maxima vector (µs); CDC's `cw=`
 	 * carries only the worst pair on its bounded budget. */
-	if (!http_json_append((char *)body, capacity, &length,
+	if (!status_append((char *)body, capacity, &length,
 	                      ",\"checkpoint_walltime_us\":[%lu,%lu,%lu,%lu,"
 	                      "%lu,%lu,%lu,%lu,%lu,%lu,%lu]",
 	                      (unsigned long)g_ckpt_max_us[0],
@@ -6192,7 +6323,7 @@ static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
 	/* Cumulative milliseconds per checkpoint: divided by loop_epoch this is
 	 * the steady per-epoch cost -- the attribution a degraded boot needs,
 	 * because the maxima above saturate on boot-time spikes. */
-	if (!http_json_append((char *)body, capacity, &length,
+	if (!status_append((char *)body, capacity, &length,
 	                      ",\"checkpoint_cumulative_ms\":[%lu,%lu,%lu,%lu,"
 	                      "%lu,%lu,%lu,%lu,%lu,%lu,%lu]",
 	                      (unsigned long)(g_ckpt_total_us[0] / 1000u),
@@ -6210,7 +6341,7 @@ static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
 	/* The audio update ISR's conviction pair: calls (normal ~375/s locked
 	 * against uptime, far higher when the input is unlocked) and the longest
 	 * single run in µs. */
-	if (!http_json_append((char *)body, capacity, &length,
+	if (!status_append((char *)body, capacity, &length,
 	                      ",\"audio_update_calls\":%lu"
 	                      ",\"audio_update_max_us\":%lu",
 	                      (unsigned long)g_audio_update_calls,
@@ -6238,13 +6369,42 @@ static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
 	 * compare and a store on this cold path. status_render_failures beside it
 	 * counts the renders that never finished (app_write_status), which the
 	 * peak cannot show: one that ran out of buffer was a 500, not a body. */
-	if (!http_json_append((char *)body, capacity, &length,
+	/* Phase 4f admission. The two arrays are indexed by AiusOpticalAdmitClass
+	 * (status, brief, meters, events, settings, directory, SD start DMA, SD
+	 * start FIFO); http_class_cost_us is each class's admission cost now. */
+	{
+		static const char format_admission[] PROGMEM =
+			",\"http_shed\":%lu,\"http_dispatch_max_us\":%lu,\"sd_fifo_defers\":%lu"
+			",\"http_shed_class\":[%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu]"
+			",\"http_class_cost_us\":[%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu]";
+		const AiusOpticalAdmission *a = &g_http_admission;
+		/* The costs as admission would judge them now (F-B1 ageing). */
+		aius_optical_admission_age(&g_http_admission, millis());
+		if (!status_append((char *)body, capacity, &length, format_admission,
+		                   (unsigned long)admission_shed_total(),
+		                   (unsigned long)a->dispatch_max_us,
+		                   (unsigned long)a->sd_fifo_defers,
+		                   (unsigned long)a->shed[0], (unsigned long)a->shed[1],
+		                   (unsigned long)a->shed[2], (unsigned long)a->shed[3],
+		                   (unsigned long)a->shed[4], (unsigned long)a->shed[5],
+		                   (unsigned long)a->shed[6], (unsigned long)a->shed[7],
+		                   (unsigned long)aius_optical_admission_cost_us(a, AIUS_OPTICAL_ADMIT_STATUS),
+		                   (unsigned long)aius_optical_admission_cost_us(a, AIUS_OPTICAL_ADMIT_BRIEF),
+		                   (unsigned long)aius_optical_admission_cost_us(a, AIUS_OPTICAL_ADMIT_METERS),
+		                   (unsigned long)aius_optical_admission_cost_us(a, AIUS_OPTICAL_ADMIT_EVENTS),
+		                   (unsigned long)aius_optical_admission_cost_us(a, AIUS_OPTICAL_ADMIT_SETTINGS),
+		                   (unsigned long)aius_optical_admission_cost_us(a, AIUS_OPTICAL_ADMIT_DIRECTORY),
+		                   (unsigned long)aius_optical_admission_cost_us(a, AIUS_OPTICAL_ADMIT_SD_START_DMA),
+		                   (unsigned long)aius_optical_admission_cost_us(a, AIUS_OPTICAL_ADMIT_SD_START_FIFO)))
+			return 0;
+	}
+	if (!status_append((char *)body, capacity, &length,
 	                      ",\"status_body_peak_bytes\":%lu"
 	                      ",\"status_render_failures\":%lu",
 	                      (unsigned long)g_status_body_peak_bytes,
 	                      (unsigned long)g_status_render_failures))
 		return 0;
-	if (!http_json_append((char *)body, capacity, &length, "}"))
+	if (!status_append((char *)body, capacity, &length, "}"))
 		return 0;
 	if (length > g_status_body_peak_bytes)
 		g_status_body_peak_bytes = (uint32_t)length;
@@ -6503,6 +6663,53 @@ static FLASHMEM size_t app_write_status(void *, uint8_t *body, size_t capacity)
 	return length;
 }
 
+/* GET /api/status/brief (Phase 4f F3): exactly the keys the editor's flow ends
+ * read (renderFlowEnds, firmware/sd/www/dsp-editor.js), under the full body's
+ * names and nesting and from the same sources: put_status()'s header, the
+ * pipeline's codec_pc and the LATCHED gate decision. Under 512 B
+ * (test/status-body-bound). */
+static FLASHMEM size_t http_status_brief_json(uint8_t *body, size_t capacity)
+{
+	uint8_t status[71];
+	uint16_t status_length = 0;
+	put_status(status, &status_length);
+	if (capacity == 0 || status_length < 71)
+		return 0;
+	/* PROGMEM: flash, not DTCM .rodata (4e §Memory, the .data cliff). */
+	static const char format_brief[] PROGMEM =
+		"{\"carrier\":%u,\"state\":%u,\"sample_rate\":%lu,\"pipeline_diag\":{\"codec_pc\":%u},\"tx_gate\":{\"open\":%u,\"replay_running\":%u}}";
+	int written = snprintf((char *)body, capacity, format_brief,
+		status[3] & 1u, status[2],
+		(unsigned long)aius_net_get_u32(status + 25),
+		(unsigned)g_audio_processor.pipeline_codec_pc(),
+		g_tx_gate_open ? 1u : 0u, g_tx_gate_replay ? 1u : 0u);
+	if (written <= 0 || (size_t)written >= capacity)
+		return 0;
+	return (size_t)written;
+}
+
+static FLASHMEM size_t app_write_status_brief(void *, uint8_t *body,
+                                              size_t capacity)
+{
+	return http_status_brief_json(body, capacity);
+}
+
+/* Phase 4f F5: every route dispatch is metered between these two. The meter
+ * (lib/aius_producer_yield) closes a stretch at each yield opportunity and
+ * reopens it after any nested pass, so the class cost excludes producer time. */
+static FLASHMEM void app_dispatch_begin(void *)
+{
+	aius_producer_yield_meter_begin();
+}
+
+static FLASHMEM void app_dispatch_end(void *, AiusHttpRoute route,
+                                      AiusHttpMethod method)
+{
+	aius_optical_admission_note_dispatch(&g_http_admission, route, method,
+	                                     aius_producer_yield_meter_end_us(),
+	                                     millis());
+}
+
 static FLASHMEM size_t app_write_events(void *, uint32_t cursor, uint8_t *body,
                                         size_t capacity)
 {
@@ -6693,6 +6900,9 @@ static FLASHMEM void app_set_test_running(void *, bool running)
 static FLASHMEM void app_clear_counters(void *)
 {
 	g_audio_processor.clear_counters();
+	/* Phase 4f F8: the shed counts and the dispatch watermark reset; the
+	 * class cost windows do not (a cost is a model of the route). */
+	aius_optical_admission_clear(&g_http_admission);
 	/* Clearing zeroes the ingress-drop projection used by the capture latch
 	 * compares against by EQUALITY -- a clear during a live capture could
 	 * therefore mask a real overrun's 512-frame seam (latched 0, one overrun,
@@ -6975,6 +7185,9 @@ static FLASHMEM bool app_sd_set_mode(void *, bool dma)
 	AiusSdTeensy *target = &g_runtime.storage.target;
 	if (target->file_open)
 		return false;
+	/* Phase 4f F-S3: charge the segments taken so far to the mode they ran
+	 * in, before the switch, not to the new mode at the next epoch. */
+	admission_sd_window_sample();
 	aius_sd_teensy_set_mode(target, dma);
 	return true;
 }
@@ -7017,7 +7230,10 @@ const AiusOpticalApp g_aius_optical_app = {
 	app_recorder_config,
 	app_recorder_read,
 	app_recorder_read_release,
-	app_sd_set_mode
+	app_sd_set_mode,
+	app_write_status_brief,
+	app_dispatch_begin,
+	app_dispatch_end
 };
 
 /* ------------------------------------------------------------------ */
@@ -8065,6 +8281,53 @@ static FLASHMEM void sd_settle_http_write(void)
 	g_sd_commit_target = SD_COMMIT_NONE;
 }
 
+/* Phase 4f F-S1: admission SHEDs an SD_START before the storage service sees
+ * it, so sd_settle_http_write() never meets that write's terminal. The upload
+ * the shed start carried is the one app_store_dsp_config() or
+ * app_store_public_config() just armed (not yet observed writing): disarm it
+ * as a faulted write would, so a card-reinsert LOAD_DSP is not skipped and no
+ * later upload commits the shed model. */
+static FLASHMEM void sd_disarm_shed_staging(const AiusSdJobRequest *job)
+{
+	if (job == nullptr || job->kind != AIUS_SD_JOB_UPLOAD ||
+	    job->target_path == nullptr ||
+	    g_sd_commit_target == SD_COMMIT_NONE || g_sd_commit_writing)
+		return;
+	if (strcmp(job->target_path,
+	           g_sd_commit_target == SD_COMMIT_PUBLIC_CONFIG ?
+	                   AIUS_SD_PUBLIC_CONFIG_PATH :
+	                   AIUS_SD_DSP_MODEL_PATH) != 0)
+		return;
+	g_dsp_upload_pending = false;
+	g_config_upload_pending = false;
+	g_sd_commit_target = SD_COMMIT_NONE;
+}
+
+/* Phase 4f round 4: an armed staging whose request can no longer settle. A
+ * network teardown during a DEFER re-inits the transaction and drops the held
+ * start (http_init clears deferred_start_present), so the write never starts
+ * and sd_settle_http_write() never meets a terminal for it. Disarm it, as
+ * sd_disarm_shed_staging() does for a SHED, once the transaction holds no
+ * request that can still start it: not in DISPATCH (the arming epoch),
+ * SD_START or SD_TRANSFER, no held start and no admitted start queued
+ * (aius_optical_app_sd_staging_orphaned()), and its job never seen. Reads
+ * transaction state only, as reboot_drain_complete() does. Runs right after
+ * sd_settle_http_write(), so a write that reached its terminal has already
+ * settled. */
+static FLASHMEM void sd_drop_orphan_staging(void)
+{
+	if (g_sd_commit_target == SD_COMMIT_NONE || g_sd_commit_writing ||
+	    g_sd_http_job_seen ||
+	    !aius_optical_app_sd_staging_orphaned(
+		    &g_runtime.network_http.http,
+		    g_runtime.network_http.deferred_start_present,
+		    g_runtime.storage_action_present))
+		return;
+	g_dsp_upload_pending = false;
+	g_config_upload_pending = false;
+	g_sd_commit_target = SD_COMMIT_NONE;
+}
+
 /* Whether a root-initiated job may start this epoch.
  *
  * The first three terms mirror aius_runtime_storage_start_root_job()'s own
@@ -8204,7 +8467,10 @@ static FLASHMEM void sd_step_complete(uint32_t now_ms)
 	case SD_STEP_LOAD_DSP:
 		/* A missing or invalid /aius/dsp.json is the common case and is
 		 * not an error: the active model is left alone, exactly as
-		 * stage_dsp_sd_override() did. */
+		 * stage_dsp_sd_override() did. F-B2: whatever the outcome,
+		 * bring-up's loads are over; root holds may begin (latched once
+		 * per boot, so a missing dsp.json does not hold it open). */
+		aius_optical_admission_note_bringup_loaded(&g_http_admission);
 		g_sd_step = SD_STEP_USAGE;
 		return;
 	case SD_STEP_USAGE:
@@ -8235,6 +8501,7 @@ static FLASHMEM void sd_lifecycle_service(uint32_t now_ms)
 	/* First, because a root job start would restart the shared job object
 	 * and destroy the terminal state the commit arm reads. */
 	sd_settle_http_write();
+	sd_drop_orphan_staging();
 
 	if (g_runtime.storage.root_state ==
 	    AIUS_RUNTIME_STORAGE_ROOT_RUNNING)
@@ -8290,6 +8557,10 @@ static FLASHMEM void sd_lifecycle_service(uint32_t now_ms)
 		g_sd_step = SD_STEP_PROBE;
 	}
 	if (!sd_storage_idle())
+		return;
+	/* Phase 4f F2: a root job start waits while sd_fifo_defer() holds; the
+	 * step stays chosen and starts on a later epoch. */
+	if (sd_fifo_defer())
 		return;
 	if (sd_start_step(g_sd_step))
 		g_sd_step_running = true;
@@ -8627,6 +8898,10 @@ static FLASHMEM void replay_refill_service(uint32_t now_ms)
 {
 	AiusReplayRefill refill;
 
+	/* Phase 4f F2: the refill is a root job, so its start consults
+	 * sd_fifo_defer(); once started it runs to its end (a root job is held
+	 * only at its start gate). During a replay live input does not own the
+	 * ring (F11), so this never holds a refill in practice. */
 	if (g_replay_job_active) {
 		replay_job_advance(now_ms);
 		return;
@@ -8635,7 +8910,7 @@ static FLASHMEM void replay_refill_service(uint32_t now_ms)
 	                                     AIUS_REPLAY_REFILL_MAX_BYTES / 2u,
 	                                     &refill))
 		return;
-	if (!sd_storage_idle()) {
+	if (!sd_storage_idle() || sd_fifo_defer()) {
 		aius_replay_service_abandon_refill(&g_replay_service);
 		return;
 	}
@@ -9444,6 +9719,9 @@ static FLASHMEM bool platform_replay(void *, const AiusRuntimeBudget *budget,
 	if (budget == nullptr ||
 	    budget->checkpoint != AIUS_BOOT_CHECKPOINT_REPLAY)
 		return false;
+	/* Phase 4f F2: last epoch's longest SD window segment into the mounted
+	 * mode's SD-start cost window, before this epoch's SD work. */
+	admission_sd_window_sample();
 	sd_lifecycle_service(now_ms);
 	replay_refill_service(now_ms);
 	/* Settle carrier displacement before selecting a target clock. */
@@ -9813,6 +10091,9 @@ FLASHMEM void setup(void)
 	const AiusRuntimeTeensyPlatformOps platform = platform_ops();
 	aius_runtime_teensy_construct(&g_runtime, &g_aius_optical_app, &cdc,
 	                              &platform, millis(), g_recovery_safe);
+	/* Phase 4f: every class window at its declared seed before the first
+	 * epoch can consult aius_runtime_http_admit(). Memory only. */
+	aius_optical_admission_init(&g_http_admission);
 #if AIUS_OTA
 	/* Install the OTA seam AFTER the dispatcher is constructed: the runtime's
 	 * aius_optical_app_init() zeroes the OTA slot, and ota_compose() then binds

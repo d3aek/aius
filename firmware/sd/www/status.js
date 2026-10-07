@@ -30,7 +30,7 @@
 
   const $ = (id) => document.getElementById(id);
   const shared = window.aiusSdShared;
-  const { setPill, request, guard, describe, formatBytes, formatUs } = shared;
+  const { setPill, request, describe, formatBytes, formatUs } = shared;
 
   const STATUS_POLL_MS = 1000; /* the status JSON is an epoch-latched snapshot */
 
@@ -511,17 +511,17 @@
     else delete $('flow').dataset.stale;
   }
 
-  async function poll() {
-    const result = await request('/api/status', { headers: { Accept: 'application/json' } });
-    if (!result.ok || !result.body) {
-      /* Every grid keeps its last good values, so every grid dims: a frozen
-       * "PCM / gate open" beside a live-looking pill is the defect this page
-       * inherits from the replay manager's poll (UX finding P4). */
-      setAllPills('unreachable');
-      setGridsStale(true);
-      setCardStatus('poll', `No answer from /api/status -- ${describe(result)}. Every value below is stale.`);
-      return;
-    }
+  function renderUnreachable(result) {
+    /* Every grid keeps its last good values, so every grid dims: a frozen
+     * "PCM / gate open" beside a live-looking pill is the defect this page
+     * inherits from the replay manager's poll (UX finding P4). Reached only
+     * after three consecutive failures; a 503 never gets here. */
+    setAllPills('unreachable');
+    setGridsStale(true);
+    setCardStatus('poll', `No answer from /api/status -- ${describe(result)}. Every value below is stale.`);
+  }
+
+  function renderAnswer(result) {
     const status = result.body;
     renderAudio(status);
     renderConfiguration(status);
@@ -534,6 +534,12 @@
     setCardStatus('poll', `Input source: ${inputSource(status)}. Snapshot at epoch ${Number(status.loop_epoch) || 0}.`);
   }
 
-  void guard(poll, cardSink('poll'));
-  setInterval(() => void guard(poll, cardSink('poll')), STATUS_POLL_MS);
+  shared.createPoller({
+    fetch: () => request('/api/status', { headers: { Accept: 'application/json' } }),
+    cadenceMs: STATUS_POLL_MS,
+    immediate: true,
+    onAnswer: renderAnswer,
+    onUnreachable: renderUnreachable,
+    onError: cardSink('poll'),
+  });
 })();

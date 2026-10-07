@@ -25,7 +25,9 @@ typedef struct {
 	volatile uint8_t in_producer;
 	volatile uint8_t pend_armed;
 	uint8_t window_depth;
-	uint8_t reserved;
+	/* D-S7: 0 until the first pass after a configure that saw audio not
+	 * ready; that pass disarms the boot-time stamp instead of timing it. */
+	uint8_t audio_seen;
 	volatile uint32_t pend_stamp;
 	uint32_t seg_start;
 	uint32_t pend_latency_max_cycles;
@@ -36,6 +38,12 @@ typedef struct {
 	uint32_t point_passes;
 	uint32_t late_passes;
 	uint32_t hook_calls;
+	/* Phase 4f: the longest window segment since the last take (the SD
+	 * start cost sample) and the dispatch meter (F5). */
+	uint32_t window_recent_max_cycles;
+	uint32_t meter_seg_start;
+	uint32_t meter_max_cycles;
+	uint8_t meter_active;
 } AiusProducerYieldState;
 
 extern AiusProducerYieldState g_aius_producer_yield;
@@ -86,6 +94,19 @@ bool aius_producer_yield_guard(bool window_or_point);
  * and disarms the stamp; end re-stamps when ingress is still non-empty. */
 void aius_producer_yield_visit_begin(void);
 void aius_producer_yield_visit_end(void);
+
+/* Phase 4f F5, the dispatch meter. Between begin and end every yield
+ * opportunity (an explicit point, or a hook call inside an SD window) closes
+ * the running stretch and opens the next one after any nested pass returns,
+ * so end reports the longest stretch the producer could have waited behind,
+ * nested producer time excluded. FLASHMEM. */
+void aius_producer_yield_meter_begin(void);
+uint32_t aius_producer_yield_meter_end_us(void);
+
+/* Phase 4f F2: the longest SD window segment (4e's sd_window_nonyield
+ * definition) closed since the previous take, in us, and reset to 0. 0 when
+ * no window segment closed. FLASHMEM. */
+uint32_t aius_producer_yield_window_take_max_us(void);
 
 void aius_producer_yield_get_diag(AiusProducerYieldDiag *out);
 /* Resets the watermarks (pend latency, non-yield stretch) and late_passes so a

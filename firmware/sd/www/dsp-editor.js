@@ -5,8 +5,8 @@
  * own fields) -- building the config form from the
  * field table below, rendering GET /api/dsp/config into it, validating edits
  * against the firmware parser's bounds, PUTting the model back with an
- * optimistic-concurrency token, polling GET /api/meters at 10 Hz and
- * GET /api/status at 1 Hz -- one serialised request at a time per endpoint,
+ * optimistic-concurrency token, polling GET /api/meters at 4 Hz and
+ * GET /api/status/brief at 1 Hz (the shared poller) -- one serialised request at a time per endpoint,
  * never a timer stack -- and drawing the signal-flow strip: ONE stacked EQ plot
  * carrying every cascade, the downmix routing diagram, the level bars under
  * peak-hold ballistics, the DSP load and the limiter's gain reduction, all from
@@ -43,7 +43,8 @@
    * dependency on it. */
   const shared = window.aiusSdShared;
 
-  const METER_POLL_MS = 100; /* 10 Hz, per the API contract */
+  const METER_POLL_MS = 250; /* 4 Hz: lighter on the device (Phase 4f); the ballistics smooth the steps */
+  const APPLY_BUSY_ATTEMPTS = 5; /* Apply tries before a 503 audio_busy reads as a rejection */
   const METER_RETRY_MS = 5000; /* back-off while /api/meters is absent */
   const STATUS_POLL_MS = 1000; /* the signal-flow ends only need 1 Hz */
   const PENDING_POLL_MS = 500; /* the apply lands at an audio block boundary */
@@ -1622,11 +1623,22 @@
 
     setApplyState('sending');
     setStatus(sending);
-    const result = await request('/api/dsp/config', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json', 'X-Aius-SD-Auth': token },
-      body: payload,
-    });
+    /* A 503 audio_busy is the device shedding the parse while live input owns
+     * the transmit ring: nothing was written, so the PUT is safe to repeat.
+     * Retried after Retry-After (clamped 0.25-5 s) up to APPLY_BUSY_ATTEMPTS
+     * times; only then does it read as a rejection. */
+    let result = null;
+    for (let attempt = 1; attempt <= APPLY_BUSY_ATTEMPTS; attempt++) {
+      result = await request('/api/dsp/config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'X-Aius-SD-Auth': token },
+        body: payload,
+      });
+      const busy = result.status === 503 && result.body && result.body.error === 'audio_busy';
+      if (!busy || attempt === APPLY_BUSY_ATTEMPTS) break;
+      setStatus(`Device busy with audio; retrying (${attempt}/${APPLY_BUSY_ATTEMPTS - 1})...`);
+      await new Promise((resolve) => setTimeout(resolve, shared.retryAfterMs(result.retryAfter)));
+    }
     if (result.status === 409) {
       setStale(true);
       setApplyState('stale');
@@ -2145,18 +2157,12 @@
    * perfectly well and has simply never published (metering bypassed, or no
    * block processed yet), which is a render state rather than a fault -- so it
    * keeps the full 10 Hz cadence. */
-  async function pollMeters() {
-    const result = await request('/api/meters', { headers: { Accept: 'application/json' } });
-    if (!result.ok || !result.body) {
-      renderMetersAbsent(result);
-      return METER_RETRY_MS;
-    }
+  function onMetersAnswer(result) {
     if (!(Number(result.body.sequence) > 0)) {
       renderMetersIdle();
-      return METER_POLL_MS;
+      return;
     }
     renderMeters(result.body);
-    return METER_POLL_MS;
   }
 
   function blankMeterRows() {
@@ -2299,11 +2305,9 @@
   /* The same serialised discipline at its own 1 Hz cadence: a status read that
    * takes longer than a second must not put a second one on the wire behind it,
    * because that overlap is exactly what costs a dropped connection. */
-  async function pollStatus() {
-    const result = await request('/api/status', { headers: { Accept: 'application/json' } });
-    renderFlowEnds(result.ok && result.body ? result.body : null);
-    return STATUS_POLL_MS;
-  }
+  /* The compact body (GET /api/status/brief, never the full /api/status): it
+   * carries exactly the keys renderFlowEnds reads, so a poll costs the device
+   * one short render. */
 
   function setFlowEnd(id, dataState, text) {
     const element = $(id);
@@ -4106,7 +4110,21 @@
   /* Two serialised loops, never two timers: the meters take their first
    * cadence before asking (the strip reads "waiting" for 100 ms), the flow ends
    * ask at once because the page opens with nothing to say about the input. */
-  startPolling(pollMeters, METER_POLL_MS);
-  startPolling(pollStatus, STATUS_POLL_MS, true);
+  shared.createPoller({
+    fetch: () => request('/api/meters', { headers: { Accept: 'application/json' } }),
+    cadenceMs: METER_POLL_MS,
+    onAnswer: onMetersAnswer,
+    onUnreachable: renderMetersAbsent,
+    unreachableDelayMs: METER_RETRY_MS,
+    onError: showError,
+  });
+  shared.createPoller({
+    fetch: () => request('/api/status/brief', { headers: { Accept: 'application/json' } }),
+    cadenceMs: STATUS_POLL_MS,
+    immediate: true,
+    onAnswer: (result) => renderFlowEnds(result.body),
+    onUnreachable: () => renderFlowEnds(null),
+    onError: showError,
+  });
   startBallistics();
 })();

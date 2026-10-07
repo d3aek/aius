@@ -315,7 +315,168 @@ typedef struct {
 	 * file is open, answered 503 sd_busy with the mode unchanged. Optional and
 	 * last in the table: a table without it answers 404 on the route. */
 	bool (*sd_set_mode)(void *context, bool dma);
+	/* GET /api/status/brief (Phase 4f F3): exactly the keys the editor's flow
+	 * ends read, under the full body's names and nesting. Optional: a table
+	 * without it answers 404 on the route. */
+	size_t (*write_status_brief)(void *context, uint8_t *body,
+	                             size_t capacity);
+	/* Phase 4f F5 (optional pair): called around every HTTP route dispatch,
+	 * so the composition meters each dispatch's longest stretch between
+	 * yield points and charges it to the route's admission class. */
+	void (*dispatch_begin)(void *context);
+	void (*dispatch_end)(void *context, AiusHttpRoute route,
+	                     AiusHttpMethod method);
 } AiusOpticalApp;
+
+/* --------------------------------------------------------------------------
+ * Admission (aius-sample-rate-following.md Phase 4f, F1, F2, F8, F9, F11, F12)
+ *
+ * Portable decision half of the HTTP admission hook. The composition root
+ * supplies one AiusOpticalAdmitSample per decision (live_owns_ring() and the
+ * ring level, the SD mode and millis()) and maps the verdicts onto the
+ * runtime seam's AiusHttpAdmitVerdict. Nothing here reads a clock or a ring.
+ * ------------------------------------------------------------------------ */
+
+/* Route classes (F1) then the per-mode SD-start windows (F2). Every other
+ * route is admitted whatever the margin (F13). */
+typedef enum {
+	AIUS_OPTICAL_ADMIT_STATUS = 0,     /* GET /api/status */
+	AIUS_OPTICAL_ADMIT_BRIEF,          /* GET /api/status/brief */
+	AIUS_OPTICAL_ADMIT_METERS,         /* GET /api/meters */
+	AIUS_OPTICAL_ADMIT_EVENTS,         /* GET /api/events */
+	AIUS_OPTICAL_ADMIT_SETTINGS,       /* PUT /api/dsp/config, PUT /api/config */
+	AIUS_OPTICAL_ADMIT_DIRECTORY,      /* GET /api/replays */
+	AIUS_OPTICAL_ADMIT_SD_START_DMA,
+	AIUS_OPTICAL_ADMIT_SD_START_FIFO,
+	AIUS_OPTICAL_ADMIT_CLASSES,
+	AIUS_OPTICAL_ADMIT_NONE = AIUS_OPTICAL_ADMIT_CLASSES
+} AiusOpticalAdmitClass;
+
+#define AIUS_OPTICAL_ADMIT_ROUTE_CLASSES 6u
+#define AIUS_OPTICAL_ADMIT_SLOTS 5u          /* four completed buckets + current */
+#define AIUS_OPTICAL_ADMIT_BUCKET 16u        /* dispatches per bucket */
+#define AIUS_OPTICAL_ADMIT_UNDERRUN_FRAMES 128
+#define AIUS_OPTICAL_ADMIT_GUARD_FRAMES 48
+#define AIUS_OPTICAL_ADMIT_FRAMES_PER_MS 48u
+#define AIUS_OPTICAL_ADMIT_SD_DEFER_MS 500u  /* F9 */
+#define AIUS_OPTICAL_ADMIT_BUCKET_MS 2000u   /* F12: a bucket's wall-time span */
+
+typedef enum {
+	AIUS_OPTICAL_ADMIT_VERDICT_ADMIT = 0,
+	AIUS_OPTICAL_ADMIT_VERDICT_SHED,
+	AIUS_OPTICAL_ADMIT_VERDICT_DEFER
+} AiusOpticalAdmitVerdict;
+
+/* F12: a bucketed maximum, 16 B. slot[0..3] are the maxima of the last four
+ * completed buckets, slot[4] the current bucket's; the cost is the largest
+ * slot. A bucket closes after 16 samples or 2,000 ms of millis() since it
+ * opened, whichever first (F-B1): a full bucket is retired lazily by the next
+ * sample, and every whole 2,000 ms that passes retires the current bucket,
+ * empty or not, at the class's next sample or consult. A completed bucket
+ * replaces the oldest. So an outlier stays the cost for at least 64 and at
+ * most 79 further samples (gone at the 80th) or about 8 to 10 s of wall time,
+ * whichever comes first, whether the class is admitted or shed (a SHED adds
+ * no sample); a class's first measurement, which replaces the seed in all
+ * five slots, is the same as an outlier at a bucket's first position (gone
+ * at the 80th). A window whose buckets all age out empty returns to its seed
+ * (F8, R4-S1: never judged against 0). While `seeded` is set all five slots
+ * hold the class seed, the window does not age, and the first sample
+ * overwrites all five (F8). */
+typedef struct {
+	uint16_t slot[AIUS_OPTICAL_ADMIT_SLOTS];
+	uint8_t count;   /* bits 0-4: samples in the current bucket (0..16);
+	                  * bits 5-6: the oldest completed slot */
+	uint8_t seeded;
+	uint32_t opened_ms; /* millis() when the current bucket opened */
+} AiusOpticalCostWindow;
+
+typedef struct {
+	AiusOpticalCostWindow window[AIUS_OPTICAL_ADMIT_CLASSES];
+	uint32_t shed[AIUS_OPTICAL_ADMIT_CLASSES]; /* SHED verdicts per class */
+	uint32_t dispatch_max_us;   /* every route's longest stretch (F13) */
+	/* Held decisions (F9): each DEFER of an HTTP SD start and each hold of a
+	 * root job's start. Not an epoch count: one epoch can add two (an HTTP
+	 * DEFER and a root hold in the same epoch). */
+	uint32_t sd_fifo_defers;
+	uint32_t defer_started_ms;  /* F9's millis() timer */
+	uint8_t defer_timing;
+	/* F-B2: once-per-boot latch, set when bring-up's first LOAD_DSP step
+	 * ends (any outcome). Root holds wait for it; init clears it, clear
+	 * keeps it. Sits in the struct's tail padding. */
+	uint8_t bringup_loaded;
+} AiusOpticalAdmission;
+
+typedef struct {
+	bool live_owns_ring;   /* the ring's gate flag set with the carrier locked */
+	bool fifo_mode;        /* the mounted SD mode is FIFO */
+	uint32_t level_frames; /* transmit ring level */
+	uint32_t now_ms;
+} AiusOpticalAdmitSample;
+
+/* Boot: every window holds its declared seed (in flash), counters zero. */
+void aius_optical_admission_init(AiusOpticalAdmission *admission);
+/* POST /api/clear: shed counts, dispatch_max_us and sd_fifo_defers reset; the
+ * cost windows and a running F9 timer are kept (F8, R4-S1). */
+void aius_optical_admission_clear(AiusOpticalAdmission *admission);
+AiusOpticalAdmitClass aius_optical_admit_route_class(AiusHttpRoute route,
+                                                     AiusHttpMethod method);
+/* One sample (us, saturating at 65,535) into a class window at millis()
+ * now_ms; the window first ages to now_ms. */
+void aius_optical_admission_record(AiusOpticalAdmission *admission,
+                                   AiusOpticalAdmitClass klass, uint32_t us,
+                                   uint32_t now_ms);
+/* After a route dispatch: its class window and dispatch_max_us. */
+void aius_optical_admission_note_dispatch(AiusOpticalAdmission *admission,
+                                          AiusHttpRoute route,
+                                          AiusHttpMethod method, uint32_t us,
+                                          uint32_t now_ms);
+/* F-B1: retire every bucket whose 2,000 ms have passed, in every window. The
+ * consults below age their own class; a reader of cost_us() for display (the
+ * status body) calls this first. */
+void aius_optical_admission_age(AiusOpticalAdmission *admission,
+                                uint32_t now_ms);
+uint32_t aius_optical_admission_cost_us(const AiusOpticalAdmission *admission,
+                                        AiusOpticalAdmitClass klass);
+/* F1: true while live input owns the ring and level - 128 < cost + 48 frames
+ * (48 frames per ms); always false outside ownership (F11). Reads the window
+ * as it stands: the consults below age it first. */
+bool aius_optical_admission_short(const AiusOpticalAdmission *admission,
+                                  AiusOpticalAdmitClass klass,
+                                  const AiusOpticalAdmitSample *sample);
+/* ROUTE: SHED for a short class (counted), else ADMIT. */
+AiusOpticalAdmitVerdict aius_optical_admission_route(
+	AiusOpticalAdmission *admission, AiusHttpRoute route,
+	AiusHttpMethod method, const AiusOpticalAdmitSample *sample);
+/* F2: in FIFO mode, true while the FIFO SD-start window is short; counts each
+ * true as one hold in sd_fifo_defers. F-B2: always false until
+ * aius_optical_admission_note_bringup_loaded(), so bring-up's PROBE,
+ * LOAD_CONFIG and LOAD_DSP root jobs start while live input owns the ring
+ * (FIFO is the boot mode; the 2026-08-16 starvation). HTTP SD starts
+ * (aius_optical_admission_sd_start) do not read the latch. */
+bool aius_optical_admission_sd_fifo_defer(AiusOpticalAdmission *admission,
+                                          const AiusOpticalAdmitSample *sample);
+/* F-B2: bring-up's first LOAD_DSP step has ended, found or not. */
+void aius_optical_admission_note_bringup_loaded(AiusOpticalAdmission *admission);
+/* Round 4: whether the HTTP transaction can no longer start or finish the SD
+ * write an upload staging (PUT /api/dsp/config, PUT /api/config) was armed
+ * for. False while the transaction is in DISPATCH (the arming epoch, its SD
+ * job not yet emitted), SD_START or SD_TRANSFER, while the seam holds a
+ * deferred start (`start_held`) or an admitted start waits for the storage
+ * checkpoint (`start_queued`); true otherwise (a teardown re-inited the
+ * transaction, or it moved on to another request). Reads state only. */
+bool aius_optical_app_sd_staging_orphaned(const AiusHttpTransaction *http,
+                                          bool start_held, bool start_queued);
+/* SD_START: OTA staging always ADMIT (F9); FIFO: DEFER while
+ * sd_fifo_defer() holds, SHED once 500 ms have passed since the first
+ * deferral; DMA: SHED when short. ADMIT and SHED stop the timer.
+ * `reconsult` is true only when this consult re-issues the start the last
+ * DEFER held; a first consult (a new start, or one after a network teardown
+ * dropped the held start) restarts the timer (F-S2). */
+AiusOpticalAdmitVerdict aius_optical_admission_sd_start(
+	AiusOpticalAdmission *admission, const AiusSdJobRequest *job,
+	const AiusOpticalAdmitSample *sample, bool reconsult);
+/* An OTA staging chunk job: an UPLOAD whose target is the staged image. */
+bool aius_optical_app_sd_job_is_ota_staging(const AiusSdJobRequest *job);
 
 /* --------------------------------------------------------------------------
  * OTA -- staged firmware upgrade (docs/plans/aius-ota-upgrade.md, slice 3)
@@ -645,6 +806,15 @@ typedef struct {
 	char backup_path[AIUS_SD_PATH_STORAGE];
 	char replay_id[AIUS_OPTICAL_APP_REPLAY_ID_STORAGE];
 	char usb_payload[AIUS_OPTICAL_APP_USB_PAYLOAD_STORAGE];
+	/* The flag word (Phase 4f): ota_pending, recorder_lease_active, valid
+	 * and the recorder lease's slot (a recorder bank index, under 256) share
+	 * one word placed here, in what was the alignment hole before the
+	 * 8 B aligned index_entries, so the OCRAM instance does not grow. Each
+	 * is documented with its mechanism below. */
+	bool ota_pending;
+	bool recorder_lease_active;
+	bool valid;
+	uint8_t recorder_lease_slot;
 	/* Scratch for one directory listing, ~3 KB. Written and read entirely
 	 * inside a single dispatch call -- the response borrows `body`, never this
 	 * -- so it does not extend the borrow invariant above. It lives here rather
@@ -663,8 +833,8 @@ typedef struct {
 	 * transaction's request body, which outlives the job (the settle fires
 	 * before that transaction recycles); the drain arm in the composition
 	 * clears a pending left by a released connection. While armed, the
-	 * chunk route answers 503 sd_busy -- a one-epoch window. */
-	bool ota_pending;
+	 * chunk route answers 503 sd_busy -- a one-epoch window. ota_pending
+	 * itself sits in the flag word above index_entries. */
 	uint32_t ota_pending_offset;
 	const uint8_t *ota_pending_data;
 	size_t ota_pending_length;
@@ -686,11 +856,9 @@ typedef struct {
 	 * included (aius_http_transaction_discard). A nonzero count therefore
 	 * names a path that bypassed the hook -- diagnostic, not a normal
 	 * mode -- while the drop itself keeps the leaked slot from pinning the
-	 * bank's round-robin for the rest of the boot. */
-	bool recorder_lease_active;
-	uint32_t recorder_lease_slot;
+	 * bank's round-robin for the rest of the boot. recorder_lease_slot and
+	 * recorder_lease_active sit in the flag word above index_entries. */
 	uint32_t recorder_lease_leaks;
-	bool valid;
 } AiusOpticalAppDispatcher;
 
 /* Copies `app` and adopts the caller-owned response body buffer. Returns false

@@ -21,7 +21,36 @@
           "200": {
             "description": "Telemetry snapshot",
             "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Status" } } }
-          }
+          },
+          "503": { "$ref": "#/components/responses/AudioBusy" }
+        }
+      }
+    },
+    "/api/status/brief": {
+      "get": {
+        "operationId": "getStatusBrief",
+        "description": "Compact status for the editor's flow ends (Phase 4f F3): exactly carrier, state, sample_rate, pipeline_diag.codec_pc, tx_gate.open and tx_gate.replay_running, under the full body's names and nesting and from the same sources. Under 512 bytes. GET only; POST answers 405.",
+        "responses": {
+          "200": {
+            "description": "Compact status snapshot",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/StatusBrief" },
+                "examples": {
+                  "live": {
+                    "value": {
+                      "carrier": 1,
+                      "state": 4,
+                      "sample_rate": 48000,
+                      "pipeline_diag": { "codec_pc": 1 },
+                      "tx_gate": { "open": 1, "replay_running": 0 }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": { "$ref": "#/components/responses/AudioBusy" }
         }
       }
     },
@@ -146,13 +175,15 @@
             }
           },
           "503": {
-            "description": "The SD card is not ready (sd_unavailable), or another SD job is already in flight (sd_busy). Neither SD nor the active DSP snapshot is touched.",
+            "description": "The SD card is not ready (sd_unavailable), or another SD job is already in flight (sd_busy). audio_busy: shed while live input owns the transmit ring and the body parse's or the store job's start cost exceeds the ring margin (Phase 4f admission); carries Retry-After: 1; retry. Neither SD nor the active DSP snapshot is touched.",
+            "headers": { "Retry-After": { "$ref": "#/components/headers/RetryAfter" } },
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/Error" },
                 "examples": {
                   "sd_unavailable": { "value": { "ok": false, "error": "sd_unavailable" } },
-                  "sd_busy": { "value": { "ok": false, "error": "sd_busy" } }
+                  "sd_busy": { "value": { "ok": false, "error": "sd_busy" } },
+                  "audio_busy": { "value": { "ok": false, "error": "audio_busy" } }
                 }
               }
             }
@@ -240,7 +271,8 @@
                 "examples": { "response_too_large": { "value": { "ok": false, "error": "response_too_large" } } }
               }
             }
-          }
+          },
+          "503": { "$ref": "#/components/responses/AudioBusy" }
         }
       }
     },
@@ -387,7 +419,8 @@
           "200": {
             "description": "Bounded event page",
             "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Events" } } }
-          }
+          },
+          "503": { "$ref": "#/components/responses/AudioBusy" }
         }
       }
     },
@@ -714,8 +747,17 @@
             }
           },
           "503": {
-            "description": "sd_busy: an SD job (refill, upload, download, probe) owns the volume; retry.",
-            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+            "description": "sd_busy: an SD job (refill, upload, download, probe) owns the volume; retry. audio_busy: shed while live input owns the transmit ring and the route's admission cost exceeds the ring margin (Phase 4f admission); carries Retry-After: 1; retry.",
+            "headers": { "Retry-After": { "$ref": "#/components/headers/RetryAfter" } },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "examples": {
+                  "sd_busy": { "value": { "ok": false, "error": "sd_busy" } },
+                  "audio_busy": { "value": { "ok": false, "error": "audio_busy" } }
+                }
+              }
+            }
           }
         }
       },
@@ -876,7 +918,20 @@
         "responses": {
           "200": { "$ref": "#/components/responses/Ack" },
           "400": { "$ref": "#/components/responses/Error" },
-          "503": { "$ref": "#/components/responses/Error" }
+          "503": {
+            "description": "sd_unavailable with no card; sd_busy while an SD job holds the volume. audio_busy: shed while live input owns the transmit ring and the body parse's or the store job's start cost exceeds the ring margin (Phase 4f admission); carries Retry-After: 1; retry.",
+            "headers": { "Retry-After": { "$ref": "#/components/headers/RetryAfter" } },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "examples": {
+                  "sd_unavailable": { "value": { "ok": false, "error": "sd_unavailable" } },
+                  "sd_busy": { "value": { "ok": false, "error": "sd_busy" } },
+                  "audio_busy": { "value": { "ok": false, "error": "audio_busy" } }
+                }
+              }
+            }
+          }
         }
       }
     },
@@ -944,7 +999,20 @@
           "200": { "description": "File contents" },
           "404": { "$ref": "#/components/responses/Error" },
           "413": { "$ref": "#/components/responses/Error" },
-          "503": { "$ref": "#/components/responses/Error" }
+          "503": {
+            "description": "sd_unavailable with no card; sd_busy while an SD job holds the volume. audio_busy: shed while live input owns the transmit ring and the SD job's start cost exceeds the ring margin (Phase 4f admission); carries Retry-After: 1; retry.",
+            "headers": { "Retry-After": { "$ref": "#/components/headers/RetryAfter" } },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "examples": {
+                  "sd_unavailable": { "value": { "ok": false, "error": "sd_unavailable" } },
+                  "sd_busy": { "value": { "ok": false, "error": "sd_busy" } },
+                  "audio_busy": { "value": { "ok": false, "error": "audio_busy" } }
+                }
+              }
+            }
+          }
         }
       },
       "put": {
@@ -973,11 +1041,15 @@
             }
           },
           "503": {
-            "description": "No SD card is mounted.",
+            "description": "No SD card is mounted (sd_unavailable). audio_busy: shed while live input owns the transmit ring and the SD job's start cost exceeds the ring margin (Phase 4f admission); carries Retry-After: 1; retry.",
+            "headers": { "Retry-After": { "$ref": "#/components/headers/RetryAfter" } },
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/Error" },
-                "examples": { "sd_unavailable": { "value": { "ok": false, "error": "sd_unavailable" } } }
+                "examples": {
+                  "sd_unavailable": { "value": { "ok": false, "error": "sd_unavailable" } },
+                  "audio_busy": { "value": { "ok": false, "error": "audio_busy" } }
+                }
               }
             }
           },
@@ -1045,13 +1117,15 @@
             }
           },
           "503": {
-            "description": "sd_unavailable with no card; sd_busy while an SD job holds the volume.",
+            "description": "sd_unavailable with no card; sd_busy while an SD job holds the volume. audio_busy: shed while live input owns the transmit ring and the SD job's start cost exceeds the ring margin (Phase 4f admission); carries Retry-After: 1; retry.",
+            "headers": { "Retry-After": { "$ref": "#/components/headers/RetryAfter" } },
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/Error" },
                 "examples": {
                   "sd_unavailable": { "value": { "ok": false, "error": "sd_unavailable" } },
-                  "sd_busy": { "value": { "ok": false, "error": "sd_busy" } }
+                  "sd_busy": { "value": { "ok": false, "error": "sd_busy" } },
+                  "audio_busy": { "value": { "ok": false, "error": "audio_busy" } }
                 }
               }
             }
@@ -1221,9 +1295,50 @@
       "Error": {
         "description": "Rejected request",
         "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+      },
+      "AudioBusy": {
+        "description": "audio_busy: shed while live input owns the transmit ring and the route's admission cost exceeds the ring margin (Phase 4f admission); carries Retry-After: 1; retry.",
+        "headers": { "Retry-After": { "$ref": "#/components/headers/RetryAfter" } },
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/Error" },
+            "examples": { "audio_busy": { "value": { "ok": false, "error": "audio_busy" } } }
+          }
+        }
+      }
+    },
+    "headers": {
+      "RetryAfter": {
+        "description": "Seconds to wait before retrying; the firmware sends 1 on every 503.",
+        "schema": { "type": "integer", "minimum": 0 }
       }
     },
     "schemas": {
+      "StatusBrief": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["carrier", "state", "sample_rate", "pipeline_diag", "tx_gate"],
+        "properties": {
+          "carrier": { "type": "integer", "minimum": 0, "maximum": 1 },
+          "state": { "type": "integer", "minimum": 0 },
+          "sample_rate": { "type": "integer", "minimum": 0 },
+          "pipeline_diag": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["codec_pc"],
+            "properties": { "codec_pc": { "type": "integer", "minimum": 0 } }
+          },
+          "tx_gate": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["open", "replay_running"],
+            "properties": {
+              "open": { "type": "integer", "minimum": 0, "maximum": 1 },
+              "replay_running": { "type": "integer", "minimum": 0, "maximum": 1 }
+            }
+          }
+        }
+      },
       "DspConfig": {
         "type": "object",
         "additionalProperties": false,
@@ -3913,6 +4028,35 @@
             "type": "integer",
             "minimum": 0,
             "description": "Largest finished GET /api/status body this boot in bytes, the peak of the renders before this one (a body cannot state its own length). Compare against the 12,288-byte app body buffer; 0 on the first render."
+          },
+          "http_shed": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Phase 4f: requests answered 503 audio_busy (route sheds and SD job start sheds), the sum of http_shed_class. Reset by POST /api/clear."
+          },
+          "http_dispatch_max_us": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Phase 4f: every route's longest non-yielding stretch in one dispatch (us, nested producer passes excluded), unlisted routes included (F13). Reset by POST /api/clear."
+          },
+          "sd_fifo_defers": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Phase 4f: held decisions in FIFO mode while live input owned the ring with the margin short (F2, F9): each DEFER of an HTTP SD start and each hold of a root job at its start (no hold before the boot's first dsp.json load has ended; a started root job runs to its end). A count of holds, not of epochs: one epoch can add two. Reset by POST /api/clear."
+          },
+          "http_shed_class": {
+            "type": "array",
+            "minItems": 8,
+            "maxItems": 8,
+            "items": { "type": "integer", "minimum": 0 },
+            "description": "Phase 4f: 503 audio_busy answers per admission class, in order: full status, brief status, meters, events, settings PUT parse, directory listing, SD start (DMA), SD start (FIFO). Reset by POST /api/clear."
+          },
+          "http_class_cost_us": {
+            "type": "array",
+            "minItems": 8,
+            "maxItems": 8,
+            "items": { "type": "integer", "minimum": 0, "maximum": 65535 },
+            "description": "Phase 4f: each admission class's current cost (us), in http_shed_class's order: the bucketed maximum of the longest stretch between yield points over the last 64 to 79 samples or about 8 to 10 s, whichever is shorter (a bucket closes after 16 samples or 2,000 ms; a shed adds no sample, so a shed class's cost still ages), or the declared seed until the first measurement and again once every bucket has aged out empty. Kept across POST /api/clear (F8)."
           },
           "status_render_failures": {
             "type": "integer",

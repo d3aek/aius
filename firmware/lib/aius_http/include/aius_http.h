@@ -111,7 +111,10 @@ typedef enum {
 	 * mount with no file open (aius-sample-rate-following.md Phase 4e, E3).
 	 * Auth-gated at dispatch; not persisted, so a reset reverts to FIFO.
 	 * Appended last so the START..REBOOT method range keeps its ids. */
-	AIUS_HTTP_ROUTE_SD_MODE
+	AIUS_HTTP_ROUTE_SD_MODE,
+	/* GET /api/status/brief: the few keys the flow-ends renderer reads
+	 * (Phase 4f F3). GET only. Appended last. */
+	AIUS_HTTP_ROUTE_STATUS_BRIEF
 } AiusHttpRoute;
 
 typedef enum {
@@ -166,6 +169,8 @@ AiusHttpResult aius_http_parse(const uint8_t *data, size_t length,
 	                               AiusHttpRequest *request);
 
 const char *aius_http_reason(unsigned status);
+/* A 503 also carries "Retry-After: 1"; every other status keeps its header
+ * set byte-identical. */
 /* cache_max_age_s nonzero appends "Cache-Control: max-age=<n>"; zero emits
  * no caching header at all (the pre-existing header set, byte-identical). */
 size_t aius_http_write_headers(uint8_t *output, size_t capacity,

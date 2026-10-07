@@ -173,8 +173,8 @@ function createDevice(options = {}) {
     if (url === '/api/meters') {
       return stub.meters ? jsonResponse(200, stub.meters) : jsonResponse(404, { ok: false, error: 'not_found' });
     }
-    if (url === '/api/status') {
-      return stub.status ? jsonResponse(200, stub.status) : jsonResponse(503, { ok: false, error: 'unavailable' });
+    if (url === '/api/status/brief') {
+      return stub.status ? jsonResponse(200, stub.status) : jsonResponse(500, { ok: false, error: 'unavailable' });
     }
     if (url === '/sd/www/presets/') {
       return stub.presetsIndex
@@ -1452,7 +1452,7 @@ describe('Aius SD DSP editor — protecting unapplied work', () => {
 describe('Aius SD DSP editor — meters', () => {
   it('renders numeric levels and telemetry from a snapshot', async () => {
     await boot();
-    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(250);
 
     expect(el('meter-state').textContent).toBe('live');
     expect(el('meter-in-fl-peak').textContent).toBe('-6.2');
@@ -1480,13 +1480,13 @@ describe('Aius SD DSP editor — meters', () => {
 
     // One poll catching a full-burst spike must not move the median.
     device.meters = { ...steady, estimated_latency_us: 40000 };
-    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(250);
     expect(el('meter-latency').textContent).toBe(settled);
   });
 
   it('renders levels at the -120 dBFS floor as silence, not as a number', async () => {
     await boot({ meters: fixture('meters-silent.json') });
-    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(250);
 
     expect(el('meter-state').textContent).toBe('live');
     expect(el('meter-in-fl-peak').textContent).toBe('-inf');
@@ -1500,7 +1500,7 @@ describe('Aius SD DSP editor — meters', () => {
 
   it('shows "no data" for a never-published snapshot without backing off', async () => {
     await boot({ meters: fixture('meters-idle.json') });
-    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(250);
 
     expect(el('meter-state').textContent).toBe('no data');
     expect(el('meter-sequence').textContent).toBe('0');
@@ -1512,15 +1512,15 @@ describe('Aius SD DSP editor — meters', () => {
     expect(el('meter-cycles').textContent).toBe('--');
     expect(el('meter-summary').textContent).toContain('No meter snapshot published yet');
 
-    // A valid 200 is not a fault, so the 10 Hz poll continues at full rate --
-    // unlike the absent-endpoint branch, which backs off to 5 s.
+    // A valid 200 is not a fault, so the 4 Hz poll continues at full rate --
+    // unlike the unreachable branch, which backs off to 5 s.
     const afterFirst = callsTo('/api/meters').length;
     await vi.advanceTimersByTimeAsync(1000);
-    expect(callsTo('/api/meters').length).toBe(afterFirst + 10);
+    expect(callsTo('/api/meters').length).toBe(afterFirst + 4);
 
     // Once the device starts publishing, the page goes live on the next poll.
     device.meters = fixture('meters-snapshot.json');
-    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(250);
     expect(el('meter-state').textContent).toBe('live');
     expect(el('meter-sequence').textContent).toBe('1287');
   });
@@ -1532,7 +1532,7 @@ describe('Aius SD DSP editor — meters', () => {
    * an empty box with a status line implying it was about to fill. */
   it('carries no canvas in the live-processing card, and no analyser wiring', async () => {
     await boot();
-    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(250);
 
     expect(el('waveform')).toBe(null);
     expect(el('spectrogram')).toBe(null);
@@ -1547,7 +1547,7 @@ describe('Aius SD DSP editor — meters', () => {
    * FRONT (fl, fr, fc and the LFE that rides with them), SURROUND, OUTPUT. */
   it('groups the per-channel meters into Front, Surround and Output cards', async () => {
     await boot();
-    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(250);
 
     const groups = [...document.querySelectorAll('.meter-group')];
     expect(groups.map((group) => group.querySelector('.meter-group__title').textContent)).toEqual([
@@ -1565,9 +1565,15 @@ describe('Aius SD DSP editor — meters', () => {
     expect(document.querySelector('.meter-table')).toBe(null);
   });
 
-  it('degrades gracefully and backs off when /api/meters is absent', async () => {
+  it('degrades gracefully and backs off after three failures when /api/meters is absent', async () => {
     await boot({ meters: null });
-    await vi.advanceTimersByTimeAsync(100);
+    // Two failures are silent: the pill has not said "unreachable" yet.
+    await vi.advanceTimersByTimeAsync(250);
+    await vi.advanceTimersByTimeAsync(250);
+    expect(callsTo('/api/meters')).toHaveLength(2);
+    expect(el('meter-state').textContent).not.toBe('unreachable');
+    await vi.advanceTimersByTimeAsync(250);
+    expect(callsTo('/api/meters')).toHaveLength(3);
 
     expect(el('meter-state').textContent).toBe('unreachable');
     expect(el('meter-summary').textContent).toContain('HTTP 404');
@@ -1576,12 +1582,52 @@ describe('Aius SD DSP editor — meters', () => {
     expect(el('apply-state').textContent).toBe('loaded');
     expect(valueOf('matrix.headroom_linear')).toBe('0.5');
 
-    const afterFirst = callsTo('/api/meters').length;
-    await vi.advanceTimersByTimeAsync(1000);
-    expect(callsTo('/api/meters').length).toBe(afterFirst);
+    await vi.advanceTimersByTimeAsync(4900);
+    expect(callsTo('/api/meters')).toHaveLength(3);
 
-    await vi.advanceTimersByTimeAsync(4100);
-    expect(callsTo('/api/meters').length).toBe(afterFirst + 1);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(callsTo('/api/meters')).toHaveLength(4);
+  });
+
+  it('treats a 503 as a silent skip, keeps the last values, and honours Retry-After clamped to 0.25-5 s', async () => {
+    await boot();
+    await vi.advanceTimersByTimeAsync(250);
+    expect(el('meter-state').textContent).toBe('live');
+
+    const inner = globalThis.fetch;
+    let retryAfter = '30';
+    globalThis.fetch = vi.fn(async (url, init) => {
+      if (url !== '/api/meters') return inner(url, init);
+      device.calls.push({ url, method: 'GET', headers: {}, body: undefined });
+      return { ...jsonResponse(503, { ok: false, error: 'audio_busy' }), headers: { get: () => retryAfter } };
+    });
+    const before = callsTo('/api/meters').length;
+    await vi.advanceTimersByTimeAsync(250);
+    expect(callsTo('/api/meters')).toHaveLength(before + 1);
+    // Pill and values untouched even after many sheds.
+    expect(el('meter-state').textContent).toBe('live');
+    expect(el('meter-in-fl-peak').textContent).toBe('-6.2');
+    // 30 s clamps to 5 s.
+    await vi.advanceTimersByTimeAsync(4900);
+    expect(callsTo('/api/meters')).toHaveLength(before + 1);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(callsTo('/api/meters')).toHaveLength(before + 2);
+    // 0 clamps up to 0.25 s; never three-in-a-row unreachable from 503s.
+    retryAfter = '0';
+    await vi.advanceTimersByTimeAsync(5000);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(el('meter-state').textContent).toBe('live');
+  });
+
+  it('shows unreachable only after three consecutive failures and clears it on one success', async () => {
+    await boot();
+    await vi.advanceTimersByTimeAsync(250);
+    device.meters = null;
+    await vi.advanceTimersByTimeAsync(750);
+    expect(el('meter-state').textContent).toBe('unreachable');
+    device.meters = fixture('meters-snapshot.json');
+    await vi.advanceTimersByTimeAsync(5100);
+    expect(el('meter-state').textContent).toBe('live');
   });
 });
 
@@ -1608,7 +1654,7 @@ describe('Aius SD DSP editor — serialised polling', () => {
 
   it('holds the meter loop while a request hangs, and never queues the frames it missed', async () => {
     await boot();
-    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(250);
     expect(callsTo('/api/meters')).toHaveLength(1);
 
     const waiting = hold('/api/meters');
@@ -1623,27 +1669,27 @@ describe('Aius SD DSP editor — serialised polling', () => {
     waiting[0](jsonResponse(200, fixture('meters-snapshot.json')));
     await settle();
     expect(callsTo('/api/meters')).toHaveLength(2);
-    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(250);
     expect(callsTo('/api/meters')).toHaveLength(3);
     expect(el('meter-state').textContent).toBe('live');
   });
 
   it('holds the status loop the same way, at its own 1 Hz cadence', async () => {
     await boot();
-    expect(callsTo('/api/status')).toHaveLength(1);
+    expect(callsTo('/api/status/brief')).toHaveLength(1);
 
-    const waiting = hold('/api/status');
+    const waiting = hold('/api/status/brief');
     await vi.advanceTimersByTimeAsync(1000);
-    expect(callsTo('/api/status')).toHaveLength(2);
+    expect(callsTo('/api/status/brief')).toHaveLength(2);
 
-    await vi.advanceTimersByTimeAsync(5000);
+    await vi.advanceTimersByTimeAsync(2500); /* inside the 4 s request timeout */
     expect(waiting).toHaveLength(1);
-    expect(callsTo('/api/status')).toHaveLength(2);
+    expect(callsTo('/api/status/brief')).toHaveLength(2);
 
     waiting[0](jsonResponse(200, STATUS_IDLE));
     await settle();
     await vi.advanceTimersByTimeAsync(1000);
-    expect(callsTo('/api/status')).toHaveLength(3);
+    expect(callsTo('/api/status/brief')).toHaveLength(3);
   });
 
   /* The pending window polls the config endpoint every 500 ms for up to 20 s;
@@ -1657,10 +1703,40 @@ describe('Aius SD DSP editor — serialised polling', () => {
 
     const before = callsTo('/api/dsp/config').length;
     const waiting = hold('/api/dsp/config');
-    await vi.advanceTimersByTimeAsync(5000);
+    await vi.advanceTimersByTimeAsync(3000); /* inside the 4 s request timeout */
 
     expect(waiting).toHaveLength(1);
     expect(callsTo('/api/dsp/config')).toHaveLength(before + 1);
+  });
+
+  it('aborts a hung request, counts it, schedules the next poll, and shows unreachable after three', async () => {
+    await boot();
+    await vi.advanceTimersByTimeAsync(250);
+    expect(el('meter-state').textContent).toBe('live');
+
+    const signals = [];
+    globalThis.fetch = vi.fn((target, init = {}) => {
+      if (target !== '/api/meters') return Promise.resolve(jsonResponse(404, { ok: false }));
+      device.calls.push({ url: target, method: 'GET', headers: {}, body: undefined });
+      signals.push(init.signal);
+      return new Promise(() => {});
+    });
+    const before = callsTo('/api/meters').length;
+
+    // First hang: aborted at 4 s, counted (still live), next poll scheduled.
+    await vi.advanceTimersByTimeAsync(250 + 4000);
+    expect(callsTo('/api/meters')).toHaveLength(before + 1);
+    expect(signals[0].aborted).toBe(true);
+    expect(el('meter-state').textContent).toBe('live');
+    await vi.advanceTimersByTimeAsync(250 + 4000);
+    expect(callsTo('/api/meters')).toHaveLength(before + 2);
+    expect(el('meter-state').textContent).toBe('live');
+
+    // Third consecutive timeout reads unreachable.
+    await vi.advanceTimersByTimeAsync(250 + 4000);
+    expect(callsTo('/api/meters')).toHaveLength(before + 3);
+    expect(el('meter-state').textContent).toBe('unreachable');
+    expect(el('meter-summary').textContent).toContain('timeout');
   });
 });
 
@@ -1756,14 +1832,75 @@ describe('Aius SD DSP editor — input source and transmit gate', () => {
 
   it('polls at 1 Hz and reads a failed poll as unreachable, not as silence', async () => {
     await boot();
-    expect(callsTo('/api/status')).toHaveLength(1);
+    expect(callsTo('/api/status/brief')).toHaveLength(1);
 
     device.status = null;
     await vi.advanceTimersByTimeAsync(1000);
 
-    expect(callsTo('/api/status')).toHaveLength(2);
+    expect(callsTo('/api/status/brief')).toHaveLength(2);
+    // One or two failures keep the last ends; the third reads unreachable.
+    expect(el('input-source').dataset.state).toBe('none');
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(callsTo('/api/status/brief')).toHaveLength(4);
     expect(el('input-source').dataset.state).toBe('unreachable');
     expect(el('tx-gate').dataset.state).toBe('unreachable');
+
+    device.status = STATUS_IDLE;
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(el('input-source').dataset.state).toBe('none');
+  });
+
+  it('renders the flow ends from the brief fixture and polls the brief route, never the full status', async () => {
+    await boot({ status: fixture('status-brief.json') });
+
+    expect(el('input-source').textContent).toBe('input: optical carrier · bitstream (AC-3) · 48000 Hz');
+    expect(el('tx-gate').dataset.state).toBe('open');
+    expect(callsTo('/api/status')).toHaveLength(0);
+  });
+
+  it('keeps the flow ends through a 503 on the brief route', async () => {
+    await boot({ status: fixture('status-brief.json') });
+    const inner = globalThis.fetch;
+    globalThis.fetch = vi.fn(async (url, init) =>
+      url === '/api/status/brief' ? jsonResponse(503, { ok: false, error: 'audio_busy' }) : inner(url, init),
+    );
+    await vi.advanceTimersByTimeAsync(10000);
+    expect(el('input-source').dataset.state).toBe('carrier');
+    expect(el('tx-gate').dataset.state).toBe('open');
+  });
+
+  it('retries an Apply that answers 503 audio_busy, then lands it', async () => {
+    let attempts = 0;
+    await boot({
+      put: () => {
+        attempts++;
+        return attempts < 3 ? jsonResponse(503, { ok: false, error: 'audio_busy' }) : jsonResponse(200, { ok: true });
+      },
+    });
+    setToken('0123456789abcdef');
+    await setNumber('matrix.center_gain_linear', '0.5');
+    await click('apply');
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(attempts).toBe(3);
+    expect(el('apply-state').textContent).not.toBe('error');
+  });
+
+  it('gives up on a persistent 503 audio_busy Apply as a rejection', async () => {
+    let attempts = 0;
+    await boot({
+      put: () => {
+        attempts++;
+        return jsonResponse(503, { ok: false, error: 'audio_busy' });
+      },
+    });
+    setToken('0123456789abcdef');
+    await setNumber('matrix.center_gain_linear', '0.5');
+    await click('apply');
+    await vi.advanceTimersByTimeAsync(10000);
+
+    expect(attempts).toBe(5);
+    expect(el('apply-state').textContent).toBe('error');
   });
 });
 
@@ -3715,7 +3852,7 @@ describe('Aius SD DSP editor — DSP load, level bars and the limiter strip', ()
 
   it('renders load and headroom against the per-block cycle budget', async () => {
     await boot();
-    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(250);
 
     // 41230 / 6,400,000 cycles per 512-frame block at 48 kHz, in ONE phrasing.
     expect(el('meter-load').textContent).toBe('0.6 % of budget, 99.4 % headroom');
@@ -3726,7 +3863,7 @@ describe('Aius SD DSP editor — DSP load, level bars and the limiter strip', ()
   it('renders a heavy block as a load approaching the budget, and says it is heavy', async () => {
     const busy = { ...fixture('meters-snapshot.json'), dsp_cycles_last: 5600000, dsp_cycles_max: 6400000 };
     await boot({ meters: busy });
-    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(250);
 
     expect(el('meter-load').textContent).toBe('87.5 % of budget, 12.5 % headroom');
     expect(el('meter-load-peak').textContent).toBe('100.0 % of budget');
@@ -3736,7 +3873,7 @@ describe('Aius SD DSP editor — DSP load, level bars and the limiter strip', ()
 
   it('fills the level bars from the same snapshot as the table', async () => {
     await boot();
-    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(250);
 
     expect(el('bar-in-fl-value').textContent).toBe('-6.2');
     expect(el('bar-in-fl-fill').style.width).toBe('89.7%');
@@ -3750,7 +3887,7 @@ describe('Aius SD DSP editor — DSP load, level bars and the limiter strip', ()
 
   it('marks a bar that is close to clipping', async () => {
     await boot({ meters: fixture('meters-silent.json') });
-    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(250);
 
     // fr sits at -0.1 dBFS: a hair from full scale, not a healthy green.
     expect(el('bar-in-fr-fill').dataset.zone).toBe('danger');
@@ -3759,23 +3896,23 @@ describe('Aius SD DSP editor — DSP load, level bars and the limiter strip', ()
 
   it('accumulates the limiter history across polls and caps the ring', async () => {
     await boot();
-    await vi.advanceTimersByTimeAsync(300);
+    await vi.advanceTimersByTimeAsync(750);
 
     expect(el('gr-value').textContent).toBe('-1.8 dB');
     expect(el('gr-fill').style.width).toBe('7.5%');
     expect(historyPoints()).toHaveLength(3);
 
-    await vi.advanceTimersByTimeAsync(200);
+    await vi.advanceTimersByTimeAsync(500);
     expect(historyPoints()).toHaveLength(5);
 
     // 130 polls in, the strip still shows the last 128 published instants.
-    await vi.advanceTimersByTimeAsync(12500);
+    await vi.advanceTimersByTimeAsync(31250);
     expect(historyPoints()).toHaveLength(128);
   });
 
   it('renders a fully closed limiter at the bar rail, not off the scale', async () => {
     await boot({ meters: fixture('meters-silent.json') });
-    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(250);
 
     // The defensive fully-closed value is below the -120 dBFS floor.
     expect(el('gr-value').textContent).toBe('-inf dB');
@@ -3785,11 +3922,11 @@ describe('Aius SD DSP editor — DSP load, level bars and the limiter strip', ()
 
   it('clears the strip for a never-published snapshot', async () => {
     await boot();
-    await vi.advanceTimersByTimeAsync(300);
+    await vi.advanceTimersByTimeAsync(750);
     expect(historyPoints()).toHaveLength(3);
 
     device.meters = fixture('meters-idle.json');
-    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(250);
 
     expect(el('strip-limiter-state').textContent).toBe('no data');
     expect(el('meter-load').textContent).toBe('--');
@@ -3805,7 +3942,7 @@ describe('Aius SD DSP editor — DSP load, level bars and the limiter strip', ()
    * (UX finding E5): the plot is a view of the FORM and stays live. */
   it('scopes the meter state to the blocks that read a snapshot', async () => {
     await boot({ config: fixture('dsp-config-sd.json'), meters: null });
-    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(750);
 
     expect(el('strip-input-state').textContent).toBe('unreachable');
     expect(el('strip-limiter-state').textContent).toBe('unreachable');
@@ -3849,14 +3986,14 @@ describe('Aius SD DSP editor — meter ballistics', () => {
 
   it('carries a level bar between two snapshots instead of stepping it', async () => {
     await boot();
-    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(250);
     expect(el('bar-in-fl-fill').style.width).toBe('89.7%');
 
     // fl drops 33.8 dB between one snapshot and the next.
     const quiet = fixture('meters-snapshot.json');
     quiet.input[0] = { peak_dbfs: -40, rms_dbfs: -52 };
     device.meters = quiet;
-    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(250);
 
     // The printed number is the published instant, immediately ...
     expect(el('meter-in-fl-peak').textContent).toBe('-40.0');
@@ -3878,12 +4015,12 @@ describe('Aius SD DSP editor — meter ballistics', () => {
 
   it('holds the gain-reduction bar at the deepest reduction and lets it recover', async () => {
     await boot({ meters: { ...fixture('meters-snapshot.json'), limiter_gain_reduction_db: -12 } });
-    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(250);
     // 12 dB of the bar's 24 dB span.
     expect(el('gr-fill').style.width).toBe('50.0%');
 
     device.meters = { ...fixture('meters-snapshot.json'), limiter_gain_reduction_db: 0 };
-    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(250);
     expect(el('gr-value').textContent).toBe('0.0 dB');
     expect(el('gr-fill').style.width).toBe('50.0%');
 
@@ -3896,11 +4033,11 @@ describe('Aius SD DSP editor — meter ballistics', () => {
    * publishing any more. */
   it('drops every needle when the meters go away', async () => {
     await boot();
-    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(250);
     expect(el('bar-in-fl-fill').style.width).toBe('89.7%');
 
     device.meters = fixture('meters-idle.json');
-    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(250);
     expect(el('bar-in-fl-fill').style.width).toBe('0.0%');
     expect(el('bar-in-fl-fill').dataset.zone).toBe('idle');
     expect(el('gr-fill').style.width).toBe('0.0%');

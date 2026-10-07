@@ -191,7 +191,12 @@ RECURSION = [RecursionRow(anchor=("ff_tx_init_subtx", None), bound=2,
 TABLES = Tables(
     producer_roots=[("aius_audio_service_run", "aius_audio_service.c.o"),
                     ("_ZN18AiusAudioProcessor13consume_blockEPvPK12AiusPcmBlock", MAIN)],
-    yield_roots=[("_ZL19platform_checkpointPvt", MAIN)],
+    # Phase 4f: the status render's appends (status_append in optical_main.cpp,
+    # diag_append in aius_runtime_storage.cpp's sd_diag section, both noinline)
+    # are the render-append yield roots; every status section reaches the
+    # yield through one of them.
+    yield_roots=[("_ZL19platform_checkpointPvt", MAIN), ("_ZL13status_appendPcjPjPKcz", MAIN),
+                 ("_ZN12_GLOBAL__N_1L11diag_appendEPcjPjPKcz", "aius_runtime_storage.cpp.o")],
     sd_windowed=[("_ZN12_GLOBAL__N_1L7advanceEP18AiusRuntimeStoragemb", "aius_runtime_storage.cpp.o"),
                  ("_ZL18app_read_directoryPvPKcP22AiusOpticalAppDirBatch", MAIN),
                  ("_ZL21app_write_replay_listPvPhj", MAIN), ("_ZL17app_replay_deletePvPKc", MAIN)],

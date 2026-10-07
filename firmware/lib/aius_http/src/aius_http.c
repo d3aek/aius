@@ -136,6 +136,8 @@ static FLASHMEM AiusHttpRoute route_for(const uint8_t *path, size_t length,
 		return AIUS_HTTP_ROUTE_DSP_CONFIG;
 	if (token_equals(path, length, "/api/meters"))
 		return AIUS_HTTP_ROUTE_METERS;
+	if (token_equals(path, length, "/api/status/brief"))
+		return AIUS_HTTP_ROUTE_STATUS_BRIEF;
 	if (token_equals(path, length, "/api/replays"))
 		return AIUS_HTTP_ROUTE_REPLAYS;
 	if (token_equals(path, length, "/api/replays/status"))
@@ -511,6 +513,8 @@ FLASHMEM AiusHttpResult aius_http_parse(const uint8_t *data, size_t length,
 		return AIUS_HTTP_ERR_METHOD;
 	if (request->route == AIUS_HTTP_ROUTE_SD_MODE && request->method != AIUS_HTTP_POST)
 		return AIUS_HTTP_ERR_METHOD;
+	if (request->route == AIUS_HTTP_ROUTE_STATUS_BRIEF && request->method != AIUS_HTTP_GET)
+		return AIUS_HTTP_ERR_METHOD;
 	if (request->route == AIUS_HTTP_ROUTE_SD_FILE &&
 	    request->method != AIUS_HTTP_GET && request->method != AIUS_HTTP_PUT &&
 	    request->method != AIUS_HTTP_DELETE)
@@ -588,8 +592,10 @@ FLASHMEM size_t aius_http_write_headers(uint8_t *output, size_t capacity,
 {
 	/* 224: the 192 the pre-cache header set fit with margin, plus the 32-byte
 	 * worst case of "Cache-Control: max-age=4294967295\r\n". */
-	char header[224];
+	char header[256];
 	char cache[40];
+	/* Only a 503 gains a header; every other status is byte-identical. */
+	const char *retry = status == 503u ? "Retry-After: 1\r\n" : "";
 	const char *reason = aius_http_reason(status);
 	int header_length;
 	if (output == NULL || reason == NULL || !valid_content_type(content_type))
@@ -608,9 +614,9 @@ FLASHMEM size_t aius_http_write_headers(uint8_t *output, size_t capacity,
 		cache[0] = '\0';
 	}
 	header_length = snprintf(header, sizeof(header),
-		"HTTP/1.0 %u %s\r\nContent-Type: %s\r\nContent-Length: %llu\r\n%sConnection: close\r\n\r\n",
+		"HTTP/1.0 %u %s\r\nContent-Type: %s\r\nContent-Length: %llu\r\n%s%sConnection: close\r\n\r\n",
 		status, reason, content_type, (unsigned long long)content_length,
-		cache);
+		cache, retry);
 	if (header_length < 0 || (size_t)header_length >= sizeof(header) ||
 	    (size_t)header_length > capacity)
 		return 0;
@@ -623,7 +629,7 @@ FLASHMEM size_t aius_http_write_response(uint8_t *output, size_t capacity,
 	                              const uint8_t *body, size_t body_length,
 	                              uint32_t cache_max_age_s)
 {
-	uint8_t header[224];
+	uint8_t header[256];
 	size_t header_length;
 	if (output == NULL || (body_length != 0u && body == NULL) ||
 	    body_length > AIUS_HTTP_MAX_RESPONSE)

@@ -266,6 +266,90 @@ static void test_clear(void)
 	CHECK(d.wait_passes == 1u && d.hook_calls == 1u); /* lifetime counters */
 }
 
+/* D-S7: a commit before audio turns ready (configure saw it not ready) leaves a
+ * stamp the first pass disarms instead of timing; later pends are timed. */
+static void test_boot_stamp_disarmed(void)
+{
+	AiusProducerYieldDiag d;
+	memset(&f, 0, sizeof f);
+	f.irq_sw = f.pending = true;
+	f.ready = false;
+	f.ledger = AIUS_BOOT_CHECKPOINT_HTTP;
+	aius_producer_yield_configure(CPU_PER_US, AIUS_PRODUCER_YIELD_LATE_US_DEFAULT);
+	f.now = MS(1);
+	aius_producer_yield_note_pend(f.now);
+	CHECK(!aius_producer_yield_point()); /* not ready: no pass */
+	CHECK(g_aius_producer_yield.pend_armed == 1u);
+	f.ready = true;
+	f.now = MS(400);
+	CHECK(aius_producer_yield_point());
+	aius_producer_yield_get_diag(&d);
+	CHECK(d.pend_latency_max_us == 0u && d.late_passes == 0u);
+	CHECK(g_aius_producer_yield.pend_armed == 0u);
+	f.now = MS(401);
+	aius_producer_yield_note_pend(f.now);
+	f.pending = true;
+	f.now = MS(402);
+	CHECK(aius_producer_yield_point());
+	aius_producer_yield_get_diag(&d);
+	CHECK(d.pend_latency_max_us == 1000u && d.late_passes == 0u);
+
+	/* The same through a regular visit as the first pass. */
+	memset(&f, 0, sizeof f);
+	f.irq_sw = true;
+	aius_producer_yield_configure(CPU_PER_US, AIUS_PRODUCER_YIELD_LATE_US_DEFAULT);
+	aius_producer_yield_note_pend(MS(1));
+	f.ready = true;
+	f.now = MS(300);
+	aius_producer_yield_visit_begin();
+	aius_producer_yield_visit_end();
+	aius_producer_yield_get_diag(&d);
+	CHECK(d.pend_latency_max_us == 0u && d.late_passes == 0u);
+}
+
+/* Phase 4f F5: the dispatch meter reports the longest stretch between yield
+ * opportunities with nested pass time excluded; a hook outside a window is no
+ * opportunity. 9 ms total, longest stretch 0.3 ms. */
+static void test_dispatch_meter(void)
+{
+	reset();
+	f.pass_cycles = MS(4);
+	f.pending_after_pass = true;
+	f.now = MS(10);
+	aius_producer_yield_meter_begin();
+	f.now += MS(0.2);
+	CHECK(aius_producer_yield_point());     /* 4 ms pass */
+	f.now += MS(0.3);
+	CHECK(aius_producer_yield_point());     /* 4 ms pass */
+	f.now += MS(0.1);
+	aius_producer_yield_wait();             /* no window: no opportunity */
+	f.now += MS(0.1);
+	f.pending = false;
+	CHECK(!aius_producer_yield_point());    /* still an opportunity */
+	f.now += MS(0.25);
+	CHECK(aius_producer_yield_meter_end_us() == 300u);
+	/* After end the meter is idle: points do not move it. */
+	f.now += MS(5);
+	(void)aius_producer_yield_point();
+	CHECK(g_aius_producer_yield.meter_max_cycles == MS(0.3));
+
+	/* Inside an SD window the hook calls split the stretch too. */
+	reset();
+	f.pending = false;
+	aius_producer_yield_meter_begin();
+	f.now += MS(0.4);
+	aius_producer_yield_window_open();
+	f.now += MS(0.1);
+	aius_producer_yield_wait();
+	f.now += MS(0.2);
+	aius_producer_yield_window_close();
+	f.now += MS(0.05);
+	CHECK(aius_producer_yield_meter_end_us() == 500u); /* 0.4 + 0.1 */
+	/* The window segment sample: longest segment since the last take. */
+	CHECK(aius_producer_yield_window_take_max_us() == 200u);
+	CHECK(aius_producer_yield_window_take_max_us() == 0u);
+}
+
 int main(void)
 {
 	test_truth_table();
@@ -273,6 +357,8 @@ int main(void)
 	test_ledger();
 	test_stretch();
 	test_clear();
+	test_boot_stamp_disarmed();
+	test_dispatch_meter();
 	printf("producer-yield: %d checks, %d failed\n", g_checks, g_failed);
 	return g_failed == 0 ? 0 : 1;
 }

@@ -723,10 +723,15 @@ def reduce_scenario(scenario: str, active: np.ndarray, capture_rate: int,
     raise RuntimeError(f"unknown scenario {scenario!r}")
 
 
+POLL_SKIP_LIMIT = 0.05
+
+
 def http_get(url: str, auth: str | None, attempts: int = 3
-             ) -> tuple[str, dict]:
+             ) -> tuple[str | None, dict | None]:
     """GET a JSON endpoint, retrying the board's transient one-client-at-a-
-    time transport drops (not HTTP or JSON errors, which are real)."""
+    time transport drops (not HTTP or JSON errors, which are real). A 503 is
+    the board declining one poll: it returns (None, None) for the caller to
+    count as a skipped sample, never retried and never raised."""
     import urllib.error
     import urllib.request
 
@@ -739,6 +744,10 @@ def http_get(url: str, auth: str | None, attempts: int = 3
             with urllib.request.urlopen(request, timeout=5.0) as response:
                 raw = response.read().decode("utf-8")
             return raw, json.loads(raw)
+        except urllib.error.HTTPError as error:
+            if error.code == 503:
+                return None, None
+            raise
         except (urllib.error.URLError, ConnectionError, TimeoutError) as error:
             last = error
             time.sleep(0.2 * (attempt + 1))
@@ -760,6 +769,9 @@ def wait_for_rate(status_url: str, auth: str | None, rate: int,
         try:
             _raw, status = http_get(status_url, auth)
         except RuntimeError:
+            time.sleep(0.5)
+            continue
+        if status is None:
             time.sleep(0.5)
             continue
         clock = status["clock"]
@@ -825,6 +837,8 @@ def capture_and_poll(args) -> tuple[Path, list[dict], dict]:
     capture = None
     playback = None
     polls: list[dict] = []
+    poll_attempts = 0
+    poll_skips = 0
     events_base = events_url(args.status_url)
     lock_budget_s = 20.0
     started = time.monotonic()
@@ -855,12 +869,17 @@ def capture_and_poll(args) -> tuple[Path, list[dict], dict]:
             capture_start_offset_s = first_frames_at - started
             capture_start_source = "first-captured-frame"
         first_raw, first = http_get(args.status_url, args.auth)
-        cursor = int(first["event_sequence"])
+        cursor = 0 if first is None else int(first["event_sequence"])
         while capture.poll() is None:
             elapsed = time.monotonic() - started
+            poll_attempts += 1
             status_raw, status = http_get(args.status_url, args.auth)
-            events_raw, events = http_get(
+            events_raw, events = (None, None) if status is None else http_get(
                 f"{events_base}?cursor={cursor}", args.auth)
+            if status is None or events is None:
+                poll_skips += 1
+                time.sleep(1.0)
+                continue
             cursor = int(events["next"])
             polls.append({
                 "elapsed_s": elapsed,
@@ -883,6 +902,8 @@ def capture_and_poll(args) -> tuple[Path, list[dict], dict]:
         "arecord_returncode": returncode,
         "alsa_overruns": overruns,
         "alsa_overrun_lines": overrun_lines,
+        "poll_attempts": poll_attempts,
+        "poll_skips": poll_skips,
         "requested_seconds": float(args.seconds),
         "capture_start_offset_s": float(capture_start_offset_s),
         "capture_start_source": capture_start_source,
@@ -900,6 +921,12 @@ def capture_failures(health: dict, geometry: dict) -> list[str]:
         failures.append("arecord-did-not-exit")
     elif returncode != 0:
         failures.append(f"arecord-exit-{returncode}")
+    attempts = health.get("poll_attempts", 0)
+    skips = health.get("poll_skips", 0)
+    if attempts and skips / attempts > POLL_SKIP_LIMIT:
+        failures.append(
+            f"status-poll-skips-{skips}-of-{attempts}-over-"
+            f"{POLL_SKIP_LIMIT:.0%}")
     rate = geometry.get("sample_rate_hz") or 0
     captured_s = (geometry.get("frames", 0) / rate) if rate else 0.0
     health["captured_seconds"] = float(captured_s)
@@ -1063,6 +1090,9 @@ def main(argv: list[str] | None = None) -> int:
                        options, external_raw)
         announce_evidence(output / "evidence.jsonl")
     print(json.dumps(external, indent=2, sort_keys=True))
+    print(f"status polls: {health['poll_skips']} skipped (503) of "
+          f"{health['poll_attempts']} (limit {POLL_SKIP_LIMIT:.0%})",
+          file=sys.stderr)
     if failures:
         print(f"capture FAILED: {', '.join(failures)}", file=sys.stderr)
         return 2

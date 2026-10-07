@@ -4,6 +4,7 @@ Indirect sites under the leaves (not charged): __sflush_r 3, __sfvwrite_r 3, _vf
 """
 
 DECLARED = {
+    ('_ZL13status_appendPcjPjPKcz', 'optical_main.cpp.o'): 32,
     ('_ZN10StreamFileI10FsBaseFileyE4peekEv', 'aius_sd_teensy.cpp.o'): 0,
     ('_ZN10StreamFileI10FsBaseFileyE4readEv', 'aius_sd_teensy.cpp.o'): 16,
     ('_ZN10StreamFileI10FsBaseFileyE5flushEv', 'aius_sd_teensy.cpp.o'): 0,
@@ -12,6 +13,7 @@ DECLARED = {
     ('_ZN12_GLOBAL__N_115AiusSpdifRxHook3isrEv', 'aius_spdif_sources.cpp.o'): 8,
     ('_ZN12_GLOBAL__N_117AiusSpdifTx24Hook3isrEv', 'aius_spdif_sources.cpp.o'): 28,
     ('_ZN12_GLOBAL__N_1L10slot_crc32EmRK14AiusBootLedger', 'aius_boot_teensy.cpp.o'): 40,
+    ('_ZN12_GLOBAL__N_1L11diag_appendEPcjPjPKcz', 'aius_runtime_storage.cpp.o'): 32,
     ('_ZN12_GLOBAL__N_1L12driver_faultEP12AiusSdTeensyy', 'aius_sd_teensy.cpp.o'): 24,
     ('_ZN12_GLOBAL__N_1L15runtime_serviceEPvPK17AiusRuntimeBudget', 'aius_runtime_teensy.cpp.o'): 120,
     ('_ZN12_GLOBAL__N_1L16hardware_barrierEPv', 'aius_boot_teensy.cpp.o'): 0,
@@ -50,8 +52,6 @@ DECLARED = {
     ('__math_uflowf', 'libm_a-math_errf.o'): 0,
     ('__popcountdi2', '_popcountdi2.o'): 0,
     ('__udivmoddi4', '_udivmoddi4.o'): 40,
-    ('_fnet_tcp_send_dataseg', 'fnet_tcp.c.o'): 96,
-    ('_fnet_tcp_send_seg', 'fnet_tcp.c.o'): 64,
     ('aius_spdif_tx24_dma_offset_frames', 'aius_spdif_sources.cpp.o'): 0,
     ('aius_spdif_tx24_dma_read_position', 'aius_spdif_sources.cpp.o'): 8,
     ('cos', 'libm_a-s_cos.o'): 24,
@@ -75,7 +75,6 @@ DECLARED = {
     ('sin', 'libm_a-s_sin.o'): 24,
     ('sqrt', 'libm_a-w_sqrt.o'): 24,
     ('sqrtf', 'libm_a-wf_sqrt.o'): 24,
-    ('strlen', 'libc_a-strlen.o'): 8,
     ('with_errno', 'libm_a-math_err.o'): 16,
     ('with_errnof', 'libm_a-math_errf.o'): 16,
     ('xflow', 'libm_a-math_err.o'): 8,

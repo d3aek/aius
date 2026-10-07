@@ -40,6 +40,7 @@ FLASHMEM void http_init(AiusRuntimeNetworkHttp *service, uint32_t now_ms)
 	       sizeof(service->pending_application_response));
 	service->http_event_present = false;
 	service->application_response_present = false;
+	service->deferred_start_present = false;
 }
 
 /* Retains one correlated transport result for the next HTTP step. Transport
@@ -82,6 +83,47 @@ FLASHMEM void retain_application_response(
 	service->http_event_present = true;
 }
 
+/* Flash-resident (const). Shed route dispatches answer this without reaching
+ * the application; Retry-After comes from aius_http_write_headers (503). */
+const uint8_t kShedBody[] = "{\"ok\":false,\"error\":\"audio_busy\"}";
+
+FLASHMEM AiusHttpAdmitVerdict consult(const AiusRuntimeNetworkHttp *service,
+                                      AiusHttpAdmitKind kind,
+                                      const AiusHttpRequest *request,
+                                      const AiusSdJobRequest *sd_job)
+{
+	AiusHttpAdmitQuery query;
+
+	(void)service;
+	memset(&query, 0, sizeof(query));
+	query.kind = kind;
+	if (request != nullptr) {
+		query.route = request->route;
+		query.method = request->method;
+	}
+	query.sd_job = sd_job;
+	return aius_runtime_http_admit(&query);
+}
+
+/* Fails an outstanding SD_START with the audio_busy 503: the correlated
+ * SD_FAILED result the storage service would have produced. */
+FLASHMEM void shed_sd_start(AiusRuntimeNetworkHttp *service,
+                            const AiusHttpAction *action)
+{
+	memset(&service->pending_http_event, 0,
+	       sizeof(service->pending_http_event));
+	service->pending_http_event.kind = AIUS_HTTP_EVENT_SD_RESULT;
+	service->pending_http_event.action_id = action->action_id;
+	service->pending_http_event.completed_action = AIUS_HTTP_ACTION_SD_START;
+	service->pending_http_event.io.result = AIUS_IO_PROGRESS;
+	service->pending_http_event.sd_kind = AIUS_HTTP_SD_FAILED;
+	service->pending_http_event.sd_fault = AIUS_SD_FAULT_MEDIA;
+	service->pending_http_event.sd_driver_fault =
+		AIUS_HTTP_DRIVER_FAULT_AUDIO_BUSY;
+	service->http_event_present = true;
+	aius_runtime_http_note_shed();
+}
+
 FLASHMEM bool adapter_busy(const AiusRuntimeNetworkHttp *service)
 {
 	return service->target.active_action.kind != AIUS_NET_ACTION_NONE;
@@ -90,6 +132,18 @@ FLASHMEM bool adapter_busy(const AiusRuntimeNetworkHttp *service)
 } // namespace
 
 extern "C" {
+
+/* Weak defaults; the platform's strong definitions win at link time. */
+__attribute__((weak)) FLASHMEM AiusHttpAdmitVerdict aius_runtime_http_admit(
+	const AiusHttpAdmitQuery *query)
+{
+	(void)query;
+	return AIUS_HTTP_VERDICT_ADMIT;
+}
+
+__attribute__((weak)) FLASHMEM void aius_runtime_http_note_shed(void)
+{
+}
 
 FLASHMEM void aius_runtime_network_http_construct(
 	AiusRuntimeNetworkHttp *service,
@@ -225,6 +279,31 @@ FLASHMEM bool aius_runtime_http_service(
 	if (!service->target.online)
 		return true;
 
+	/* A held SD start is re-consulted without stepping the transaction (its
+	 * SD_START action is still outstanding). */
+	if (service->deferred_start_present) {
+		/* Re-issue the still-outstanding SD_START from the transaction. */
+		AiusHttpAction held;
+		AiusHttpAdmitVerdict verdict;
+
+		memset(&held, 0, sizeof(held));
+		held.kind = AIUS_HTTP_ACTION_SD_START;
+		held.action_id = service->http.outstanding_action_id;
+		held.sd_request = &service->http.sd_request;
+		verdict = consult(service, AIUS_HTTP_ADMIT_SD_START, nullptr,
+		                  held.sd_request);
+
+		if (verdict == AIUS_HTTP_VERDICT_DEFER)
+			return true;
+		service->deferred_start_present = false;
+		service->http_stepped = true;
+		if (verdict == AIUS_HTTP_VERDICT_SHED)
+			shed_sd_start(service, &held);
+		else
+			*storage_action = held;
+		return true;
+	}
+
 	memset(&event, 0, sizeof(event));
 	if (service->http_event_present) {
 		event = service->pending_http_event;
@@ -286,9 +365,24 @@ FLASHMEM bool aius_runtime_http_service(
 		          aius_network_teensy_close_once(&service->target));
 		break;
 	case AIUS_HTTP_ACTION_DISPATCH: {
-		const AiusHttpApplicationResponse *response =
-			aius_optical_app_http_dispatch(app, action.request);
+		const AiusHttpApplicationResponse *response;
+
 		service->http_requests++;
+		if (consult(service, AIUS_HTTP_ADMIT_ROUTE, action.request,
+		            nullptr) == AIUS_HTTP_VERDICT_SHED) {
+			AiusHttpApplicationResponse shed;
+
+			memset(&shed, 0, sizeof(shed));
+			shed.kind = AIUS_HTTP_APP_IMMEDIATE;
+			shed.status = 503u;
+			shed.content_type = "application/json";
+			shed.body = kShedBody;
+			shed.body_length = sizeof(kShedBody) - 1u;
+			aius_runtime_http_note_shed();
+			retain_application_response(service, &action, &shed);
+			break;
+		}
+		response = aius_optical_app_http_dispatch(app, action.request);
 		/* A null return means an invalid dispatcher or request, which
 		 * cannot be expressed as an application response. Retaining no
 		 * event makes the next step's NONE a protocol fault, i.e. the
@@ -298,6 +392,19 @@ FLASHMEM bool aius_runtime_http_service(
 		break;
 	}
 	case AIUS_HTTP_ACTION_SD_START:
+		switch (consult(service, AIUS_HTTP_ADMIT_SD_START, nullptr,
+		                action.sd_request)) {
+		case AIUS_HTTP_VERDICT_SHED:
+			shed_sd_start(service, &action);
+			break;
+		case AIUS_HTTP_VERDICT_DEFER:
+			service->deferred_start_present = true;
+			break;
+		default:
+			*storage_action = action;
+			break;
+		}
+		break;
 	case AIUS_HTTP_ACTION_SD_STEP:
 	case AIUS_HTTP_ACTION_SD_CANCEL:
 		*storage_action = action;

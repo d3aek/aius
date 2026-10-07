@@ -33,7 +33,10 @@ replace wholesale on the next handover.
 - **Status.** Phases 1, 2, 3 DONE. Phase 4 BUILT: fill-loop device
   criteria passed 2026-10-07; gate 7 at fill-write cadence (U24 bench) is
   its last proof, owner needed. Phases 4a, 4c, 4d DONE. Phase 4b
-  (acceptance umbrella), 4f, 4g, 4h PLANNED and READY; **4e BUILT**
+  (acceptance umbrella), 4g, 4h PLANNED and READY; **4f BUILT**
+  (2026-10-07: 14 host suites green, all four images, OCRAM at every
+  floor, delivery audit FAIL then closure PASS; device runs the
+  owner's); **4e BUILT**
   (2026-10-07: 22 host suites green, all four images with every
   post-link guard, delivery audit FAIL on D-B1 then closure PASS; device
   runs 1 and 2 and the E7 gate wait for the owner, and no OTA until the
@@ -70,10 +73,13 @@ replace wholesale on the next handover.
   give each call its own line). Every device session (OTAs and
   source-off checks included) and anything destructive goes to the owner
   (ruling 2026-10-07).
-- **Next action.** Dispatch 4f per its fan-out on 4e BUILT (D-S7 carried
-  in). Owner-side, whenever the owner chooses: 4e device runs 1 and 2
-  (run 1 ends with an OTA stage and rehearsal, so it waits for the OTA
-  go-ahead) and the E7 verdict.
+- **Next action.** Dispatch 4g per its fan-out on 4f BUILT (4g's
+  carve-out and cache budget against the post-4f figures: slot-a ITCM
+  12,900 B free, DTCM statics +192 B over 4e, stack zone 25,472 B,
+  `.data` 33,472 B with `_VectorsRam` at 0x20008000). Owner-side,
+  whenever the owner chooses: 4e device runs 1 and 2 (run 1 ends with an
+  OTA stage and rehearsal, so it waits for the OTA go-ahead), the E7
+  verdict, and 4f's two device runs.
 - **What landed this run** (aius commits; each followed by a upstream repository
   pointer bump; foreign commits from the mixer session omitted):
 
@@ -102,7 +108,8 @@ replace wholesale on the next handover.
 | `4d8c36c` | focused 4h review (NOT READY, FR-B1, FR-S1 to S13) folded: safe-copy ordering, in-place overwrite with sector 0 last, 3N+17 primitives (89, 90 epochs for dsp.json); owner scopes the rename-gap fix to settings files | 4h yaml parses; parser trailing-byte rejection checked in source |
 | `368cecb` | 4h closure READY; FR2-S1 to S3 folded (put keeps the safe copy; 0.78 s; first-save fault over-count accepted); all of 4b, 4e to 4h READY | reviewer walked every cut in both orders and both probes against SdFat source |
 | `d6f4f58` | owner "start"; no OTA deploy without the owner's go-ahead | none |
-| this commit | Phase 4e BUILT: vendored SdFat and SD (DMA, card-wait hook, DTCM bounce), producer-yield library, adapter fault split and mode route, windows and yield points, per-env OCRAM floors, producer-isolation and stack-bound suites, delivery-audit fixes (D-B1 MPU trap, D-S1 to D-S4) | 22 host suites (verifier run), all four images and every post-link guard, delivery audit closure PASS |
+| `21c8f52` | Phase 4e BUILT: vendored SdFat and SD (DMA, card-wait hook, DTCM bounce), producer-yield library, adapter fault split and mode route, windows and yield points, per-env OCRAM floors, producer-isolation and stack-bound suites, delivery-audit fixes (D-B1 MPU trap, D-S1 to D-S4) | 22 host suites (verifier run), all four images and every post-link guard, delivery audit closure PASS |
+| this commit | Phase 4f BUILT: link-time admission (route and SD-start shedding, 503 audio_busy with Retry-After), live_owns_ring, time-aged bucketed cost windows, FIFO start-gate deferral with bring-up latch, render and storage-diag yields, /api/status/brief, shared web poller with 503 skip and GET timeout, capture.py 503 skips, dsp_model_pad.py, D-S7, delivery-audit fixes (F-B1, F-B2, F-S1 to F-S6) | 14 host suites (verifier run), all four images, OCRAM at every floor, delivery audit closure PASS |
 
 - **Uncommitted tree.** Clean after this commit. 4e's worker handoff
   notes and baseline (`4e-handoff.md`, `4e-baseline.md`) are in the
@@ -3978,7 +3985,7 @@ delivery audit per phase. Each item is followed by its resolution.
 ```yaml
 phase: 4f
 title: HTTP is best-effort (503 shedding, render yields, compact editor status, self-scheduled lighter polling)
-status: planned
+status: built # 2026-10-07: host proof green (14 suites), all four images with every post-link guard and OCRAM at each floor, delivery audit FAIL (F-B1, F-B2) then closures FAIL (F-B2 remainder) and PASS; the two device runs are the owner's (no OTA until the owner's go-ahead)
 depends-on: phase-4e
 prebuild-review: ready # 2026-10-07: rounds 2 to 5, clean-room, clean-room closure, clean-room round 3 and two closures; second closure READY; CR5-S1 to S4 folded; no further clean-room: the closing reviewer was itself clean-room and implementation carries a delivery audit per phase
 outcome: >-
@@ -4066,9 +4073,11 @@ fan-out: # ui-polling, http-admit and capture-tool concurrently; parent-wiring a
       - firmware/test/registry/**
       - firmware/scripts/test.sh
       - firmware/README.md
+      - firmware/lib/aius_producer_yield/** # D-S7, carried in from 4e's delivery audit
+      - firmware/test/producer-yield/** # D-S7
 review-intensity: active
 commit-checkpoint:
-  green: [http, optical-app, optical-cutover, status-body-bound, sd-editor, rate-gate-capture, dsp-config, stack-bound, producer-isolation, runtime-target, memory, itcm-placement, registry]
+  green: [http, optical-app, optical-cutover, status-body-bound, sd-editor, rate-gate-capture, dsp-config, stack-bound, producer-isolation, producer-yield, runtime-target, memory, itcm-placement, registry]
   buildable: [teensy41-optical, teensy41-optical-slot-a]
   parent-commit: "feat(aius): HTTP is best-effort during playback (Phase 4f)"
   coordination: owned-path sets are disjoint; firmware/sd/www/mixer.html and mixer.js are tracked but owned by the mixer session and not edited (mixer.html inherits dsp-editor.js polling); ui-polling owns only mixer.test.js, to keep it green; ui-polling owns test/sd-editor/fixtures/**, which parent-wiring's openapi.test.js only reads
@@ -4092,6 +4101,51 @@ left in FIFO mode.
   /api/clear`). Fix: disarm the stamp when audio becomes ready
   (`aius_producer_yield_plat_audio_ready` turning true), with a
   producer-yield host case.
+
+**Delivery audit (2026-10-07): FAIL, decisions taken (orchestrator):**
+
+- **F-B1, a shed class could stay shed for the session.** A shed adds no
+  sample, so a window aged only on admitted work; one 5 ms settings
+  parse on PCM (margin at most about 3.7 ms) locked settings PUTs out
+  while live, and a saturated 65,535 us slot needs more than the 2,048
+  frame ring. Decided: a cost bucket closes after 16 samples or 2,000 ms
+  of `millis()`, whichever first, so an outlier ages out within about
+  10 s of wall time, admitted or not. The F12 "64 to 79 dispatches"
+  bound becomes "64 to 79 samples or about 8 to 10 s".
+- **F-B2, FIFO deferral starved bring-up.** FIFO is the boot default, so
+  a reboot with a source playing held PROBE, LOAD_CONFIG and LOAD_DSP
+  until silence, and a root job paused mid-flight left every HTTP SD
+  route on `503 sd_busy`. Decided: bring-up root jobs are exempt from
+  `sd_fifo_defer()`, and a root job is deferred only at its start; once
+  its first primitive has run it runs to its end (it may cost a dropout
+  in FIFO, as a started HTTP job already may).
+- **F-S1 to F-S5** (stale upload staging after a shed Apply, the F9
+  timer surviving a teardown, the SD-start sample charged to the wrong
+  mode, no fetch timeout in the poller, the first-measurement outlier
+  bound): fixed as the audit proposed.
+- **As built (parent-wiring round 3).** F12's windows gain `opened_ms`
+  and are 16 B each (128 B for eight; `g_http_admission` 176 B in DTCM,
+  slot-a DTCM statics +192 B over 4e, inside 256 B). A window whose
+  buckets all age out empty returns to its seed, not 0, since a zero
+  cost would admit a class free (R4-S1). F2 and F9: a root job is held
+  only while its phase is BEGIN and no event is pending (a primitive's
+  event lands an epoch later), bring-up jobs are never held, and a
+  started replay refill is never held. F-S2 restarts the F9 timer on any
+  consult that is not a re-consult of the held start, not on an action
+  id, because the transaction resets its action ids to 1 at teardown.
+  F-S5 needed no code: the first-measurement outlier holds through 79
+  further samples. Closure check FAIL on F-B2's remainder (the bring-up
+  exemption ended when PROBE found the card, before LOAD_CONFIG and
+  LOAD_DSP): a once-per-boot latch set when the first LOAD_DSP ends now
+  holds `sd_fifo_defer()` false until it is set; the root-step BEGIN
+  hold is dropped (deferral only at the start gate, so no started job is
+  parked); and a staging armed by a request that a network teardown
+  dropped during its DEFER is cleared from the composition. The web poller times out GETs at 4 s (a mutating
+  request has no default timeout: a first SD save can take over 7 s).
+- **Device run (F10):** after the 12,288 B Apply, wait about 15 s (the
+  cost bucket ages out) before PUTting the owner's model back, and retry
+  that restore on `503 audio_busy`; a shed restore otherwise voids the
+  run.
 
 Implements the owner's "a UI poll never interrupts audio" and "lighter
 polling" decisions, and the write-path investigation's load shedding.
@@ -4219,7 +4273,14 @@ the ring margin.
   mostly-whitespace pad would understate the worst cost (R5-S3): the tool
   first gives every number the longest spelling the parser accepts for
   the same value, pads only the remainder with JSON whitespace, and
-  reports the split. A dsp-config host case proves the output parses to
+  reports the split. Built (2026-10-07): every one of the fixture's 29
+  numbers reaches the 63 B cap (`AIUS_DSP_CONFIG_NUMBER_BUFFER_MAX` 64;
+  the parser rejects leading zeros, so the padding is trailing fraction
+  zeros), which is still only 14.9% of the body; the rest is whitespace.
+  The schema caps the model's numbers, so no admissible 12,288 B body
+  holds many more, and this split is the realistic worst case. The live
+  GET fixture lacks `base_generation`, so the device body is built with
+  `--base-generation` set to the board's `config_generation`. A dsp-config host case proves the output parses to
   the input's model at exactly the limit and asserts the number-byte
   share. Each PUT, the restore
   included, carries `base_generation` from the board's current
@@ -4559,6 +4620,33 @@ commit-checkpoint:
 
 **Owner confirmation (2026-10-07).** Confirmed: G1 to G4 and G6 to
 G10.
+
+**Starting figures (after 4f's link, 2026-10-07).** Slot-a ITCM 12,900 B
+free (4g budget 1,000 B); DTCM statics +192 B over 4e (each phase 256 B;
+4g's 256 B is still whole); slot-a stack zone 25,472 B usable;
+`.data` 33,472 B with `_VectorsRam` at 0x20008000 (about 150 B before
+the next 1,024 B step: new strings and tables go in flash); OCRAM at
+every env's floor. The stack-bound deepest hook path is HTTP
+`app_write_replay_list` at 22,632 B.
+
+**Carried in from 4e and 4f (found during their builds):**
+
+- **Mechanise the ITCM and DTCM budgets (parent-wiring,
+  `firmware/test/memory/**`).** `test/memory` enforces only the per-env
+  OCRAM floors; each phase's ITCM (1,000 B) and DTCM statics (256 B)
+  budgets and the `.data` step are checked by hand from build logs. Add
+  a slot-a ITCM-free floor and a DTCM `_ebss` ceiling to
+  `verify_target.py`, set from the post-4f link and moved only by a
+  phase commit that records the new figure, plus a `.data`
+  `_VectorsRam` step check, each with a synthetic failing case.
+- **Rejected HTTP upload start (parent-wiring, `firmware/test/runtime-target/**`).**
+  4f's closure check traced that a rejected HTTP SD start
+  (`aius_sd_job_start` returning FAILED) leaves its upload staging armed
+  until the orphan drop clears it one to two epochs later; add a
+  runtime-target case pinning that.
+- **Nit (http-admit's file).** `firmware/src/aius_runtime_network_http.h`
+  repeats the `deferred_start_present` comment; drop one when the file
+  is next touched.
 
 Implements the owner's PSRAM web cache (pad 2, CRC per 512 B chunk, SD
 fallback, recorder ring unchanged) and gzip bundling with cache

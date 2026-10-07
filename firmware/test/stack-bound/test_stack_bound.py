@@ -111,6 +111,17 @@ class Fixtures(unittest.TestCase):
         self.assertEqual(d, fr("fx_malloc_helper") + fr("aius_sdio_wait_hook"))
         self.assertEqual(path, ["fx_malloc_helper", "aius_sdio_wait_hook"])
 
+    def test_below_root_hook_field(self):
+        # Phase 4f: a Chain may end its walk at another hook; the default is
+        # the card-wait hook, and a root that cannot reach the named hook fails.
+        s = bound("fx_alloc.c")
+        root = s.img.resolve("fx_malloc_helper")[0]
+        self.assertEqual(s.below_root(root, True, aw.HOOK), s.below_root(root, True))
+        self.assertEqual(s.failures, [])
+        self.assertEqual(s.below_root(root, True, "fx_exit_fn"), (0, []))
+        self.assertTrue(any("does not reach fx_exit_fn" in f for f in s.failures), s.failures)
+        self.assertIsNone(sb.Chain("c", []).hook)
+
     def test_margin(self):
         self.assertEqual(sb.check_margin(1000, 3048), [])
         self.assertEqual(len(sb.check_margin(1001, 3048)), 1)

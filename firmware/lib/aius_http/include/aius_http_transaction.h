@@ -36,6 +36,11 @@ typedef enum {
 	AIUS_HTTP_SD_PHASE_CANCEL
 } AiusHttpSdPhase;
 
+/* A synthesized SD_FAILED{AIUS_SD_FAULT_MEDIA} whose sd_driver_fault is this
+ * value answers 503 {"error":"audio_busy"} instead of sd_unavailable (Phase 4f:
+ * an SD start refused by the admission hook). */
+#define AIUS_HTTP_DRIVER_FAULT_AUDIO_BUSY 0x41554442u
+
 typedef enum {
 	AIUS_HTTP_APP_IMMEDIATE,
 	AIUS_HTTP_APP_SD_JOB

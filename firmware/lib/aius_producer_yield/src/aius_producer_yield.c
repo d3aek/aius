@@ -24,6 +24,10 @@ FLASHMEM void aius_producer_yield_configure(uint32_t cycles_per_us,
 	*s = (AiusProducerYieldState){0};
 	s->cycles_per_us = cycles_per_us != 0u ? cycles_per_us : 1u;
 	s->late_cycles = late_us * s->cycles_per_us;
+	/* D-S7: the firmware configures before AudioMemory, so audio is not
+	 * ready yet and the first pass (which needs it ready) disarms whatever
+	 * the boot left stamped. */
+	s->audio_seen = aius_producer_yield_plat_audio_ready() ? 1u : 0u;
 }
 
 /* Close the open non-yield segment at `now`. */
@@ -32,6 +36,24 @@ static void segment_close(AiusProducerYieldState *s, uint32_t now)
 	uint32_t seg = now - s->seg_start;
 	if (seg > s->nonyield_max_cycles)
 		s->nonyield_max_cycles = seg;
+	if (seg > s->window_recent_max_cycles)
+		s->window_recent_max_cycles = seg;
+}
+
+/* The dispatch meter's stretch ends at a yield opportunity (F5). */
+static void meter_close(AiusProducerYieldState *s)
+{
+	if (s->meter_active != 0u) {
+		uint32_t seg = aius_producer_yield_plat_cycles() - s->meter_seg_start;
+		if (seg > s->meter_max_cycles)
+			s->meter_max_cycles = seg;
+	}
+}
+
+static void meter_open(AiusProducerYieldState *s)
+{
+	if (s->meter_active != 0u)
+		s->meter_seg_start = aius_producer_yield_plat_cycles();
 }
 
 FLASHMEM void aius_producer_yield_window_open(void)
@@ -79,6 +101,13 @@ static void producer_leave(AiusProducerYieldState *s)
  * Shared by nested passes and regular visits (both are "the next pass"). */
 static void pend_serve(AiusProducerYieldState *s)
 {
+	if (s->audio_seen == 0u) {
+		/* D-S7: audio just turned ready; a stamp from before is a boot
+		 * artefact, not a producer wait. */
+		s->audio_seen = 1u;
+		s->pend_armed = 0u;
+		return;
+	}
 	if (s->pend_armed != 0u) {
 		uint32_t lat = aius_producer_yield_plat_cycles() - s->pend_stamp;
 		s->pend_armed = 0u;
@@ -123,27 +152,61 @@ bool aius_producer_yield_wait(void)
 	bool ran = false;
 
 	s->hook_calls++;
-	if (in_window)
+	if (in_window) {
 		segment_close(s, aius_producer_yield_plat_cycles());
+		meter_close(s);
+	}
 	if (aius_producer_yield_guard(in_window)) {
 		s->wait_passes++;
 		nested_pass(s);
 		ran = true;
 	}
 	/* The next segment starts at hook return, after any pass. */
-	if (in_window)
+	if (in_window) {
 		s->seg_start = aius_producer_yield_plat_cycles();
+		meter_open(s);
+	}
 	return ran;
 }
 
 bool aius_producer_yield_point(void)
 {
 	AiusProducerYieldState *s = &g_aius_producer_yield;
-	if (!aius_producer_yield_guard(true))
-		return false;
-	s->point_passes++;
-	nested_pass(s);
-	return true;
+	bool ran = false;
+	meter_close(s);
+	if (aius_producer_yield_guard(true)) {
+		s->point_passes++;
+		nested_pass(s);
+		ran = true;
+	}
+	meter_open(s);
+	return ran;
+}
+
+FLASHMEM void aius_producer_yield_meter_begin(void)
+{
+	AiusProducerYieldState *s = &g_aius_producer_yield;
+	s->meter_max_cycles = 0u;
+	s->meter_active = 1u;
+	s->meter_seg_start = aius_producer_yield_plat_cycles();
+}
+
+FLASHMEM uint32_t aius_producer_yield_meter_end_us(void)
+{
+	AiusProducerYieldState *s = &g_aius_producer_yield;
+	uint32_t cpu = s->cycles_per_us != 0u ? s->cycles_per_us : 1u;
+	meter_close(s);
+	s->meter_active = 0u;
+	return s->meter_max_cycles / cpu;
+}
+
+FLASHMEM uint32_t aius_producer_yield_window_take_max_us(void)
+{
+	AiusProducerYieldState *s = &g_aius_producer_yield;
+	uint32_t cpu = s->cycles_per_us != 0u ? s->cycles_per_us : 1u;
+	uint32_t us = s->window_recent_max_cycles / cpu;
+	s->window_recent_max_cycles = 0u;
+	return us;
 }
 
 FLASHMEM void aius_producer_yield_get_diag(AiusProducerYieldDiag *out)

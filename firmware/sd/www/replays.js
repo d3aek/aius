@@ -107,14 +107,27 @@
 
   /* ---- library ------------------------------------------------------------ */
 
+  /* Manual refreshes (buttons, post-mutation) show a failure at once; the
+   * background poll goes through the shared poller instead and shows
+   * "unreachable" only after three consecutive failures. A 503 is shedding,
+   * never a failure: both paths leave the last listing and pill untouched. */
   async function refreshFiles() {
     const result = await request('/api/replays', { headers: { Accept: 'application/json' } });
+    if (result.status === 503) return;
     if (!result.ok || !result.body) {
-      setPill($('library-state'), 'unreachable');
-      $('files').dataset.stale = 'true';
-      setCardStatus('library', `Listing not refreshed -- ${describe(result)}. The rows below are the last good listing.`);
+      markFilesUnreachable(result);
       return;
     }
+    renderFilesAnswer(result);
+  }
+
+  function markFilesUnreachable(result) {
+    setPill($('library-state'), 'unreachable');
+    $('files').dataset.stale = 'true';
+    setCardStatus('library', `Listing not refreshed -- ${describe(result)}. The rows below are the last good listing.`);
+  }
+
+  function renderFilesAnswer(result) {
     /* A missing card answers 200 with an error token instead of failing the
      * request (dispatch_replays()'s pre-cutover listing behaviour), so "no
      * files on the card" and "no card" arrive with the same HTTP status and
@@ -249,14 +262,23 @@
 
   async function refreshStatus() {
     const result = await request('/api/replays/status', { headers: { Accept: 'application/json' } });
+    if (result.status === 503) return;
     if (!result.ok || !result.body) {
-      /* A frozen grid beside a confident "playing" pill was how a dead device
-       * read a second ago (UX finding P4). */
-      setPill($('state'), 'unreachable');
-      $('playback-grid').dataset.stale = 'true';
-      setCardStatus('playback', `No answer from /api/replays/status -- ${describe(result)}. Values below are stale.`);
+      markStatusUnreachable(result);
       return;
     }
+    renderStatusAnswer(result);
+  }
+
+  function markStatusUnreachable(result) {
+    /* A frozen grid beside a confident "playing" pill was how a dead device
+     * read a second ago (UX finding P4). */
+    setPill($('state'), 'unreachable');
+    $('playback-grid').dataset.stale = 'true';
+    setCardStatus('playback', `No answer from /api/replays/status -- ${describe(result)}. Values below are stale.`);
+  }
+
+  function renderStatusAnswer(result) {
     delete $('playback-grid').dataset.stale;
     renderStatus(result.body);
   }
@@ -489,13 +511,18 @@
 
   async function refreshMeters() {
     const result = await request('/api/meters', { headers: { Accept: 'application/json' } });
+    if (result.status === 503) return;
     if (!result.ok || !result.body) {
-      setPill($('meter-state'), 'unreachable');
-      $('meter-summary').textContent = `No meter snapshot -- ${describe(result)}.`;
-      drawWaveform($('waveform'), []);
+      markMetersUnreachable(result);
       return;
     }
     renderMeters(result.body);
+  }
+
+  function markMetersUnreachable(result) {
+    setPill($('meter-state'), 'unreachable');
+    $('meter-summary').textContent = `No meter snapshot -- ${describe(result)}.`;
+    drawWaveform($('waveform'), []);
   }
 
   function renderMeters(meters) {
@@ -530,12 +557,18 @@
   $('token').addEventListener('input', () => storeToken(authToken()));
 
   if (!CONTRACT_MODE) {
-    void guard(refreshStatus, cardSink('playback'));
-    void guard(refreshFiles, cardSink('library'));
-    void guard(refreshMeters, cardSink('playback'));
-    setInterval(() => void guard(refreshStatus, cardSink('playback')), STATUS_POLL_MS);
-    setInterval(() => void guard(refreshMeters, cardSink('playback')), METER_POLL_MS);
-    setInterval(() => void guard(refreshFiles, cardSink('library')), LIBRARY_POLL_MS);
+    const startPoller = (url, cadenceMs, card, onAnswer, onUnreachable) =>
+      shared.createPoller({
+        fetch: () => request(url, { headers: { Accept: 'application/json' } }),
+        cadenceMs,
+        immediate: true,
+        onAnswer,
+        onUnreachable,
+        onError: cardSink(card),
+      });
+    startPoller('/api/replays/status', STATUS_POLL_MS, 'playback', renderStatusAnswer, markStatusUnreachable);
+    startPoller('/api/replays', LIBRARY_POLL_MS, 'library', renderFilesAnswer, markFilesUnreachable);
+    startPoller('/api/meters', METER_POLL_MS, 'playback', (result) => renderMeters(result.body), markMetersUnreachable);
   }
   document.body.dataset.uiContractReady = 'aius-firmware-replays';
 })();

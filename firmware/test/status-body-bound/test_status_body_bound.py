@@ -48,7 +48,9 @@ LIMIT_MACRO = "AIUS_RUNTIME_TEENSY_STATUS_BODY"
 ROOT_EMITTER = "http_status_json"
 
 # Primitive -> (capacity argument index, format argument index).
-PRIMITIVES = {"snprintf": (1, 2), "http_json_append": (1, 3), "diag_append": (1, 3)}
+PRIMITIVES = {"snprintf": (1, 2), "http_json_append": (1, 3), "diag_append": (1, 3),
+              # Phase 4f: the status render's append, http_json_append plus a yield point.
+              "status_append": (1, 3)}
 CONTROL = {"if", "for", "while", "switch", "return", "sizeof", "do", "defined", "catch"}
 
 # Teensy 4.1 (Cortex-M7, arm-none-eabi): int and long are 32-bit, long long
@@ -676,11 +678,39 @@ PINNED_KEYS = {
         # Phase 4a F3: the pending-boundary open's extra pad.
         "gate_open_pending_padded_frames",
     ),
+    # Phase 4f: the admission counters, rendered by the root emitter itself.
+    ROOT_EMITTER: (
+        "http_shed",
+        "http_dispatch_max_us",
+        "sd_fifo_defers",
+        "http_shed_class",
+        "http_class_cost_us",
+    ),
 }
+
+# Phase 4f F3: GET /api/status/brief, its own emitter and bound, and exactly
+# the keys the editor's flow ends read (renderFlowEnds, dsp-editor.js).
+BRIEF_EMITTER = "http_status_brief_json"
+BRIEF_LIMIT = 512
+BRIEF_KEYS = ("carrier", "state", "sample_rate", "pipeline_diag", "codec_pc",
+              "tx_gate", "open", "replay_running")
+
+
+def check_brief(sources):
+    """The brief body's worst case stays under BRIEF_LIMIT and carries its keys."""
+    worst = walk(sources, BRIEF_EMITTER)
+    _, body = sources.function(BRIEF_EMITTER)
+    for key in BRIEF_KEYS:
+        if f'\\"{key}\\":' not in body:
+            raise BoundError(f"{BRIEF_EMITTER}() no longer renders {key!r}")
+    keys = re.findall(r'\\"([A-Za-z_]+)\\":', body)
+    if sorted(keys) != sorted(BRIEF_KEYS):
+        raise BoundError(f"{BRIEF_EMITTER}() renders {sorted(keys)}, expected exactly {sorted(BRIEF_KEYS)}")
+    return worst
 
 
 def check_pinned_keys(sources, rows):
-    walked = {callee for callee, _ in rows}
+    walked = {callee for callee, _ in rows} | {ROOT_EMITTER}
     for emitter, keys in PINNED_KEYS.items():
         if emitter not in walked:
             raise BoundError(f"{emitter}() is not reached by the walk from {ROOT_EMITTER}()")
@@ -714,6 +744,11 @@ def main(argv):
     for callee, bytes_ in rows:
         print(f"  {callee:<40} {bytes_:>6}")
     print(f"status body worst case {worst} B + NUL against {source} {limit} B: headroom {limit - worst - 1} B")
+    brief = check_brief(sources)
+    print(f"brief body worst case {brief} B + NUL against {BRIEF_LIMIT} B")
+    if not brief + 1 <= BRIEF_LIMIT:
+        print(f"FAIL: GET /api/status/brief can need {brief + 1} B, over {BRIEF_LIMIT} B", file=sys.stderr)
+        return 1
     if not fits(worst, limit):
         print(
             f"FAIL: GET /api/status can need {worst + 1} B (body + NUL) but the buffer is {limit} B; "

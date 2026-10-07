@@ -74,10 +74,14 @@ class Chain:
     hops: [(name, obj, via)], first the entry (loop), last the SD root; via is
     "call" (a direct edge, veneers resolved) or "indirect: <registration cite>"
     (the caller has an indirect site and the hop is address-taken).
+    hook: the symbol the below-root walk ends at, the card-wait hook unless
+    set (Phase 4f: the status render's chain ends at aius_producer_yield_point,
+    reached through each render append).
     """
     label: str
     hops: list
     unwindowed: bool = False
+    hook: str | None = None
 
 
 @dataclass
@@ -223,15 +227,31 @@ class StackBound:
                              f"site reaching {n} (sites {len(self.img.sites[x])}, taken {y in self.img.taken})")
         return fails, addrs
 
-    def below_root(self, root: int, unwindowed: bool) -> tuple[int, list]:
-        """Deepest path from an SD root to the hook (then the pass, or none when unwindowed).
+    def below_root(self, root: int, unwindowed: bool, hook_name: str | None = None) -> tuple[int, list]:
+        """Deepest path from a root to the hook (then the pass, or none when unwindowed).
 
         Only callees from which the hook is reachable are charged: paths that
         never reach the hook are unchanged by 4e (device floor). Components
-        are charged as W6 rows; an undeclared one fails.
+        are charged as W6 rows; an undeclared one fails. The hook is the
+        card-wait hook unless hook_name names another (a Chain's hook).
         """
-        hook = set(self.img.resolve(aw.HOOK))
-        seen, _ = self.w.walk([root])
+        hook = set(self.img.resolve(hook_name or aw.HOOK))
+        if hook_name is None:
+            seen, _ = self.w.walk([root])
+        else:
+            # A chain with its own hook (the 4f render chain) records unlisted
+            # sites only on hook-reaching nodes (dh below): its root also
+            # reaches paths that never yield (the status render's FNET reads),
+            # unchanged by 4f and backed by the device floor, as 4e's scope.
+            seen, st = set(), [root]
+            while st:
+                a = st.pop()
+                if a in seen:
+                    continue
+                seen.add(a)
+                if not aw.is_leaf(self.img.funcs[a].name):
+                    st.extend(b for b in self.w.successors(a, record=False) if b not in seen)
+        hook_name = hook_name or aw.HOOK
         adj = {a: {self.img.collapse(b) for b in self.w.successors(a, record=False)} & seen
                for a in seen if a not in self.img.veneer and not aw.is_leaf(self.img.funcs[a].name)}
         radj: dict = {}
@@ -286,14 +306,14 @@ class StackBound:
             return v
 
         if root not in reach:
-            self.failures.append(f"stack-bound: SD root {self.img.funcs[root].name} does not reach the hook")
+            self.failures.append(f"stack-bound: root {self.img.funcs[root].name} does not reach {hook_name}")
             return 0, []
         total = dh(root)
         path, cur = [], root
         while cur is not None and len(path) < 200:
             path.append(self.img.funcs[cur].name)
             cur = best.get(cur)
-        if path and path[-1] == aw.HOOK and not unwindowed:
+        if path and path[-1] == hook_name and not unwindowed:
             path.append("<pass>")
         return total, path
 
@@ -306,7 +326,7 @@ class StackBound:
             if addrs is None:
                 continue
             prefix = sum(self.frame(a) for a in addrs[:-1])
-            below, path = self.below_root(addrs[-1], ch.unwindowed)
+            below, path = self.below_root(addrs[-1], ch.unwindowed, ch.hook)
             out.append((ch.label, prefix, below, [h[0] for h in ch.hops[:-1]] + path))
         return out
 

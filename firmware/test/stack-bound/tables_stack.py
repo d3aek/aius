@@ -1,7 +1,8 @@
 """stack-bound tables for the optical images (4e link).
 
 Scope (orchestrator decision, Phase 4e): stack-bound bounds the paths 4e
-deepens, those through the card-wait hook: a declared caller chain from
+deepens, those through the card-wait hook (and, from Phase 4f, the status
+render's chain to the render-append yield point): a declared caller chain from
 loop() to each W2 SD root (every hop edge checked against the resolved
 graph), then the resolved walk below the root restricted to callees that
 reach the hook, then the nested pass (none under the unwindowed roots).
@@ -11,7 +12,7 @@ device floor stack_free_min_bytes. The exception chain stacks on top.
 Declared frames (symbols with no .su) and the W3 leaves' inclusive depths
 live in frames_optical.py, measured by gen_frames_optical.py.
 """
-from aius_walk import SiteRow
+from aius_walk import YIELD_POINT, SiteRow
 from stack_bound import Chain, Handler, StackTables
 
 try:
@@ -47,6 +48,11 @@ CHAINS = [
     Chain("HTTP app_read_directory", HTTP + [("_ZL18app_read_directoryPvPKcP22AiusOpticalAppDirBatch", MAIN, APP_OP)]),
     Chain("HTTP app_write_replay_list", HTTP + [("_ZL21app_write_replay_listPvPhj", MAIN, APP_OP)]),
     Chain("HTTP app_replay_delete", HTTP + [("_ZL17app_replay_deletePvPKc", MAIN, APP_OP)]),
+    # Phase 4f: the status render yields after every append (status_append
+    # in optical_main.cpp, diag_append in aius_runtime_storage.cpp's sd_diag
+    # section), so its deepest path runs to the yield point and a nested pass.
+    Chain("HTTP app_write_status (render-append yields)",
+          HTTP + [("_ZL16app_write_statusPvPhj", MAIN, APP_OP)], hook=YIELD_POINT),
     Chain("unwindowed replay_job_advance", REPLAY + [("_ZL18replay_job_advancem", MAIN, "call")], unwindowed=True),
     Chain("unwindowed ota_copy_staged_to_psram",
           [("loop", None, "call"), ("_ZL24ota_copy_staged_to_psramPhm", MAIN, "call")], unwindowed=True),

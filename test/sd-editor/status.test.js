@@ -175,7 +175,7 @@ function createDevice(options = {}) {
   globalThis.fetch = vi.fn(async (url, init = {}) => {
     stub.calls.push({ url, method: init.method || 'GET', headers: init.headers || {} });
     if (url === '/api/status') {
-      return stub.status ? jsonResponse(200, stub.status) : jsonResponse(503, { ok: false, error: 'unavailable' });
+      return stub.status ? jsonResponse(200, stub.status) : jsonResponse(500, { ok: false, error: 'unavailable' });
     }
     return jsonResponse(404, { ok: false, error: 'not_found' });
   });
@@ -621,6 +621,10 @@ describe('Aius SD device status — polling', () => {
     expect(text('input-source')).toBe('optical carrier');
 
     device.status = null;
+    /* Two failures are silent; the third reads unreachable. */
+    await vi.advanceTimersByTimeAsync(2000);
+    await settle();
+    for (const pill of PILLS) expect(text(pill)).toBe('live');
     await vi.advanceTimersByTimeAsync(1000);
     await settle();
 
@@ -637,6 +641,8 @@ describe('Aius SD device status — polling', () => {
 
   it('recovers the live pills and undims the grids on the next good poll', async () => {
     device = await boot({ status: null });
+    await vi.advanceTimersByTimeAsync(2000);
+    await settle();
     expect(text('audio-pill')).toBe('unreachable');
 
     device.status = SNAPSHOT;
@@ -646,6 +652,65 @@ describe('Aius SD device status — polling', () => {
     for (const pill of PILLS) expect(text(pill)).toBe('live');
     for (const grid of GRIDS) expect(el(grid).dataset.stale).toBeUndefined();
     expect(el('flow').dataset.stale).toBeUndefined();
+  });
+
+  it('treats a 503 as a silent skip: last values and pills stay, and Retry-After sets the next poll', async () => {
+    device = await boot();
+    const inner = globalThis.fetch;
+    let retryAfter = '30';
+    globalThis.fetch = vi.fn(async (url, init) => {
+      device.calls.push({ url, method: 'GET', headers: {} });
+      return { ...jsonResponse(503, { ok: false, error: 'audio_busy' }), headers: { get: () => retryAfter } };
+    });
+    void inner;
+    const before = device.calls.length;
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(device.calls.length).toBe(before + 1);
+    // 30 s clamps to 5 s: no second poll at 1 s intervals.
+    await vi.advanceTimersByTimeAsync(4900);
+    expect(device.calls.length).toBe(before + 1);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(device.calls.length).toBe(before + 2);
+
+    // Many sheds in a row never show unreachable.
+    retryAfter = '0';
+    await vi.advanceTimersByTimeAsync(5000);
+    await settle();
+    for (const pill of PILLS) expect(text(pill)).toBe('live');
+    for (const grid of GRIDS) expect(el(grid).dataset.stale).toBeUndefined();
+    expect(text('input-source')).toBe('optical carrier');
+    // 0 clamps up to 250 ms, so a 5 s window holds about twenty polls, never a flood.
+    expect(device.calls.length).toBeLessThan(before + 2 + 25);
+  });
+
+  it('never overlaps polls: the next request waits for the previous answer', async () => {
+    device = await boot();
+    const waiting = [];
+    globalThis.fetch = vi.fn(() => new Promise((resolve) => waiting.push(resolve)));
+    await vi.advanceTimersByTimeAsync(3500); /* inside the 4 s request timeout */
+    expect(waiting).toHaveLength(1);
+    waiting[0](jsonResponse(200, SNAPSHOT));
+    await settle();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(waiting).toHaveLength(2);
+  });
+
+  it('aborts a hung poll after the request timeout, counts it, and schedules the next', async () => {
+    device = await boot();
+    const signals = [];
+    globalThis.fetch = vi.fn((url, init = {}) => {
+      signals.push(init.signal);
+      return new Promise(() => {});
+    });
+    for (let round = 1; round <= 2; round++) {
+      await vi.advanceTimersByTimeAsync(1000 + 4000);
+      expect(signals).toHaveLength(round);
+      expect(signals[round - 1].aborted).toBe(true);
+      for (const pill of PILLS) expect(text(pill)).toBe('live');
+    }
+    await vi.advanceTimersByTimeAsync(1000 + 4000);
+    expect(signals).toHaveLength(3);
+    for (const pill of PILLS) expect(text(pill)).toBe('unreachable');
   });
 
   it('carries the four-tab firmware menu, marking the current page', async () => {

@@ -1,0 +1,7 @@
+{
+  "carrier": 1,
+  "state": 4,
+  "sample_rate": 48000,
+  "pipeline_diag": { "codec_pc": 1 },
+  "tx_gate": { "open": 1, "replay_running": 0 }
+}

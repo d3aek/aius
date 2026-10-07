@@ -43,6 +43,7 @@ const APPEND_PRIMITIVES = new Map([
   ["snprintf", 2], // snprintf((char *)body, capacity, format, ...)
   ["http_json_append", 3], // http_json_append(body, capacity, length, format, ...)
   ["diag_append", 3], // aius_runtime_storage.cpp's own bounded append
+  ["status_append", 3], // Phase 4f: the status render's append (http_json_append plus a yield point)
 ]);
 
 /** Statement keywords a bare `identifier (` scan would otherwise read as calls. */
@@ -54,11 +55,11 @@ const CONTROL_KEYWORDS = new Set(["if", "for", "while", "switch", "return", "siz
  * the response buffer and absent from this table is an error, not a skip.
  */
 const EMITTERS = {
-  // GET /api/status. The snprintf literal closes its object; the firmware then
-  // rewinds over that brace (`length = written - 1u`) so the diagnostic objects
-  // can be appended and the body re-closed. Modelled here, and the trailing
-  // brace must be there, or the assembled skeleton stops balancing.
-  http_status_json: { file: "src/optical_main.cpp", rewindFirstChunkTrailing: "}" },
+  // GET /api/status. Since Phase 4f the head literal leaves the top-level
+  // object open (no rewind) and the render's last append closes it.
+  http_status_json: { file: "src/optical_main.cpp" },
+  // GET /api/status/brief (Phase 4f F3), one snprintf.
+  http_status_brief_json: { file: "src/optical_main.cpp" },
   http_net_diag_json: { file: "src/optical_main.cpp" },
   http_net_diag_generation: {
     file: "src/optical_main.cpp",
@@ -145,6 +146,7 @@ const EMITTERS = {
 /** The three documents this gate covers, and the schema each one answers to. */
 const DOCUMENTS = {
   status: { emitter: "http_status_json", schema: "Status" },
+  statusBrief: { emitter: "http_status_brief_json", schema: "StatusBrief" },
   recorder: { emitter: "app_write_recorder", schema: "Recorder" },
   replayStatus: { emitter: "http_replay_status_json", schema: "ReplayStatus" },
   dspConfig: {
@@ -761,6 +763,7 @@ describe("Aius OpenAPI contract", () => {
       "/api/sd/mode",
       "/api/start",
       "/api/status",
+      "/api/status/brief",
       "/api/stop",
       "/sd/{directory}/",
       "/sd/{resource}",
@@ -1062,7 +1065,7 @@ describe("Aius OpenAPI contract", () => {
     expect(errorExamples("409")).toEqual(["stale_generation"]);
     expect(errorExamples("413")).toEqual(["request_too_large", "body_too_large"]);
     expect(errorExamples("500")).toEqual(["sd_commit"]);
-    expect(errorExamples("503")).toEqual(["sd_unavailable", "sd_busy"]);
+    expect(errorExamples("503")).toEqual(["sd_unavailable", "sd_busy", "audio_busy"]);
     expect(errorExamples("507")).toEqual(["sd_write"]);
     for (const status of ["400", "401", "409", "413", "503"]) {
       expect(put.responses[status].content["application/json"].schema).toEqual({
@@ -1158,11 +1161,12 @@ describe("Aius OpenAPI contract", () => {
     const document = JSON.parse(readFileSync(documentPath, "utf8"));
     const get = document.paths["/api/meters"].get;
     expect(get.operationId).toBe("getMeters");
-    // A diagnostic read: no auth parameter, no request body, and only the two
-    // statuses http_meters_json() plus the dispatcher can produce.
+    // A diagnostic read: no auth parameter, no request body, and only the
+    // statuses http_meters_json() plus the dispatcher can produce, with the
+    // Phase 4f admission shed (503 audio_busy).
     expect(get.parameters).toBeUndefined();
     expect(get.requestBody).toBeUndefined();
-    expect(Object.keys(get.responses).sort()).toEqual(["200", "500"]);
+    expect(Object.keys(get.responses).sort()).toEqual(["200", "500", "503"]);
     expect(get.responses["200"].content["application/json"].schema).toEqual({
       $ref: "#/components/schemas/Meters",
     });
@@ -1352,6 +1356,7 @@ describe("Aius OpenAPI contract", () => {
     expect(Object.keys(filePath.delete.responses["503"].content["application/json"].examples)).toEqual([
       "sd_unavailable",
       "sd_busy",
+      "audio_busy",
     ]);
   });
 
@@ -1718,6 +1723,64 @@ describe("Aius OpenAPI contract", () => {
     // layout_aware is emitted even though the PUT validator would accept its
     // absence, so the GET and PUT key sets match; the schema documents it.
     expect(served.properties.get("matrix").properties.has("layout_aware")).toBe(true);
+  });
+
+  it("documents GET /api/status/brief exactly as the firmware serializes it", () => {
+    const document = JSON.parse(readFileSync(documentPath, "utf8"));
+    const served = servedDocument("statusBrief");
+    expect(compareWithSchema(document, served, "StatusBrief")).toEqual(NO_DRIFT);
+    // Exactly the keys the editor's flow ends read, under the full body's names
+    // and nesting (Phase 4f F3); the ui-polling fixture is one such body.
+    const fixture = JSON.parse(readFileSync(resolve(repoRoot, "test/sd-editor/fixtures/status-brief.json"), "utf8"));
+    expect(Object.keys(fixture).sort()).toEqual([...served.properties.keys()].sort());
+    const status = document.components.schemas.Status.properties;
+    for (const key of ["carrier", "state", "sample_rate", "pipeline_diag", "tx_gate"]) {
+      expect(status[key], key).toBeDefined();
+    }
+    const get = document.paths["/api/status/brief"].get;
+    expect(get.responses["200"].content["application/json"].examples.live.value).toEqual(fixture);
+  });
+
+  it("lists audio_busy with Retry-After on every sheddable route (Phase 4f)", () => {
+    const document = JSON.parse(readFileSync(documentPath, "utf8"));
+    const resolveResponse = (response) =>
+      response.$ref ? document.components.responses[response.$ref.split("/").pop()] : response;
+    // The admission classes (status, brief, meters, events, settings PUT parses,
+    // directory listing) and every HTTP SD job start; OTA staging is exempt.
+    const sheddable = [
+      ["/api/status", "get", []],
+      ["/api/status/brief", "get", []],
+      ["/api/meters", "get", []],
+      ["/api/events", "get", []],
+      ["/api/dsp/config", "put", ["sd_unavailable", "sd_busy"]],
+      ["/api/config/public", "put", ["sd_unavailable", "sd_busy"]],
+      ["/api/replays", "get", ["sd_busy"]],
+      ["/sd/{resource}", "get", ["sd_unavailable", "sd_busy"]],
+      ["/sd/{resource}", "put", ["sd_unavailable"]],
+      ["/sd/{resource}", "delete", ["sd_unavailable", "sd_busy"]],
+    ];
+    for (const [path, method, sdBodies] of sheddable) {
+      const response = resolveResponse(document.paths[path][method].responses["503"]);
+      const label = `${method.toUpperCase()} ${path}`;
+      expect(response, label).toBeDefined();
+      expect(Object.keys(response.content["application/json"].examples), label).toEqual([...sdBodies, "audio_busy"]);
+      expect(response.headers["Retry-After"], label).toEqual({ $ref: "#/components/headers/RetryAfter" });
+      expect(response.description, label).toContain("audio_busy");
+      for (const [name, sample] of Object.entries(response.content["application/json"].examples)) {
+        expect(sample.value).toEqual({ ok: false, error: name });
+      }
+    }
+    // Control and OTA routes are never shed (F13): no audio_busy body on them.
+    for (const [path, method] of [
+      ["/api/start", "post"],
+      ["/api/stop", "post"],
+      ["/api/clear", "post"],
+      ["/api/reboot", "post"],
+      ["/api/ota/image", "put"],
+      ["/api/dsp/config", "get"],
+    ]) {
+      expect(JSON.stringify(document.paths[path][method]), `${method} ${path}`).not.toContain("audio_busy");
+    }
   });
 
   it("fails loudly rather than extracting a subset", () => {

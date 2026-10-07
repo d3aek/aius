@@ -71,6 +71,8 @@ static const uint8_t sd_range_body[] =
 	"{\"ok\":false,\"error\":\"sd_range\"}";
 static const uint8_t sd_unavailable_body[] =
 	"{\"ok\":false,\"error\":\"sd_unavailable\"}";
+static const uint8_t sd_audio_busy_body[] =
+	"{\"ok\":false,\"error\":\"audio_busy\"}";
 static const uint8_t sd_capacity_body[] =
 	"{\"ok\":false,\"error\":\"sd_capacity\"}";
 static const uint8_t sd_failure_body[] =
@@ -993,8 +995,13 @@ static FLASHMEM void select_sd_error(AiusHttpTransaction *transaction,
 		size = sizeof(sd_range_body);
 	} else if (fault == AIUS_SD_FAULT_MEDIA) {
 		status = 503u;
-		body = sd_unavailable_body;
-		size = sizeof(sd_unavailable_body);
+		if (driver_fault == AIUS_HTTP_DRIVER_FAULT_AUDIO_BUSY) {
+			body = sd_audio_busy_body;
+			size = sizeof(sd_audio_busy_body);
+		} else {
+			body = sd_unavailable_body;
+			size = sizeof(sd_unavailable_body);
+		}
 	} else if (fault == AIUS_SD_FAULT_CAPACITY ||
 	           fault == AIUS_SD_FAULT_OVERFLOW) {
 		status = 507u;

@@ -250,7 +250,7 @@ function createDevice(options = {}) {
     }
     if (url === '/api/ota' && method === 'GET') {
       if (stub.absent) return jsonResponse(404, { ok: false, error: 'ota_absent' });
-      if (stub.unreachable || !stub.ota) return jsonResponse(503, { ok: false, error: 'sd_busy' });
+      if (stub.unreachable || !stub.ota) return jsonResponse(500, { ok: false, error: 'sd_busy' });
       return jsonResponse(200, Object.assign({}, stub.ota));
     }
     if (url === '/api/ota/image' && method === 'PUT') {
@@ -999,11 +999,28 @@ describe('Aius SD firmware upgrade — the absent device', () => {
 
   it('separates an unreachable poll from an absent OTA surface', async () => {
     await boot({ unreachable: true });
+    /* Two failures are silent; the third (boot is the first) reads unreachable. */
+    expect(el('ota-pill').textContent).not.toBe('unreachable');
+    await vi.advanceTimersByTimeAsync(2000);
+    await settle();
 
     expect(el('ota-pill').textContent).toBe('unreachable');
     expect(el('absent').hidden).toBe(true);
     expect(el('ota-grid').dataset.stale).toBe('true');
     expect(el('ota-status').textContent).toContain('stale');
+  });
+
+  it('treats a 503 on the poll as a silent skip that keeps the last record and pill', async () => {
+    await boot({ ota: idleOta() });
+    const pill = el('ota-pill').textContent;
+    expect(pill).not.toBe('unreachable');
+
+    globalThis.fetch = vi.fn(async () => jsonResponse(503, { ok: false, error: 'audio_busy' }));
+    await vi.advanceTimersByTimeAsync(20000);
+    await settle();
+
+    expect(el('ota-pill').textContent).toBe(pill);
+    expect(el('ota-grid').dataset.stale).toBeUndefined();
   });
 });
 

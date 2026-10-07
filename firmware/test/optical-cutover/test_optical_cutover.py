@@ -180,6 +180,17 @@ def loop_headers(text):
     return headers
 
 
+def without_attributes(clean):
+    """`clean` with every `__attribute__((...))` replaced by spaces of the
+    same length, so offsets into the original text still hold."""
+    out = clean
+    for match in re.finditer(r"\b__attribute__\s*\(", clean):
+        opening = clean.find("(", match.start())
+        closing = matching_delimiter(clean, opening, "(", ")")
+        out = out[:match.start()] + " " * (closing + 1 - match.start()) + out[closing + 1:]
+    return out
+
+
 def function_definitions(text):
     """Every file-scope C-style function DEFINITION in `text`, as
     name -> brace-matched body.
@@ -189,8 +200,11 @@ def function_definitions(text):
     call, or a macro. Comments and literals are blanked for the scan and the
     brace match; the returned body is the original text. Qualified C++ member
     definitions (`Class::member`) are deliberately not matched: nothing this
-    suite scopes to is one, and admitting `::` would also admit statements."""
-    clean = without_comments_and_literals(text)
+    suite scopes to is one, and admitting `::` would also admit statements.
+    `__attribute__((...))` specifiers are blanked (length kept) for the scan,
+    so `static FLASHMEM __attribute__((noinline)) bool f(` is a definition of
+    f (Phase 4f: the render appends are noinline)."""
+    clean = without_attributes(without_comments_and_literals(text))
     definitions = {}
     for match in re.finditer(
         r"^[A-Za-z_][A-Za-z0-9_ \t*&]*?\b([A-Za-z_][A-Za-z0-9_]*)\s*\(",
@@ -5314,6 +5328,12 @@ QUALIFIED_DEFINITION = re.compile(
     re.MULTILINE,
 )
 YIELD_POINT_CALL = "aius_producer_yield_point"
+# Phase 4f: the status render's appends, each ending at a yield point (the
+# render-append rows of producer-isolation's yield-root table).
+RENDER_APPEND_YIELD_ROOTS = frozenset({
+    (OPTICAL_MAIN_SOURCE, "status_append"),
+    (STORAGE_SOURCE, "diag_append"),
+})
 YIELD_POINT_GUARDED = re.compile(
     r"if\s*\(\s*checkpoint\s*!=\s*AIUS_BOOT_CHECKPOINT_EPOCH_COMPLETE\s*\)"
     r"\s*\(void\)\s*aius_producer_yield_point\s*\(\s*\)\s*;"
@@ -5429,17 +5449,19 @@ def assert_no_yield_point_at_epoch_complete(sources):
     ):
         if YIELD_POINT_CALL + "(" in body:
             callers.append((path, name, body))
-    assert [(path, name) for path, name, _ in callers] == [
-        (OPTICAL_MAIN_SOURCE, "platform_checkpoint")
-    ], (
-        "aius_producer_yield_point must have exactly one caller, "
-        "platform_checkpoint (the 4e yield-root table): "
+    expected = sorted({(OPTICAL_MAIN_SOURCE, "platform_checkpoint")}
+                      | RENDER_APPEND_YIELD_ROOTS)
+    assert sorted((path, name) for path, name, _ in callers) == expected, (
+        "aius_producer_yield_point's callers must be exactly "
+        "platform_checkpoint and the Phase 4f render appends (the yield-root "
+        "table): "
         + ", ".join(f"{path}:{name}" for path, name, _ in callers)
     )
-    body = callers[0][2]
-    assert body.count(YIELD_POINT_CALL + "(") == 1, (
-        "platform_checkpoint calls the yield point more than once"
-    )
+    for path, name, body in callers:
+        assert body.count(YIELD_POINT_CALL + "(") == 1, (
+            f"{name} calls the yield point more than once"
+        )
+    body = next(b for p, n, b in callers if n == "platform_checkpoint")
     assert YIELD_POINT_GUARDED.search(body), (
         "platform_checkpoint's yield point is not guarded by "
         "`checkpoint != AIUS_BOOT_CHECKPOINT_EPOCH_COMPLETE` (round 1 B2: "
@@ -5588,6 +5610,567 @@ def assert_audio_service_run_is_bracketed(sources):
     )
 
 
+# --------------------------------------------------------------------------
+# Phase 4f admission source guards (aius-sample-rate-following.md F2, F9,
+# F11): every root SD job start consults sd_fifo_defer(), the storage root
+# primitive step consults it and a drain does not, OTA staging is exempt
+# before any margin test, live_owns_ring() is the one ownership derivation,
+# and the status render appends only through its yielding appends.
+# --------------------------------------------------------------------------
+
+APP_SOURCE = "src/aius_optical_app.cpp"
+ROOT_SD_START_CALLS = ("aius_runtime_teensy_start_storage_job(", "aius_sd_job_start(")
+FIFO_DEFER_CALL = "sd_fifo_defer()"
+# Round 4: a root job is held only at its start gate. The storage service's
+# ownerless branch (a drain or a ROOT_RUNNING job) advances one primitive every
+# epoch with no condition, so a started root job never parks as ROOT_RUNNING.
+STORAGE_OWNERLESS_ADVANCE = re.compile(
+    r"\(\s*service\s*->\s*draining\s*\|\|\s*"
+    r"service\s*->\s*root_state\s*==\s*AIUS_RUNTIME_STORAGE_ROOT_RUNNING\s*\)\s*"
+    r"&&\s*!\s*service\s*->\s*terminal_seen\s*\)\s*\{\s*"
+    r"\(void\)\s*advance\s*\(\s*service\s*,\s*now_ms\s*,\s*false\s*\)\s*;\s*\}"
+)
+OWNERSHIP_BODY = re.compile(
+    r"^\s*return\s+g_aius_spdif_tx24\s*\.\s*gate_open\s*!=\s*0u\s*&&\s*"
+    r"g_tx_gate_carrier\s*;\s*$"
+)
+# One statement conjoining the ring's gate flag and the latched carrier.
+OWNERSHIP_EXPRESSION = re.compile(
+    r"\bgate_open\b[^;{}]*&&[^;{}]*\bg_tx_gate_carrier\b"
+    r"|\bg_tx_gate_carrier\b[^;{}]*&&[^;{}]*\bgate_open\b"
+)
+RENDER_ROOT = "http_status_json"
+
+
+def _clean_definitions(text):
+    return {
+        name: without_comments_and_literals(body)
+        for name, body in all_function_definitions(text).items()
+    }
+
+
+def assert_root_sd_starts_consult_fifo_defer(sources):
+    """F2: each optical_main function that starts a root SD job is reached
+    only from callers that consult sd_fifo_defer() before the call."""
+    defs = _clean_definitions(sources[OPTICAL_MAIN_SOURCE])
+    starters = sorted(
+        name for name, body in defs.items()
+        if any(call in body for call in ROOT_SD_START_CALLS)
+    )
+    assert starters, "no root SD job start site found in optical_main.cpp"
+    for starter in starters:
+        callers = sorted(
+            name for name, body in defs.items()
+            if name != starter and re.search(rf"\b{starter}\s*\(", body)
+        )
+        assert callers, f"root SD start {starter} has no caller in optical_main.cpp"
+        for caller in callers:
+            body = defs[caller]
+            call = re.search(rf"\b{starter}\s*\(", body).start()
+            consult = body.find(FIFO_DEFER_CALL)
+            assert -1 < consult < call, (
+                f"{caller} starts a root SD job ({starter}) without consulting "
+                "sd_fifo_defer() first (F2)"
+            )
+    storage_text = without_comments_and_literals(sources[STORAGE_SOURCE])
+    assert "sd_fifo_defer" not in storage_text, (
+        "the storage service must not consult sd_fifo_defer(): a root job is "
+        "held only at its start gate, a started one steps every epoch (round 4)"
+    )
+    storage = _clean_definitions(sources[STORAGE_SOURCE])
+    stepping = [n for n, b in storage.items() if STORAGE_OWNERLESS_ADVANCE.search(b)]
+    assert stepping == ["aius_runtime_storage_service"], (
+        "aius_runtime_storage_service's ownerless branch must read `} else if "
+        "((service->draining || service->root_state == "
+        "AIUS_RUNTIME_STORAGE_ROOT_RUNNING) && !service->terminal_seen) { "
+        "(void)advance(service, now_ms, false); }` (a started root job is never "
+        "held; only its start gate defers): " + ", ".join(stepping)
+    )
+
+
+def assert_round3_admission_wiring(sources):
+    """4f delivery audit round 3. F-B2: bring-up root jobs are exempt from
+    sd_fifo_defer() and a started replay refill is never held; F-S1: a shed
+    SD_START disarms the upload staging it armed; F-S2: the hook tells the
+    portable decision whether the consult re-issues the held start; F-S3: the
+    mode switch charges the pending SD window sample to the old mode."""
+    defs = _clean_definitions(sources[OPTICAL_MAIN_SOURCE])
+    held_advance = sorted(
+        n for n, b in defs.items()
+        if re.search(r"!\s*sd_fifo_defer\s*\(\s*\)\s*\)\s*replay_job_advance\s*\(", b)
+    )
+    assert not held_advance, (
+        "a started replay refill must not consult sd_fifo_defer() (F-B2): "
+        + ", ".join(held_advance)
+    )
+    admit = defs.get("aius_runtime_http_admit", "")
+    assert re.search(r"\bsd_disarm_shed_staging\s*\(\s*query\s*->\s*sd_job\s*\)",
+                     admit), (
+        "aius_runtime_http_admit must disarm a shed SD_START's staging (F-S1)"
+    )
+    assert "deferred_start_present" in admit, (
+        "aius_runtime_http_admit must pass the held-start state to the "
+        "SD-start decision (F-S2)"
+    )
+    disarm = defs.get("sd_disarm_shed_staging", "")
+    for clear in (r"g_dsp_upload_pending\s*=\s*false",
+                  r"g_config_upload_pending\s*=\s*false",
+                  r"g_sd_commit_target\s*=\s*SD_COMMIT_NONE"):
+        assert re.search(clear, disarm), (
+            f"sd_disarm_shed_staging must clear `{clear}` (F-S1)"
+        )
+    mode = defs.get("app_sd_set_mode", "")
+    sample = mode.find("admission_sd_window_sample(")
+    switch = mode.find("aius_sd_teensy_set_mode(")
+    assert -1 < sample < switch, (
+        "app_sd_set_mode must take admission_sd_window_sample() before "
+        "aius_sd_teensy_set_mode() (F-S3)"
+    )
+
+
+def assert_ota_staging_exempt_before_margin(sources):
+    """F9: OTA staging chunk jobs never consult the FIFO deferral."""
+    app = _clean_definitions(sources[APP_SOURCE])
+    body = app.get("aius_optical_admission_sd_start", "")
+    exempt = body.find("aius_optical_app_sd_job_is_ota_staging(")
+    margin = body.find("aius_optical_admission_short(")
+    assert -1 < exempt < margin, (
+        "aius_optical_admission_sd_start must exempt OTA staging before any "
+        "margin test (F9)"
+    )
+    assert FIFO_DEFER_CALL not in without_comments_and_literals(
+        sources[APP_SOURCE]
+    ), "aius_optical_app.cpp must not consult sd_fifo_defer() (the OTA chunk route)"
+
+
+def assert_single_ownership_predicate(sources):
+    """F11, CR-B1: live_owns_ring() is the one derivation and both consumers
+    (admission and sd_fifo_defer) read it through admit_sample()."""
+    defs = _clean_definitions(sources[OPTICAL_MAIN_SOURCE])
+    assert OWNERSHIP_BODY.match(defs.get("live_owns_ring", "")), (
+        "live_owns_ring() must be the ring's gate flag with the latched carrier"
+    )
+    readers = sorted(n for n, b in defs.items()
+                     if n != "live_owns_ring" and re.search(r"\blive_owns_ring\s*\(", b))
+    assert readers == ["admit_sample"], (
+        f"only admit_sample() may read live_owns_ring(): {readers}"
+    )
+    for consumer in ("aius_runtime_http_admit", "sd_fifo_defer"):
+        body = defs.get(consumer, "")
+        assert "admit_sample(" in body, f"{consumer} must read admit_sample()"
+        assert "gate_open" not in body and "g_tx_gate_carrier" not in body, (
+            f"{consumer} derives ownership itself"
+        )
+    derived = sorted(
+        n for n, b in defs.items()
+        if n != "live_owns_ring" and OWNERSHIP_EXPRESSION.search(b)
+    )
+    assert not derived, (
+        "ownership derived outside live_owns_ring() (gate flag with carrier): "
+        + ", ".join(derived)
+    )
+
+
+def assert_status_render_appends_yield(sources):
+    """F5: every append in the status render ends at a yield point, so no
+    render section formats through the plain http_json_append or vsnprintf."""
+    defs = _clean_definitions(sources[OPTICAL_MAIN_SOURCE])
+    assert RENDER_ROOT in defs, f"{RENDER_ROOT} not found"
+    seen, todo = set(), [RENDER_ROOT]
+    while todo:
+        name = todo.pop()
+        if name in seen or name not in defs:
+            continue
+        seen.add(name)
+        todo.extend(c for c in re.findall(r"\b(\w+)\s*\(", defs[name])
+                    if c in defs and c not in seen and c != "status_append")
+    bare = sorted(n for n in seen
+                  if re.search(r"\b(http_json_append|v?snprintf)\s*\(", defs[n]))
+    assert not bare, (
+        "status render sections append without a yield (use status_append): "
+        + ", ".join(bare)
+    )
+    storage = _clean_definitions(sources[STORAGE_SOURCE])
+    diag = storage.get("aius_runtime_storage_diag_json", "")
+    assert "diag_append(" in diag and not re.search(r"\bv?snprintf\s*\(", diag), (
+        "aius_runtime_storage_diag_json must append only through diag_append"
+    )
+
+
+NOTE_BRINGUP = re.compile(
+    r"\baius_optical_admission_note_bringup_loaded\s*\(\s*&\s*g_http_admission\s*\)"
+)
+
+
+def assert_bringup_latch_at_load_dsp_end(sources):
+    """F-B2 (round 4): sd_fifo_defer() holds nothing until bring-up's first
+    LOAD_DSP step has ended. The latch is set unconditionally (found, missing
+    or faulted) in sd_step_complete()'s SD_STEP_LOAD_DSP arm and nowhere else,
+    sd_fifo_defer() reads it through the portable predicate on
+    g_http_admission, and the predicate returns false while it is clear,
+    before any margin test or hold count."""
+    defs = _clean_definitions(sources[OPTICAL_MAIN_SOURCE])
+    sites = sorted(n for n, b in defs.items() if NOTE_BRINGUP.search(b))
+    assert sites == ["sd_step_complete"], (
+        "the bring-up latch must be set only in sd_step_complete (F-B2): "
+        + ", ".join(sites)
+    )
+    complete = defs["sd_step_complete"]
+    assert len(NOTE_BRINGUP.findall(complete)) == 1, (
+        "sd_step_complete must set the bring-up latch exactly once (F-B2)"
+    )
+    arm_at = complete.find("case SD_STEP_LOAD_DSP:")
+    assert arm_at != -1, "sd_step_complete has no SD_STEP_LOAD_DSP arm"
+    arm = complete[arm_at + len("case SD_STEP_LOAD_DSP:"):]
+    arm = arm[:min(i for i in (arm.find("case "), arm.find("default:"), len(arm))
+                   if i != -1)]
+    note = NOTE_BRINGUP.search(arm)
+    assert note, (
+        "the bring-up latch must be set at the end of the LOAD_DSP step "
+        "(sd_step_complete's SD_STEP_LOAD_DSP arm) (F-B2)"
+    )
+    before = arm[:note.start()]
+    assert "return" not in before and not re.search(
+        r"\b(if|while|for|switch)\b|\?|&&|\|\|", before
+    ), (
+        "the LOAD_DSP arm must set the bring-up latch unconditionally, so a "
+        "missing or faulted dsp.json does not hold it open (F-B2)"
+    )
+    defer = defs.get("sd_fifo_defer", "")
+    assert re.search(
+        r"\baius_optical_admission_sd_fifo_defer\s*\(\s*&\s*g_http_admission\s*,", defer
+    ), "sd_fifo_defer() must decide through aius_optical_admission_sd_fifo_defer(&g_http_admission, ...) (F-B2)"
+    app = _clean_definitions(sources[APP_SOURCE])
+    predicate = app.get("aius_optical_admission_sd_fifo_defer", "")
+    gate = re.search(
+        r"if\s*\([^;{}]*(\bbringup_loaded\s*==\s*0u?\b|!\s*\w+\s*->\s*bringup_loaded\b)"
+        r"[^;{}]*\)\s*return\s+false\s*;",
+        predicate,
+    )
+    short = predicate.find("aius_optical_admission_short(")
+    count = predicate.find("sd_fifo_defers")
+    assert gate and -1 < short and gate.start() < short and gate.start() < count, (
+        "aius_optical_admission_sd_fifo_defer must return false while the "
+        "bring-up latch is clear, before the margin test and the hold count (F-B2)"
+    )
+    setter = app.get("aius_optical_admission_note_bringup_loaded", "")
+    assert re.search(r"\bbringup_loaded\s*=\s*(1u?|true)\s*;", setter), (
+        "aius_optical_admission_note_bringup_loaded must set the latch (F-B2)"
+    )
+
+
+def assert_orphan_staging_dropped(sources):
+    """Round 4: an armed upload staging whose request can no longer start (a
+    network teardown during a DEFER) is disarmed, right after the commit arm
+    settles and before any root start, and never while its job may still
+    start: the transaction in DISPATCH, SD_START or SD_TRANSFER, a held or a
+    queued start, or the job already seen."""
+    defs = _clean_definitions(sources[OPTICAL_MAIN_SOURCE])
+    life = defs.get("sd_lifecycle_service", "")
+    settle = life.find("sd_settle_http_write(")
+    drop = life.find("sd_drop_orphan_staging(")
+    start = life.find("sd_start_step(")
+    first_return = life.find("return")
+    assert -1 < settle < drop < start and (first_return == -1 or drop < first_return), (
+        "sd_lifecycle_service must call sd_drop_orphan_staging() right after "
+        "sd_settle_http_write() and before any return or root start (round 4)"
+    )
+    body = defs.get("sd_drop_orphan_staging", "")
+    call = re.search(
+        r"!\s*aius_optical_app_sd_staging_orphaned\s*\(\s*&\s*g_runtime\s*\.\s*"
+        r"network_http\s*\.\s*http\s*,\s*g_runtime\s*\.\s*network_http\s*\.\s*"
+        r"deferred_start_present\s*,\s*g_runtime\s*\.\s*storage_action_present\s*\)",
+        body,
+    )
+    guard = re.search(
+        r"if\s*\(\s*g_sd_commit_target\s*==\s*SD_COMMIT_NONE\s*\|\|\s*"
+        r"g_sd_commit_writing\s*\|\|\s*g_sd_http_job_seen\s*\|\|\s*"
+        r"!\s*aius_optical_app_sd_staging_orphaned\s*\([^;]*\)\s*\)\s*return\s*;",
+        body,
+    )
+    assert call and guard, (
+        "sd_drop_orphan_staging must return unless a staging is armed, not "
+        "writing, its job never seen, and aius_optical_app_sd_staging_orphaned("
+        "&g_runtime.network_http.http, deferred_start_present, "
+        "storage_action_present) holds (round 4)"
+    )
+    for clear in (r"g_dsp_upload_pending\s*=\s*false",
+                  r"g_config_upload_pending\s*=\s*false",
+                  r"g_sd_commit_target\s*=\s*SD_COMMIT_NONE"):
+        assert re.search(clear, body[guard.end():]), (
+            f"sd_drop_orphan_staging must clear `{clear}` (round 4)"
+        )
+    app = _clean_definitions(sources[APP_SOURCE])
+    orphan = app.get("aius_optical_app_sd_staging_orphaned", "")
+    held = re.search(
+        r"if\s*\([^;{}]*\bstart_held\b[^;{}]*\bstart_queued\b[^;{}]*\)\s*return\s+false\s*;",
+        orphan,
+    )
+    assert held, (
+        "aius_optical_app_sd_staging_orphaned must return false while a start "
+        "is held or queued (round 4)"
+    )
+    for state in ("AIUS_HTTP_TX_DISPATCH", "AIUS_HTTP_TX_SD_START",
+                  "AIUS_HTTP_TX_SD_TRANSFER"):
+        assert re.search(rf"\bstate\s*!=\s*{state}\b", orphan[held.end():]), (
+            f"aius_optical_app_sd_staging_orphaned must keep a staging while "
+            f"the transaction is in {state} (round 4)"
+        )
+
+
+ADMISSION_CHECKS = (
+    ("root-sd-starts-consult-fifo-defer", assert_root_sd_starts_consult_fifo_defer),
+    ("ota-staging-exempt-before-margin", assert_ota_staging_exempt_before_margin),
+    ("single-ownership-predicate", assert_single_ownership_predicate),
+    ("status-render-appends-yield", assert_status_render_appends_yield),
+    ("round3-admission-wiring", assert_round3_admission_wiring),
+    ("bringup-latch-at-load-dsp-end", assert_bringup_latch_at_load_dsp_end),
+    ("orphan-staging-dropped", assert_orphan_staging_dropped),
+)
+
+
+def _admission_fixture():
+    main = (
+        "static FLASHMEM bool live_owns_ring(void)\n{\n"
+        "\treturn g_aius_spdif_tx24.gate_open != 0u && g_tx_gate_carrier;\n}\n"
+        "static FLASHMEM AiusOpticalAdmitSample admit_sample(void)\n{\n"
+        "\tsample.live_owns_ring = live_owns_ring();\n\treturn sample;\n}\n"
+        "extern \"C\" FLASHMEM AiusHttpAdmitVerdict aius_runtime_http_admit(\n"
+        "\tconst AiusHttpAdmitQuery *query)\n{\n"
+        "\tconst AiusOpticalAdmitSample sample = admit_sample();\n"
+        "\tv = decide(&sample, g_runtime.network_http.deferred_start_present);\n"
+        "\tif (v == SHED)\n\t\tsd_disarm_shed_staging(query->sd_job);\n"
+        "\treturn v;\n}\n"
+        "static FLASHMEM bool sd_fifo_defer(void)\n{\n"
+        "\tconst AiusOpticalAdmitSample sample = admit_sample();\n"
+        "\treturn aius_optical_admission_sd_fifo_defer(&g_http_admission, &sample);\n}\n"
+        "static FLASHMEM void sd_step_complete(uint32_t now_ms)\n{\n"
+        "\tswitch (step) {\n"
+        "\tcase SD_STEP_PROBE: {\n"
+        "\t\tif (present && !g_sd_ready) {\n"
+        "\t\t\tg_sd_bringup_done = true;\n"
+        "\t\t\tg_sd_step = SD_STEP_LOAD_CONFIG;\n\t\t}\n\t\treturn;\n\t}\n"
+        "\tcase SD_STEP_LOAD_CONFIG:\n"
+        "\t\tif (!ok)\n\t\t\tg_config_error_count++;\n"
+        "\t\tg_sd_step = SD_STEP_LOAD_DSP;\n\t\treturn;\n"
+        "\tcase SD_STEP_LOAD_DSP:\n"
+        "\t\taius_optical_admission_note_bringup_loaded(&g_http_admission);\n"
+        "\t\tg_sd_step = SD_STEP_USAGE;\n\t\treturn;\n"
+        "\tdefault:\n\t\treturn;\n\t}\n}\n"
+        "static FLASHMEM void sd_disarm_shed_staging(const AiusSdJobRequest *job)\n{\n"
+        "\tg_dsp_upload_pending = false;\n\tg_config_upload_pending = false;\n"
+        "\tg_sd_commit_target = SD_COMMIT_NONE;\n}\n"
+        "static FLASHMEM bool app_sd_set_mode(void *, bool dma)\n{\n"
+        "\tadmission_sd_window_sample();\n"
+        "\taius_sd_teensy_set_mode(target, dma);\n\treturn true;\n}\n"
+        "static FLASHMEM __attribute__((noinline)) bool status_append(\n"
+        "\tchar *b, size_t c, size_t *l, const char *f, ...)\n{\n"
+        "\tint written = vsnprintf(b + *l, c - *l, f, arguments);\n"
+        "\t(void)aius_producer_yield_point();\n\treturn true;\n}\n"
+        "static FLASHMEM bool http_clock_json(char *o, size_t c, size_t *l)\n{\n"
+        "\treturn status_append(o, c, l, \"x\");\n}\n"
+        "static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)\n{\n"
+        "\tif (!status_append(b, c, &l, \"{\"))\n\t\treturn 0;\n"
+        "\tif (!http_clock_json(b, c, &l))\n\t\treturn 0;\n"
+        "\treturn l;\n}\n"
+        "static FLASHMEM bool sd_start_step(SdStep step)\n{\n"
+        "\treturn aius_runtime_teensy_start_storage_job(&g_runtime, &request);\n}\n"
+        "static FLASHMEM void sd_drop_orphan_staging(void)\n{\n"
+        "\tif (g_sd_commit_target == SD_COMMIT_NONE || g_sd_commit_writing ||\n"
+        "\t    g_sd_http_job_seen ||\n"
+        "\t    !aius_optical_app_sd_staging_orphaned(\n"
+        "\t\t    &g_runtime.network_http.http,\n"
+        "\t\t    g_runtime.network_http.deferred_start_present,\n"
+        "\t\t    g_runtime.storage_action_present))\n\t\treturn;\n"
+        "\tg_dsp_upload_pending = false; g_config_upload_pending = false;\n"
+        "\tg_sd_commit_target = SD_COMMIT_NONE;\n}\n"
+        "static FLASHMEM void sd_lifecycle_service(void)\n{\n"
+        "\tsd_settle_http_write();\n\tsd_drop_orphan_staging();\n"
+        "\tif (sd_fifo_defer())\n\t\treturn;\n"
+        "\tif (sd_start_step(g_sd_step))\n\t\tg_sd_step_running = true;\n}\n"
+        "static FLASHMEM void replay_job_start(const AiusReplayRefill *r)\n{\n"
+        "\taius_sd_job_start(&g_replay_job, &request, now_ms, 0u);\n}\n"
+        "static FLASHMEM void replay_refill_service(uint32_t now_ms)\n{\n"
+        "\tif (g_replay_job_active) {\n\t\treplay_job_advance(now_ms);\n"
+        "\t\treturn;\n\t}\n"
+        "\tif (!sd_storage_idle() || sd_fifo_defer())\n\t\treturn;\n"
+        "\treplay_job_start(&refill, now_ms);\n}\n"
+        "static FLASHMEM void tx_gate_service(void)\n{\n"
+        "\tsample.gate_open = g_aius_spdif_tx24.gate_open != 0u ? 1u : 0u;\n"
+        "\tsample.carrier = g_tx_gate_carrier ? 1u : 0u;\n}\n"
+    )
+    storage = (
+        "FLASHMEM bool aius_runtime_storage_service(AiusRuntimeStorage *service)\n{\n"
+        "\tif (action) {\n\t\troute(service);\n"
+        "\t} else if ((service->draining ||\n"
+        "\t            service->root_state ==\n"
+        "\t                    AIUS_RUNTIME_STORAGE_ROOT_RUNNING) &&\n"
+        "\t           !service->terminal_seen) {\n"
+        "\t\t(void)advance(service, now_ms, false);\n\t}\n\treturn true;\n}\n"
+        "FLASHMEM bool aius_runtime_storage_diag_json(const AiusRuntimeStorage *s)\n{\n"
+        "\treturn diag_append(o, c, l, \"x\");\n}\n"
+    )
+    app = (
+        "FLASHMEM AiusOpticalAdmitVerdict aius_optical_admission_sd_start(\n"
+        "\tAiusOpticalAdmission *a, const AiusSdJobRequest *job,\n"
+        "\tconst AiusOpticalAdmitSample *sample)\n{\n"
+        "\tif (aius_optical_app_sd_job_is_ota_staging(job))\n\t\treturn ADMIT;\n"
+        "\tif (!aius_optical_admission_short(a, klass, sample))\n\t\treturn ADMIT;\n"
+        "\treturn SHED;\n}\n"
+        "FLASHMEM bool aius_optical_admission_sd_fifo_defer(\n"
+        "\tAiusOpticalAdmission *admission, const AiusOpticalAdmitSample *sample)\n{\n"
+        "\tif (admission == NULL || sample == NULL || !sample->fifo_mode ||\n"
+        "\t    admission->bringup_loaded == 0u)\n\t\treturn false;\n"
+        "\tif (!aius_optical_admission_short(admission, klass, sample))\n"
+        "\t\treturn false;\n"
+        "\tadmission->sd_fifo_defers++;\n\treturn true;\n}\n"
+        "FLASHMEM void aius_optical_admission_note_bringup_loaded(\n"
+        "\tAiusOpticalAdmission *admission)\n{\n"
+        "\tif (admission != NULL)\n\t\tadmission->bringup_loaded = 1u;\n}\n"
+        "FLASHMEM bool aius_optical_app_sd_staging_orphaned(\n"
+        "\tconst AiusHttpTransaction *http, bool start_held, bool start_queued)\n{\n"
+        "\tif (http == NULL || start_held || start_queued)\n\t\treturn false;\n"
+        "\treturn http->state != AIUS_HTTP_TX_DISPATCH &&\n"
+        "\t       http->state != AIUS_HTTP_TX_SD_START &&\n"
+        "\t       http->state != AIUS_HTTP_TX_SD_TRANSFER;\n}\n"
+    )
+    return {OPTICAL_MAIN_SOURCE: main, STORAGE_SOURCE: storage, APP_SOURCE: app}
+
+
+def run_admission_self_test():
+    good = _admission_fixture()
+    for _, check in ADMISSION_CHECKS:
+        _expect_pass(check, good, "admission/good")
+    starts = assert_root_sd_starts_consult_fifo_defer
+    _expect_fail(starts, _mutated(
+        good, OPTICAL_MAIN_SOURCE, "\tif (sd_fifo_defer())\n\t\treturn;\n", "",
+    ), "starts/lifecycle-unguarded", "sd_lifecycle_service")
+    _expect_fail(starts, _mutated(
+        good, OPTICAL_MAIN_SOURCE, "!sd_storage_idle() || sd_fifo_defer()",
+        "!sd_storage_idle()",
+    ), "starts/refill-unguarded", "replay_refill_service")
+    _expect_fail(starts, _mutated(
+        good, OPTICAL_MAIN_SOURCE,
+        "\tif (sd_fifo_defer())\n\t\treturn;\n\tif (sd_start_step(g_sd_step))",
+        "\tif (sd_start_step(g_sd_step))\n\t\treturn;\n\tif (sd_fifo_defer())",
+    ), "starts/consulted-after", "sd_lifecycle_service")
+    _expect_fail(starts, _mutated(
+        good, STORAGE_SOURCE, "\t\t(void)advance(service, now_ms, false);\n",
+        "\t\tif (!service->event_present)\n"
+        "\t\t\t(void)advance(service, now_ms, false);\n",
+    ), "starts/ownerless-gated", "never held")
+    ota = assert_ota_staging_exempt_before_margin
+    _expect_fail(ota, _mutated(
+        good, APP_SOURCE,
+        "\tif (aius_optical_app_sd_job_is_ota_staging(job))\n\t\treturn ADMIT;\n", "",
+    ), "ota/no-exemption", "OTA staging")
+    _expect_fail(ota, dict(good, **{
+        APP_SOURCE: good[APP_SOURCE] + "static bool chunk(void)\n{\n"
+                                       "\treturn sd_fifo_defer();\n}\n",
+    }), "ota/app-defers", "must not consult")
+    own = assert_single_ownership_predicate
+    _expect_fail(own, _mutated(
+        good, OPTICAL_MAIN_SOURCE, " && g_tx_gate_carrier;", ";",
+    ), "own/flag-only", "gate flag with the latched carrier")
+    _expect_fail(own, _mutated(
+        good, OPTICAL_MAIN_SOURCE,
+        "\tconst AiusOpticalAdmitSample sample = admit_sample();\n"
+        "\treturn aius_optical_admission_sd_fifo_defer(",
+        "\treturn g_aius_spdif_tx24.gate_open != 0u && g_tx_gate_carrier &&\n"
+        "\t\taius_optical_admission_sd_fifo_defer(",
+    ), "own/defer-derives", "sd_fifo_defer")
+    _expect_fail(own, _mutated(
+        good, OPTICAL_MAIN_SOURCE,
+        "\tconst AiusOpticalAdmitSample sample = admit_sample();\n\tv = decide(",
+        "\tv = live_owns_ring() ? v : a;\n\tv = decide(",
+    ), "own/admit-reads-directly", "only admit_sample")
+    _expect_fail(own, _mutated(
+        good, OPTICAL_MAIN_SOURCE,
+        "\tsample.carrier = g_tx_gate_carrier ? 1u : 0u;\n",
+        "\tsample.carrier = g_tx_gate_carrier && g_aius_spdif_tx24.gate_open;\n",
+    ), "own/second-derivation", "tx_gate_service")
+    render = assert_status_render_appends_yield
+    _expect_fail(render, _mutated(
+        good, OPTICAL_MAIN_SOURCE, "\treturn status_append(o, c, l, \"x\");",
+        "\treturn http_json_append(o, c, l, \"x\");",
+    ), "render/bare-append", "http_clock_json")
+    _expect_fail(render, _mutated(
+        good, STORAGE_SOURCE, "\treturn diag_append(o, c, l, \"x\");",
+        "\treturn snprintf(o, c, \"x\") > 0;",
+    ), "render/storage-bare", "diag_append")
+    _expect_fail(starts, _mutated(
+        good, STORAGE_SOURCE, "\t\t(void)advance(service, now_ms, false);\n",
+        "\t\tif (service->job.phase != AIUS_SD_PHASE_BEGIN ||\n"
+        "\t\t    !aius_runtime_storage_sd_fifo_defer())\n"
+        "\t\t\t(void)advance(service, now_ms, false);\n",
+    ), "starts/begin-hold-back", "must not consult")
+    latch = assert_bringup_latch_at_load_dsp_end
+    note_line = "\t\taius_optical_admission_note_bringup_loaded(&g_http_admission);\n"
+    _expect_fail(latch, _mutated(
+        good, OPTICAL_MAIN_SOURCE, note_line, "",
+    ), "r4/latch-never-set", "only in sd_step_complete")
+    _expect_fail(latch, _mutated(
+        _mutated(good, OPTICAL_MAIN_SOURCE, note_line, ""),
+        OPTICAL_MAIN_SOURCE, "\t\t\tg_sd_bringup_done = true;\n",
+        "\t\t\tg_sd_bringup_done = true;\n" + "\t" + note_line,
+    ), "r4/latch-at-probe", "LOAD_DSP step")
+    _expect_fail(latch, _mutated(
+        good, OPTICAL_MAIN_SOURCE, note_line, "\t\tif (ok)\n\t" + note_line,
+    ), "r4/latch-only-on-success", "unconditionally")
+    _expect_fail(latch, _mutated(
+        good, OPTICAL_MAIN_SOURCE,
+        "\treturn aius_optical_admission_sd_fifo_defer(&g_http_admission, &sample);",
+        "\treturn g_sd_bringup_done && sd_short(&sample);",
+    ), "r4/defer-bypasses-latch", "g_http_admission")
+    _expect_fail(latch, _mutated(
+        good, APP_SOURCE, " ||\n\t    admission->bringup_loaded == 0u)", ")",
+    ), "r4/predicate-ignores-latch", "latch is clear")
+    _expect_fail(latch, _mutated(
+        good, APP_SOURCE, "admission->bringup_loaded = 1u;", "(void)admission;",
+    ), "r4/setter-noop", "must set the latch")
+    orphan = assert_orphan_staging_dropped
+    _expect_fail(orphan, _mutated(
+        good, OPTICAL_MAIN_SOURCE, "\tsd_settle_http_write();\n\tsd_drop_orphan_staging();\n",
+        "\tsd_drop_orphan_staging();\n\tsd_settle_http_write();\n",
+    ), "r4/drop-before-settle", "right after")
+    _expect_fail(orphan, _mutated(
+        good, OPTICAL_MAIN_SOURCE, "\t    g_sd_http_job_seen ||\n", "",
+    ), "r4/drop-seen-job", "never seen")
+    _expect_fail(orphan, _mutated(
+        good, OPTICAL_MAIN_SOURCE,
+        "\t\t    g_runtime.network_http.deferred_start_present,\n", "\t\t    false,\n",
+    ), "r4/drop-held-start", "deferred_start_present")
+    _expect_fail(orphan, _mutated(
+        good, APP_SOURCE, "\treturn http->state != AIUS_HTTP_TX_DISPATCH &&\n\t       ",
+        "\treturn ",
+    ), "r4/drop-in-dispatch", "AIUS_HTTP_TX_DISPATCH")
+    _expect_fail(orphan, _mutated(
+        good, APP_SOURCE, "\tif (http == NULL || start_held || start_queued)\n",
+        "\tif (http == NULL || start_held)\n",
+    ), "r4/drop-queued-start", "held or queued")
+    r3 = assert_round3_admission_wiring
+    _expect_fail(r3, _mutated(
+        good, OPTICAL_MAIN_SOURCE, "\t\treplay_job_advance(now_ms);\n",
+        "\t\tif (!sd_fifo_defer())\n\t\t\treplay_job_advance(now_ms);\n",
+    ), "r3/replay-advance-held", "replay_refill_service")
+    _expect_fail(r3, _mutated(
+        good, OPTICAL_MAIN_SOURCE,
+        "\tif (v == SHED)\n\t\tsd_disarm_shed_staging(query->sd_job);\n", "",
+    ), "r3/no-disarm", "F-S1")
+    _expect_fail(r3, _mutated(
+        good, OPTICAL_MAIN_SOURCE, "\tg_config_upload_pending = false;\n", "",
+    ), "r3/disarm-partial", "g_config_upload_pending")
+    _expect_fail(r3, _mutated(
+        good, OPTICAL_MAIN_SOURCE,
+        "&sample, g_runtime.network_http.deferred_start_present", "&sample, false",
+    ), "r3/no-reconsult", "F-S2")
+    _expect_fail(r3, _mutated(
+        good, OPTICAL_MAIN_SOURCE,
+        "\tadmission_sd_window_sample();\n\taius_sd_teensy_set_mode(target, dma);",
+        "\taius_sd_teensy_set_mode(target, dma);\n\tadmission_sd_window_sample();",
+    ), "r3/sample-after-switch", "F-S3")
+
+
 PRODUCER_YIELD_CHECKS = (
     ("sd-window-only-in-w2-windowed-sources",
      assert_sd_window_only_in_w2_windowed_sources),
@@ -5610,9 +6193,17 @@ def _producer_yield_fixture():
         "\t\taius_sd_teensy_execute(&service->target, action);\n"
         "\taius_producer_yield_window_close();\n"
         "\treturn true;\n}\n"
+        "FLASHMEM __attribute__((noinline, format(printf, 4, 5))) bool diag_append(\n"
+        "\tchar *o, size_t c, size_t *l, const char *f, ...)\n{\n"
+        "\twritten = vsnprintf(o + *l, c - *l, f, arguments);\n"
+        "\t(void)aius_producer_yield_point();\n\treturn true;\n}\n"
         "}\n"
     )
     main = (
+        "static FLASHMEM __attribute__((noinline)) bool status_append(\n"
+        "\tchar *b, size_t c, size_t *l, const char *f, ...)\n{\n"
+        "\tint written = vsnprintf(b + *l, c - *l, f, arguments);\n"
+        "\t(void)aius_producer_yield_point();\n\treturn true;\n}\n"
         "struct ProducerSdWindow {\n"
         "\tProducerSdWindow() { aius_producer_yield_window_open(); }\n"
         "\t~ProducerSdWindow() { aius_producer_yield_window_close(); }\n"
@@ -5742,7 +6333,12 @@ def run_producer_yield_self_test():
         "\taius_sd_teensy_execute(&g_runtime.storage.target, action);\n}",
         "\taius_sd_teensy_execute(&g_runtime.storage.target, action);\n"
         "\t(void)aius_producer_yield_point();\n}",
-    ), "epoch/second-yield-root", "exactly one caller")
+    ), "epoch/second-yield-root", "callers must be exactly")
+    _expect_fail(epoch, _mutated(
+        good, STORAGE_SOURCE,
+        "\t(void)aius_producer_yield_point();\n\treturn true;\n}\n",
+        "\treturn true;\n}\n",
+    ), "epoch/render-append-lost", "callers must be exactly")
 
     naming = assert_sd_naming_functions_are_w2_sources
     _expect_fail(naming, _mutated(
@@ -5877,6 +6473,7 @@ def main():
     run_audio_cutover_self_test()
     run_self_test()
     run_producer_yield_self_test()
+    run_admission_self_test()
     print("optical-cutover self-test (checks discriminate against synthetic input): PASS")
 
     text = OPTICAL_MAIN.read_text()
@@ -5898,6 +6495,8 @@ def main():
         run_checks(
             "producer-yield", PRODUCER_YIELD_CHECKS, read_producer_yield_sources()
         )
+        # Phase 4f: admission and render-yield guards over the same sources.
+        run_checks("admission", ADMISSION_CHECKS, read_producer_yield_sources())
     if args.group in ("absence", "all"):
         run_checks("absence", ABSENCE_CHECKS, text)
 

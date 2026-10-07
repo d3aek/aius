@@ -597,23 +597,37 @@
 
   /* ---- /api/ota poll ------------------------------------------------------- */
 
+  /* The device answers 404 ota_absent when OTA is compiled out or the latch
+   * has never been armed -- a real answer, not a failed request. */
+  const isOtaAbsent = (result) =>
+    result.status === 404 && result.body && faultName(result.body.error) === 'absent';
+  const isOtaAnswer = (result) => isOtaAbsent(result) || (result.ok && result.body);
+
+  /* Manual callers (the flow steps) get the answer at once; a 503 is shedding,
+   * so it keeps the last record. The background poll goes through the shared
+   * poller and shows "unreachable" only after three consecutive failures. */
   async function pollOta() {
     const result = await request('/api/ota', { headers: { Accept: 'application/json' } });
-    /* The device answers 404 ota_absent when OTA is compiled out or the latch
-     * has never been armed -- a real answer, not a failed request. */
-    if (result.status === 404 && result.body && faultName(result.body.error) === 'absent') {
+    if (result.status === 503) return state.ota;
+    if (isOtaAnswer(result)) return applyOtaAnswer(result);
+    markOtaUnreachable(result);
+    return null;
+  }
+
+  function markOtaUnreachable(result) {
+    state.absent = false;
+    state.ota = null;
+    setPill($('ota-pill'), 'unreachable');
+    $('ota-grid').dataset.stale = 'true';
+    setCardStatus('ota', `No answer from /api/ota -- ${describe(result)}. Values below are stale.`);
+    renderControls();
+  }
+
+  function applyOtaAnswer(result) {
+    if (isOtaAbsent(result)) {
       state.absent = true;
       state.ota = null;
       renderOta();
-      return null;
-    }
-    if (!result.ok || !result.body) {
-      state.absent = false;
-      state.ota = null;
-      setPill($('ota-pill'), 'unreachable');
-      $('ota-grid').dataset.stale = 'true';
-      setCardStatus('ota', `No answer from /api/ota -- ${describe(result)}. Values below are stale.`);
-      renderControls();
       return null;
     }
     state.absent = false;
@@ -1067,8 +1081,15 @@
 
   if (!CONTRACT_MODE) {
     void guard(refreshIdentity, cardSink('ota'));
-    void guard(pollOta, cardSink('ota'));
-    setInterval(() => void guard(pollOta, cardSink('ota')), OTA_POLL_MS);
+    shared.createPoller({
+      fetch: () => request('/api/ota', { headers: { Accept: 'application/json' } }),
+      cadenceMs: OTA_POLL_MS,
+      immediate: true,
+      isAnswer: isOtaAnswer,
+      onAnswer: applyOtaAnswer,
+      onUnreachable: markOtaUnreachable,
+      onError: cardSink('ota'),
+    });
   }
   document.body.dataset.uiContractReady = 'aius-firmware-upgrade';
 })();

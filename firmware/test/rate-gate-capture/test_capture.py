@@ -360,6 +360,68 @@ class CaptureHealthTests(unittest.TestCase):
         self.assertTrue(any(name.startswith("capture-short")
                             for name in failures))
 
+    def _skip_health(self, attempts, skips):
+        return {"arecord_returncode": 0, "alsa_overruns": 0,
+                "requested_seconds": 130.0,
+                "poll_attempts": attempts, "poll_skips": skips}
+
+    def test_skips_at_five_percent_pass(self):
+        failures = CAP.capture_failures(
+            self._skip_health(100, 5), self._geometry(130))
+        self.assertEqual(failures, [])
+
+    def test_skips_over_five_percent_fail(self):
+        failures = CAP.capture_failures(
+            self._skip_health(100, 6), self._geometry(130))
+        self.assertTrue(any(name.startswith("status-poll-skips")
+                            for name in failures))
+
+
+class HttpGetStatusTests(unittest.TestCase):
+    """A 503 is a counted skip; transport errors keep the retry."""
+
+    def _patched(self, side_effect):
+        import unittest.mock as mock
+        return (mock.patch("urllib.request.urlopen", side_effect=side_effect),
+                mock.patch.object(CAP.time, "sleep"))
+
+    def test_503_is_a_skip_not_retried_not_raised(self):
+        import urllib.error
+        calls = []
+
+        def fail(*_a, **_k):
+            calls.append(1)
+            raise urllib.error.HTTPError("u", 503, "busy", {}, None)
+
+        opener, sleeper = self._patched(fail)
+        with opener, sleeper:
+            self.assertEqual(CAP.http_get("http://x/api/status", None),
+                             (None, None))
+        self.assertEqual(len(calls), 1)
+
+    def test_other_http_error_is_raised(self):
+        import urllib.error
+
+        def fail(*_a, **_k):
+            raise urllib.error.HTTPError("u", 500, "bad", {}, None)
+
+        opener, sleeper = self._patched(fail)
+        with opener, sleeper, self.assertRaises(urllib.error.HTTPError):
+            CAP.http_get("http://x/api/status", None)
+
+    def test_transport_error_still_retries(self):
+        import urllib.error
+        calls = []
+
+        def fail(*_a, **_k):
+            calls.append(1)
+            raise urllib.error.URLError("reset")
+
+        opener, sleeper = self._patched(fail)
+        with opener, sleeper, self.assertRaises(RuntimeError):
+            CAP.http_get("http://x/api/status", None, attempts=3)
+        self.assertEqual(len(calls), 3)
+
     def test_overruns_become_capture_frame_gaps(self):
         external = {"capture_frame_gaps": 0}
         CAP.apply_capture_health("waveform", external,

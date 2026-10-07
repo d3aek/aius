@@ -36,18 +36,46 @@
 
   /* Never throws: a failure comes back as data, so fire-and-forget callers
    * (click handlers, tickers) always run their own cleanup/render. */
+  /* A hung fetch (half-open TCP, a listener with no free slot) would wedge a
+   * self-scheduled poller forever, so a GET is aborted after REQUEST_TIMEOUT_MS
+   * and answers { ok: false, status: 0, timeout: true }: a FAILURE (counts toward
+   * the poller's three), never a 503 skip. Override per call with
+   * options.timeoutMs (0 disables). Mutating requests (PUT/POST/DELETE) default
+   * to no timeout: a first SD save legitimately takes over 7 s. */
+  const REQUEST_TIMEOUT_MS = 4000;
+
   async function request(url, options) {
+    const { timeoutMs, ...init } = options || {};
+    const method = String(init.method || 'GET').toUpperCase();
+    const limit = timeoutMs === undefined ? (method === 'GET' ? REQUEST_TIMEOUT_MS : 0) : timeoutMs;
+    let timer = null;
+    const controller = typeof AbortController === 'function' ? new AbortController() : null;
+    if (controller && limit > 0 && !init.signal) init.signal = controller.signal;
     try {
-      const response = await fetch(url, options);
-      let body = null;
-      try {
-        body = await response.json();
-      } catch (parseError) {
-        body = null;
-      }
-      return { ok: response.ok, status: response.status, body };
+      const attempt = (async () => {
+        const response = await fetch(url, init);
+        let body = null;
+        try {
+          body = await response.json();
+        } catch (parseError) {
+          body = null;
+        }
+        const retryAfter = response.headers && response.headers.get ? response.headers.get('Retry-After') : null;
+        return { ok: response.ok, status: response.status, body, retryAfter };
+      })();
+      if (!(limit > 0)) return await attempt;
+      attempt.catch(() => {}); /* an abandoned attempt's late rejection is not unhandled */
+      const expiry = new Promise((resolve) => {
+        timer = setTimeout(() => {
+          if (controller) controller.abort();
+          resolve({ ok: false, status: 0, body: null, timeout: true, transport: `timeout after ${limit} ms` });
+        }, limit);
+      });
+      return await Promise.race([attempt, expiry]);
     } catch (error) {
       return { ok: false, status: 0, body: null, transport: error && error.message ? error.message : String(error) };
+    } finally {
+      if (timer !== null) clearTimeout(timer);
     }
   }
 
@@ -75,6 +103,73 @@
         transport: error && error.message ? error.message : String(error),
       };
     }
+  }
+
+  const RETRY_AFTER_MIN_MS = 250;
+  const RETRY_AFTER_MAX_MS = 5000;
+  const UNREACHABLE_AFTER_FAILURES = 3;
+
+  /* Retry-After is delta-seconds (the firmware never sends a date). Clamped so a
+   * 0 does not spin and a large value does not park a page for minutes. */
+  const retryAfterMs = (seconds) => {
+    const parsed = Number(seconds);
+    if (seconds === null || seconds === undefined || seconds === '' || !Number.isFinite(parsed)) return RETRY_AFTER_MIN_MS * 2;
+    return Math.min(RETRY_AFTER_MAX_MS, Math.max(RETRY_AFTER_MIN_MS, Math.round(parsed * 1000)));
+  };
+
+  /* The one poller: SELF-SCHEDULING (the next request is armed only after the
+   * previous one answered, so two never overlap on the wire) and tolerant of a
+   * best-effort device.
+   *   - 503 (audio_busy / sd_busy shedding): a silent skip. Nothing renders, so
+   *     the last values and pill stay; the next poll waits Retry-After clamped to
+   *     0.25-5 s (the cadence when the header is absent). Not a failure.
+   *   - any other non-answer (transport error, timeout, other status): a
+   *     failure. `onUnreachable` runs only at the 3rd consecutive one and on each
+   *     one after it; the earlier ones are silent too.
+   *   - an answer (default: ok with a JSON body): `onAnswer`, failures reset to 0.
+   * options: { fetch: () => Promise<result>, cadenceMs, immediate, onAnswer,
+   *   onUnreachable, onError, isAnswer, unreachableDelayMs }.
+   * Returns { stop, failures }. A throw in a callback goes to onError and the
+   * loop re-arms at the plain cadence. */
+  function createPoller(options) {
+    const isAnswer = options.isAnswer || ((result) => result.ok && result.body);
+    let timer = null;
+    let stopped = false;
+    let failures = 0;
+    const tick = async () => {
+      let delay = options.cadenceMs;
+      try {
+        const result = await options.fetch();
+        if (result.status === 503) {
+          const asked = Number(result.retryAfter);
+          if (result.retryAfter !== null && result.retryAfter !== undefined && result.retryAfter !== '' && Number.isFinite(asked)) {
+            delay = retryAfterMs(asked);
+          }
+        } else if (isAnswer(result)) {
+          failures = 0;
+          await options.onAnswer(result);
+        } else {
+          failures += 1;
+          if (failures >= UNREACHABLE_AFTER_FAILURES) {
+            await options.onUnreachable(result, failures);
+            if (options.unreachableDelayMs) delay = options.unreachableDelayMs;
+          }
+        }
+      } catch (error) {
+        if (options.onError) options.onError(`Page error: ${error && error.message ? error.message : String(error)}`);
+      }
+      if (!stopped) timer = setTimeout(() => void tick(), delay);
+    };
+    if (options.immediate) void tick();
+    else timer = setTimeout(() => void tick(), options.cadenceMs);
+    return {
+      stop() {
+        stopped = true;
+        if (timer !== null) clearTimeout(timer);
+        timer = null;
+      },
+      failures: () => failures,
+    };
   }
 
   const describe = (result) =>
@@ -192,6 +287,8 @@
     setPill,
     request,
     requestRaw,
+    createPoller,
+    retryAfterMs,
     describe,
     guard,
     formatDb,
