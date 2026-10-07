@@ -27,35 +27,20 @@ buffer and no intermediate DSP quantisation.
 
 ## Current state
 
-Handover 2026-10-07 (orchestration run, sessions 2682a96a and 63e414f8);
-replace wholesale on the next handover.
+Handover 2026-10-07 (orchestration run, session 170d7fc3: 4e and 4f
+built); replace wholesale on the next handover.
 
-- **Status.** Phases 1, 2, 3 DONE. Phase 4 BUILT: fill-loop device
-  criteria passed 2026-10-07; gate 7 at fill-write cadence (U24 bench) is
-  its last proof, owner needed. Phases 4a, 4c, 4d DONE. Phase 4b
-  (acceptance umbrella), 4g, 4h PLANNED and READY; **4f BUILT**
-  (2026-10-07: 14 host suites green, all four images, OCRAM at every
-  floor, delivery audit FAIL then closure PASS; device runs the
-  owner's); **4e BUILT**
-  (2026-10-07: 22 host suites green, all four images with every
-  post-link guard, delivery audit FAIL on D-B1 then closure PASS; device
-  runs 1 and 2 and the E7 gate wait for the owner, and no OTA until the
-  owner's go-ahead). Contract history: 4b, 4e, 4f, 4g READY after
-  prebuild rounds 2 to 5, three clean-room rounds and their closures
-  (history in each phase's review blocks). No further clean-room round
-  (orchestrator call, 2026-10-07): the closing reviewer was itself
-  clean-room, each fresh round found a new edge class in the static walk
-  rather than a design fault, and each phase carries a delivery audit.
-  Phase 5 answered by the owner 2026-10-07 and deleted: all calls
-  confirmed (E2 deferred to the recommendation) except H4, H10 and H14,
-  overturned; 4h is rewritten as filesystem-independent
-  copy-before-write (backup holds the new bytes first, then the target;
-  mount restore through the existing loaders). The focused 4h review
-  (NOT READY: FR-B1, a restore's flush emptied the only good copy) is
-  folded: each entry tracks its safe copy and writes it last; saves
-  overwrite in place with sector 0 zeroed first and written last. Owner
-  scoped the rename-gap fix to settings files (2026-10-07). 4h closure
-  READY (FR2-S1 to S3 folded).
+- **Status.** Phases 1, 2, 3 DONE; 4a, 4c, 4d DONE. Phase 4 BUILT (gate 7
+  at fill-write cadence on the U24 bench is its last proof, owner
+  needed). **4e BUILT** (`21c8f52`) and **4f BUILT** (`9c9bd88`): host
+  suites green, all four optical images with every post-link guard and
+  OCRAM at each env's floor, each delivery audit FAIL then closure PASS;
+  their device runs are the owner's and none has run. 4g and 4h PLANNED
+  and READY (contracts through prebuild rounds 2 to 5, three clean-room
+  rounds and closures; 4h rewritten as copy-before-write after the
+  owner overturned the journal). 4b (acceptance umbrella) PLANNED: it
+  closes after 4e to 4h's device runs. No open question for the owner;
+  the owner holds two gates (below).
 - **Board.** Runs `df966f17b370` (Phase 4a) in slot 1, deployed by OTA
   2026-10-06, healthy-boot self-commit. It is the owner's **fail-safe
   rollback candidate** (2026-10-07): tag `fw-rollback-df966f17b370`,
@@ -73,13 +58,17 @@ replace wholesale on the next handover.
   give each call its own line). Every device session (OTAs and
   source-off checks included) and anything destructive goes to the owner
   (ruling 2026-10-07).
-- **Next action.** Dispatch 4g per its fan-out on 4f BUILT (4g's
-  carve-out and cache budget against the post-4f figures: slot-a ITCM
-  12,900 B free, DTCM statics +192 B over 4e, stack zone 25,472 B,
-  `.data` 33,472 B with `_VectorsRam` at 0x20008000). Owner-side,
-  whenever the owner chooses: 4e device runs 1 and 2 (run 1 ends with an
-  OTA stage and rehearsal, so it waits for the OTA go-ahead), the E7
-  verdict, and 4f's two device runs.
+- **Owner gates (not questions).** (1) No OTA deploy, stage, rehearsal
+  or activation until the owner's go-ahead; another bench round may come
+  first. (2) Every device session is the owner's: 4e runs 1 and 2 (run 1
+  ends with an OTA stage and rehearsal) and its E7 verdict, then 4f's
+  source-off and AC-3 runs. An E7 verdict of B2 re-plans 4f to 4h before
+  their device runs (4f's body records this).
+- **Next action.** Re-enter `orchestrate-plan` on this doc and dispatch
+  Phase 4g per its fan-out (www-bundle, web-cache, http-cache-headers
+  concurrently; parent-wiring after web-cache's header), starting from
+  4g's "Starting figures" and "Carried in from 4e and 4f" paragraphs.
+  Prove, audit and commit 4g as 4e and 4f were; then 4h.
 - **What landed this run** (aius commits; each followed by a upstream repository
   pointer bump; foreign commits from the mixer session omitted):
 
@@ -109,11 +98,12 @@ replace wholesale on the next handover.
 | `368cecb` | 4h closure READY; FR2-S1 to S3 folded (put keeps the safe copy; 0.78 s; first-save fault over-count accepted); all of 4b, 4e to 4h READY | reviewer walked every cut in both orders and both probes against SdFat source |
 | `d6f4f58` | owner "start"; no OTA deploy without the owner's go-ahead | none |
 | `21c8f52` | Phase 4e BUILT: vendored SdFat and SD (DMA, card-wait hook, DTCM bounce), producer-yield library, adapter fault split and mode route, windows and yield points, per-env OCRAM floors, producer-isolation and stack-bound suites, delivery-audit fixes (D-B1 MPU trap, D-S1 to D-S4) | 22 host suites (verifier run), all four images and every post-link guard, delivery audit closure PASS |
-| this commit | Phase 4f BUILT: link-time admission (route and SD-start shedding, 503 audio_busy with Retry-After), live_owns_ring, time-aged bucketed cost windows, FIFO start-gate deferral with bring-up latch, render and storage-diag yields, /api/status/brief, shared web poller with 503 skip and GET timeout, capture.py 503 skips, dsp_model_pad.py, D-S7, delivery-audit fixes (F-B1, F-B2, F-S1 to F-S6) | 14 host suites (verifier run), all four images, OCRAM at every floor, delivery audit closure PASS |
+| `9c9bd88` | Phase 4f BUILT: link-time admission (route and SD-start shedding, 503 audio_busy with Retry-After), live_owns_ring, time-aged bucketed cost windows, FIFO start-gate deferral with bring-up latch, render and storage-diag yields, /api/status/brief, shared web poller with 503 skip and GET timeout, capture.py 503 skips, dsp_model_pad.py, D-S7, delivery-audit fixes (F-B1, F-B2, F-S1 to F-S6) | 14 host suites (verifier run), all four images, OCRAM at every floor, delivery audit closure PASS |
+| this commit | handover: this state; 4g gains starting figures and three carried-in items | none needed |
 
-- **Uncommitted tree.** Clean after this commit. 4e's worker handoff
-  notes and baseline (`4e-handoff.md`, `4e-baseline.md`) are in the
-  scratch directory below.
+- **Uncommitted tree.** Nothing of this session's. Foreign and left
+  alone: `docs/plans/aius-sd-mixer-dashboard.md` and
+  `firmware/sd/www/mixer.js` (the mixer session's, uncommitted).
 - **Hook item.** `stop-guard.action-reverify` is item 11 of
   `src/tools/hook/docs/plans/hook-daemon-feature-backlog.md` (owner:
   plan, do not dispatch).
@@ -123,13 +113,30 @@ replace wholesale on the next handover.
   and the prototype isolation walks behind 4e W1 to W8
   (`walk_cr3.py`, `walk_declared.py`, `walk_sdroots.py`, `walk_scc.py`,
   disassembly `opt.dis`) in
-  `.scratch/170d7fc3-409e-4126-8b10-6d8f8a95620b/`, a starting point
-  for the parent-wiring worker.
+  `.scratch/170d7fc3-409e-4126-8b10-6d8f8a95620b/`, with the 4e and 4f
+  worker handoff notes (`4e-handoff.md`, `4f-handoff.md`,
+  `4f-audit-findings.md`), build logs and verifier logs; everything
+  durable from them is in 4e and 4f's bodies.
   Everything durable is in Phase 4 §Device evidence and Phase 4b.
 - **Editor diagnostics.** clangd reports missing `Arduino.h` and library
   headers under `firmware/`: an editor include-path gap only;
   `firmware/scripts/test.sh` and the PlatformIO builds are the truth.
 - **Traps.**
+  - A firmware change that no host suite runs (boot, `setup()`, linker
+    layout) can pass every suite and still fail the board: 4e's stack
+    paint wrote the core's MPU trap at `_ebss` and would have boot-looped
+    (4e §Memory). Read the delivery audit's ELF-level checks, not just
+    suite results.
+  - Rebuilding images overwrites `firmware/.pio/build/*`; the
+    producer-isolation and stack-bound real-ELF cases read whatever was
+    last built, so never rebuild while an agent is reading those ELFs.
+  - The path-ownership hook can hold a file another session wrote even
+    when it is clean against HEAD (`test/sd-editor/mixer.test.js` was held
+    by session 74c6ef4f until released); retry after the owner finishes,
+    never write around it.
+  - A verifier quoting "Ran 25 tests" for producer-isolation is only the
+    fixture half; the arm runs `test_real_elf.py` too (7 more). Read the
+    log's every "Ran N" line before trusting a count.
   - `firmware/scripts/test.sh` needs `--environment native`; several
     `--suite` flags now each run (4c). Python tool tests run with
     `python3 -m unittest` (pytest is absent); `unittest discover` on
