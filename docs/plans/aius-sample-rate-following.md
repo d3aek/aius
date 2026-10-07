@@ -1776,7 +1776,7 @@ max 7.75 after the first 600 s (21.4 at 80 s, before settling);
 - **Web UI load underran the ring.** At 08:11:38 the owner opened the SD
   web UI: 108 HTTP requests and 5 SD download jobs in one 30 s window,
   HTTP checkpoint 1.4 ms to 20.9 ms, an epoch budget overrun, ingress
-  backlog at its 2048-word cap. Two 128-frame underruns 0.93 s apart
+  backlog high-water 2048 words (8 chunks, a 21 ms wait; capacity 8,192). Two 128-frame underruns 0.93 s apart
   (`underrun_episode_count` +2, `tx_underrun_frames` +256). AC-3, fill
   loop, DMA and governor ruled out (no crc, resync, missed fill, governor
   trim, or fill write in the prior 52 s); the recorder's underrun capture
@@ -2033,35 +2033,333 @@ depends-on: phase 4 device session (done 2026-10-07)
 prebuild-review: not-started
 outcome: >-
   No HTTP request, status render or SD-card transfer (web UI load, file
-  download, sync, OTA staging) delays the AC-3 producer or the transmit
-  path enough to move the ring: a web UI load during playback causes no
-  underrun, and the polled sub-window spread matches the unpolled one.
-unit: parent-only # design pass next
+  download, directory listing, card sync, API request) delays the AC-3
+  producer or the transmit-ring commit by more than the locked-stretch
+  bound (about 0.6 ms, 30 frames), whatever the request or card latency:
+  a web UI load or a card sync during playback causes no underrun, and the
+  polled sub-window spread matches the unpolled one. OTA staging, verify,
+  activation and rehearsal are outside the guarantee (owner, 2026-10-07)
+  and keep their state-the-cost-first posture.
+unit: component-behind-interface
 seams:
-  - HTTP service and SD job scheduling against the producer (firmware/src/optical_main.cpp main loop, checkpoint budget)
-  - app_write_status / http_status_json render scheduling
-  - SD download / sync / OTA staging job slicing
+  - producer gate, new firmware/lib/aius_producer_gate (aius_producer_gate_window_begin / _window_end / _yield / _note_pend / _take_pend_us, diag watermarks)
+  - producer interrupt in firmware/src/optical_main.cpp (producer_isr around aius_audio_service_run; pended from AiusAudioProcessor::update after each ingress commit and from platform_audio; masked by ota_quiesce)
+  - platform_audio (AUDIO checkpoint 9) becomes a gate window plus its budget-row and g_audio_service_ready checks; platform_checkpoint yields at every checkpoint boundary
+  - I/O windows via adapter hooks around aius_sd_teensy_execute (firmware/src/aius_sd_teensy.cpp) and aius_network_teensy_apply / _poll / _accept / _read_once / _write_once / _close_once / _udp_receive_once / _udp_send_once (firmware/src/aius_network_teensy.cpp)
+  - raw card scans in dispatch run in a window (http_replay_list_json, app_read_directory, app_replay_delete in optical_main.cpp), as do the request parses aius_dsp_config_parse_put and aius_config_parse
+  - yield points in http_status_json and every http_*_json section (one per http_json_append)
+  - GET /api/status audio_diag keys (producer_passes, producer_pend_latency_max_us, producer_late_passes, producer_lock_hold_max_us, stack_free_min_bytes) and firmware/sd/www/openapi.json
 targeted-proof:
-  - device: web UI load (all SD downloads) during AC-3 playback, repeated, gives underrun_episode_count delta 0 and ingress backlog below cap
-  - device: polled versus unpolled sub-window spread p95 within 10 frames of each other
+  - host: producer-gate suite (window state machine, non-nesting, re-mask on every path, pend-latency and lock-hold watermarks against a fake NVIC and cycle clock)
+  - host: producer-schedule model reproduces the 2026-10-07 underrun under today's epoch order (a 20.9 ms HTTP step at the trough underruns at setpoint 353, a 1.4 ms one does not) and shows none under windows for HTTP or SD stalls of 21 ms, 100 ms and 1.55 s at every trough phase in 0.1 ms steps
+  - host: producer-isolation post-link check on teensy41-optical (producer_isr reaches no SdFat, FNET, malloc or printf symbol; window hooks are installed only by optical_main.cpp)
+  - host: audio-service, audio-ingress, runtime, sd-target, network-transport, status-body-bound (new keys), optical-cutover (new keys), itcm-placement, registry, sd-editor green; both images build; ITCM and DTCM free recorded
+  - device: ten SD web UI loads (index page, 5 SD downloads plus the presets listing) at least 5 s apart, then one full aius-sd-sync.sh run, during AC-3 playback give underrun_episode_count delta 0, ingress_high_water_words at most 1,024, producer_pend_latency_max_us at most 1,000 and producer_lock_hold_max_us at most 500
+  - device: polled (1 Hz) versus unpolled sub-window spread p95 within 10 frames of each other
+  - device: stack_free_min_bytes at least 2,048 after both runs above
+acceptance-examples:
+  - the index page's presets listing (the likely 20.9 ms dispatch of 2026-10-07) landing at the ring trough counts no underrun
+  - a 100 ms SD read inside a download leaves producer_pend_latency_max_us under 1,000
+  - a 1 Hz status poll moves the sub-window spread p95 by at most 10 frames
+  - an OTA verify during playback may still underrun; no proof, counter or CLAUDE.md line claims otherwise
+contract-artifact: spec-only
+fan-out: # producer-gate, producer-schedule, io-windows and producer-isolation concurrently against §Slice interfaces; parent-wiring once producer-gate's header lands; the parent runs every target build
+  - name: producer-gate
+    owned-paths:
+      - firmware/lib/aius_producer_gate/**
+      - firmware/test/producer-gate/**
+  - name: producer-schedule
+    owned-paths:
+      - firmware/test/producer-schedule/**
+  - name: io-windows
+    owned-paths:
+      - firmware/src/aius_sd_teensy.cpp
+      - firmware/src/aius_sd_teensy.h
+      - firmware/src/aius_network_teensy.cpp
+      - firmware/src/aius_network_teensy.h
+      - firmware/test/sd-target/**
+      - firmware/test/network-transport/**
+  - name: producer-isolation
+    owned-paths:
+      - firmware/test/producer-isolation/**
+  - name: parent-wiring # coordinator: producer IRQ, windows and yields in optical_main.cpp, status keys, openapi, test.sh cases for the three new suites
+    owned-paths:
+      - firmware/src/optical_main.cpp
+      - firmware/lib/aius_runtime/**
+      - firmware/sd/www/openapi.json
+      - firmware/test/optical-cutover/**
+      - firmware/test/status-body-bound/**
+      - firmware/test/registry/**
+      - firmware/scripts/test.sh
+      - firmware/platformio.ini
+review-intensity: active
+commit-checkpoint:
+  green: [producer-gate, producer-schedule, producer-isolation, audio-service, audio-ingress, runtime, sd-target, network-transport, status-body-bound, optical-cutover, itcm-placement, registry, sd-editor]
+  buildable: [teensy41-optical, teensy41-optical-slot-a]
+  parent-commit: "feat(aius): run the audio producer in its own interrupt (Phase 4b)"
+  coordination: the five owned-path sets are disjoint; only parent-wiring builds firmware images; host suites build one suite at a time
 ```
 
 **Owner ruling 2026-10-07:** loading the SD interfaces must never cause
-audio issues; the audio hot path always has priority. This widens 4b from
+audio issues; the audio hot path always has priority. OTA is the
+exception: staging and activation are deliberate, disruptive operations
+and stay outside the guarantee. This widens 4b from
 the status render to every HTTP and SD service path, and supersedes
 `CLAUDE.md`'s "owner-initiated card traffic is
 deliberately NOT gated" (that paragraph is updated in this phase; until it
 ships, card traffic still costs dropouts). Evidence: Phase 4 §Device
 evidence 2026-10-07 (page-load underrun; polled p95 54 against unpolled
-10). First step: a design pass (budgeted or sliced HTTP and SD work
-yielding to the producer, or producer service between slices), then the
-prebuild review.
+10). Design pass done (2026-10-07, §Design below); next, the prebuild
+review.
 
 Found by the Phase 4 entry-gate design pass (2026-10-06): Phase 3 measured
 the render delaying production, and Phase 4 only adds margin against it.
 The 16 KiB status body makes the render longer (dip estimated 1.5 times).
-The design options it named (chunked render, or render after the
-producer's commit) remain candidates for the status path.
+§Design settles the status path: per-append yields under the producer
+gate.
+
+#### Design: the producer runs in its own interrupt (2026-10-07)
+
+**Measured cause.** The producer is `aius_audio_service_run`, called only
+by `platform_audio` at the two AUDIO visits of each epoch
+(`firmware/lib/aius_runtime/src/aius_runtime.c:114`, `:129`); it ingests
+the ingress ring, decodes, runs the DSP and commits 128-frame blocks to
+the transmit ring inside `enqueue`. Every other checkpoint runs serially
+in `loop()`, so a burst that lands while any one checkpoint runs waits
+for that checkpoint's full length. The ring drains 48 frames per ms from
+its trough: at setpoint 353 the underrun line (occupancy 128) is 225
+frames, 4.69 ms, away; at the worst-phase setpoint 256 it is 128 frames,
+2.67 ms. On 2026-10-07 `checkpoint_walltime_us[5]` (HTTP) went from
+1,402 µs (its maximum over 48 min of 1 Hz polling, status render
+included) to 20,916 µs in the 30 s holding the page load,
+`production_gap_max_us` from 30,086 to 35,823, and two 128-frame
+underruns followed 0.93 s apart. HTTP checkpoint 5 runs one transaction
+step and one action per epoch; the only actions that touch the card
+there are the raw scans in dispatch. The index page loads 5 SD files
+(`index.html`, `replays.css`, `dsp-editor.css`, `sd-shared.js`,
+`dsp-editor.js`, job kind 4 in SD checkpoint 8) and lists
+`/sd/www/presets/` (`firmware/sd/www/dsp-editor.js:1832`), which
+`app_read_directory` serves with one `SD.open` and up to 129
+`openNextFile` calls in a single dispatch
+(`firmware/src/optical_main.cpp:6792`). That listing is the likely
+20.9 ms (inferred: there is no per-route timing). The second underrun is
+unattributed: checkpoint 8's lifetime maximum (582,330 µs, the boot
+mount) hides the download primitives. Correction to §Device evidence
+2026-10-07: 2,048 words is not the ingress cap
+(`AIUS_AUDIO_INGRESS_CAPACITY_WORDS` is 8,192,
+`firmware/lib/aius_audio_ingress/include/aius_audio_ingress.h:14`); it is
+8 chunks, 21.3 ms of input at 96 words per ms, the backlog of a 20.9 ms
+wait. The ingress high-water is therefore a direct reading of the longest
+producer wait; its baseline is 616 words.
+
+**Worst-case service time per path today**, each a single stretch the
+producer waits behind:
+
+| Path | Where | Worst case per pass | Source |
+| --- | --- | --- | --- |
+| Socket accept, read, write (512 B), close | HTTP 5, `aius_network_teensy_*_once` | tens of µs, non-blocking FNET calls | code; HTTP max 1,402 µs over 48 min polled |
+| Status render | HTTP 5 dispatch, `http_status_json` | 1,402 µs at 9.7 KB; about 1.5 times at the 16 KiB worst body | Phase 4 session; Phase 4 entry gate |
+| Directory listing | HTTP 5 dispatch, `app_read_directory` (`/sd/<dir>/`), `http_replay_list_json` (`/api/replays`, no `sd_busy` gate) | card-bound; 20.9 ms observed | this session (attribution inferred) |
+| Replay delete | HTTP 5 dispatch, `app_replay_delete` | `SD.exists` plus `SD.remove`, card-bound | code |
+| SD job primitive (download, upload, install rename, delete) | SD 8, `aius_sd_teensy_execute` | one SdFat call, card-bound: read access up to 100 ms and write busy up to 250 ms by the SD physical-layer limits; `SD.usedSize()` is a FAT scan; 29,183 µs in the boot fault record | `sd_diag` |
+| Card sync | HTTP 5 during `aius-sd-sync.sh` | 1.55 s epoch, 59 ms of underrun | register, 2026-08-16 |
+| SD lifecycle, replay refill, audio control, recorder drain | REPLAY 7, `platform_replay` | 1,060 µs this session | `checkpoint_walltime_us[7]` |
+| FNET poll | NETWORK 4, `aius_network_teensy_poll` | short; 1,557,632 µs once at boot (stack start) | `checkpoint_walltime_us[4]` |
+| OTA verify (outside the guarantee) | HTTP 5 dispatch | 79,952 µs (Ed25519) | register, 2026-08-16 |
+| Producer itself | AUDIO 9 | 7,609 µs (budget 8,000), already inside the trough | `checkpoint_walltime_us[9]` |
+
+The SdFat SDIO driver runs in FIFO mode (the framework's `SD.begin`
+passes `SdioConfig(FIFO_SDIO)`), whose read waits spin without `yield()`
+(`SdioTeensy.cpp` `readData`, `waitTimeout`), and the card, not the
+firmware, sets their length. No slicing of card work can bound a single
+primitive below 4.7 ms.
+
+**Options.**
+
+| Option | Mechanism | Worst-case producer delay | Web UI | Complexity | ITCM / RAM | Host testability |
+| --- | --- | --- | --- | --- | --- | --- |
+| A: cooperative budget | AUDIO pass after every checkpoint; render chunked across epochs; directory scans become SD jobs; per-pass HTTP and SD budget | the longest indivisible step, one SdFat call: card-bound, tens to hundreds of ms | slower pages (render and listings spread over epochs) | medium: render cursor, two new SD job kinds | about 1 KiB RAM; no ITCM | budgets yes; card latency no |
+| B1: producer interrupt, lock by exception | producer in the lowest-priority interrupt, preempting anywhere; main loop masks it only around shared-state access | lock hold plus higher ISR time, about 0.3 ms | unchanged | high: every main-loop access to producer state must be found and locked; a miss is a silent race | about 32 B; producer stack nests over any main-loop depth | races are not host-testable |
+| B2: producer interrupt, lock by default (recommended) | producer in the lowest-priority interrupt; main loop keeps it masked except inside I/O windows (adapter calls, raw scans) and at yield points (checkpoint boundaries, render appends) | longest locked stretch plus higher ISR time, about 0.6 ms, watermarked | unchanged; HTTP and SD lose only the producer's own CPU | medium: one gate module, windows in two adapters and three scans, render yields | about 32 B DTCM, under 64 B ITCM (the `update` pend); producer stack nests only over window depths | gate and schedule model on host; isolation post-link; bound by device watermark |
+
+A `yield()` hook into SdFat (DMA SDIO mode) is A's best case and was
+rejected with it: FIFO-mode reads still spin, and the hook re-enters the
+producer from every SdFat caller, including the replay refill in the
+middle of the REPLAY audio-control sequence.
+
+**Recommendation: B2.** It is the only option whose bound does not depend
+on the card or on HTTP: a window around an SdFat or FNET call lets the
+producer preempt at any instruction inside it, including a FIFO spin or a
+1.55 s sync epoch. Against B1 it keeps every epoch-serial assumption in
+`optical_main.cpp` true without an audit (for example "Pipeline state is
+AUDIO-owned and HTTP runs serially in the same epoch", `:1696`, and
+`app_store_dsp_config` rewriting `g_pending_dsp_model` while an earlier
+`g_dsp_apply_pending` may still be set, `:6475`): outside a window the
+main loop and the producer stay mutually exclusive exactly as today.
+Concurrency is confined to window bodies, which touch only SdFat, FNET,
+adapter-private state and request-local buffers, and the post-link check
+sees that the producer reaches none of them. B2 fails safe: a locked
+stretch that grows shows in `producer_lock_hold_max_us` and
+`producer_late_passes`, where B1's failure is a race.
+
+**Mechanism.**
+
+- **Producer interrupt.** A spare NVIC vector (the implementer picks one
+  unused by the core and libraries, documented beside `IRQ_SOFTWARE`) at
+  priority 240, the lowest implemented level: below the audio software
+  interrupt (208, `update`), the transmit DMA interrupt and every other
+  ISR, above thread mode. Its FLASHMEM handler takes the pend latency,
+  returns if `!g_audio_service_ready`, and runs `aius_audio_service_run`
+  once. It never re-pends itself.
+- **Pends.** `AiusAudioProcessor::update` pends it after each ingress
+  commit (375 Hz at 48 kHz; an inline `note_pend` stamps the first
+  outstanding pend). `platform_audio` pends it inside its window, so the
+  two AUDIO visits still produce exactly where they do today. A pend
+  raised while masked latches and fires at the next window.
+- **Lock by default.** `setup()` leaves the vector masked; the main loop
+  holds it masked except inside `window_begin` / `window_end` pairs.
+  Windows do not nest: `window_begin` inside an open window is a no-op
+  that returns false, and `window_end(false)` leaves the window open.
+- **Windows.** Around each SD and FNET adapter entry point (hooks set at
+  init; null hooks mean no window, so host suites are unchanged); around
+  the three raw scans and the two dispatch-time parses; and the AUDIO
+  checkpoint. A window body may touch only its library's state, its
+  adapter's state and request-local buffers.
+- **Yield points** (`window_begin` then `window_end`, letting a pending
+  pass run): in `platform_checkpoint` at every checkpoint boundary, after
+  each `http_json_append` in the status sections, and between recorder
+  drain quanta if the drain exceeds the hold target. Per-append
+  consistency of `/api/status` replaces per-epoch consistency; fields
+  read inside one append stay consistent.
+- **Unchanged.** The epoch order; the watchdog feed (a wedged producer
+  starves thread mode, so the epoch never completes and WDOG1 resets as
+  today); `aius_audio_service_run` and its 8 ms budget; the fill sensor
+  and gate-open masked sections (the DMA interrupt still outranks the
+  producer); the REPLAY audio-control block, which runs locked and so
+  never interleaves with a production pass. `ota_quiesce` masks the
+  vector with the others.
+- **Observability.** `audio_diag` gains `producer_passes`,
+  `producer_pend_latency_max_us`, `producer_late_passes` (pend latency
+  over 1,000 µs), `producer_lock_hold_max_us` (armed after the
+  healthy-boot mark, cleared by `clear_counters`) and
+  `stack_free_min_bytes` (boot-time paint of the stack region, scanned by
+  the 1 Hz METRICS sampler). `checkpoint_walltime_us` and
+  `runtime_epoch_budget_overruns` now include producer passes that
+  preempt a window; a rise there is not an audio fault.
+- **FPU.** The producer's double-precision DSP now runs in an interrupt;
+  parent-wiring asserts at boot that `FPU_FPCCR` keeps automatic lazy
+  stacking (ASPEN and LSPEN set).
+
+**The bound it guarantees.** Producer start delay after a pend is
+`D <= H_lock + H_off + I_hi`: `H_lock` the longest locked main-loop
+stretch (target 500 µs, held by the device proof on
+`producer_lock_hold_max_us`); `H_off` the longest global interrupt-off
+section in steady state (the gate-open pad, 3 to 11 µs per Phase 4a N4,
+and the few-µs SdFat and FNET sections); `I_hi` higher-priority ISR time
+in that interval (under 100 µs). So `D` is at most about 0.62 ms, 30
+frames at 48 kHz: 195 frames inside the 225-frame tolerance at setpoint
+353, 98 inside the worst-phase 128, and 2 percent of the 32 ms AC-3 burst
+period. No HTTP request, render, listing or card primitive appears in
+`D`; their length only delays other main-loop work. The ingress backlog
+is the safety signal: under `D` it stays within one 8 ms producer pass
+plus a chunk, 1,024 words; a reading above that means a stretch escaped
+the gate.
+
+**Slice interfaces.** Parent-wiring builds against these; the host
+slices implement them.
+
+```c
+/* firmware/lib/aius_producer_gate/include/aius_producer_gate.h */
+typedef struct {
+	void (*mask)(void *ctx);      /* NVIC_DISABLE_IRQ(producer vector) */
+	void (*unmask)(void *ctx);    /* NVIC_ENABLE_IRQ(producer vector) */
+	uint32_t (*cycles)(void *ctx);
+	void *ctx;
+	uint32_t cycles_per_us;
+	uint32_t late_us;             /* producer_late_passes threshold, 1000 */
+} AiusProducerGateOps;
+
+void aius_producer_gate_init(AiusProducerGate *gate,
+                             const AiusProducerGateOps *ops); /* masked, disarmed */
+void aius_producer_gate_arm(AiusProducerGate *gate);          /* hold watermark on */
+bool aius_producer_gate_window_begin(AiusProducerGate *gate); /* false: already open */
+void aius_producer_gate_window_end(AiusProducerGate *gate, bool opened);
+void aius_producer_gate_yield(AiusProducerGate *gate);
+static inline void aius_producer_gate_note_pend(AiusProducerGate *gate); /* ISR-safe */
+uint32_t aius_producer_gate_take_pend_us(AiusProducerGate *gate); /* producer entry */
+void aius_producer_gate_get_diag(const AiusProducerGate *gate,
+                                 AiusProducerGateDiag *out);
+void aius_producer_gate_clear_diag(AiusProducerGate *gate);
+```
+
+Each adapter declares its own hook pair, so the adapters and the gate
+share no header: `AiusSdTeensyWindow` and `AiusNetworkTeensyWindow`, each
+`{bool (*begin)(void *ctx); void (*end)(void *ctx, bool opened); void
+*ctx;}`, set by `aius_sd_teensy_set_window` and
+`aius_network_teensy_set_window`. Every entry point brackets its library
+call and re-closes on every return path, faults included (host cases
+assert balance). The schedule model takes its constants from this design
+(48 frames per ms, 128-frame DMA periods, 1,536-frame bursts every 32 ms
+in 256-word chunks, 1,661 µs decode steps) and calibrates against
+§Device evidence 2026-10-07 before asserting the B2 result. The isolation
+check walks `arm-none-eabi-objdump` call edges from the producer handler
+symbol, in the manner of `firmware/test/itcm-placement/verify_target.py`.
+
+**Technical calls taken here.** Lock by default over lock by exception
+(B2 over B1, above). Per-append yields over a snapshot struct for the
+status render (no 16 KiB copy, no restructure of the section writers).
+Priority 240, below every ISR. A hook pair per adapter over a shared
+header (disjoint ownership; null hooks keep host suites unchanged). Hold
+target 500 µs (24 frames), inside the polled spread's 10-frame p95 proof
+because a hold costs frames only when a pend lands in it at the trough.
+Ingress device threshold 1,024 words.
+
+**Open owner decision.** Replay playback from the card: B2 protects the
+producer, but a download primitive and a replay refill primitive still
+take turns on the card, so a slow card read during a web UI load can
+starve the replay source itself. Recommended: 4b's guarantee covers live
+input (optical AC-3 and PCM); replay keeps its SD-sized gate-open margin
+(`AIUS_TX_GATE_OPEN_REPLAY_TARGET_FRAMES`), and card priority for the
+refill becomes later work only if asked for.
+
+**Residual risks.**
+
+- The locked-stretch bound is measured, not proven: a future long
+  computation without a yield raises `H_lock`. The watermark, the late
+  counter and the device proof catch it; host suites cannot time it.
+- The producer stack now nests over window depths; the 2,048-byte floor
+  proof covers only the paths the device runs exercise.
+- The A/B healthy-boot record (`ab_mark_healthy`, `ab_record_write`)
+  programs flash with interrupts off once per boot, possibly during
+  playback; this exists today. Record its duration in the device session.
+- The 20.9 ms attribution and the second underrun's cause are inferred;
+  B2 does not depend on them.
+- A bench build with `AIUS_NET_POLL_SINGLE_CONTEXT=0` arms the FNET PIT
+  at priority 224, above the producer; the deployed envs set 1
+  (`firmware/platformio.ini:304`).
+- OTA stays outside: verify (80 ms) and staging may still underrun.
+  Under B2 a window around the verify would remove most of that cost
+  cheaply; it is not promised.
+
+**CLAUDE.md at ship** (`CLAUDE.md` §Device access and
+OTA, via `the release-promotion step`): replace the paragraph from "Owner-initiated
+card traffic is deliberately NOT gated" through "state its cost first
+rather than after." with the text below; the bench sentence that follows
+("On the bench there is never audio to interrupt") stays as it is.
+
+> **HTTP and SD-card work never delays the audio producer; OTA is the one
+> exception.** The producer runs in its own lowest-priority interrupt and
+> the main loop masks it except inside I/O windows and yield points
+> (aius-sample-rate-following Phase 4b), so a web UI load, a download, a
+> card sync, a status poll or an API request during playback costs no
+> dropout and needs no cost statement. `audio_diag.producer_lock_hold_max_us`
+> and `producer_pend_latency_max_us` are the evidence;
+> `ingress_high_water_words` above about 1,024 means a stretch escaped
+> the gate. OTA staging, verify, activation and rehearsal stay outside the
+> guarantee (owner, 2026-10-07): activation and rehearsal quiesce audio by
+> design and a verify measured one 80 ms stall, so prefer silence, and
+> when the owner accepts the interruption, state its cost first rather
+> than after.
 
 ### Phase 4c `test.sh` runs every `--suite` given ✓ SHIPPED 2026-10-06
 
