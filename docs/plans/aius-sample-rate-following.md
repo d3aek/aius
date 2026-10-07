@@ -2413,6 +2413,19 @@ rather than after." with the text below; the bench sentence that follows
   600 lines; B2 is medium to high; cache, bundle and lighter polls about
   800 to 1,500 lines and worth doing under any option.
 
+**Owner decisions 2026-10-07 (after the investigation).**
+
+- **PSRAM web cache: approved.** The web app is cached in PSRAM and
+  served from RAM; the SD card stays the source (updated by sync).
+- **Gzip bundling: approved.** Served gzip'd with cache validation.
+- **A UI poll never interrupts audio.** HTTP is best-effort: when serving
+  a request would delay the producer, the request waits, is shed or fails;
+  a missed status update heals on the next success. Audio never waits for
+  a response.
+- **Investigate next:** DMA SDIO mode (A-DMA), and whether settings
+  writes through the PSRAM cache, or an async flush to SD, remove the
+  write paths (DSP Apply, presets, uploads) from the audio's way.
+
 **Interrogate the user: the B2 execution-model change.** Present B2,
 the prebuild findings below and the alternatives (A, cooperative slicing,
 whose bound is one card primitive; B1, lock by exception) and record the
