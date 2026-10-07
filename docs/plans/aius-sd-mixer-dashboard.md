@@ -21,8 +21,8 @@ with bonded tabs. `index.html` stays as the classic editor.
 
 - **Posture**: checkpoint (owner, 2026-10-07): surface each decision and
   human-review gate as it arises.
-- **Status**: Phases 1, 1a, 1b, 2 and 4 shipped; 1b awaits the owner's phone
-  check of the preview. Phase 3 round 1 is delivered and waits on the
+- **Status**: Phases 1, 1a, 1b, 1c, 2 and 4 shipped; 1b and 1c await the
+  owner's phone check of the preview. Phase 3 round 1 is delivered and waits on the
   owner's picks. Phases 5 (board limiter) and 6 (deploy) are
   BLOCKED on the user's word. Nothing from this plan is on the board.
 - **What landed** (all pushed):
@@ -213,6 +213,66 @@ owner; the rest are own calls.
   `touch-action: manipulation`) is proven in vitest only; the owner's
   phone check of the preview is the real-touch proof, and its feedback
   becomes new work here.
+
+### Phase 1c: Control consistency pass ✓ SHIPPED
+
+Owner review of the Phase 1b preview, 2026-10-07:
+
+- The matrix strip's three steppers stack inside one strip item, grouped
+  the way the EQ bands group. The strip notes are dropped as redundant,
+  and the wasted whitespace goes with them.
+- Every reset button reads `RESET`, matches the height of its neighbours,
+  and sits in the same place throughout. An EQ band's reset sits top right,
+  in the row it shares with the band label. The limiter resets follow the
+  same rule.
+- The EQ type select matches the height of the inputs beside it.
+- Every pill and button is squarer.
+- Buttons and status pills must not be told apart only by their (uneven)
+  height.
+
+Own calls:
+
+- Buttons and status pills share a 4 px radius.
+- A button gets a solid border, an uppercase label and a pressed state, at
+  the control height (44 px).
+- A status pill gets no border, a tinted fill, a leading status dot, a
+  fixed smaller height and no pointer cursor.
+- `RESET` is `text-transform` in `mixer.css`; the label text in
+  `dsp-editor.js` stays as is.
+
+```yaml
+outcome: matrix strip is one grouped item with no notes; every RESET is uppercase, control-height and consistently placed (EQ band and limiter resets top right in the label row); EQ type select matches input height; 4 px radius on buttons and pills; buttons and status pills distinguished by border, fill, dot and cursor, not height
+seams: [firmware/sd/www/mixer.css, firmware/sd/www/mixer.js, firmware/sd/www/mixer.html, src/apps/preview/content/aius-mixer/]
+targeted-proof: vitest (root git_modules/aius) green with test/sd-editor/mixer.test.js unedited (another session owns it from 2026-10-07); Chromium probe of the preview at 1440 and 390 px measuring every RESET button's height against its row neighbours, the EQ type select's height against the inputs, every button and pill border-radius at most 4 px, the band reset's top-right position, and no sideways scroll; viewport screenshots read at both widths
+```
+
+- `dsp-editor.js`, `index.html` and `test/sd-editor/mixer.test.js` stay
+  untouched. If a mixer test breaks on a DOM change, change the approach
+  rather than the test, or stop and report.
+- Built (own calls, recorded at delivery):
+  - New tokens in `mixer.css`: `--bench-radius-ctl` (4 px),
+    `--bench-control-h` (44 px), `--bench-pill-h` (24 px) and `--bench-dot`.
+    No `999px` radius remains, and inputs and selects take the 4 px radius
+    too.
+  - One button rule covers the action bar, the dialog, the curve, preset
+    and stale-reload buttons, the steppers, the chips (toggle buttons), the
+    disclosure `summary` elements, and the tabs (flat, 44 px).
+  - Pills (apply, dirty and strip state, the lock chip, `.flow-end`) take
+    their tone from `currentColor`, so the `data-state` colours carry over.
+    The lock chip keeps the pointer cursor, because it opens the token
+    dialog.
+  - Reset placement:
+    - `mixer.js` `labelEqCells()` moves each EQ band's reset to follow its
+      `.eq-table__sec` label, so the two share a row; ids are kept.
+    - A trim reset closes the value, minus and plus row.
+    - Stacked-field and checkbox resets sit top right in the label row.
+    - Stage-head resets have no row neighbour.
+  - The matrix strip is one `.strip__item` of three `.strip__cell` steppers,
+    one per row at 390 px. The clip-free explanation moved to a `title`.
+  - The probe scenario
+    `src/apps/preview/content/aius-mixer/_tools/consistency-probe.json`
+    reads the `.field__reset` ids, so it needs updating if `dsp-editor.js`
+    renames them.
 
 ### Phase 2: Vendor the fonts ✓ SHIPPED
 

@@ -426,6 +426,12 @@
     for (const input of document.querySelectorAll('.eq-table .field--cell [data-field]')) {
       input.parentElement.dataset.col = CELL_LABELS[input.dataset.field.split('.').pop()] || '';
     }
+    /* A band's RESET rides the label row: seat each one straight after its label. */
+    for (const reset of document.querySelectorAll('.eq-table__reset')) {
+      let sec = reset.previousElementSibling;
+      while (sec && !sec.classList.contains('eq-table__sec')) sec = sec.previousElementSibling;
+      if (sec && sec.nextElementSibling !== reset) sec.after(reset);
+    }
   }
 
   /* ---- matrix strip ------------------------------------------------------------
@@ -443,11 +449,14 @@
 
   function buildStrip() {
     const mount = $('mixer-strip');
+    /* One grouped item, like an EQ band: a labelled stepper per setting. */
+    const item = document.createElement('div');
+    item.className = 'strip__item';
     for (const def of STRIP) {
       const source = field(def.path);
       if (!source) continue;
-      const item = document.createElement('div');
-      item.className = 'strip__item';
+      const cell = document.createElement('div');
+      cell.className = 'strip__cell';
       const caption = document.createElement('label');
       caption.className = 'strip__label';
       caption.textContent = `${def.label} (${def.unit})`;
@@ -462,11 +471,9 @@
       input.setAttribute('aria-label', `${def.label} (${def.unit})`);
       input.dataset.label = def.label;
       caption.htmlFor = input.id;
-      const note = document.createElement('span');
-      note.className = 'strip__note';
       holder.append(input);
-      item.append(caption, holder, note);
-      mount.append(item);
+      cell.append(caption, holder);
+      item.append(cell);
       const forward = (type) => {
         if (source.disabled) return;
         source.value = input.value;
@@ -475,16 +482,17 @@
       };
       input.addEventListener('input', () => forward('input'));
       input.addEventListener('change', () => forward('change'));
-      stripItems.push({ def, source, input, holder, note });
+      stripItems.push({ def, source, input, holder });
     }
+    mount.append(item);
   }
 
   function syncStrip() {
-    for (const { def, source, input, holder, note } of stripItems) {
+    for (const { def, source, input, holder } of stripItems) {
       if (document.activeElement !== input && input.value !== source.value) input.value = source.value;
       input.disabled = source.disabled;
       holder.dataset.invalid = String(Boolean(source.closest('.field--invalid')));
-      note.textContent = source.disabled && def.key === 'hr' ? 'resolved by clip-free' : '';
+      input.title = source.disabled && def.key === 'hr' ? 'Resolved by clip-free headroom' : '';
     }
   }
 

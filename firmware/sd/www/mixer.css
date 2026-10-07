@@ -79,6 +79,13 @@
 
   --bench-radius: 10px;
   --bench-radius-lg: 16px;
+  /* Buttons, inputs and status pills share one square-ish corner and the
+     buttons one height; a pill is smaller and borderless, so shape and fill,
+     never height alone, tell the two apart. */
+  --bench-radius-ctl: 4px;
+  --bench-control-h: 44px;
+  --bench-pill-h: 24px;
+  --bench-dot: 6px;
   --bench-gutter: clamp(10px, 1.2vw, 18px);
   --bench-f-display: "Archivo", "Archivo Narrow", system-ui, sans-serif;
   --bench-f-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -109,7 +116,7 @@ body.bench::before {
 .bench code { font-family: var(--bench-f-mono); font-size: .9em; color: var(--aius-accent-primary); }
 .bench-main { position: relative; max-width: none; margin: 0; padding: 0; }
 
-.skip { position: absolute; left: -999px; top: 8px; z-index: 100; padding: 8px 12px; border-radius: 8px; background: var(--aius-accent-warning); color: var(--bench-amber-ink); }
+.skip { position: absolute; left: -999px; top: 8px; z-index: 100; padding: 8px 12px; border-radius: var(--bench-radius-ctl); background: var(--aius-accent-warning); color: var(--bench-amber-ink); }
 .skip:focus { left: 8px; }
 
 /* The one label style on the page: mono, uppercase, amber. */
@@ -117,22 +124,38 @@ body.bench::before {
 .kicker--sub { font-size: 11px; color: var(--aius-text-muted); }
 
 /* ---- controls --------------------------------------------------------------
-   One pill vocabulary for every button the editor builds, so a stage reset, a
-   curve button and Apply read as one family. */
+   Two vocabularies. A BUTTON (every <button>, the chips, the disclosure
+   summaries) has a solid border, an uppercase label, a pressed state and the
+   control height. A status PILL (.pill, the lock chip, .flow-end) has no
+   border, a tinted fill, a leading dot, a smaller fixed height and no pointer
+   cursor. Both share the one corner radius. */
 .bench button,
-.bench .preset-menu > summary {
+.bench .preset-menu > summary,
+.bench .mixer__exact > summary,
+.bench .chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
   font: 500 12px/1 var(--bench-f-mono);
-  letter-spacing: .04em;
-  border-radius: 999px;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  border-radius: var(--bench-radius-ctl);
   padding: 0 14px;
-  min-height: 32px;
+  min-height: var(--bench-control-h);
   color: var(--aius-text-primary);
   background: var(--aius-surface-action);
   border: 1px solid var(--aius-accent-primary);
+  cursor: pointer;
   transition: border-color .2s, background .2s, box-shadow .2s;
 }
+.bench button:active:not(:disabled),
+.bench .preset-menu > summary:active,
+.bench .mixer__exact > summary:active { background: var(--bench-amber-fill); border-color: var(--aius-accent-warning); }
+.bench button:disabled { cursor: not-allowed; }
 .bench button.secondary,
-.bench .preset-menu > summary { background: transparent; border-color: var(--aius-border-control); color: var(--aius-text-secondary); }
+.bench .preset-menu > summary,
+.bench .chip { background: transparent; border-color: var(--aius-border-control); color: var(--aius-text-secondary); }
 .bench button.secondary:hover:not(:disabled) { border-color: var(--aius-text-secondary); color: var(--aius-text-primary); background: transparent; }
 .bench button.danger { background: var(--aius-surface-danger); border-color: var(--aius-accent-danger); color: var(--aius-text-danger); }
 .bench #apply { background: var(--aius-accent-warning); border-color: var(--aius-accent-warning); color: var(--bench-amber-ink); font-weight: 600; padding: 0 22px; }
@@ -143,13 +166,37 @@ body.bench::before {
   font-size: 12px;
   background: var(--aius-surface-input);
   border: 1px solid var(--aius-border-control);
-  border-radius: 8px;
+  border-radius: var(--bench-radius-ctl);
 }
+.bench select { height: var(--bench-control-h); }
 .bench input[type="checkbox"] { accent-color: var(--aius-accent-primary); }
-.bench .field__reset { min-height: 0; padding: 2px 7px; font-size: 10px; border-radius: 999px; background: none; border-color: var(--aius-border-strong); color: var(--aius-text-disabled); }
+/* RESET: the quiet button. The label text is "reset" in dsp-editor.js; the case
+   is this sheet's. The corner it sits in is set per container below. */
+.bench .field__reset { background: transparent; border-color: var(--aius-border-control); color: var(--aius-text-muted); }
+.bench .field__reset:hover:not(:disabled) { border-color: var(--aius-text-secondary); color: var(--aius-text-primary); }
+.bench .field__reset[data-dirty="true"] { border-color: var(--aius-accent-warning); color: var(--aius-text-warning); }
+.bench .field__reset:disabled { opacity: .35; }
 .bench .pill,
 .bench .token-lock,
-.bench .flow-end { font: 500 10px var(--bench-f-mono); letter-spacing: .06em; text-transform: uppercase; white-space: var(--aius-white-space-atomic); }
+.bench .flow-end {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: var(--bench-pill-h);
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--bench-radius-ctl);
+  background: color-mix(in srgb, currentColor 14%, transparent);
+  font: 500 10px/1 var(--bench-f-mono);
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  white-space: var(--aius-white-space-atomic);
+  cursor: default;
+}
+.bench .pill::before,
+.bench .token-lock::before,
+.bench .flow-end::before { content: ""; flex: none; width: var(--bench-dot); height: var(--bench-dot); border-radius: 50%; background: currentColor; }
+.bench .pill[hidden] { display: none; }
 .bench .hint { font: 400 11px/1.5 var(--bench-f-mono); }
 
 /* ---- nav --------------------------------------------------------------------- */
@@ -189,24 +236,27 @@ body.bench::before {
 .bench .action-bar__token-field { font: 500 10px var(--bench-f-mono); text-transform: uppercase; letter-spacing: .06em; }
 .bench .action-bar__token-field input { width: 140px; }
 .bench .action-bar input,
-.bench .action-bar button { height: 32px; }
+.bench .action-bar button { height: var(--bench-control-h); }
 .bench .form-fact { font: 400 11px var(--bench-f-mono); }
 
 /* A phone scrolls past the bar: there it is a header, not a fixture. */
 @media (max-width: 720px) { .bench .action-bar { position: static; backdrop-filter: none; } }
 
 /* The lock chip doubles as the button that opens the token dialog. */
-.bench .token-trigger { min-height: 32px; padding: 0; border: 0; background: none; }
-.bench .token-trigger:hover:not(:disabled) { background: none; }
-.bench .token-trigger:hover .token-lock { border-color: var(--aius-text-primary); }
-.bench .token-trigger .token-lock { display: inline-flex; align-items: center; min-height: 28px; padding: 0 12px; }
-.bench .token-trigger:focus-visible { outline: 3px solid var(--aius-accent-primary); outline-offset: 2px; border-radius: 999px; }
+.bench .token-trigger,
+.bench .action-bar .token-trigger { height: auto; min-height: var(--bench-control-h); padding: 0; border: 0; background: none; }
+.bench .token-trigger:hover:not(:disabled),
+.bench .token-trigger:active:not(:disabled) { background: none; }
+.bench .token-trigger:hover .token-lock { background: color-mix(in srgb, currentColor 26%, transparent); }
+/* The one pill that is also a door, so it keeps its button's pointer. */
+.bench .token-trigger .token-lock { cursor: inherit; }
+.bench .token-trigger:focus-visible { outline: 3px solid var(--aius-accent-primary); outline-offset: 2px; }
 
 .token-dialog { width: min(420px, calc(100vw - 32px)); padding: 0; border: 1px solid var(--aius-border-control); border-radius: var(--bench-radius-lg); background: var(--aius-surface-raised); color: var(--aius-text-primary); box-shadow: 0 30px 80px -20px var(--bench-shadow); }
 .token-dialog::backdrop { background: var(--bench-nav-glass); }
 .token-dialog__body { display: grid; gap: 14px; margin: 0; padding: 18px; }
 .bench .token-dialog .action-bar__token-field { display: grid; gap: 6px; }
-.bench .token-dialog input { width: 100%; height: 34px; }
+.bench .token-dialog input { width: 100%; height: var(--bench-control-h); }
 .token-dialog__actions { display: flex; justify-content: flex-end; gap: 8px; }
 
 .facts { gap: 0; }
@@ -345,19 +395,7 @@ body.bench::before {
 .mixer__divider { width: 1px; height: 22px; margin: 0 6px; background: var(--aius-border-control); }
 .mixer__none { font: 500 11px var(--bench-f-mono); color: var(--aius-text-muted); }
 
-.bench .chip {
-  display: inline-flex;
-  gap: 7px;
-  align-items: center;
-  min-height: 30px;
-  padding: 0 12px;
-  border: 1px solid var(--aius-border-control);
-  border-radius: 999px;
-  background: transparent;
-  font: 500 11px/1 var(--bench-f-mono);
-  color: var(--aius-text-secondary);
-  cursor: pointer;
-}
+/* A chip is a toggle button: it takes the button rule above. */
 .bench .chip:hover:not(:disabled) { border-color: var(--aius-text-secondary); color: var(--aius-text-primary); background: transparent; }
 .chip--layout { --chip-colour: var(--aius-accent-primary); }
 .mixer__presets .chip[aria-pressed="true"],
@@ -449,7 +487,7 @@ body.bench::before {
 .dial__row { display: flex; justify-content: space-between; gap: 12px; font: 500 12px var(--bench-f-mono); color: var(--aius-text-secondary); }
 .dial__row--ends { margin-top: 6px; font-size: 10px; color: var(--aius-text-muted); text-transform: uppercase; letter-spacing: .06em; }
 .dial__num { font-size: 14px; font-weight: 600; color: var(--aius-accent-warning); font-variant-numeric: tabular-nums; }
-.dial__track { position: relative; height: 12px; margin-top: 8px; overflow: hidden; border: 1px solid var(--aius-border-strong); border-radius: 999px; background: var(--aius-surface-page); }
+.dial__track { position: relative; height: 12px; margin-top: 8px; overflow: hidden; border: 1px solid var(--aius-border-strong); border-radius: var(--bench-radius-ctl); background: var(--aius-surface-page); }
 .dial__fill { position: absolute; top: 0; bottom: 0; left: 0; width: 50%; background: linear-gradient(90deg, var(--aius-accent-danger), var(--bench-amber-dim) 45%, var(--aius-accent-warning)); transition: width .25s ease; }
 .dial__mid { position: absolute; left: 50%; top: -2px; bottom: -2px; width: 1px; background: var(--aius-text-secondary); opacity: .4; }
 
@@ -461,7 +499,7 @@ body.bench::before {
 .verdict[data-tone="bad"] { border-color: var(--aius-accent-danger); }
 
 .mixer__exact { margin-top: 14px; padding-top: 12px; border-top: 1px dashed var(--aius-border-strong); }
-.mixer__exact > summary { display: inline-flex; align-items: center; min-height: 28px; padding: 0 12px; border: 1px solid var(--aius-border-control); border-radius: 999px; font: 500 11px var(--bench-f-mono); color: var(--aius-text-secondary); cursor: pointer; list-style: none; }
+.bench .mixer__exact > summary { background: transparent; border-color: var(--aius-border-control); color: var(--aius-text-secondary); list-style: none; }
 .mixer__exact > summary::-webkit-details-marker { display: none; }
 .mixer__exact > summary::before { content: "+"; margin-right: 8px; color: var(--aius-accent-warning); }
 .mixer__exact[open] > summary::before { content: "\2212"; }
@@ -502,7 +540,7 @@ body.bench::before {
   align-items: center;
   gap: 6px;
   flex: none;
-  min-height: 34px;
+  min-height: var(--bench-control-h);
   padding: 0 clamp(8px, 1vw, 14px);
   border: 0;
   border-bottom: 2px solid transparent;
@@ -550,7 +588,7 @@ body.bench::before {
   min-height: 44px;
   padding: 0;
   border: 1px solid var(--aius-border-control);
-  border-radius: var(--bench-radius);
+  border-radius: var(--bench-radius-ctl);
   background: var(--aius-surface-input);
   color: var(--aius-text-primary);
   font: 600 20px/1 var(--bench-f-mono);
@@ -565,27 +603,39 @@ body.bench::before {
 .bench .stepper__btn:disabled { opacity: .35; cursor: not-allowed; }
 .bench .stepper__btn:focus-visible { outline: 3px solid var(--aius-accent-primary); outline-offset: 2px; }
 .bench .curve-q.stepper { display: inline-flex; align-items: center; gap: 4px; }
-.bench .tabs__trim .field--trim.stepper { display: grid; width: min(100%, 220px); }
+/* The trim has no label row, so its RESET closes the one row of value, minus, plus. */
+.bench .tabs__trim .field--trim.stepper { display: grid; grid-template-columns: minmax(0, 1fr) 44px 44px auto; width: 100%; max-width: 340px; }
 .bench .tabs__trim .field--trim.stepper input { width: auto; }
-.bench .tabs__trim .field--trim.stepper .field__reset { justify-self: start; }
+.bench .tabs__trim .field--trim.stepper > .field__reset { grid-area: 1 / 4; justify-self: end; margin-left: 8px; }
+.bench .field { align-content: start; }
 .bench .mixer__exact .field-grid { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); }
 
-.strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; margin-top: 14px; padding-top: 12px; border-top: 1px dashed var(--aius-border-strong); }
-.strip__item { display: grid; gap: 6px; align-content: start; padding: 10px; border: 1px solid var(--aius-border-strong); border-radius: 10px; background: var(--aius-surface-input); }
+/* One grouped item, laid out like an EQ band: labelled steppers, two or three to a row. */
+.strip { margin-top: 14px; padding-top: 12px; border-top: 1px dashed var(--aius-border-strong); }
+.strip__item { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px 16px; align-items: start; padding: 10px; border: 1px solid var(--aius-border-strong); border-radius: 10px; background: var(--aius-surface-input); }
+.strip__cell { display: grid; gap: 4px; min-width: 0; align-content: start; }
 .strip__label { font: 500 10px var(--bench-f-mono); text-transform: uppercase; letter-spacing: .06em; color: var(--aius-text-secondary); }
-.strip__note { min-height: 1.2em; font: 400 10px var(--bench-f-mono); color: var(--aius-text-muted); }
 .strip__field[data-invalid="true"] input { border-color: var(--aius-accent-danger); }
 
 /* An EQ band reflows from a table row into labelled steppers, two or three to a row. */
 .bench .eq-table--output { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px 16px; align-items: start; }
 .bench .eq-table__h { display: none; }
-.bench .eq-table__sec { grid-column: 1 / -1; padding-top: 8px; border-top: 1px dashed var(--aius-border-strong); font: 600 11px var(--bench-f-mono); letter-spacing: .08em; text-align: left; color: var(--aius-text-muted); }
-.eq-table__sec::before { content: "Band "; }
+/* The band label and its RESET share the first row: the label takes every column
+   but the last, mixer.js seats the reset beside it in that last column. */
+.bench .eq-table__sec { grid-column: 1 / -2; display: flex; align-items: center; align-self: stretch; margin-top: 8px; font: 600 11px var(--bench-f-mono); letter-spacing: .08em; text-align: left; color: var(--aius-text-muted); }
+.bench .eq-table .eq-table__reset { grid-column: -2 / -1; justify-self: end; align-self: start; margin-top: 8px; }
+.bench .eq-table select { width: 100%; height: var(--bench-control-h); }
+.eq-table__sec::before { content: "Band\00a0"; }
 .bench .eq-table .field--cell[data-col]::before { content: attr(data-col); display: block; margin-bottom: 4px; font: 500 10px var(--bench-f-mono); text-transform: uppercase; letter-spacing: .06em; color: var(--aius-text-muted); }
-.bench .eq-table__reset { justify-self: start; align-self: end; min-height: 36px; padding: 0 12px; }
+/* Limiter and every other stacked field: the RESET sits top right, in the row the label
+   shares with it. */
+.bench .field:not(.field--cell):has(> .field__reset) > .field__label { display: flex; align-items: center; min-height: var(--bench-control-h); padding-right: 84px; }
+.bench .field:not(.field--cell) > .field__reset { position: absolute; top: 8px; right: 8px; }
 
 /* ---- limiter and live ---------------------------------------------------------------- */
-.bench .gr { font: 500 11px var(--bench-f-mono); }
+/* One row at every width: dsp-editor.css's phone rule drops the value under the bar. */
+.bench .gr { grid-template-columns: auto minmax(0, 1fr) auto minmax(6ch, auto); gap: 8px; font: 500 11px var(--bench-f-mono); }
+.bench .gr__value { grid-column: auto; }
 .bench .gr__track { height: 12px; border: 1px solid var(--aius-border-strong); background: var(--aius-surface-page); }
 .bench .gr__fill { background: repeating-linear-gradient(90deg, var(--aius-accent-warning) 0 6px, transparent 6px 8px); }
 
@@ -606,7 +656,7 @@ body.bench::before {
 .bench .presets-row label { font: 500 10px var(--bench-f-mono); text-transform: uppercase; letter-spacing: .06em; }
 .bench .presets-row input,
 .bench .presets-row select,
-.bench .presets-row button { height: 32px; }
+.bench .presets-row button { height: var(--bench-control-h); }
 .bench .preset-select-field,
 .bench .preset-name-field { flex: 1 1 140px; }
 .bench .preset-menu[open] .preset-menu__body { border-radius: var(--bench-radius); }
