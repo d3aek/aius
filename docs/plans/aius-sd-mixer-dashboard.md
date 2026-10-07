@@ -390,6 +390,14 @@ by 5.3 dB. `limiter.enabled` was already true at -1 dBFS, 0.5 ms attack,
   within a relative 1e-12, and mismatch messages list the differing paths
   (R4). Accepted as is: R2, a no-op `--set` plus a transport fault reports
   "landed", which is harmless. The suite has 30 setter tests.
+- **Check before the run:** aius `9c9bd88` (sample-rate-following Phase 4f)
+  makes HTTP best-effort during playback, and this phase needs playback for
+  the save to apply. Before the run, read 4f's contract in
+  [`aius-sample-rate-following.md`](aius-sample-rate-following.md) for what
+  a `PUT /api/dsp/config` and the `--wait` GETs get during playback (a
+  delayed answer, `503`, or a dropped connection). Confirm the setter's
+  timeouts and its transport-fault re-GET cover it. Stop if the build on the
+  board predates 4f, and record which one was found.
 - outcome: `features.limiter` true on the board; nothing else changed.
 - seams: the board's `/aius/dsp.json`, through Phase 4's tool.
 - targeted-proof: a GET `/api/dsp/config` showing `features.limiter: true` at
