@@ -27,67 +27,77 @@ buffer and no intermediate DSP quantisation.
 
 ## Current state
 
-Updated 2026-10-06 during an orchestration run; replace wholesale on the
-next handover.
+Handover 2026-10-07 (orchestration run, sessions 2682a96a and 63e414f8);
+replace wholesale on the next handover.
 
-- **Rollback candidate** (owner, 2026-10-07): `df966f17b370`, tag
-  `fw-rollback-df966f17b370`, images and steps in
+- **Status.** Phases 1, 2, 3 DONE. Phase 4 BUILT: fill-loop device
+  criteria passed 2026-10-07; gate 7 at fill-write cadence (U24 bench) is
+  its last proof, owner needed. Phases 4a, 4c, 4d DONE. Phase 4b
+  (acceptance umbrella) and 4e to 4h PLANNED, prebuild round 2 NOT READY
+  (blockers B1 to B6), implementation held by the owner. Phase 5
+  (confirm autonomous calls) holds E1 to E4, F1 to F4, G1, G2, G4, H1 to
+  H4.
+- **Board.** Runs `df966f17b370` (Phase 4a) in slot 1, deployed by OTA
+  2026-10-06, healthy-boot self-commit. It is the owner's **fail-safe
+  rollback candidate** (2026-10-07): tag `fw-rollback-df966f17b370`,
+  signed container and USB `recovery.hex` in LFS with steps in
   `firmware/releases/df966f17b370/README.md`.
-- **Hold before implementation** (owner, 2026-10-07): the Phase 4b
-  re-plan (phases 4e onward) is planning only; no implementer is
-  dispatched until the owner says to start.
-- **Orchestration posture: autonomous** (owner, 2026-10-06, second run):
-  resolve every call on its recommendation, record it with its why in the
-  phase it settles, and collect calls wanting confirmation in the closing
-  `Interrogate the user: confirm autonomous calls` phase. Device sessions
-  and anything destructive still go to the owner. The Phase 4 device
-  session runs in the listening-room, and the owner waives the
-  audio-interruption cost statements for that session.
-- **Status.** Phases 1, 2 and 3 DONE. Phase 4 BUILT; Phase 4a SHIPPED
-  (2026-10-06) on host proof, with delivery review, closure and clean-room
-  all passing. Deployed 2026-10-06: `df966f17b370` by OTA (container
-  sha256 `bb3e090a8e8b…`), slot 1, healthy-boot self-commit,
-  `rollback_observed` false; `clock.centre_writes` and
-  `clock.gate_open_pending_padded_frames` present.
-- **Next action.** Phase 4e prebuild review. Phase 4b is now the
-  acceptance umbrella over phases 4e (vendored SdFat, DMA SDIO, guarded
-  wait hook), 4f (HTTP best-effort), 4g (PSRAM web cache, gzip bundles)
-  and 4h (write-behind flush), per the owner's 2026-10-07 direction; the
-  hold above stands, so the review runs but no implementer is dispatched.
-  Phase 4's fill-loop device criteria passed on 2026-10-07; its last
-  proof is gate 7 at fill-write cadence on the U24 bench, which needs the
-  owner. Phases 4c and 4d shipped.
-- **Hook item moved.** `stop-guard.action-reverify` is item 11 of
-  `src/tools/hook/docs/plans/hook-daemon-feature-backlog.md` (owner:
-  plan, do not dispatch).
-- **What landed this session** (aius commits; upstream pointer bumps
-  follow each):
+- **Hold before implementation** (owner, 2026-10-07): no implementer is
+  dispatched for 4e to 4h until the owner says start. Reviews and
+  contract revision are allowed.
+- **Orchestration posture: autonomous** (owner, 2026-10-06): resolve
+  calls on their recommendation, record them with their why, and collect
+  calls wanting confirmation in Phase 5. Device sessions and anything
+  destructive go to the owner (pending the 4e interrogate step on
+  source-off runs).
+- **Next action.** Spawn one `opus` agent to revise the 4e to 4h and 4b
+  contracts against each phase's "Prebuild review round 2" block (B1 to
+  B6 and S1 to S17), then a fresh `opus` `reviewer` for round 3 given the
+  round 2 list (the round 2 reviewer's context did not survive); repeat
+  until READY. Then put the Phase 4e interrogate step (source-off device
+  runs) and the Phase 5 confirmations to the owner, and wait for "start".
+- **What landed this run** (aius commits; each followed by a upstream repository
+  pointer bump; foreign commits from the mixer session omitted):
 
 | Commit | Contents | Proof |
 | --- | --- | --- |
-| `443a0ae` | Phase 3 fill sensor, status keys, `optical-cutover` refresh, capture reducer, register entry for the replay trim | tx-fill-sensor, tx-gate, tx-governor, clock-target, registry, sd-editor, optical-cutover, itcm-placement green; adversarial and clean-room reviews PASS |
-| `9a145b7`, `0f03beb` | deploy records (`443a0ae5cb26`, then `0af7a8244081`) | healthy-boot self-commit, `rollback_observed` false |
-| `0af7a82` | output-jitter Phase J (governor replay target), `status_render_failures` | tx-governor and the green list above; ITCM unchanged |
-| `a10e2ff` | Phase J shipped; output-jitter Phases K and L planned; `measure_run.py --auth-file`, `replay` | three 10 s device replays, `governor_trims` 0 |
-| `c4c6200` | Phase 3 shipped on the capture; reducer underrun fixes; register update | reducer `--self-test` ok; capture reduced end to end |
+| `0cca005` | Phase 4a delivery-audit fixes (F3/R3 pending-open pad, N5 to N11, R4, R7, R9; bench tools R1, R2, R6, R10 to R15) | 10 firmware suites, both images, tool tests 93/71/119; delivery review FAIL, closure PASS, clean-room PASS |
+| `a2c4e8c` | Phase 4c `test.sh` runs every `--suite` | registry, multi-suite exit codes, shellcheck |
+| `df966f1` | owner confirms R2, R3, R13 | none needed |
+| `bdfa916`, `961ac4c` | deploy record `df966f17b370`; reducer splits on pending pad; short device session | reducer `--self-test` ok; OTA self-commit |
+| `5d7c05d`, `3ce0129` | aius CLAUDE.md: auth-file tools, recorder keys, glitch stamps; Phase 4d fill counters and signing form | promote diff matched B1 |
+| `46456cf` | full device session; 4b widened (owner: audio hot path always has priority; OTA excluded) | device evidence 2026-10-07 |
+| `a974465` to `a480243` | 4b B2 design, prebuild round 1, three investigations (network/SD, write path, SdFat DMA), owner decisions | read-only reviews |
+| `9d62deb` | rollback candidate images and README, `*.ota` LFS, tag `fw-rollback-df966f17b370` | sha256 checked against the deploy record |
+| `bdf9629` | re-plan: 4b umbrella, phases 4e to 4h | yaml fields checked by the author |
+| this commit | prebuild round 2 folded into 4b, 4e to 4h and Phase 5; 4e interrogate step; this state | none |
 
-- **Uncommitted tree.** Clean.
-- **Capture data** (scratch, reaped about 2026-10-12, so the design pass
-  must read it before then):
-  `.scratch/2682a96a-3760-4d00-b9e0-f71f66b336ba/capture-polled.jsonl`,
-  `capture-unpolled.jsonl`, `capture-pcm-topup.jsonl`, the reducer reports
-  `fill-analysis-final.*`, and the recorder pulls in `recorder-2026-10-05/`.
-  Everything durable is in Phase 3 §Measured.
-- **Editor diagnostics.** clangd reports missing `Arduino.h` and the
-  library headers on `firmware/src/` and `firmware/test/` files: an include
-  path gap in the editor only; `firmware/scripts/test.sh` and the PlatformIO
-  builds are the truth.
-- **Evidence outside the repo** (7-day scratch GC):
-  `.scratch/a2a9bb23-23dd-4b7a-beb4-02ddc24fabff/session-2026-10-04.jsonl`
-  (1 Hz status, 20:42 to 21:32 UTC) and `recorder-underrun-2105.wav`,
-  `recorder-underrun-2114.wav`, `recorder-underrun.wav` (21:22). The numbers
-  that matter are already in the register entry and Phase 3's defect text.
+- **Uncommitted tree.** Clean after this commit. `firmware/sd/www/mixer.*`
+  and `tools/aius_dsp_set.py` belong to another session (committed).
+- **Hook item.** `stop-guard.action-reverify` is item 11 of
+  `src/tools/hook/docs/plans/hook-daemon-feature-backlog.md` (owner:
+  plan, do not dispatch).
+- **Evidence in scratch** (reaped about 2026-10-14): full session
+  `.scratch/63e414f8-e0a8-416d-8629-cda946de784a/session-4a-full/`, the
+  underrun capture `underrun-0811/`, the B2 disassembly `optical.dis`.
+  Everything durable is in Phase 4 §Device evidence and Phase 4b.
+- **Editor diagnostics.** clangd reports missing `Arduino.h` and library
+  headers under `firmware/`: an editor include-path gap only;
+  `firmware/scripts/test.sh` and the PlatformIO builds are the truth.
 - **Traps.**
+  - `firmware/scripts/test.sh` needs `--environment native`; several
+    `--suite` flags now each run (4c). Python tool tests run with
+    `python3 -m unittest` (pytest is absent); `unittest discover` on
+    `firmware/test/rate-runner` also picks up `test_recorder_pull.py`.
+  - A raw `git status`/`git diff` on the working tree is hook-denied; use
+    `the repo tooling git -C git_modules/aius status --short`.
+  - "Unpolled" is only unpolled if no browser has the web UI open: the
+    editor polls meters about 2.6/s and status 1/s. Check
+    `http_requests` per poll before trusting a quiet segment.
+  - A poller job longer than about 25 min is killed with its background
+    job; launch the next segment immediately on the completion notice.
+  - A sub-agent's leftover Monitor keeps re-delivering its report; ask it
+    to stop its own monitor rather than killing it.
   - The host clock is UTC; the owner speaks UK local time (BST in
     October). Map board `millis()` stamps to wall time from one bracketed
     `/api/status` read (`dark_open_start_ms + dark_open_ms` is "now" while
@@ -104,8 +114,8 @@ next handover.
     500 mHz deadband, not a dead tracker; that is the defect Phase 4 fixes.
   - The recorder taps the stream before the TX ring, so a capture does not
     contain a TX underrun's gap, only the programme around it.
-  - Phase 4's commit edits `CLAUDE.md` (the fill stamps),
-    a protected file: write it via `the release-promotion step`.
+  - `CLAUDE.md` is protected: change it only via `the maintainer
+    promote` (4b's ship step does).
   - Polling `/api/status` is not neutral: a render delays the AC-3
     producer and can trigger the underrun being measured. Note each poll
     instant against `underrun_episodes[].start_ms` when reading a capture.
@@ -2613,6 +2623,21 @@ Each finding is plan work for the design revision after the discussion.
   strings; reconcile the `/api/replays` `sd_busy` table entry with the
   code.
 
+**Prebuild review round 2 (2026-10-07, `reviewer` `opus`): NOT READY.**
+
+- **Verdict.** Overall HOLD. Phase 4b inherits the phase verdicts: 4e NOT
+  READY (4 blockers), 4f NOT READY (1), 4g NOT READY (no blocker, S10 to
+  S13 contract corrections), 4h NOT READY (1 blocker plus wrong-fact
+  proofs). Blockers B1 to B6 are listed under their phases; the contract
+  revision is the next session's work.
+- **B5 consequence.** The polled-vs-unpolled proof (the 4b proof at
+  `:2058` and 4f's at `:2833`) becomes vacuous under 4f as written: most
+  1 Hz full-status polls would answer 503, so the spreads compare almost
+  nothing. Once the 4f admission cost is fixed, the proof must assert at
+  least N% of the 1 Hz polls answer 200 and
+  `firmware/tools/rate_gate_capture/capture.py:726-745` (retries 503 three
+  times, then raises) needs 503 handling, as a 4f seam.
+
 ### Phase 4e Every SD-card wait runs the live-input producer (vendored SdFat, DMA SDIO)
 
 ```yaml
@@ -2703,6 +2728,18 @@ commit-checkpoint:
   parent-commit: "feat(aius): SD-card waits run the audio producer (vendored SdFat, DMA SDIO) (Phase 4e)"
   coordination: owned-path sets are disjoint; host suites build one at a time
 ```
+
+**Interrogate the user: source-off device runs without the owner.**
+
+- **Question:** "May I OTA and run the source-off device checks (4e run
+  1, 4g run 1) myself, or should every device session wait for you?"
+- **Options:** (a) agents may OTA and run source-off checks alone, AC-3
+  runs still need the owner: faster, no audio is playing; (b) every
+  device session waits for the owner: today's posture, slower.
+- **Recommendation:** (a): no audio to interrupt, the rollback candidate
+  is preserved, and the FIFO-at-boot image keeps OTA rollback intact.
+- **Blocks:** 4e device run 1, 4g device run 1 (not the contract revision
+  or host work).
 
 Implements the owner's A-DMA direction and the prebuild findings that
 carry over (B1, B2 in part, S3, S4, S5, S6, S8; S1 and S7 are moot
@@ -2798,6 +2835,123 @@ healthy-boot self-commit and a short repeat of run 1's content check.
   4f's SD-start shedding is its only cover.
 - D is measured, not proven: a future long checkpoint body raises it, and
   `producer_late_passes` shows it.
+
+**Prebuild review round 2 (2026-10-07, `reviewer` `opus`): NOT READY.**
+
+- **B1 (blocker).** Hooking `waitTimeout` breaks every DMA data command
+  under load. Plan `:2637`/`:2723` put the hook in `waitTimeout`;
+  `cardCommand` uses it for the command-complete wait
+  (`SdioTeensy.cpp:395`). For CMD17/18/24/25/CMD6, `rdWrSectors` and
+  `cardCMD6` set `SDHC_IRQSIGEN` (TCIEN included, `:58-63`) before
+  `cardCommand` (`:509`, `:413`). A producer pass (up to 7.6 ms) run by the
+  hook inside that wait lets the transfer complete; `sdIrs` (`:282-290`)
+  clears all of IRQSTAT including CC; `isBusyCommandComplete` never sees CC
+  and spins out `BUSY_TIMEOUT_MICROS` (1 s, `:36`); the read fails as CMD17
+  plus a driver fault. Run 1 is source-off so the guard (needs pending
+  ingress) never fires and passes; run 2 (AC-3) faults and the gate
+  (`:2654`) sends it to B2, a design defect misread as "DMA unreliable".
+  Fix: hook only between commands (`yieldTimeout` loop iterations,
+  `waitDmaStatus`, `isBusyDat`, between ACMD41 iterations), never inside
+  `cardCommand`; add an sdfat-vendor host case "no hook call between the
+  `SDHC_XFERTYP` write and the CC observation".
+- **B2 (blocker).** The producer-isolation proof cannot pass as written:
+  `:2649` requires no malloc/printf reachable. A direct-call walk of
+  today's teensy41-optical ELF from `aius_audio_service_run`, enqueue,
+  `consume_block`, `apply_config` and the codec entries reaches
+  `__wrap_malloc` to `malloc` (via `ta_zalloc_size` from `core_filter` from
+  `aius_dts_decode_access_unit`), `vfprintf` (via `dca_format_log` from
+  `core_filter`), `__vsnprintf` (via `avpriv_request_sample` from
+  `aius_eac3_core_frame`), `abort` (via `__assert_func`) and `av_malloc_array`
+  (`firmware/lib/aius_dts/src/aius_alloc_shim.c:95-99` to `__real_malloc`).
+  The implementer must weaken it ad hoc or stall. Fix: an explicit
+  allowlist (malloc/stdio only from decode paths) plus the argument why a
+  hook site can never sit inside malloc/stdio, and assert that instead: the
+  hook is reachable only from vendored SdFat wait loops, which never
+  allocate. Disassembly used:
+  `.scratch/63e414f8-e0a8-416d-8629-cda946de784a/optical.dis` (Oct 6
+  teensy41-optical `firmware.elf`).
+- **B3 (blocker).** The E2 bounce misses the multi-sector paths. The seam
+  (`:2637`) names only `rdWrSectors`/`readSector`/`writeSector`.
+  `ota_copy_staged_to_psram` (`firmware/src/optical_main.cpp:5160-5184`)
+  reads 4,096 B at file offset 256+k*4096; full sectors go
+  `FatFile::read` to `cacheSafeRead(sector,dst,ns)` (`FsCache.h:82-86`) to
+  `readSectors` (`SdioTeensy.cpp:918-930`), a CMD18 DMA straight into
+  write-back-cached PSRAM (the parked recorder ring; dirty lines may be
+  resident; eviction overwrites DMA data). Activation then fails verify
+  (`:9949-9979`); the board stays up but OTA is blocked under image 2 until
+  `/api/sd/mode` is flipped to FIFO. No 4e run exercises an activation in
+  DMA mode. Fix: add `readSectors`/`writeSectors` to the seam with a
+  per-sector DTCM bounce; host source-contract case "no `rdWrSectors` call
+  with a non-DTCM buffer"; run 1 stages and rehearses with DMA armed
+  (rehearsal copies and verifies).
+- **B4 (blocker).** The fallback gate is ambiguous. `driver_fault()`
+  (`firmware/src/aius_sd_teensy.cpp:107-123`) increments `driver_faults` for
+  a not-found OPEN; the 4e seam changes only the invalidation. So the
+  acceptance example "GET /sd/www/missing.js answers 404" (`:2658`) raises
+  `driver_faults`, failing "delta 0" (`:2652`), and the gate reads it as "a
+  driver fault, so B2". Stack-floor breach and watchdog reset have no
+  verdict. Fix: count not-found separately; a driver fault is
+  `sdErrorCode() != 0` only; define "DMA hang" as 1 s `BUSY_TIMEOUT_MICROS`
+  expiry with a nonzero code; classify stack-floor breach and watchdog reset
+  explicitly.
+- **S1.** Image 1's "no new risk" (`:2632-2634`) is false: the window and
+  hook are live in FIFO mode from boot at upstream yield sites plus "init
+  and command waits" (`:2725-2727`); a pass inside `cardCommand` after CMD18
+  (infinite FIFO read, `SdioTeensy.cpp:956`) lets the card stream into the
+  FIFO for ms. `waitTimeout` is shared with FIFO data waits (`:853`, `:864`,
+  `:1015`, `:629`), so "never inside readData/writeData" needs a split
+  function. Fix: no hook in FIFO mode on image 1 except at existing
+  `yield()` sites; name the split.
+- **S2.** Stack facts are wrong: "1,408 B headroom" (`:2533`, `:2595`) is
+  DTCM free over the memory gate's committed floor (`:1857`), not stack
+  headroom; the stack is the 25,760 B free-for-locals and today's peak is
+  unmeasured. The stack-bound proof (`:2650`) needs a call-edge source
+  (`-fstack-usage` gives frames only), resolution of SdFat virtual
+  block-device calls and codec function pointers, a rule for objects
+  without `.su` (libc, core), the 512 B DTCM bounce frame live under the
+  hook, and the raw-scan path (HTTP dispatch to `app_read_directory` to
+  `SD.open`), deeper than the storage path. 4f, 4g and 4h add yield roots
+  (render appends, G3 verify) without stack-bound in their green lists
+  (`:2869`, `:2982`, `:3102`).
+- **S3.** The B1 metric can still under-report (`:2742`): a commit landing
+  during a pass is unstamped; if the pass exits on budget with work left,
+  the following wait is never timed. Fix: re-stamp at pass exit when
+  ingress is non-empty; host case.
+- **S4.** D target vs render: D 2,000 us (`:2630`, `:2653`) but the status
+  render at the 14,981 B worst body is about 2.1 ms (`:2418-2419`), and the
+  editor polls it at 1 Hz in run 2. Fix: set D for 4e to 2,500 us or drop
+  full-status polling from run 2.
+- **S5.** Watermarks are not reset at run start (latency, ingress
+  high-water and nonyield max carry FIFO/boot periods into run 2). Fix:
+  proofs start with `POST /api/clear` after arming and assert `sd_mode ==
+  DMA` at run end (a watchdog reset silently reverts to FIFO; E3 is not
+  persisted).
+- **S6.** The retained producer-active flag (`:2642`) has no named home or
+  reader; the retained region has link ASSERTs; neither boot/boot-target
+  nor the prev-boot classifier is in seams or green; a yield-point wedge
+  after `aius_boot_record_checkpoint` (`firmware/src/optical_main.cpp:9419`)
+  is attributed to checkpoint N. Fix: name the home and reader, add the
+  boot/boot-target and prev-boot classifier to seams and green.
+- **S7.** No post-link proof that the vendored copy is linked. Fix: add a
+  check (as for NativeEthernet) that vendored SdioCard is linked, not the
+  framework's, and that the strong `aius_sdio_wait_hook` wins (a strong
+  definition in an LDF archive loses to SdFat's weak one silently).
+- **S8.** Memory headroom is unchecked: memory is absent from the 4e, 4f
+  and 4h green lists; ITCM 191,996 B against the 196,608 B six-bank
+  boundary leaves about 4.6 KiB shared by all four phases; crossing it
+  costs 32 KiB DTCM. Fix: add memory to the green lists and budget the ITCM
+  share per phase.
+- **S9.** The playback remount example (`:2657`) is unproven: during live
+  input the probe is deferred (`firmware/src/optical_main.cpp:8162-8164`),
+  so a remount happens at a job BEGIN and run 1 is source-off. Fix: add the
+  step to run 2 or drop the example.
+- **Smaller.** "Never on the OTA path" (`:2729`) is false (OTA staging
+  chunks go through the windowed storage execute,
+  `firmware/src/aius_runtime_storage.cpp:335`; benign, fix the text).
+  `note_pend` must be `static inline` (called from ITCM `update()`). The S7
+  fill-sensor device comparison was dropped: add `clock.fill_trims` and an
+  unpolled-spread baseline to run 2. `restart()` already keeps the mode
+  upstream (`SdFat.h:104-112`).
 
 ### Phase 4f HTTP is best-effort: shedding, render yields, lighter polling
 
@@ -2911,6 +3065,39 @@ during the dispatch moves it, which the per-append yields bound. A class
 maximum never decays, so one outlier sheds that class more often until
 `clear_counters`. The listener backlog stays 1; self-scheduling lowers
 the request rate but parallel browser connections still queue.
+
+**Prebuild review round 2 (2026-10-07, `reviewer` `opus`): NOT READY.**
+
+- **B5 (blocker).** Admission cost includes the producer's own passes, so
+  full `/api/status` is shed almost always. F1 (`:2881-2887`) uses "the
+  class's measured dispatch maximum" (never decays). With 4f's per-append
+  yields running producer passes inside the render, the status class max
+  becomes about 2 ms plus one pass (up to 7.6 ms), about 480 frames. Shed
+  when `level - 128 < cost + 48`: on PCM (margin 128 to 225 frames) full
+  status is shed nearly always; on AC-3 whenever the sawtooth is below about
+  650. Consequences: `status.html` dark during playback; the acceptance
+  instrument `firmware/tools/rate_gate_capture/capture.py:726-745` retries
+  503 three times then raises; the 4f proof (`:2833`) and the 4b proof
+  (`:2058`) compare spreads with most polls 503, vacuous. Fix: for
+  yield-sliced classes, cost = the longest non-yielding append stretch
+  (producer cycles subtracted), not total dispatch; proofs assert at least
+  N% of 1 Hz polls answer 200; add `capture.py` 503 handling to the 4f
+  seams.
+- **S2 (4f part).** 4f adds yield roots (render appends) without
+  stack-bound in its green list (`:2869`); add it (see 4e S2).
+- **S8 (4f part).** Memory is absent from the 4f green list; add it (see
+  4e S8).
+- **S10 (F2, `:2888`).** `sd_window_nonyield_max_us` is a lifetime max
+  including the image-1 FIFO period and outliers, so one outlier sheds every
+  SD job start until a clear. Fix: a windowed max or a declared DMA bound.
+- **S11 (F4, with 4g G1).** The `mixer.*` facts are stale: `mixer.*` is
+  tracked (commit `4b68103` "mixer dashboard skin over the DSP editor") and
+  `test/sd-editor/mixer.test.js` exists; "untracked" and "only when
+  present" are wrong, and `mixer.test.js` is not in ui-polling's owned
+  paths. Fix: correct the F4 text and the coordination line (`:2872`), add
+  `mixer.test.js` to ui-polling's owned paths.
+- **Nit.** Reconcile the `/api/replays` `sd_busy` entry with the code
+  comment at `firmware/src/optical_main.cpp:6241-6245`.
 
 ### Phase 4g PSRAM web cache with gzip page bundles
 
@@ -3026,6 +3213,31 @@ line; if pad 2 misbehaves, P2 (halve the recorder ring to free pad 1) is
 an owner call. Inlined bundles duplicate `dsp-editor.js` between the
 index and mixer pages (about 50 KB gzip each) and drop per-file browser
 caching across pages.
+
+**Prebuild review round 2 (2026-10-07, `reviewer` `opus`): NOT READY.**
+
+- **Blockers.** None; S10 to S13 are contract corrections (S10, S11 are
+  filed under 4f).
+- **S2 (4g part).** G3 verify adds a yield root without stack-bound in the
+  green list (`:2982`); add it (see 4e S2).
+- **S11 (4g part).** The `mixer.*` facts are stale: `mixer.*` is tracked
+  (commit `4b68103`) and `test/sd-editor/mixer.test.js` exists, so the
+  www-bundle proof's "mixer.html bundled only when present" (`:2941`) and
+  G1's "when present" are wrong. Fix: bundle `mixer.html` unconditionally
+  and cover it.
+- **S12 (`:2938`, `:2930`).** The cache fill is a root job that blocks HTTP
+  SD jobs (`sd_storage_idle`); after a mount (about 1 MB) and after every
+  upload refill, page misses and the next sync PUT answer 503 `sd_busy`;
+  `aius-sd-sync.sh` gives up after 4 attempts 1 s apart
+  (`firmware/tools/aius-sd-sync.sh:106-121`), which can fail the 4g, 4h and
+  4b sync proofs. Fix: the fill yields to HTTP jobs, or an upload body
+  populates its cache entry directly.
+- **S13 (G3 and fill read-back).** CRC checks read the cache, not the chip:
+  PSRAM is WBWA, so "read-back CRC before publish" reads lines just written
+  in dcache and proves nothing about marginal pad 2; the serve-time
+  check-then-stream leaves a gap. Fix: `arm_dcache_flush_delete` each chunk
+  before the CRC check, and CRC per chunk at send time; add `Vary:
+  Accept-Encoding` (the same URL has gzip and plain representations).
 
 ### Phase 4h Write-behind settings flush, card-swap hold, rename-gap recovery
 
@@ -3147,6 +3359,46 @@ served from PSRAM until reboot, after which the card's older file returns;
 `sd_flush` shows it, with no audio effect. The power-cut model is
 host-only; no device power-cut test is planned.
 
+**Prebuild review round 2 (2026-10-07, `reviewer` `opus`): NOT READY.**
+
+- **B6 (blocker).** A card reinsert reloads settings from the card,
+  bypassing the overlay. Reinsert (`firmware/src/optical_main.cpp:8032-8041`)
+  runs `SD_STEP_LOAD_CONFIG` and `LOAD_DSP`; `platform_publish_config`
+  (`:8194-8222`) writes `g_pending_dsp_model`, arms Apply and overwrites
+  `g_config` from the card file. Same card returning with a dirty or held
+  `dsp.json`: the older card model is applied, the newer is flushed but
+  never re-applied, so audio diverges from what is saved. A different card
+  before discard: that card's config and DSP are applied while H3 promises
+  "settings stay the owner's latest". The card-swap proof (`:3064`) uses
+  presets only. Fix: CONFIG_LOAD reads through the overlay or skips any
+  path with a dirty, flushing or held entry; host case plus a device step
+  that holds and reinserts with `dsp.json`.
+- **Wrong-fact proofs.** S14 and S15 below, and the stack-bound and memory
+  omissions: 4h adds yield roots without stack-bound (`:3102`, see 4e S2)
+  and memory is absent from the green list (see 4e S8).
+- **S14 (`:3061`).** "GET returns the accepted bytes" is wrong: `GET
+  /api/dsp/config` is serialised from memory (`write_dsp_config`,
+  `firmware/src/optical_main.cpp:3016`) and changes only at the enqueue
+  apply. Fix: name the route each proof reads.
+- **S15 (`:3063`).** The 5,000 ms flush bound looks unmeetable for one full
+  sync (about 600 KB, one file at a time, read-back; one primitive per epoch
+  under playback is 2,400+ primitives, plausibly over 5 s for the last
+  file). Fix: bound latency per flush start, or exempt sync bursts.
+- **S16 (H5).** The OTA drain check is TOCTOU: the 409 check is at the
+  route, activation and rehearsal run later from `loop()`; a PUT accepted in
+  between is lost across the reset. Fix: re-check the drain in
+  `service_ota_activation` and rehearsal; add the same gate to `POST
+  /api/reboot`.
+- **S17 (H4 RECOVER, `:3060`).** "Both exist, remove the backup" can free a
+  live file's clusters: SdFat rename creates the new entry then removes the
+  old (`FatFile.cpp:936-1009`); a power cut between leaves both names on one
+  cluster chain; `remove(bak)` frees the target's clusters; the
+  per-primitive power-cut model misses this. Fix: journal phase markers, or
+  compare first clusters and drop only the directory entry; also remove
+  orphan `.tmp` files; an empty journal is a no-op.
+- **Nit.** The 4h read-back can hit SdFat's FsCache for a partial last
+  sector; read around it or invalidate the cache line before the check.
+
 ### Phase 4c `test.sh` runs every `--suite` given ✓ SHIPPED 2026-10-06
 
 ```yaml
@@ -3206,6 +3458,53 @@ call, alternative, cost of reversing.
   in-place dcache maintenance. Alternative: flush and invalidate 32 B
   aligned whole lines in the driver. Reversing: local to the vendored
   driver (the `alignas(32)` fixes land anyway).
+- **4e E3.** DMA is armed at runtime by a new authed `POST /api/sd/mode`
+  (not persisted); image 1 boots FIFO, image 2 boots DMA, and the route
+  stays in the field as the fallback to FIFO, which costs an extra OTA.
+  Alternative: a compile-time switch (no route, one image per mode).
+  Reversing: remove the route, its openapi entry and the retained wiring,
+  and ship another OTA.
+- **4e E4.** Vendored directories stay `SdFat` and `SD`; `library.json`
+  names become `AiusSdFat` and `AiusSD` so `lib_ignore` drops the framework
+  copies. Alternative: rename the directories. Reversing: renames plus the
+  LDF names `itcm-placement` expects.
+- **4f F1.** Admission sheds when `level - 128 < cost_frames(class) + 48`,
+  with cost from the class's measured dispatch maximum; control and OTA
+  routes never shed. Alternative: a fixed per-class cost table, or shedding
+  control routes too. Reversing: the admission callback only.
+- **4f F2.** An SD job start costs `sd_window_nonyield_max_us` in DMA mode
+  and the longest card primitive in FIFO mode, where an in-flight job also
+  defers its next primitive while the margin is short. Alternative: one
+  fixed start cost for both modes. Reversing: the admission callback and
+  the FIFO deferral.
+- **4f F3.** `GET /api/status/brief` carries exactly the keys
+  `renderFlowEnds` reads (plus `sd_flush` from 4h); `status.html` keeps the
+  full body. Alternative: a trimmed full body for all pages. Reversing: one
+  route and the editor's poll URL.
+- **4f F4.** One self-scheduled poller in `sd-shared.js`; a 503 is a
+  silent skip honouring Retry-After; unreachable after three consecutive
+  failures; meters at 250 ms; `mixer.html` inherits `dsp-editor.js`
+  polling. Alternative: per-page `setInterval` polling kept, with a longer
+  period. Reversing: `sd-shared.js` and the four pages' poll calls.
+- **4g G2.** Strong ETag `"<crc32>-<length>"`; pages and bundles
+  `Cache-Control: no-cache`, fonts and plain `.js`/`.css` keep 86400.
+  Alternative: weak ETags, or long max-age with versioned names.
+  Reversing: header emission in `lib/aius_http` and the cache manifest.
+- **4g G4.** The cache is a 2 MiB carve from `0x70808000`, the tail of
+  PSRAM pad 2 (absent on 8 MiB fitments), shared with 4h's overlay and
+  staging. Alternative: the OCRAM heap, or halving the recorder ring to
+  free pad 1 (P2). Reversing: the placement function and fill sizing.
+- **4h H1.** 500 ms debounce, flush start within 1 s, one file per job.
+  Alternative: flush at once, or batch several files per job. Reversing:
+  scheduler constants in `lib/aius_sd_overlay`.
+- **4h H2.** Sync PUT bodies stream into PSRAM staging, pointer-swapped at
+  the end of the body, staging full answers `503 sd_busy`; replay uploads
+  (`.iec`) stay direct-to-card. Alternative: all uploads direct to the
+  card. Reversing: the upload dispatch and staging size.
+- **4h H3.** Volume identity is CID plus the FAT volume serial; held
+  contents keep serving until the card returns or the owner discards.
+  Alternative: CID only, or flushing to whichever card is inserted.
+  Reversing: the overlay's volume check and the vendor accessor.
 - **4g G1.** One inlined gzip bundle per page (CSS and scripts in the
   HTML). Alternative: a gzip twin per file, or one shared JS and one CSS
   bundle. Reversing: `firmware/tools/www_bundle.py` and the dispatch name
