@@ -387,6 +387,9 @@ dsp-config)
 	# is a 400 on every save with nothing failing. That shipped once
 	# (matrix.lfe_crossover_hz); this compares the two key sets so it cannot again.
 	python3 "$fw_root/test/dsp-config/test_editor_keys.py" "$fw_root"
+	# The committed DSP-config setter's PUT body, refusals and --wait, over a fake
+	# transport and a real live GET fixture.
+	python3 "$fw_root/test/dsp-config/test_aius_dsp_set.py"
 	;;
 arena)
 	compile_and_run arena "$src/aius_arena.c" "$fw_root/test/arena/test_arena.c"

@@ -373,6 +373,23 @@ ends left open:
   [`aius-output-jitter.md`](aius-output-jitter.md) Phase K; the hidden
   receiver state is instrumented in Phase L.
 
+- **OPEN: a DSP-config save drifts untouched floats by one ulp (filed
+  2026-10-07).** The PUT number decoder is not correctly rounded
+  (`firmware/lib/aius_dsp_config/src/aius_dsp_config.c:136-176`; it scales
+  digit by digit with `scale *= 0.1`), so the GET's own `%.17g` text can
+  decode to a neighbouring double. Live case: `matrix.lfe_gain_linear`
+  `0.3162277660168385` is stored back as `0.31622776601683855`, one ulp
+  higher on every save. It hits every classic-editor save
+  (`firmware/sd/www/dsp-editor.js` sends `JSON.stringify` of the exact GET
+  values) and `firmware/tools/dsp_config/aius_dsp_set.py`. About 1e-16
+  relative, inaudible; the owner accepted it for now (2026-10-07). Fix: a
+  correctly rounded decoder (`strtod` or exact integer-mantissa scaling;
+  mind the ITCM budget noted at `aius_dsp_config.c:130-135`), native tests
+  on 16- and 17-digit mantissas and exponent forms, then an OTA. It fixes
+  drift from then on; it does not restore values already moved. Found by
+  the [`aius-sd-mixer-dashboard.md`](aius-sd-mixer-dashboard.md) Phase 4
+  review.
+
 - **FIXED 2026-10-05: the TX governor trimmed a clean replay from its
   768-frame floor to the live 128-frame target.** Fixed by
   [`aius-output-jitter.md`](aius-output-jitter.md) Phase J on

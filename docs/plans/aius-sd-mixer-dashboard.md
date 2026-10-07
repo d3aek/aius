@@ -21,10 +21,9 @@ with bonded tabs. `index.html` stays as the classic editor.
 
 - **Posture**: checkpoint (owner, 2026-10-07): surface each decision and
   human-review gate as it arises.
-- **Status**: Phases 1 and 2 shipped. Phase 3 round 1 and Phase 4 in flight.
-  Phase 1a waits on Phase 4 (both edit `CONTRIBUTING.md`). Phases 5 (board
-  limiter) and 6 (deploy) BLOCKED on the user's word. Nothing from this plan
-  is on the board.
+- **Status**: Phases 1, 1a, 2 and 4 shipped. Phase 3 round 1 is delivered
+  and waits on the owner's picks. Phases 5 (board limiter) and 6 (deploy) are
+  BLOCKED on the user's word. Nothing from this plan is on the board.
 - **What landed** (all pushed):
 
   | Commit | Contents | Proof |
@@ -32,9 +31,10 @@ with bonded tabs. `index.html` stays as the classic editor.
   | aius `4b68103` | `firmware/sd/www/mixer.{html,css,js}`, `test/sd-editor/mixer.test.js`, this plan, plans README entry | `pnpm exec vitest run --root git_modules/aius` from the repository root: 6 files, 387 tests green (21 in `mixer.test.js`); Chromium probes via `the repo tooling tool playwright-inspect` at 1920, 1440 and 390 px (see Phase 1) |
   | upstream repository `8da5b5556` | `git_modules/aius` pointer to `4b68103`; also carries `a974465`, another session's pushed aius docs commit | none beyond the aius row |
   | aius `63b7ff8` | owner answers recorded, answered questions removed, state rewritten | `the repo tooling doc-index --validate-only` |
-  | aius, Phase 2 | `firmware/sd/www/fonts/` (Fontsource 5.3.0 woff2, Latin, 135 KB, plus OFL texts), `@font-face` in `mixer.css`, `THIRD-PARTY.md` entries | vitest 6 files, 387 tests; Chromium probe of the preview: both `document.fonts.check` true, 0 off-origin requests |
+  | aius `6186506` | `firmware/sd/www/fonts/` (Fontsource 5.3.0 woff2, Latin, 135 KB, plus OFL texts), `@font-face` in `mixer.css`, `THIRD-PARTY.md` entries | vitest 6 files, 387 tests; Chromium probe of the preview: both `document.fonts.check` true, 0 off-origin requests |
+  | aius, Phases 1a and 4 | `firmware/tools/dsp_config/aius_dsp_set.py` with its test, fixture and `test.sh` wiring; SD page docs (`CONTRIBUTING.md`, `dsp-editor.js` banner, `docs/reference/user-interface.md`, `CLAUDE.md` through `the release-promotion step`, `THIRD-PARTY.md`); register entry for the float-drift defect | `test.sh --environment native --suite dsp-config` green (26 setter tests); live `--dry-run` printed only `features.limiter: false -> true`; vitest 6 files, 387 tests; doc-index clean |
 
-- **Uncommitted tree state**: nothing in this submodule. Two transient
+- **Uncommitted tree state**: nothing of this plan's in this submodule. Two transient
   folders sit on the the host application preview mount, gitignored by design
   (`src/apps/preview/README.md`). The next agent can build on both:
   - `src/apps/preview/content/aius-mixer/`: the preview bundle, served at
@@ -42,10 +42,11 @@ with bonded tabs. `index.html` stays as the classic editor.
     `_tools/` folder holds `build_preview.py`, `preview-shim.js`, the probe
     scenarios, and `fixtures/` captured read-only from the board.
   - `src/apps/preview/content/aius-logos/`: eight raster explorations, the
-    gallery `index.html` and `_tools/generate_logos.py`.
-- **Next action**: Phase 3, refinement round 1. Hand-draw SVG variants of the
-  six-to-two mark into `src/apps/preview/content/aius-logos/svg/`, add them to
-  a review page, and hand the URL to the user.
+    gallery `index.html` and `_tools/generate_logos.py`; round 1's SVGs in
+    `svg/` and its review page `round-1.html`.
+- **Next action**: Phase 3 round 2, once the owner gives picks and answers
+  the two round-2 questions in the Phase 3 block. Phase 5 runs on the
+  owner's word, after its R1, R3 and R4 setter fixes.
 
 ## Constraints
 
@@ -109,7 +110,7 @@ Settled, user-directed unless marked:
   (own call). The gateway origin cannot reach `192.0.2.66`, and the shim keeps
   every write in the browser tab.
 
-### Phase 1a: Doc touch-ups for a second SD page
+### Phase 1a: Doc touch-ups for a second SD page ✓ SHIPPED
 
 - outcome: every doc that lists the SD pages names `mixer.html`.
 - seams:
@@ -126,6 +127,11 @@ Settled, user-directed unless marked:
     upstream licence file..." now follows Phase 2's fonts table; move it back
     under the components table it describes.
 - targeted-proof: `the repo tooling doc-index --validate-only` clean.
+- Shipped: all three seams, plus `docs/reference/user-interface.md`'s URL
+  list. `CLAUDE.md` landed through `the release-promotion step` with the owner's
+  approval. Left as written on purpose: `docs/plans/aius-sd-config-web.md:62`
+  (a historical page list) and `CLAUDE.md`'s "12-file sync measured ~59 ms"
+  (a dated measurement).
 
 ### Phase 2: Vendor the fonts ✓ SHIPPED
 
@@ -163,8 +169,23 @@ several rounds with the user's review between each.
   narrow on the user's picks; the user says when to stop.
 - Source: `src/apps/preview/content/aius-logos/six-to-two.png` (gpt-image-2
   raster). Redraw it; do not trace it.
+- Round 1 delivered 2026-10-07: five variants at
+  `https://apps.example.net/apps/preview/aius-logos/round-1.html`, A
+  (source proportions), B (bold, tight), C (airy, ring outputs), D (A stacked
+  over the wordmark), E (B beside the wordmark, nav lockup). Favicons are
+  redrawn on a 16 px pixel grid, not scaled down. The wordmark is outlined
+  shapes, because an SVG used as an image or favicon cannot load a web font.
+  Generator: `$CLAUDE_SESSION_SCRATCH/gen_logos_r1.py` (session
+  `74c6ef4f`; it is reaped after about a week, so round 2 reauthors from the
+  SVGs if it is gone). Awaiting the owner's picks, plus two questions round 2
+  needs answered:
+  - Grid orientation. The source has 3 rows by 2 columns with the middle-left
+    dot amber; the current CSS logo has 3 columns by 2 rows with the
+    top-middle dot amber. Round 1 follows the source.
+  - Favicon on a light browser chrome. The off-white dots vanish, so either
+    keep the black tile or add a `prefers-color-scheme: light` colour swap.
 
-### Phase 4: A committed DSP-config setter with `--auth-file`
+### Phase 4: A committed DSP-config setter with `--auth-file` ✓ SHIPPED
 
 The owner chose to enable the board's limiter (Phase 5). No committed tool can
 flip one config field with the token read from a file, and `CLAUDE.md` forbids
@@ -178,9 +199,34 @@ tool `dsp_characterize.py` stays read-only.
   `/api/dsp/config`, sets the named dotted paths, then PUTs the result with
   the current `config_generation` and `X-Aius-SD-Auth` read from
   `--auth-file`. It refuses on 409 or 400.
-- Still open before ship: wire `firmware/test/dsp-config/test_aius_dsp_set.py`
-  into `firmware/scripts/test.sh` the way the OTA client test is (near line
-  1198), so the suite runs it.
+- Wire shape (found 2026-10-07): the PUT body is the whole config plus
+  `base_generation` = the GET's `config_generation`
+  (`firmware/lib/aius_dsp_config/src/aius_dsp_config.c:1022`). Stale answers
+  `409 stale_generation`, invalid `400`, busy or no card `503`
+  (`firmware/src/aius_optical_app.cpp:1336-1360`). A 200 means the SD commit
+  landed; `config_generation` advances only at the audio block-boundary
+  apply, so with no carrier the GET shows `config_pending: true` and the old
+  generation.
+- Shipped after three adversarial review rounds and a clean-room pass, both
+  CLEAR:
+  - It refuses when the GET already shows `config_pending: true`.
+  - `--wait SECONDS` exits 0 when the board shows `config_pending` false and
+    the applied config matches what was sent. Numbers may differ by one ulp;
+    `source` is ignored, and so is `matrix.headroom_linear` under clipfree.
+    The generation does not count, because the counter restarts at each boot.
+  - A transport fault on the PUT re-GETs once rather than reporting a
+    refusal, and a token that is not one line of printable ASCII is refused.
+    Exception text is never printed.
+  - Exit codes are 0, 1 (HTTP or transport failure), 2 (local refusal) and
+    3 (wait timeout).
+  - Tests: `firmware/test/dsp-config/test_aius_dsp_set.py`, 26 cases on a
+    real live-GET fixture, run by the `dsp-config` suite in
+    `firmware/scripts/test.sh`.
+- Float drift, settled by the owner 2026-10-07: accepted. Any save moves an
+  untouched float whose text the firmware decoder misrounds by one ulp (live:
+  `matrix.lfe_gain_linear`). The classic editor already does the same. The
+  firmware fix is tracked in
+  [`aius-open-work-register.md`](aius-open-work-register.md) §Open defects.
 - seams: `firmware/tools/`, and its usage line in `CONTRIBUTING.md`.
 - targeted-proof: a host unit test of the body it builds (only the named
   paths change, the generation is carried), plus `--dry-run` printing the
@@ -194,11 +240,36 @@ LFE 0.316 and headroom 0.5. A worst-case in-phase sum overshoots full scale
 by 5.3 dB. `limiter.enabled` was already true at -1 dBFS, 0.5 ms attack,
 100 ms release and 2 ms lookahead.
 
+- First, before the board run, close the setter's residual review findings in
+  `firmware/tools/dsp_config/aius_dsp_set.py`. All are LOW, and none is hit
+  by the Phase 5 command against the 2026-10-07 config:
+  - **R1:** after a transport fault, a pending save counts as "landed" even
+    when it is another client's. Require pending *and* a match, since GET
+    serves the staged model while pending
+    (`firmware/src/optical_main.cpp:3006-3008`).
+  - **R3:** after a reboot with another client's config applied, the timeout
+    says "no carrier?".
+  - **R4:** drift above one ulp, possible for exponent-form values, reads
+    as another client's save.
+  - Accepted as is: **R2**, a no-op `--set` plus a transport fault reports
+    "landed", which is harmless.
 - outcome: `features.limiter` true on the board; nothing else changed.
 - seams: the board's `/aius/dsp.json`, through Phase 4's tool.
 - targeted-proof: a GET `/api/dsp/config` showing `features.limiter: true` at
-  a new `config_generation`, with every other field equal to the pre-change
-  read.
+  a new `config_generation` and `config_pending: false`, with every other
+  field equal to the pre-change read, numbers within one ulp (owner,
+  2026-10-07: `matrix.lfe_gain_linear` moves one ulp, known decoder drift).
+  The save applies only inside `enqueue()` when an audio block arrives
+  (`firmware/src/optical_main.cpp:2045-2065`), so the proof needs a carrier
+  or a replay running; `--wait` only watches for it. With no carrier (the
+  board read `carrier: 0` on 2026-10-07) the run exits 3 with the save
+  staged on the card, and the limiter turns on at the next carrier or replay
+  start. A re-run while staged is refused (exit 2), so a retry is safe.
+- Command, from the repository root: `python3
+  firmware/tools/dsp_config/aius_dsp_set.py --device
+  http://192.0.2.66 --auth-file .secrets/aius-sd-auth --set
+  features.limiter=true --wait 30`. Run `--dry-run` first; it printed
+  `features.limiter: false -> true` and nothing else on 2026-10-07.
 - Runs only on the owner's word (see Constraints). It is an apply at a block
   boundary, not a card sync, but it still changes live audio.
 

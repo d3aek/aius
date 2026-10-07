@@ -26,7 +26,7 @@ the deployed board at `http://192.0.2.66`, driven by a real 5.1 source; see
   [`firmware/src/aius_network_teensy.cpp`](../../firmware/src/aius_network_teensy.cpp)).
   The device is a bench instrument on a trusted LAN.
 - The real URLs are `http://<device>/sd/www/index.html`,
-  `.../replays.html`, `.../status.html` and `.../upgrade.html`. The site root
+  `.../mixer.html`, `.../replays.html`, `.../status.html` and `.../upgrade.html`. The site root
   `/` is a small built-in fallback page compiled into flash
   ([`firmware/src/http_home_page.cpp`](../../firmware/src/http_home_page.cpp))
   that links into the SD tree and reports when no card is mounted.

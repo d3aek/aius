@@ -1,6 +1,8 @@
 /* Aius SD-hosted DSP control surface.
  *
- * OWNS: the whole /sd/www/index.html page -- building the config form from the
+ * OWNS: the whole /sd/www/index.html page (and the same editor under
+ * /sd/www/mixer.html, whose mixer.js adapter drives it through the editor's
+ * own fields) -- building the config form from the
  * field table below, rendering GET /api/dsp/config into it, validating edits
  * against the firmware parser's bounds, PUTting the model back with an
  * optimistic-concurrency token, polling GET /api/meters at 10 Hz and

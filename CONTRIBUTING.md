@@ -67,7 +67,7 @@ Every suite is host-only and self-contained except `itcm-placement`, which
 inspects the linked objects of an optical image; without a current cross-build it
 exits 3 and prints the build command to run.
 
-The SD-hosted web pages (status, DSP editor, replay manager, upgrade) are host JS
+The SD-hosted web pages (status, DSP editor, mixer dashboard, replay manager, upgrade) are host JS
 covered by vitest in [`test/sd-editor/`](test/sd-editor/). The same suite holds
 the OpenAPI drift gate, which checks
 [`firmware/sd/www/openapi.json`](firmware/sd/www/openapi.json) against the
@@ -149,6 +149,19 @@ each flag is set; read them before changing one:
   and the DSP round-trip are reported unresolved (exit 3), not a pass.
   The stall gate builds and flashes fault images, so it needs the build and flash
   tools.
+- **[`firmware/tools/dsp_config/aius_dsp_set.py`](firmware/tools/dsp_config/aius_dsp_set.py)**:
+  Run from the repository root (the auth file is `.secrets/aius-sd-auth` there):
+  `python3 firmware/tools/dsp_config/aius_dsp_set.py --device http://<addr> --auth-file .secrets/aius-sd-auth --set features.limiter=true [--set PATH=JSON ...] [--dry-run] [--wait SECONDS]`.
+  GETs `/api/dsp/config`, changes only the named existing paths, and PUTs the whole
+  config back carrying `base_generation`; non-2xx (409 stale, 400 invalid) exits 1
+  with the body. `--dry-run` prints the diff and makes no PUT. A GET already showing
+  `config_pending: true` (another client's save is staged) is refused with exit 2
+  naming `staged_generation`. A save applies only when an audio block arrives (a
+  carrier or a replay), so `--wait SECONDS` without a carrier exits 3 with the save
+  staged. Exit codes: 0 done, 1 HTTP or transport failure (or another client's save
+  applied instead), 2 local refusal or bad input, 3 `--wait` timeout. Another
+  client's save that commits between our GET and our PUT is overwritten (the
+  firmware's stale-check design). `--help` lists the rest.
 
 Bench wiring for the proto board is in
 [`docs/guides/proto-optical-wiring.md`](docs/guides/proto-optical-wiring.md).

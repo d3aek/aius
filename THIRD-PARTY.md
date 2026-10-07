@@ -51,6 +51,9 @@ at a version newer than 2.
 | SdFat 2.1.2 | Teensy framework package | MIT | Teensy's own copy |
 | SPI | Teensy framework package | GPL-2.0 or LGPL-2.1 | No |
 
+Each vendored tree keeps its upstream licence file and a `NOTICE.md` recording
+its provenance, pinned upstream revision and every divergence.
+
 ### SD-card web UI fonts
 
 Served from the SD card by the dashboard, not linked into the firmware image.
@@ -61,9 +64,6 @@ the licence text sits beside the files.
 |---|---|---|---|
 | Archivo (variable, `wght` + `wdth`) | `firmware/sd/www/fonts/archivo-latin-wdth.woff2`, [`OFL-Archivo.txt`](firmware/sd/www/fonts/OFL-Archivo.txt) | OFL-1.1 | `@fontsource-variable/archivo` 5.3.0, `https://cdn.jsdelivr.net/npm/@fontsource-variable/archivo@5.3.0/files/archivo-latin-wdth-normal.woff2` |
 | IBM Plex Mono 400, 500, 600 | `firmware/sd/www/fonts/ibm-plex-mono-latin-{400,500,600}.woff2`, [`OFL-IBMPlexMono.txt`](firmware/sd/www/fonts/OFL-IBMPlexMono.txt) | OFL-1.1 | `@fontsource/ibm-plex-mono` 5.3.0, `https://cdn.jsdelivr.net/npm/@fontsource/ibm-plex-mono@5.3.0/files/ibm-plex-mono-latin-{400,500,600}-normal.woff2` |
-
-Each vendored tree keeps its upstream licence file and a `NOTICE.md` recording
-its provenance, pinned upstream revision and every divergence.
 
 ## Obligations this project carries
 
