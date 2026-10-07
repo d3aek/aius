@@ -2370,6 +2370,49 @@ rather than after." with the text below; the bench sentence that follows
   moving the producer into an interrupt before any slice is dispatched.
   This is 4b's first step (below).
 
+**Investigation 2026-10-07 (owner-requested, read-only).**
+
+- **Requests.** A cold page load is about 8 requests: 5 SD downloads
+  (231,937 B raw, 67,869 B as one gzip stream; `dsp-editor.js` alone
+  175,913 B), `/api/dsp/config`, the `/sd/www/presets/` listing and a
+  favicon 404. The 108 requests in 30 s were polling: the editor polls
+  `/api/meters` at a 10 Hz target (about 2.6/s achieved) and
+  `/api/status` at 1 Hz; the replays page also lists `/api/replays`, a
+  raw card scan, every 5 s. Every response is HTTP/1.0 with
+  `Connection: close`, and the listener backlog is 1.
+- **The 20.9 ms was the presets listing** (by elimination): one dispatch of
+  `SD.open` plus up to 129 `openNextFile`, each directory-sector change a
+  card read. Downloads are already spread at one 512 B read per epoch;
+  their worst step is the OPEN (one card read latency). Status render
+  1.4 ms measured, about 2.1 ms at 16 KiB.
+- **Memory.** DTCM and OCRAM have about 1.3 KB and 700 B headroom: no
+  room. PSRAM is fitted (16 MB): about 8.35 MB free on pad 2 (flagged
+  marginal) or pad 1 if the recorder ring halves to 4 MiB. Flash slot A
+  has about 3.44 MB free. The whole www set is about 187 KB gzip plus 145
+  KB of fonts, so a cache fits in PSRAM (CRC per chunk, SD fallback) or
+  could be embedded in flash (web changes then ship by OTA).
+- **HTTP.** `Cache-Control: max-age=86400` on `.js` and `.css` only; no
+  gzip, ETag or 304. Bundling saves about 4 requests per cold load and
+  70% of its card reads and sends; the request rate is the polling.
+- **SdFat 2.1.2.** The firmware uses FIFO mode, whose read latency spins
+  with no hook (write-busy waits already call `yield()`). DMA mode yields
+  in every transfer and busy wait (only the µs command phase spins); it
+  uses the uSDHC's own DMA (no conflict with audio eDMA) but needs dcache
+  maintenance on the OCRAM buffers and 4-byte alignment.
+- **What caching does not cover.** Every write (DSP Apply, presets, card
+  sync, uploads), uncached reads, the replays listing and a remount stay
+  single SdFat calls; in FIFO mode their latency cannot be bounded below
+  4.7 ms.
+- **New option, A-DMA (untested inference).** DMA SDIO mode plus a
+  guarded `yield()` override that runs a pending producer pass only
+  inside SD adapter windows, plus yield points in the status render: every
+  card wait becomes a producer opportunity without an interrupt. Bound is
+  the longest non-yielding stretch (command phases, FNET calls, render
+  gaps, the 1,060 µs REPLAY checkpoint). Risks: DMA-mode reliability on
+  this card, dcache handling, stack nesting over SdFat. Size about 300 to
+  600 lines; B2 is medium to high; cache, bundle and lighter polls about
+  800 to 1,500 lines and worth doing under any option.
+
 **Interrogate the user: the B2 execution-model change.** Present B2,
 the prebuild findings below and the alternatives (A, cooperative slicing,
 whose bound is one card primitive; B1, lock by exception) and record the
