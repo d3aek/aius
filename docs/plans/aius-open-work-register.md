@@ -373,15 +373,18 @@ ends left open:
   [`aius-output-jitter.md`](aius-output-jitter.md) Phase K; the hidden
   receiver state is instrumented in Phase L.
 
-- **OPEN: a DSP-config save drifts untouched floats by one ulp (filed
+- **OPEN: a DSP-config save drifts floats by a few ulps (filed
   2026-10-07).** The PUT number decoder is not correctly rounded
   (`firmware/lib/aius_dsp_config/src/aius_dsp_config.c:136-176`; it scales
   digit by digit with `scale *= 0.1`), so the GET's own `%.17g` text can
   decode to a neighbouring double. Live case: `matrix.lfe_gain_linear`
   `0.3162277660168385` is stored back as `0.31622776601683855`, one ulp
-  higher on every save. It hits every classic-editor save
-  (`firmware/sd/www/dsp-editor.js` sends `JSON.stringify` of the exact GET
-  values) and `firmware/tools/dsp_config/aius_dsp_set.py`. About 1e-16
+  higher on every save. A newly typed value can land up to 5 ulps off
+  (modelled: about 16% of values in 0.1 to 4 drift more than one ulp;
+  `0.03` is stored as `0.030000000000000006`). It hits every classic-editor
+  save (`firmware/sd/www/dsp-editor.js` sends `JSON.stringify` of the exact
+  GET values) and `firmware/tools/dsp_config/aius_dsp_set.py`, whose
+  `--wait` compare uses a relative 1e-12 tolerance for it. About 1e-15
   relative, inaudible; the owner accepted it for now (2026-10-07). Fix: a
   correctly rounded decoder (`strtod` or exact integer-mantissa scaling;
   mind the ITCM budget noted at `aius_dsp_config.c:130-135`), native tests

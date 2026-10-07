@@ -34,7 +34,8 @@ re-GETs once, treats a pending or matching config as saved, else exits 1 with
 "outcome unknown, re-run --dry-run to check".
 
 Known limits: a -0 value is stored as 0; with matrix.clipfree true any save
-stores the computed headroom; any save may move an untouched float by one ulp
+stores the computed headroom; any save may move a float by a few ulps (relative
+1e-12 tolerance in the applied-config compare)
 (firmware decoder rounding); another client's save that commits between our GET
 and our PUT is overwritten (the firmware's stale-check design).
 
@@ -166,6 +167,11 @@ def wait_seconds(text):
     return value
 
 
+# The firmware PUT decoder is not correctly rounded: newly typed values land
+# several ulps off (0.03 reads back as 0.030000000000000006, 2 ulps; up to 5
+# measured). See docs/plans/aius-open-work-register.md, Open defects.
+NUMBER_RELATIVE_TOLERANCE = 1e-12
+
 _IGNORED = {"config_generation", "config_pending", "staged_generation", "base_generation"}
 
 
@@ -173,8 +179,15 @@ _IGNORED_TOP = _IGNORED | {"source"}  # a PUT always reads back as "sd"
 
 
 def matches_applied(sent, applied):
-    """True when the applied GET is what we sent: bookkeeping keys and source
-    ignored, matrix.headroom_linear skipped when clipfree serves it computed."""
+    """True when the applied GET is what we sent."""
+    return not config_differences(sent, applied)
+
+
+def config_differences(sent, applied):
+    """[(path, sent, applied)] where the applied GET departs from what we sent:
+    bookkeeping keys and source ignored, matrix.headroom_linear skipped when
+    clipfree serves it computed, numbers within a few ulps (relative 1e-12
+    tolerance) equal."""
     sent, applied = copy.deepcopy(sent), copy.deepcopy(applied)
     for cfg in (sent, applied):
         for key in _IGNORED_TOP:
@@ -184,20 +197,39 @@ def matches_applied(sent, applied):
         matrix.pop("headroom_linear", None)
         if isinstance(sent.get("matrix"), dict):
             sent["matrix"].pop("headroom_linear", None)
-    return _same(sent, applied)
+    return _differences(sent, applied, "")
 
 
-def _same(a, b):
-    """Structural equality; numbers within one ulp."""
+def _differences(a, b, path):
+    """Leaf departures, numbers within a few ulps (relative 1e-12 tolerance) equal."""
+    join = (lambda key: f"{path}.{key}" if path else str(key))
     if isinstance(a, dict) and isinstance(b, dict):
-        return set(a) == set(b) and all(_same(a[k], b[k]) for k in a)
-    if isinstance(a, list) and isinstance(b, list):
-        return len(a) == len(b) and all(_same(x, y) for x, y in zip(a, b))
+        out = []
+        for key in dict.fromkeys([*a, *b]):
+            if key in a and key in b:
+                out.extend(_differences(a[key], b[key], join(key)))
+            else:
+                out.append((join(key), a.get(key), b.get(key)))
+        return out
+    if isinstance(a, list) and isinstance(b, list) and len(a) == len(b):
+        out = []
+        for i, (x, y) in enumerate(zip(a, b)):
+            out.extend(_differences(x, y, join(i)))
+        return out
     numeric = (int, float)
     if (isinstance(a, numeric) and isinstance(b, numeric)
             and not isinstance(a, bool) and not isinstance(b, bool)):
-        return abs(a - b) <= max(math.ulp(a), math.ulp(b))
-    return a == b
+        same = a == b or abs(a - b) <= NUMBER_RELATIVE_TOLERANCE * max(abs(a), abs(b))
+    else:
+        same = a == b
+    return [] if same else [(path, a, b)]
+
+
+def _describe(differences, limit=5):
+    shown = [f"{p}: sent {json.dumps(s)}, applied {json.dumps(a)}"
+             for p, s, a in differences[:limit]]
+    more = len(differences) - limit
+    return "; ".join(shown) + (f"; and {more} more" if more > 0 else "")
 
 
 def _get_config(transport, url):
@@ -261,9 +293,13 @@ def run(base, token, assignments, dry_run, transport=urllib_transport,
         # Transport fault: the card write may have committed anyway.
         print(f"PUT {ROUTE} transport fault: {text}", file=err)
         check, _, _, _ = _get_config(transport, url)
-        if check is not None and (check.get("config_pending") is True
-                                  or matches_applied(body, check)):
-            print("the save landed (pending or matching config on the board)", file=out)
+        diffs = config_differences(body, check) if check is not None else None
+        if check is not None and check.get("config_pending") is True and diffs:
+            print(f"another client's save is staged; ours did not land "
+                  f"({_describe(diffs)})", file=err)
+            return 1
+        if check is not None and not diffs:
+            print("the save landed (matching config on the board)", file=out)
         else:
             print("outcome unknown, re-run --dry-run to check", file=err)
             return 1
@@ -272,6 +308,8 @@ def run(base, token, assignments, dry_run, transport=urllib_transport,
     base_generation = live["config_generation"]
     deadline = now() + wait
     answered = False
+    last_diffs = None  # differences at the last answered poll (None: not applied-looking)
+    last_generation = None
     while True:
         after, message, _, poll_status = _get_config(transport, url)
         answered = answered or poll_status is not None
@@ -279,17 +317,25 @@ def run(base, token, assignments, dry_run, transport=urllib_transport,
             print(f"post-PUT {message}", file=err)
         else:
             print(_state(after), file=out)
+            diffs = config_differences(body, after)
+            last_generation = after["config_generation"]
+            last_diffs = diffs if after.get("config_pending") is False else None
             if wait and after.get("config_pending") is False:
-                if matches_applied(body, after):
+                if not diffs:
                     return 0
                 if after["config_generation"] > base_generation:
                     print("applied config differs from the one we sent: another "
-                          "client's save was applied in place of ours", file=err)
+                          "client's save was applied in place of ours "
+                          f"({_describe(diffs)})", file=err)
                     return 1
         if not wait:
             return 0
         if now() >= deadline:
-            if answered:
+            if last_diffs and last_generation <= base_generation:
+                print(f"timed out after {wait} s: the board is running a different "
+                      f"config than ours (rebooted, or another client's save): "
+                      f"{_describe(last_diffs)}", file=err)
+            elif answered:
                 print(f"timed out after {wait} s: the save is committed to the card "
                       f"but not yet applied (no carrier?)", file=err)
             else:

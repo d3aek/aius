@@ -262,14 +262,54 @@ class DspSetTest(unittest.TestCase):
         code, *_ = run(["features.limiter=true"], wait=30, after=[done])
         self.assertEqual(code, 0)
 
+    def test_wait_tolerates_multi_ulp_decoder_drift_but_flags_real_changes(self):
+        cases = (("matrix.lfe_gain_linear=0.03", 0.030000000000000006, 0),
+                 ("matrix.lfe_gain_linear=1e-5", 1e-5, 0),
+                 ("matrix.center_gain_linear=1.5", 1.5000001, 1))
+        for sets, got, expected in cases:
+            if sets.endswith("1e-5"):
+                for _ in range(5):
+                    got = math.nextafter(got, 1)  # 5 ulps off a value near 1e-5
+            done = applied(2, False)
+            done["features"]["limiter"] = False
+            done["matrix"][sets.split("=")[0].split(".")[1]] = got
+            code, *_ = run([sets], wait=30, after=[done])
+            self.assertEqual(code, expected, sets)
+
     def test_failed_put_with_pending_or_matching_config_counts_as_saved(self):
-        for status in (None,):
-            for after in ([with_state(1, True)], [applied(2, False)]):
-                code, calls, out, err, _ = run(["features.limiter=true"],
-                                               put_status=status, put_text="reset",
-                                               after=after)
-                self.assertEqual(code, 0)
-                self.assertIn("the save landed", out)
+        for after in ([applied(1, True)], [applied(2, False)]):
+            code, calls, out, err, _ = run(["features.limiter=true"],
+                                           put_status=None, put_text="reset",
+                                           after=after)
+            self.assertEqual(code, 0)
+            self.assertIn("the save landed", out)
+
+    def test_failed_put_with_pending_mismatch_is_another_clients_save(self):
+        other = with_state(1, True)  # staged model lacks our limiter=true
+        other["matrix"]["center_gain_linear"] = 0.9
+        code, _, _, err, _ = run(["features.limiter=true"], put_status=None,
+                                 put_text="reset", after=[other])
+        self.assertEqual(code, 1)
+        self.assertIn("another client's save is staged; ours did not land", err)
+
+    def test_timeout_with_different_applied_config_names_it_not_carrier(self):
+        rebooted = with_state(1, False)  # same generation as base, limiter false
+        code, _, _, err, _ = run(["features.limiter=true"], wait=2, after=[rebooted])
+        self.assertEqual(code, 3)
+        self.assertIn("running a different config than ours", err)
+        self.assertIn("features.limiter", err)
+        self.assertNotIn("no carrier", err)
+
+    def test_mismatch_message_lists_up_to_five_paths_with_values(self):
+        other = applied(2, False)
+        for key in ("center_gain_linear", "surround_gain_linear", "lfe_gain_linear",
+                    "lfe_crossover_hz", "headroom_linear", "surround_delay_ms"):
+            other["matrix"][key] = 77
+        code, _, _, err, _ = run(["features.limiter=true"], wait=30, after=[other])
+        self.assertEqual(code, 1)
+        self.assertIn("matrix.center_gain_linear: sent 1.5, applied 77", err)
+        self.assertEqual(err.count("applied 77"), 5)
+        self.assertIn("and 1 more", err)
 
     def test_failed_put_with_unchanged_config_is_outcome_unknown(self):
         code, _, _, err, _ = run(["features.limiter=true"], put_status=None,

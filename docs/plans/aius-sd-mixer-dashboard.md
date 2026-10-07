@@ -45,8 +45,8 @@ with bonded tabs. `index.html` stays as the classic editor.
     gallery `index.html` and `_tools/generate_logos.py`; round 1's SVGs in
     `svg/` and its review page `round-1.html`.
 - **Next action**: Phase 3 round 2, once the owner gives picks and answers
-  the two round-2 questions in the Phase 3 block. Phase 5 runs on the
-  owner's word, after its R1, R3 and R4 setter fixes.
+  the two round-2 questions in the Phase 3 block. Phase 5 is ready and runs
+  on the owner's word, ideally with a carrier present.
 
 ## Constraints
 
@@ -211,7 +211,8 @@ tool `dsp_characterize.py` stays read-only.
   CLEAR:
   - It refuses when the GET already shows `config_pending: true`.
   - `--wait SECONDS` exits 0 when the board shows `config_pending` false and
-    the applied config matches what was sent. Numbers may differ by one ulp;
+    the applied config matches what was sent. Numbers may differ by a
+    relative 1e-12 (the decoder drift below);
     `source` is ignored, and so is `matrix.headroom_linear` under clipfree.
     The generation does not count, because the counter restarts at each boot.
   - A transport fault on the PUT re-GETs once rather than reporting a
@@ -224,7 +225,9 @@ tool `dsp_characterize.py` stays read-only.
     `firmware/scripts/test.sh`.
 - Float drift, settled by the owner 2026-10-07: accepted. Any save moves an
   untouched float whose text the firmware decoder misrounds by one ulp (live:
-  `matrix.lfe_gain_linear`). The classic editor already does the same. The
+  `matrix.lfe_gain_linear`), and a newly typed value by up to 5 ulps (the
+  acceptance was asked on "one ulp"; the corrected figure was reported to the
+  owner the same day). The classic editor already does the same. The
   firmware fix is tracked in
   [`aius-open-work-register.md`](aius-open-work-register.md) §Open defects.
 - seams: `firmware/tools/`, and its usage line in `CONTRIBUTING.md`.
@@ -240,25 +243,19 @@ LFE 0.316 and headroom 0.5. A worst-case in-phase sum overshoots full scale
 by 5.3 dB. `limiter.enabled` was already true at -1 dBFS, 0.5 ms attack,
 100 ms release and 2 ms lookahead.
 
-- First, before the board run, close the setter's residual review findings in
-  `firmware/tools/dsp_config/aius_dsp_set.py`. All are LOW, and none is hit
-  by the Phase 5 command against the 2026-10-07 config:
-  - **R1:** after a transport fault, a pending save counts as "landed" even
-    when it is another client's. Require pending *and* a match, since GET
-    serves the staged model while pending
-    (`firmware/src/optical_main.cpp:3006-3008`).
-  - **R3:** after a reboot with another client's config applied, the timeout
-    says "no carrier?".
-  - **R4:** drift above one ulp, possible for exponent-form values, reads
-    as another client's save.
-  - Accepted as is: **R2**, a no-op `--set` plus a transport fault reports
-    "landed", which is harmless.
+- Pre-step done 2026-10-07 (review CLEAR): the setter's residual findings
+  are closed. After a transport fault, "landed" needs a matching GET (R1).
+  The wait timeout names a different running config (R3). Numbers compare
+  within a relative 1e-12, and mismatch messages list the differing paths
+  (R4). Accepted as is: R2, a no-op `--set` plus a transport fault reports
+  "landed", which is harmless. The suite has 30 setter tests.
 - outcome: `features.limiter` true on the board; nothing else changed.
 - seams: the board's `/aius/dsp.json`, through Phase 4's tool.
 - targeted-proof: a GET `/api/dsp/config` showing `features.limiter: true` at
   a new `config_generation` and `config_pending: false`, with every other
-  field equal to the pre-change read, numbers within one ulp (owner,
-  2026-10-07: `matrix.lfe_gain_linear` moves one ulp, known decoder drift).
+  field equal to the pre-change read, numbers within a relative 1e-12
+  (owner, 2026-10-07: `matrix.lfe_gain_linear` moves one ulp, known decoder
+  drift).
   The save applies only inside `enqueue()` when an audio block arrives
   (`firmware/src/optical_main.cpp:2045-2065`), so the proof needs a carrier
   or a replay running; `--wait` only watches for it. With no carrier (the
