@@ -19,44 +19,45 @@ with bonded tabs. `index.html` stays as the classic editor.
 
 ## State: resume here
 
-- **Status**: Phase 1 DONE (committed, not deployed). Phase 1a, the
-  interrogate steps and their dependent phases are untouched. Nothing is on
-  the board yet.
-- **What landed**: the aius commit that adds this plan also adds
-  `firmware/sd/www/mixer.html`, `mixer.css`, `mixer.js` and
-  `test/sd-editor/mixer.test.js`; the upstream repository commit after it bumps the
-  `git_modules/aius` pointer. Proof that ran before it: `pnpm exec vitest run
-  --root git_modules/aius` from the repository root, 6 files and 387 tests green
-  (21 in `mixer.test.js`); Chromium probes through `the repo tooling tool
-  playwright-inspect` at 1920, 1440 and 390 px, covering no sideways scroll,
-  a trusted click on an EQ tab, trusted typing into a linked FL trim
-  mirroring to FR, the token dialog opening on a trusted click and closing on
-  Escape, and the action bar going `position: static` at phone width.
-- **Uncommitted tree state**: none in this submodule. Two transient preview
-  folders live on the the host application preview mount, which is gitignored by design
-  (`src/apps/preview/README.md`):
-  - `src/apps/preview/content/aius-mixer/`: the preview bundle (served at
-    `https://apps.example.net/apps/preview/aius-mixer/mixer.html`) and its
-    `_tools/` folder: `build_preview.py`, `preview-shim.js`, the probe
-    scenarios and `fixtures/` captured read-only from the board.
-  - `src/apps/preview/content/aius-logos/`: eight raster logo explorations,
-    the gallery `index.html` and `_tools/generate_logos.py`.
-- **Next action**: run the Phase 2 interrogate step: ask the user whether and
-  when to deploy (it opens with the exact question).
+- **Status**: Phase 1 DONE. Phases 1a, 2 (fonts), 3 (logos), 4 (limiter
+  tool) and 5 (board limiter) not started. Phase 6 (deploy) BLOCKED on the
+  user's word. Nothing from this plan is on the board.
+- **What landed** (all pushed):
+
+  | Commit | Contents | Proof |
+  | --- | --- | --- |
+  | aius `4b68103` | `firmware/sd/www/mixer.{html,css,js}`, `test/sd-editor/mixer.test.js`, this plan, plans README entry | `pnpm exec vitest run --root git_modules/aius` from the repository root: 6 files, 387 tests green (21 in `mixer.test.js`); Chromium probes via `the repo tooling tool playwright-inspect` at 1920, 1440 and 390 px (see Phase 1) |
+  | upstream repository `8da5b5556` | `git_modules/aius` pointer to `4b68103`; also carries `a974465`, another session's pushed aius docs commit | none beyond the aius row |
+  | aius, this edit | owner answers recorded, answered questions removed, state rewritten | `the repo tooling doc-index --validate-only` |
+
+- **Uncommitted tree state**: nothing in this submodule. Two transient
+  folders sit on the the host application preview mount, gitignored by design
+  (`src/apps/preview/README.md`). The next agent can build on both:
+  - `src/apps/preview/content/aius-mixer/`: the preview bundle, served at
+    `https://apps.example.net/apps/preview/aius-mixer/mixer.html`. Its
+    `_tools/` folder holds `build_preview.py`, `preview-shim.js`, the probe
+    scenarios, and `fixtures/` captured read-only from the board.
+  - `src/apps/preview/content/aius-logos/`: eight raster explorations, the
+    gallery `index.html` and `_tools/generate_logos.py`.
+- **Next action**: Phase 3, refinement round 1. Hand-draw SVG variants of the
+  six-to-two mark into `src/apps/preview/content/aius-logos/svg/`, add them to
+  a review page, and hand the URL to the user.
 
 ## Constraints
 
 - **`dsp-editor.js` runs unchanged.** `mixer.html` carries every id
-  `index.html` carries (asserted in `test/sd-editor/mixer.test.js`); markup the
-  skin does not show sits in `.bench-legacy[hidden]` blocks (the routing
-  canvas and its captions, the view toggle, `#bars-input`).
+  `index.html` carries (asserted in `test/sd-editor/mixer.test.js`). Markup the
+  skin does not show sits in `.bench-legacy[hidden]` blocks: the routing
+  canvas and its captions, the view toggle, `#bars-input`.
 - **`mixer.js` makes no request of its own.** The device serves one HTTP client
-  at a time and the editor's pollers carry everything shown; the adapter reads
+  at a time, and the editor's pollers carry everything shown. The adapter reads
   the editor's DOM and writes only through the editor's own `f:<path>` fields
-  with an `input` or `change` event, the path the routing canvas uses.
-- **No web fonts are fetched.** The card's page must not phone home; Archivo
-  and IBM Plex Mono are used only when installed locally (Phase 6 decides
-  whether to vendor them).
+  with an `input` or `change` event, the same path the routing canvas uses.
+- **The page fetches nothing off the card.** Fonts and logo ship as card files
+  (Phases 2 and 3), never from a CDN.
+- **Device mutations wait for the owner's word.** Owner, 2026-10-07: deploy
+  "when I tell you to". This covers the card sync (Phase 6) and the board
+  config change (Phase 5).
 
 ## Phases
 
@@ -64,78 +65,158 @@ with bonded tabs. `index.html` stays as the classic editor.
 
 - outcome: `mixer.html` + `mixer.css` + `mixer.js`, a full-width 12-column
   dashboard of panels headed by kickers only (`00 / Signal` to `05 / Presets`),
-  no hero, section headings or footer.
-- seams: `firmware/sd/www/mixer.{html,css,js}`; `replays.css` and
-  `dsp-editor.css` are loaded first and re-tokened, not edited.
-- targeted-proof: `test/sd-editor/mixer.test.js` (21 cases) plus the Chromium
-  probes listed under State.
+  with no hero, section headings or footer.
+- seams: `firmware/sd/www/mixer.{html,css,js}`. `replays.css` and
+  `dsp-editor.css` load first and are re-tokened, not edited.
+- targeted-proof: `test/sd-editor/mixer.test.js` (21 cases). Chromium probes
+  checked:
+  - no sideways scroll at 1920, 1440 and 390 px
+  - a trusted click on an EQ tab
+  - trusted typing into a linked FL trim, mirrored to FR
+  - the token dialog opening on a trusted click and closing on Escape
+  - `position: static` for the action bar at phone width
 
-Decisions settled in this phase (user-directed unless marked):
+Settled, user-directed unless marked:
 
 - **Matrix faders are C, F, S and LFE only.** F is a fixed, disabled 1.0
   reference because the firmware has no field for it. LFE crossover, surround
-  delay and headroom live only in the folded "Exact values" form (user: they
-  "do not deserve sliders"); the equation readout still shows them, and the
-  clip-free chip still resolves headroom.
-- **Gain faders are dB-tapered over the linear field** (own call): bottom stop
-  is 0 (off), then -40 dB up to the field's 4.0 maximum; values round to the
-  field's 0.01 step.
+  delay and headroom live only in the folded "Exact values" form. The
+  equation readout still shows them, and the clip-free chip still resolves
+  headroom.
+- **Gain faders are dB-tapered over the linear field** (own call). The bottom
+  stop is 0 (off), then the scale runs from -40 dB to the field's 4.0
+  maximum, rounded to the field's 0.01 step.
 - **EQ tabs follow the plot's curves one to one**: FL+FR, C, LFE, SL+SR, OUT.
-  A pair is bonded by default: one set of controls, every edit (resets
-  included) copied left to right after the editor's own handler runs. A pair
-  whose members differ after a device read or preset load opens unlinked
-  rather than being overwritten; linking copies left into right and the bond
+  A pair is bonded by default: one set of controls, and every edit (resets
+  included) is copied left to right after the editor's own handler runs. A
+  pair whose members differ after a device read or preset load opens unlinked
+  rather than being overwritten. Linking copies left into right, and the bond
   note says so first.
-- **Token entry lives in a `<dialog>`** opened from the lock chip; a save that
+- **Token entry lives in a `<dialog>`** opened from the lock chip. A save that
   locks the field closes it.
 - **The action bar is sticky only above 720 px.**
-- **The `00 / Signal` diagram is the only input-level display**; its boxes
+- **The `00 / Signal` diagram is the only input-level display.** Its boxes
   mirror the editor's needles, wire widths follow the matrix weights, and the
   wires animate only while the transmit gate is open.
 - **The verdict line states the worst-case in-phase overshoot** (own call):
   `headroom x (1 + centre + surround + |lfe|)`, and whether the limiter is on
   to catch it.
-- **Preview runs on the host application with a fetch shim and captured fixtures** (own
-  call): the gateway origin cannot reach `192.0.2.66`, and the shim keeps every
-  write in the browser tab.
+- **The preview runs on the host application with a fetch shim and captured fixtures**
+  (own call). The gateway origin cannot reach `192.0.2.66`, and the shim keeps
+  every write in the browser tab.
 
 ### Phase 1a: Doc touch-ups for a second SD page
 
-- outcome: the docs that enumerate the SD pages name `mixer.html`.
+- outcome: every doc that lists the SD pages names `mixer.html`.
 - seams:
-  - `firmware/sd/www/dsp-editor.js` banner: "OWNS: the whole
-    /sd/www/index.html page" now also runs under `mixer.html`.
-  - `CONTRIBUTING.md` (the SD pages list near line 70).
-  - `CLAUDE.md` §Device access and OTA: "`aius-sd-sync.sh ...` (all 12
-    files, unconditionally)" is now 15 files. CLAUDE.md is protected and
-    changes only through `the release-promotion step`.
+  - `firmware/sd/www/dsp-editor.js` banner says "OWNS: the whole
+    /sd/www/index.html page"; it now also runs under `mixer.html`.
+  - `CONTRIBUTING.md`, the SD pages list near line 70.
+  - `CLAUDE.md` §Device access and OTA says "`aius-sd-sync.sh ...` (all 12
+    files, unconditionally)". The card tree is now 15 files, 17 after Phase 2.
+    CLAUDE.md is protected and changes only through `the release-promotion step`.
 - targeted-proof: `the repo tooling doc-index --validate-only` clean.
 
-### Phase 2: Interrogate the user: deploy and its timing
+### Phase 2: Vendor the fonts
 
-- outcome: the user's answer recorded in Phase 3; this step deleted.
-- seams: none (a question).
-- targeted-proof: Phase 3 carries no open question.
+Settled by the owner, 2026-10-07: yes, vendor them.
 
-Ask: "The mixer dashboard is committed but not on the board. Upload
-`mixer.html`, `mixer.css` and `mixer.js` now? The board had carrier and an open
-gate when last read, so a card sync costs a short dropout (a 12-file sync once
-measured about 59 ms of `tx_underrun_frames`)."
+- outcome: local `@font-face` rules in `mixer.css` for Archivo (variable,
+  `wdth` axis) and IBM Plex Mono, with woff2 files under
+  `firmware/sd/www/fonts/`, about 150 KB.
+- seams: `mixer.css`, `firmware/sd/www/fonts/`, and `THIRD-PARTY.md`. Both
+  families are SIL OFL 1.1, so add their entries and ship the licence text
+  beside the files.
+- targeted-proof: a Chromium probe of the preview where
+  `document.fonts.check('12px Archivo')` and
+  `document.fonts.check('12px "IBM Plex Mono"')` are true, and the transcript
+  shows no request leaving the page's origin. `build_preview.py` copies a
+  fixed file list, so add `fonts/` to it.
 
-- **Now**: deploy immediately and accept the dropout.
-- **At a named quiet time**: deploy when the user says audio is off.
-- **Not yet**: more design changes first; Phase 3 waits.
+### Phase 3: Six-to-two logo, refinement rounds
 
-Recommendation: at a quiet time. The page is additive and nothing links to it
-from the other pages yet, so there is no rush worth a dropout. Blocks Phase 3.
+Settled by the owner, 2026-10-07: direction 1 (six-to-two) only, refined over
+several rounds with the user's review between each.
 
-### Phase 3: Deploy to the board
+- outcome: a hand-authored SVG on the bench tokens: six dots in a 3 by 2 grid
+  converging to two, centre dot amber. It is reviewed at favicon (16 and
+  32 px), nav (20 px tall) and large size, then replaces `.logo__dots` +
+  `.logo__word` in `mixer.html` and becomes the page's favicon.
+- seams: `src/apps/preview/content/aius-logos/svg/` and a review page there
+  for each round; then `mixer.html`, `mixer.css` (`.logo`), and an SVG
+  favicon file under `firmware/sd/www/`.
+- targeted-proof: each round, a Chromium screenshot of the review page at
+  1x and 2x DPR, read before handing the URL over. On adoption, the mixer
+  suite still green.
+- Round 1 offers 4 to 6 variants: dot size and spacing, curve tension, with
+  and without the wordmark, and stroke versus filled outputs. Round 2 and later
+  narrow on the user's picks; the user says when to stop.
+- Source: `src/apps/preview/content/aius-logos/six-to-two.png` (gpt-image-2
+  raster). Redraw it; do not trace it.
 
-- outcome: the three files served from the card.
-- seams: the card's `/sd/www/` tree; additive only.
-- targeted-proof: the sync prints `PUT /sd/www/<file>` for each file with no
-  retry failure, and a `GET` of `http://192.0.2.66/sd/www/mixer.html` returns
-  the committed bytes.
+### Phase 4: A committed DSP-config setter with `--auth-file`
+
+The owner chose to enable the board's limiter (Phase 5). No committed tool can
+flip one config field with the token read from a file, and `CLAUDE.md` forbids
+a literal token on a command line or a scratch-script workaround.
+
+- outcome: a committed tool, either new as
+  `firmware/tools/dsp_config/aius_dsp_set.py` or added to
+  `firmware/tools/dsp_characterize/dsp_characterize.py`. It runs GET
+  `/api/dsp/config`, sets the named dotted paths, then PUTs the result with
+  the current `config_generation` and `X-Aius-SD-Auth` read from
+  `--auth-file`. It refuses on 409 or 400.
+- seams: `firmware/tools/`, and its usage line in `CONTRIBUTING.md`.
+- targeted-proof: a host unit test of the body it builds (only the named
+  paths change, the generation is carried), plus `--dry-run` printing the
+  diff against a live GET.
+
+### Phase 5: Enable the limiter on the board
+
+Settled by the owner, 2026-10-07: enable the limiter. The live config read at
+08:20 UTC had `features.limiter` false, with centre 1.5, surround 0.855,
+LFE 0.316 and headroom 0.5. A worst-case in-phase sum overshoots full scale
+by 5.3 dB. `limiter.enabled` was already true at -1 dBFS, 0.5 ms attack,
+100 ms release and 2 ms lookahead.
+
+- outcome: `features.limiter` true on the board; nothing else changed.
+- seams: the board's `/aius/dsp.json`, through Phase 4's tool.
+- targeted-proof: a GET `/api/dsp/config` showing `features.limiter: true` at
+  a new `config_generation`, with every other field equal to the pre-change
+  read.
+- Runs only on the owner's word (see Constraints). It is an apply at a block
+  boundary, not a card sync, but it still changes live audio.
+
+### Phase 6: Deploy to the board
+
+Settled by the owner, 2026-10-07: deploy only "when I tell you to". The
+default-page question is decided at that time.
+
+- **Interrogate the user: default page.** Ask this when the owner says to
+  deploy, before uploading:
+  - Question: "Should the mixer dashboard become the default DSP editor?"
+  - **Yes, menus only**: `index.html`, `replays.html`, `status.html` and
+    `upgrade.html` link "DSP editor" to `mixer.html`. The classic editor stays
+    reachable from the mixer's nav.
+  - **Yes, swap the files**: `mixer.html` becomes `index.html` and the classic
+    page is renamed, so the device's root lands on the dashboard.
+  - **No**: the mixer stays an opt-in page linked only from its own nav.
+  - Recommendation: yes, menus only. It needs no rename and keeps the classic
+    page one click away.
+  - The answer sets the extra seams below; delete this step once it is
+    recorded.
+- outcome: the mixer files (plus the fonts, the favicon, and any menu edits
+  from the answer) served from the card.
+- seams: the card's `/sd/www/` tree, additive only. The answer may add the
+  four SD pages' `<nav>` blocks, plus `test/sd-editor/*.test.js` and
+  `firmware/test/optical-app/test_bitstream_ui.py` where they read
+  `index.html`.
+- targeted-proof: the sync prints `PUT /sd/www/<file>` per file with no retry
+  failure, and a GET of `http://192.0.2.66/sd/www/mixer.html` returns the
+  committed bytes. If menus changed, the vitest suite is green first.
+- Card traffic during playback costs a short dropout (a 12-file sync once
+  measured about 59 ms of `tx_underrun_frames`). State that cost when the
+  owner gives the word.
 
 ```bash
 firmware/tools/aius-sd-sync.sh --device http://192.0.2.66 \
@@ -143,129 +224,27 @@ firmware/tools/aius-sd-sync.sh --device http://192.0.2.66 \
   --file mixer.html --file mixer.css --file mixer.js
 ```
 
-### Phase 4: Interrogate the user: default page
-
-- outcome: the answer recorded in Phase 5; this step deleted.
-- seams: none (a question).
-- targeted-proof: Phase 5 carries no open question.
-
-Ask: "Should the mixer dashboard become the default DSP editor, with the other
-SD pages' menus pointing to it?"
-
-- **Yes**: `index.html`, `replays.html`, `status.html` and `upgrade.html` link
-  "DSP editor" to `mixer.html`; the classic editor stays reachable from the
-  mixer's nav.
-- **Yes, and swap the files**: `mixer.html` becomes `index.html` and the
-  classic page is renamed, so the device's root lands on the dashboard.
-- **No**: the mixer stays an opt-in page linked only from its own nav.
-
-Recommendation: yes, menus only. It needs no rename and keeps the classic page
-one click away. Blocks Phase 5.
-
-### Phase 5: Make the mixer the default editor
-
-- outcome: per the Phase 4 answer.
-- seams: the four SD pages' `<nav>` blocks; `test/sd-editor/*.test.js` and
-  `firmware/test/optical-app/test_bitstream_ui.py` where they read
-  `index.html`.
-- targeted-proof: `pnpm exec vitest run --root git_modules/aius` green, then a
-  Phase 3-style sync of the touched pages.
-
-### Phase 6: Interrogate the user: vendor the fonts
-
-- outcome: the answer recorded in Phase 7; this step deleted.
-- seams: none (a question).
-- targeted-proof: Phase 7 carries no open question.
-
-Ask: "Copy Archivo and IBM Plex Mono onto the card (about 150 KB of woff2) so
-the dashboard looks like the product site? Without them it uses system fonts."
-
-- **Yes**: Phase 7 adds the files and `@font-face` rules; the sync grows by
-  two files.
-- **No**: system fallbacks stay; Phase 7 is dropped.
-
-Recommendation: yes. The condensed Archivo carries much of the look, and
-150 KB is small against the card. Blocks Phase 7.
-
-### Phase 7: Vendor the fonts
-
-- outcome: local `@font-face` for Archivo (variable, `wdth`) and IBM Plex Mono
-  in `mixer.css`, files under `firmware/sd/www/fonts/`.
-- seams: `mixer.css`, `firmware/sd/www/fonts/`, and the sync's file list.
-- targeted-proof: a Chromium probe where `document.fonts.check('12px Archivo')`
-  is true and no request leaves the page's origin.
-
-### Phase 8: Interrogate the user: logo directions
-
-- outcome: the picks recorded in Phase 9; this step deleted.
-- seams: none (a question).
-- targeted-proof: Phase 9 names its directions.
-
-Ask: "Which raster explorations should be redrawn as SVG? Gallery:
-`https://apps.example.net/apps/preview/aius-logos/index.html`."
-
-- **1 six-to-two**: six dots converging to two, amber centre. Closest to the
-  current dot logo and works as a favicon.
-- **4 dialogue-lift**: waveform bars with the middle band lifted in amber.
-- **6 matrix-grid**: a node grid with an amber centre row.
-- **3 routing-a**: an "a" drawn as merging signal lines, as an app icon.
-
-Recommendation: 1, with 4 as the alternate. 2, 5, 7 and 8 picked up
-unrequested face and speaker pictograms and fail at small sizes. Blocks
-Phase 9.
-
-### Phase 9: SVG logo redraws
-
-- outcome: each picked direction as a hand-authored SVG on the bench tokens,
-  shown at favicon, nav and large size on one preview page; the chosen one
-  replaces `.logo__dots` in `mixer.html`.
-- seams: `src/apps/preview/content/aius-logos/` for review; then `mixer.html`
-  and `mixer.css` (`.logo`).
-- targeted-proof: a Chromium screenshot of the preview page at 1x and 2x DPR.
-
-### Phase 10: Interrogate the user: board limiter is off
-
-- outcome: the answer recorded here and acted on through the editor; this step
-  deleted.
-- seams: the board's DSP config (`/aius/dsp.json`), not code.
-- targeted-proof: the verdict line on the deployed dashboard reads clip-safe or
-  "the limiter catches it".
-
-Ask: "The board's live config has the limiter stage off (`features.limiter`
-false) with centre 1.5, surround 0.855, LFE 0.316 and headroom 0.5. A
-worst-case in-phase sum overshoots full scale by 5.3 dB. Change it?"
-
-- **Enable the limiter**: tick the limiter's stage enable and Apply; peaks
-  are caught at -1 dBFS true-peak.
-- **Lower headroom**: about 0.27 makes the worst case clip-safe, at about
-  5 dB less level.
-- **Leave it**: the overshoot needs every channel in phase at full scale,
-  which real programme rarely reaches.
-
-Recommendation: enable the limiter. It costs no level on normal programme.
-Blocks nothing above; it can be asked at any point.
-
 ## Traps
 
 - **happy-dom and Chromium disagree on text mutations.** happy-dom reports a
-  `textContent` write equal to the old text; Chromium does not. An early
-  version keyed the faders on `#model-bytes` text and passed vitest but showed
+  `textContent` write that equals the old text; Chromium does not. An early
+  version keyed the faders on `#model-bytes` text: it passed vitest but showed
   stale values in the browser. `mixer.js` now uses capture-phase
   `input`/`change` listeners plus a 200 ms signature check, with status-line
   observers only as hints.
 - **Microtasks run between listeners for real user events.** A microtask
   queued in a capture listener runs before the field's own handler on a real
-  keystroke but after it on a scripted `dispatchEvent`. The sync and the pair
-  mirror use `setTimeout(0)`, and the suite's `settle()` flushes two timer
-  turns. That lets the editor's needle ticker repaint during a test, so
+  keystroke, but after it on a scripted `dispatchEvent`. The sync and the pair
+  mirror therefore use `setTimeout(0)`, and the suite's `settle()` flushes two
+  timer turns. That lets the editor's needle ticker repaint during a test, so
   needle assertions compare against what the editor painted, not a hand-set
   width.
-- **The preview is a copy and a snapshot.** `build_preview.py` copies the
-  SD files into the preview mount, so rebuild it after any edit
-  (`python3 -I src/apps/preview/content/aius-mixer/_tools/build_preview.py
+- **The preview is a copy and a snapshot.** `build_preview.py` copies the SD
+  files into the preview mount, so rebuild it after any edit:
+  `python3 -I src/apps/preview/content/aius-mixer/_tools/build_preview.py
   /other/upstream repository src/apps/preview/content/aius-mixer/_tools/fixtures
-  2026-10-07T08:20Z`). Its fixtures are the board's state at 08:20 UTC on
+  2026-10-07T08:20Z`. Its fixtures are the board's state at 08:20 UTC on
   2026-10-07, and its meters loop 5 s of real readings.
-- **`dsp-editor.css` scopes canvas sizing under `.visual`**, which this page
-  does not use; `mixer.css` sizes `canvas.curve` and `canvas.gr__history`
-  itself.
+- **`dsp-editor.css` scopes canvas sizing under `.visual`.** This page does
+  not use that class, so `mixer.css` sizes `canvas.curve` and
+  `canvas.gr__history` itself.
