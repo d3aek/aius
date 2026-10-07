@@ -64,6 +64,13 @@ with bonded tabs. `index.html` stays as the classic editor.
 - **Device mutations wait for the owner's word.** Owner, 2026-10-07: deploy
   "when I tell you to". This covers the card sync (Phase 6) and the board
   config change (Phase 5).
+- **The board is shared with the sample-rate-following work**
+  ([`aius-sample-rate-following.md`](aius-sample-rate-following.md)), whose
+  device sessions (OTAs, source-off checks) also wait for the owner. Before
+  Phase 5 or 6 touches the board, read `/api/status` `build_revision` and
+  that plan's State block, and confirm with the owner that no run of theirs
+  is in progress: a config apply or card sync during one perturbs its
+  measurements.
 
 ## Phases
 
