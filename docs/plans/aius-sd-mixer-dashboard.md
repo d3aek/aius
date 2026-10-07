@@ -274,6 +274,62 @@ targeted-proof: vitest (root git_modules/aius) green with test/sd-editor/mixer.t
     reads the `.field__reset` ids, so it needs updating if `dsp-editor.js`
     renames them.
 
+### Phase 1d: Trim label and bypass-note reflow ✓ SHIPPED
+
+The owner reported on 2026-10-07 that each EQ tab carries an unlabelled
+"gain dB" input, and that the "EQ bypassed" note reflows the panel.
+
+- The input is the per-channel trim, `input_channels.<ch>.gain_db`, from
+  -60 to +12 dB. It is a flat gain applied before that channel's EQ biquads
+  and the downmix (`firmware/lib/aius_dsp/src/aius_dsp.c:574-585`). Its
+  "Trim (dB)" head was hidden by Phase 1c's `.bench .eq-table__h` rule.
+- The note is an always-present empty span that `refreshStageInertness`
+  fills on bypass, with no reserved space.
+
+```yaml
+outcome: the trim reads "Trim dB" on every EQ tab; a stage bypass changes neither the input card's box nor the action bar's height
+seams: [firmware/sd/www/mixer.css, firmware/sd/www/mixer.js, src/apps/preview/content/aius-mixer/]
+targeted-proof: vitest (root git_modules/aius) green; Chromium probes trim-note-probe.json (1440) and trim-note-phone-probe.json (390) show the trim label box non-zero on four tabs and the card box, first-stepper offset and action-bar height unchanged across a trusted bypass click
+```
+
+- Built:
+  - `.bench .tabs__trim > .eq-table__h` shows the head.
+  - `.bench .stage-head__note` holds a fixed two-line band (`flex: 0 0 100%`,
+    `height: 2.6em`).
+  - `.bench .action-bar__state > .pill[hidden]` keeps its box with
+    `visibility: hidden`. The 22 px growth at 390 px came from
+    `#dirty-state` appearing, not from the note.
+  - At 390 px the action bar stays at 150 px and the card top stays at
+    2541 across the bypass.
+
+### Phase 1e: Bypass note truth and trim on the EQ curve
+
+Owner, 2026-10-07:
+
+- **Bypass skips trim.** With `features.input_eq` off, the firmware skips
+  the whole input stage, trim included
+  (`firmware/lib/aius_dsp_runtime_config/src/aius_dsp_runtime_config.c:119-124`).
+  The firmware is right; the note is wrong. Change the `input_eq`
+  `offNote` (`firmware/sd/www/dsp-editor.js:188-190`) to "EQ and trim
+  bypassed". Also fix the stale "+-24" gain-bound comment at
+  `dsp-editor.js:61`; the `gain_db` bound is +-12.
+- **The curve shows trim.** Each channel's EQ curve is offset by its trim,
+  so the plot shows the total level. It reads `input_channels.<ch>.gain_db`
+  beside the sections in `curveSections` / `entityCascade`
+  (`dsp-editor.js:2784-2797`). A bonded pair draws each member's own
+  offset. This changes the classic `index.html` curve too.
+
+```yaml
+outcome: the input_eq bypass note says "EQ and trim bypassed"; each channel's EQ curve sits at its trim offset on both SD pages
+seams: [firmware/sd/www/dsp-editor.js, test/sd-editor/dsp-editor.test.js]
+targeted-proof: dsp-editor.test.js cases for the new note text and for a curve point shifting by exactly the trim dB; Chromium probe of the mixer preview showing the curve move on a trim step; vitest green
+```
+
+- **Blocked:** `dsp-editor.js` and its test belong to the
+  sample-rate-following session (path-ownership write gate). Start once
+  that session commits and releases them; check with `hook-admin
+  ownership list`.
+
 ### Phase 2: Vendor the fonts ✓ SHIPPED
 
 Settled by the owner, 2026-10-07: yes, vendor them.

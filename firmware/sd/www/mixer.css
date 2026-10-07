@@ -238,6 +238,8 @@ body.bench::before {
 .bench .action-bar input,
 .bench .action-bar button { height: var(--bench-control-h); }
 .bench .form-fact { font: 400 11px var(--bench-f-mono); }
+/* The dirty pill keeps its box while hidden, so a status change never resizes the bar. */
+.bench .action-bar__state > .pill[hidden] { display: inline-flex; visibility: hidden; }
 
 /* A phone scrolls past the bar: there it is a header, not a fixture. */
 @media (max-width: 720px) { .bench .action-bar { position: static; backdrop-filter: none; } }
@@ -316,7 +318,8 @@ body.bench::before {
 .panel.card--invalid { border-color: var(--aius-accent-danger); }
 .bench .panel__head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; margin: 0 0 14px; padding-bottom: 10px; border-bottom: 1px solid var(--aius-border-strong); }
 .bench .stage-enable { font: 500 10px var(--bench-f-mono); text-transform: uppercase; letter-spacing: .06em; }
-.bench .stage-head__note { font-family: var(--bench-f-mono); font-size: 11px; }
+/* The note owns a full-width two-line band of the head, filled or empty, so a bypass changes no layout. */
+.bench .stage-head__note { flex: 0 0 100%; box-sizing: border-box; height: 2.6em; overflow: hidden; line-height: 1.3; font-family: var(--bench-f-mono); font-size: 11px; text-align: right; }
 /* A bypassed stage is dimmed, not disabled: same contract as index.html. */
 .panel[data-stage="off"] .mixer__body,
 .panel[data-stage="off"] .gr,
@@ -603,7 +606,7 @@ body.bench::before {
 .bench .stepper__btn:disabled { opacity: .35; cursor: not-allowed; }
 .bench .stepper__btn:focus-visible { outline: 3px solid var(--aius-accent-primary); outline-offset: 2px; }
 .bench .curve-q.stepper { display: inline-flex; align-items: center; gap: 4px; }
-/* The trim has no label row, so its RESET closes the one row of value, minus, plus. */
+/* The trim label sits beside the control, so its RESET closes the one row of value, minus, plus. */
 .bench .tabs__trim .field--trim.stepper { display: grid; grid-template-columns: minmax(0, 1fr) 44px 44px auto; width: 100%; max-width: 340px; }
 .bench .tabs__trim .field--trim.stepper input { width: auto; }
 .bench .tabs__trim .field--trim.stepper > .field__reset { grid-area: 1 / 4; justify-self: end; margin-left: 8px; }
@@ -620,6 +623,8 @@ body.bench::before {
 /* An EQ band reflows from a table row into labelled steppers, two or three to a row. */
 .bench .eq-table--output { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px 16px; align-items: start; }
 .bench .eq-table__h { display: none; }
+/* The trim's label is not a column head: shown, captioned like the band cells' data-col labels. */
+.bench .tabs__trim > .eq-table__h { display: block; flex: none; font: 500 10px var(--bench-f-mono); text-transform: uppercase; letter-spacing: .06em; color: var(--aius-text-muted); }
 /* The band label and its RESET share the first row: the label takes every column
    but the last, mixer.js seats the reset beside it in that last column. */
 .bench .eq-table__sec { grid-column: 1 / -2; display: flex; align-items: center; align-self: stretch; margin-top: 8px; font: 600 11px var(--bench-f-mono); letter-spacing: .08em; text-align: left; color: var(--aius-text-muted); }

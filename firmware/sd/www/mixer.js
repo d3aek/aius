@@ -666,7 +666,7 @@
     member.textContent = channel.toUpperCase();
     const trimRow = document.createElement('div');
     trimRow.className = 'tabs__trim';
-    trimRow.append(head('Trim (dB)'), trim);
+    trimRow.append(head('Trim dB'), trim);
     const grid = document.createElement('div');
     grid.className = 'eq-table eq-table--output';
     grid.append(...EQ_SECTION_HEADS.map(head), ...sections);
