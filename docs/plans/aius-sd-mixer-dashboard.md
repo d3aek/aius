@@ -330,6 +330,33 @@ targeted-proof: dsp-editor.test.js cases for the new note text and for a curve p
   that session commits and releases them; check with `hook-admin
   ownership list`.
 
+### Phase 1f: BYPASSED pill ✓ SHIPPED
+
+Owner, 2026-10-09: the bypass note should read just BYPASSED, in a pill
+like the EDITED one (`#dirty-state`).
+
+```yaml
+outcome: on mixer.html every bypassed stage head shows one BYPASSED status pill styled like EDITED; the editor's off-note text is not shown; the pill's box is reserved, so toggling a bypass moves nothing
+seams: [firmware/sd/www/mixer.js, firmware/sd/www/mixer.css, src/apps/preview/content/aius-mixer/]
+targeted-proof: vitest (root git_modules/aius) green with mixer.test.js unedited; Chromium probe at 1440 and 390 px where a trusted bypass click shows the pill (text BYPASSED, the same computed height, radius and border as #dirty-state), hides the long note, and leaves the card box and action-bar height unchanged within 1 px
+```
+
+- Own call: `mixer.js` drives the pill from the card's `data-stage="off"`,
+  which `refreshStageInertness` already sets (`dsp-editor.js:1340-1341`),
+  and the off-note span is visually hidden on `mixer.html`. So this needs
+  no `dsp-editor.js` change, and Phase 1e's note-text fix now matters only
+  for the classic page.
+- Built:
+  - Each `.stage-head` gets a `span.pill.stage-head__bypass`, placed after
+    EDITED. A `MutationObserver` on the nearest `[id^="card-"]` follows
+    `data-stage` and sets `data-on`; `visibility: hidden` holds the box
+    while off.
+  - `.stage-head__note` is visually hidden but kept in the accessibility
+    tree.
+  - Probed at both widths: the pill's height, radius and border match
+    `#dirty-state` (24 px, 4 px, none), and the card and action bar are
+    unchanged across the bypass.
+
 ### Phase 2: Vendor the fonts ✓ SHIPPED
 
 Settled by the owner, 2026-10-07: yes, vendor them.

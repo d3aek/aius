@@ -998,6 +998,26 @@
   observe($('tx-gate'), { attributes: true, attributeFilter: ['data-state'] }, syncFlowEnds);
   observe($('input-source'), { attributes: true, attributeFilter: ['data-state'] }, syncFlowEnds);
 
+  /* The BYPASSED pill: the editor's off-note span stays (it is the accessible
+   * text, visually hidden by mixer.css) and a pill in the same stage head shows
+   * the state. The editor sets data-stage on the card without an event, so an
+   * attribute observer drives the pill; the box is always laid out and only
+   * its visibility flips, so a bypass toggle moves nothing. */
+  for (const head of document.querySelectorAll('.stage-head')) {
+    const card = head.closest('[id^="card-"]');
+    if (!card) continue;
+    const pill = document.createElement('span');
+    pill.className = 'pill stage-head__bypass';
+    pill.dataset.state = 'bypassed';
+    pill.textContent = 'bypassed';
+    pill.setAttribute('aria-hidden', 'true');
+    const syncBypass = () => { pill.dataset.on = card.dataset.stage === 'off' ? 'true' : 'false'; };
+    const dirty = head.querySelector('.pill');
+    head.insertBefore(pill, dirty ? dirty.nextSibling : null);
+    observe(card, { attributes: true, attributeFilter: ['data-stage'] }, syncBypass);
+    syncBypass();
+  }
+
   syncIfChanged();
   renderPresetChips();
   syncFlowMeters();
