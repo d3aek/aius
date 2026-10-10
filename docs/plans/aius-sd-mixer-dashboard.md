@@ -21,10 +21,12 @@ with bonded tabs. `index.html` stays as the classic editor.
 
 - **Posture**: checkpoint (owner, 2026-10-07): surface each decision and
   human-review gate as it arises.
-- **Status**: Phases 1, 1a, 1b, 1c, 2 and 4 shipped; 1b and 1c await the
-  owner's phone check of the preview. Phase 3 round 1 is delivered and waits on the
-  owner's picks. Phases 5 (board limiter) and 6 (deploy) are
-  BLOCKED on the user's word. Nothing from this plan is on the board.
+- **Status**: Phases 1, 1a to 1d, 1f, 2 and 4 shipped; the owner's phone
+  check of the preview is open. Phase 1e is BLOCKED until the
+  sample-rate-following session releases `dsp-editor.js`. Phase 3 (logo) is
+  deferred by the owner. Phase 5 is the owner's own manual step. Phase 6
+  (deploy) is BLOCKED on the owner's word. Nothing from this plan is on the
+  board.
 - **What landed** (all pushed):
 
   | Commit | Contents | Proof |
@@ -43,11 +45,11 @@ with bonded tabs. `index.html` stays as the classic editor.
     `_tools/` folder holds `build_preview.py`, `preview-shim.js`, the probe
     scenarios, and `fixtures/` captured read-only from the board.
   - `src/apps/preview/content/aius-logos/`: eight raster explorations, the
-    gallery `index.html` and `_tools/generate_logos.py`; round 1's SVGs in
-    `svg/` and its review page `round-1.html`.
-- **Next action**: Phase 3 round 2, once the owner gives picks and answers
-  the two round-2 questions in the Phase 3 block. Phase 5 is ready and runs
-  on the owner's word, ideally with a carrier present.
+    gallery `index.html` and `_tools/generate_logos.py`; the round 1 and 2
+    SVGs in `svg/`, and the review pages `round-1.html` and `round-2.html`.
+- **Next action**: Phase 1e once `hook-admin ownership list` no longer
+  shows `firmware/sd/www/dsp-editor.js` held by another session. Phase 6
+  on the owner's word.
 
 ## Constraints
 
@@ -373,7 +375,7 @@ Settled by the owner, 2026-10-07: yes, vendor them.
   shows no request leaving the page's origin. `build_preview.py` copies a
   fixed file list, so add `fonts/` to it.
 
-### Phase 3: Six-to-two logo, refinement rounds
+### Phase 3: Six-to-two logo, refinement rounds BLOCKED
 
 Settled by the owner, 2026-10-07: direction 1 (six-to-two) only, refined over
 several rounds with the user's review between each.
@@ -429,7 +431,12 @@ several rounds with the user's review between each.
   The agent's picks are 03 and 02. Every favicon is a tile, so light
   grounds need no colour swap. Generator:
   `$CLAUDE_SESSION_SCRATCH/gen_logos_r2.py` (session `74c6ef4f`; reaped
-  after about a week). Awaiting the owner's picks.
+  after about a week).
+- **Deferred by the owner, 2026-10-10:** not satisfied with any round 2
+  concept, and no logo change for now. The page keeps its CSS dot logo and
+  no favicon, and Phase 6 ships without one. Resume only on the owner's
+  word, with a fresh brief; the round 1 and 2 pages remain at the preview
+  mount for reference.
 
 ### Phase 4: A committed DSP-config setter with `--auth-file` ✓ SHIPPED
 
