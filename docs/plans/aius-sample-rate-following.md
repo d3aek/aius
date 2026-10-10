@@ -6401,7 +6401,7 @@ phase: 4i
 title: Replay leaves the firmware, the web UI and the bench tools
 status: planned
 depends-on: phase-4b, phase-4h, phase-4j
-prebuild-review: folded, closure pending # NOT READY 2026-10-10 (B1, B2, S1 to S11, nits) and the owner's Q1 to Q4, folded the same day
+prebuild-review: folded, closure pending # closure NOT READY 2026-10-10 (S11 open, S1 to S3 new, N1 to N5), folded with owner answer. Before it: NOT READY 2026-10-10 (B1, B2, S1 to S11, nits) and the owner's Q1 to Q4, folded the same day
 outcome: >-
   The optical images carry no replay: no replay library, ring, refill
   job, source, clock plan, routes, page, status fields or build flags,
@@ -6411,9 +6411,10 @@ outcome: >-
   other replay DMAMEM leave OCRAM; 4g's fill_busy gate, its fill pause
   and the three tool retries go. /api/measure loopback runs from a U24
   aplay stimulus with its request and response shape unchanged, proven
-  on the bench before anything is removed. Every card capture
+  on the bench before anything is removed. Every complete card capture
   (/aius/replays/*.iec) is archived to the repo as LFS before it is
-  deleted from the card. The replays page's Live processing card moves
+  deleted from the card; in-flight .part files are deleted with their
+  names and sizes in the archive manifest. The replays page's Live processing card moves
   to status.html, and the shared SD stylesheet survives as
   sd-chrome.css. The tx-gate header, the SD lifecycle service with 4g's
   fill walk, /api/measure's body parsing, OTA staging's append and
@@ -6422,27 +6423,28 @@ outcome: >-
 unit: component-behind-interface
 seams:
   - "firmware/tools/measure_vectors (step 1, before any removal; S1, S2): measure_run.py plays its vectors through the U24 with aplay, as dsp_matrix_round.py does (aplay -D hw:U24XL,0, AIUS_ALSA_DEVICE override), instead of PUT /sd/replays/<id> and /api/replays/start. Arming, for the measure run and isr_cost alike: set amixer -c 0 cset numid=5 110,110 and read it back, start a looped aplay render that outlasts the run, wait until /api/status shows tx_gate.open true and clock.state tracking, then POST /api/measure/start; the render stops when the run ends or fails. The upload and replay commands and the fill_busy retry go; measure_vectors.py and README follow. From this step on the /api/measure request ({\"id\": ...}) and response (vector_id included) are frozen, so the firmware rename below changes no wire key"
-  - "firmware/tools/replay_retire.py (new, step 1; owner Q2): --device, --auth-file, three subcommands. archive: GET /api/replays, then GET /sd/replays/<id> for each capture into docs/reference/datasheets.mdAIUS-REPLAY-CAPTURES/<id>.iec (LFS by .gitattributes:9), each checked against the listing's size, with a manifest of id, bytes, sha256, card date and the board's build_revision. delete-captures: DELETE /api/replays {\"id\": ...} for each id whose archived file is committed and whose sha256 matches, run while the replay routes still exist. delete-www (after removal and a sync): DELETE /sd/www/replays.html, replays.js, replays.css and replays.html.gz. The parent records the captures' provenance in aius-replay-manager.md and deletes the tool once delete-www has run"
-  - "firmware/lib/aius_replay: deleted. aius_tx_gate.h moves to firmware/lib/aius_audio/src (S11): its real includers are optical_main.cpp:46 and test_tx_gate.c:7 (aius_input_liveness.h only names it in a comment); lib/aius_audio/src is not on the include path, so both include it as ../lib/aius_audio/src/aius_tx_gate.h (test.sh's tx-gate -I at :859 and the -I at :817 go). Today it reaches aius_codec.h and aius_pipeline.h through aius_replay.h, so it or its includers add those directly. Its AiusReplaySource argument and replay source state go"
-  - "firmware/src/optical_main.cpp (432 replay references): replay_refill_service, replay_source_service, replay_clock_service, replay_job_advance, g_replay_* (g_replay_service with its ring, g_replay_job, g_replay_transfer, g_replay_diag), the replay ops and status replay fields go, with 4g's fill_busy gate in app_replay_start and web_cache_replay_playing (:9034, used at :9057), g_audio_ingress_source and the held dispatch for /api/replays. platform_replay (:10401-10442) becomes platform_service and keeps, in today's order, admission_sd_window_sample, sd_lifecycle_service (:9177, the 4g fill walk within it), sample_rate_service, tx_gate_service, input_fault_service, input_dark_service and the recorder drain. Clock (owner Q3, S7): clock.master stays in the status object as the constant input for client compatibility; clock.state loses replay (:4065-4066); the replay clock reconciler and the master shims go, and setup() pins the input as master once, explicitly. http_home_page.cpp:25 loses the Replay manager link"
+  - "firmware/tools/replay_retire.py (new, step 1; owner Q2, closure S2 and N3): --device, --auth-file, three subcommands. archive: GET /api/replays, failing on truncated:true (the listing, http_replay_list_json in optical_main.cpp, stops at AIUS_OPTICAL_APP_INDEX_SCAN_MAX, 128 raw reads, aius_optical_app.h:93, and also returns .part rows); then GET /sd/replays/<id> for each complete <id>.iec row only (the route builds <id>.iec, aius_optical_app.cpp:1478-1486, so a .part cannot be fetched) into docs/reference/datasheets.mdAIUS-REPLAY-CAPTURES/<id>.iec (LFS by .gitattributes:9), each checked against the listing's size; every call retries 503 sd_busy (openapi.json:737, aius_optical_app.cpp:1531). The manifest records id, bytes and sha256 per capture, the name and listed size of every .part row, and the board's build_revision; no card date, since neither the listing nor the download carries one. delete-captures: DELETE /api/replays {\"id\": ...} for each .iec id whose archived file is committed and whose sha256 matches, then for each .part id in the committed manifest, run while the replay routes still exist, ending with a listing that must be empty. delete-www (after removal and a sync): DELETE /sd/www/replays.html, replays.js, replays.css and replays.html.gz; after 4h each answers 200 at accept and flushes later, so it then polls /api/status until sd_flush.dirty reads 0 (closure N5). The parent records the captures' provenance in aius-replay-manager.md and deletes the tool only after delete-www has drained"
+  - "firmware/src/optical_main.cpp, app_replay_delete (step 1, before the archive run; closure S2): today it removes only /aius/replays/<id>.iec (:7219-7225), although openapi.json:766 already promises a .part delete. It removes <id>.part when no <id>.iec exists, under the same sd_busy gate and direct_card_settle, and ships by OTA before the owner runs archive. Chosen over the alternatives: after removal the ordinary SD file route deletes only under www/, and a boot-time sweep would be new firmware outliving replay"
+  - "firmware/lib/aius_replay: deleted. aius_tx_gate.h moves to firmware/lib/aius_audio/src (S11): its real includers are optical_main.cpp:46 and test_tx_gate.c:7 (aius_input_liveness.h only names it in a comment), and both keep the plain #include \"aius_tx_gate.h\" (closure S11): the optical envs already reach lib/aius_audio/src (optical_main.cpp includes aius_audio_clock.h from it), and test.sh passes -I$fw_root/lib/aius_audio/src to other suites (:554, :879), so the tx-gate arm's -I$fw_root/lib/aius_replay/include (:859) becomes that -I, and the aius_replay -I at :817 goes. A ../lib/... relative include would resolve from firmware/test/tx-gate to firmware/test/lib and not compile. Today it reaches aius_codec.h and aius_pipeline.h through aius_replay.h, so it or its includers add those directly. Its AiusReplaySource argument and replay source state go"
+  - "firmware/src/optical_main.cpp (432 replay references): replay_refill_service, replay_source_service, replay_clock_service, replay_job_advance, g_replay_* (g_replay_service with its ring, g_replay_job, g_replay_transfer, g_replay_diag), the replay ops and status replay fields go, with 4g's fill_busy gate in app_replay_start and web_cache_replay_playing (:9034, used at :9057), g_audio_ingress_source and the held dispatch for /api/replays. platform_replay (:10401-10442) becomes platform_service and keeps, in today's order, admission_sd_window_sample, sd_lifecycle_service (:9177, the 4g fill walk within it), dsp_idle_apply_service (landed by 4j before sample_rate_service; closure S1), sample_rate_service, tx_gate_service, input_fault_service, input_dark_service and the recorder drain. Clock (owner Q3, S7): clock.master stays in the status object as the constant input for client compatibility; clock.state loses replay (:4065-4066); the replay clock reconciler and the master shims go, and setup() pins the input as master once, explicitly. http_home_page.cpp:25 loses the Replay manager link"
   - "firmware/lib/aius_boot, firmware/lib/aius_runtime, firmware/src/aius_runtime_teensy.cpp and .h: AIUS_BOOT_CHECKPOINT_REPLAY becomes AIUS_BOOT_CHECKPOINT_SERVICE with id 7 and its budget row unchanged, so checkpoint_walltime_us[7] keeps its index (status is index-only); ops.replay and aius_runtime_teensy.h:89 platform.replay become service; the aius_runtime.c:42-49 budget comment follows; checkpoint labels live only in docs/reference/usb-control-protocol.md:149 and firmware/tools/net/aius_recovery_smoke.py:123, which read service"
   - "firmware/lib/aius_clock: AIUS_CLOCK_SOURCE_REPLAY, the rate model's 48 kHz replay-master case and the clock plan's replay cases go"
   - "firmware/lib/aius_sd (S5): AiusSdJobKind takes explicit values (PROBE 0 to DELETE 5, CACHE_FILL 7) and 6, REPLAY_REFILL, is retired, never reused, so CACHE_FILL keeps its wire value; openapi.json:2299 and the event documentation mark job kind 6 and event type 3 retired"
-  - "firmware/lib/aius_http and firmware/src/aius_optical_app.cpp and .h: the /api/replays* routes, AIUS_HTTP_ROUTE_SD_REPLAY (aius_http.c:236-241) and replay ops go, so a /sd/replays/ path falls to the ordinary SD file route. What survives, renamed to vector or ID terms (S1): replay_id_chars_valid, AIUS_HTTP_MAX_REPLAY_ID, AIUS_OPTICAL_APP_REPLAY_ID_STORAGE, AIUS_REPLAY_MAX_ID_LENGTH and MeasureSession.vector_id, which /api/measure's body parsing uses; OTA staging's AIUS_SD_INSTALL_APPEND_PART and its Content-Range parsing; aius_json's body reader"
+  - "firmware/lib/aius_http and firmware/src/aius_optical_app.cpp and .h: the /api/replays* routes, AIUS_HTTP_ROUTE_SD_REPLAY (aius_http.c:236-241) and replay ops go, so a /sd/replays/ path falls to the ordinary SD file route. What survives, renamed to vector or ID terms (S1): replay_id_chars_valid, AIUS_HTTP_MAX_REPLAY_ID, AIUS_OPTICAL_APP_REPLAY_ID_STORAGE and MeasureSession.vector_id, which /api/measure's body parsing uses. AIUS_REPLAY_MAX_ID_LENGTH (aius_replay.h:42, 48) dies with aius_replay.h; vector_id (optical_main.cpp:7805) is sized by the renamed AIUS_OPTICAL_APP_REPLAY_ID_STORAGE (aius_optical_app.h:36, AIUS_HTTP_MAX_REPLAY_ID + 1, also 48 + 1), so the ID bound keeps one home, aius_http.h:20 (closure N1). Also surviving: OTA staging's AIUS_SD_INSTALL_APPEND_PART and its Content-Range parsing; aius_json's body reader"
   - "replay parameters in surviving libraries (S10): aius_tx_fill_sensor_pre's replay_block (aius_tx_fill_sensor.h:155), AIUS_AUDIO_INGRESS_GAP_SHORT_REPLAY and ingress_drop_short_replay, aius_optical_web_fill_paused's replay argument (aius_optical_app.h:1035) and AiusReplaySource go with their callers"
   - "firmware/platformio.ini: the aius_replay source filter and include lines and AIUS_TX_GATE_OPEN_REPLAY_TARGET_FRAMES (:326-333) go"
-  - "firmware/sd/www (B1, owner Q1): replays.css is the shared chrome for every SD page (tokens, nav, .card, .pill), so it is renamed sd-chrome.css, not deleted; index.html:9, status.html:9, mixer.html:13 and upgrade.html:9 link it, and the comments citing it (dsp-editor.css, mixer.css, upgrade.css, sd-shared.js:28, the page heads) follow. replays.html and replays.js are deleted, after the Live processing card (replays.html:73-77, replays.js:513-541, drawWaveform at sd-shared.js:235) moves to status.html and status.js. Every page's nav, sd-shared.js and openapi.json (/api/replays*, replay status fields, clock.state replay, 503 fill_busy) drop replay; www_bundle.py and aius-sd-sync.sh drop the replays page"
+  - "firmware/sd/www (B1, owner Q1): replays.css is the shared chrome for every SD page (tokens, nav, .card, .pill), so it is renamed sd-chrome.css, not deleted; index.html:9, status.html:9, mixer.html:13 and upgrade.html:9 link it, and the comments citing it (dsp-editor.css, mixer.css, upgrade.css, sd-shared.js:28, the page heads) follow. replays.html and replays.js are deleted, after the Live processing card (replays.html:73-77, replays.js:513-541, drawWaveform at sd-shared.js:235) moves to status.html and status.js. Every page's nav, sd-shared.js and openapi.json (/api/replays*, replay status fields, clock.state replay, 503 fill_busy) drop replay; so do openapi.json's other replay mentions (closure N2): /api/measure's descriptions (:285, :352, :1749, :1774, :1834, the stimulus now a U24 render), the APPEND_PART and Content-Range wording that cites the replay upload (:466, :496, :1032), and the status brief's 'exactly ... tx_gate.replay_running' (:32, with its example and schema); www_bundle.py and aius-sd-sync.sh drop the replays page"
   - "firmware/tools (B2): firmware/tools/ac3_vectors already has its own generate.sh and README.md, so replay_samples' generate.sh and validate.py move to a new firmware/tools/iec_fixtures/; test.sh:823-848, dsp_matrix_round.py:35-37, ac3_vectors/README.md:74, gen_iec_stream.py:63, dsp_characterize/README.md:87, docs/reference/user-interface.md:309 and firmware/.gitignore:13 (the generated pack, about 66 MB) follow. replay_samples' eac3_acceptance.py and upload.sh are deleted. recorder_transitions.py loses --with-replay, the loss to replay leg and its fill_busy retry; aius_rate_bench.py loses the replay phase label and the clock.state replay arm (:461)"
 targeted-proof:
   - "host: itcm-placement (verify_target.py): no optical env's symbol table names replay, and aius_replay is absent from EXPECTED_LDF_LIBS with a case that a link carrying it fails"
   - "host: optical-app and runtime-target: GET /api/replays and POST /api/replays/start answer 404, and PUT /sd/replays/x, with auth and a mounted card in the fixture, answers the SD file route's refusal, not a replay upload; an AC-3 and a PCM carrier still open the gate; a fill walk in progress refuses nothing it refused only for replay; /api/measure start and GET keep their request and response keys (S1); optical-app's test_bitstream_ui.py reads status.html, not replays.html"
-  - "host: optical-cutover: REPLAY_REQUIRED_FUNCTIONS and REPLAY_SIZING_SOURCES go; platform_service calls sd_lifecycle_service and the six other services in today's order; the no-direct-SD scan covers platform_service; setup() pins the input master once"
-  - "host: tx-gate (header from aius_audio by relative include), clock (no replay source; live plans unchanged), http, tx-governor (Phase J replay floor case gone), sd (CACHE_FILL is 7, no kind 6), sd-target, web-cache, boot, runtime, recorder, input-liveness, input-dark, pipeline, audio-ingress, tx-fill-sensor, json, dts, ota (APPEND_PART and Content-Range unchanged), status-body-bound (clock.state without replay, clock.master input, new peak recorded): green with replay cases deleted, not skipped"
+  - "host: optical-cutover: REPLAY_REQUIRED_FUNCTIONS and REPLAY_SIZING_SOURCES go; platform_service calls sd_lifecycle_service and the seven other services in today's order, dsp_idle_apply_service (4j) before sample_rate_service (closure S1); the no-direct-SD scan covers platform_service; setup() pins the input master once"
+  - "host: tx-gate (plain include, header found through -I$fw_root/lib/aius_audio/src), clock (no replay source; live plans unchanged), http, tx-governor (Phase J replay floor case gone), sd (CACHE_FILL is 7, no kind 6), sd-target, web-cache, boot, runtime, recorder, input-liveness, input-dark, pipeline, audio-ingress, tx-fill-sensor, json, dts, ota (APPEND_PART and Content-Range unchanged), status-body-bound (clock.state without replay, clock.master input, new peak recorded): green with replay cases deleted, not skipped"
   - "host: stack-bound and producer-isolation: the HTTP replay chains and replay roots leave the tables, which record the new worst figures"
   - "host: memory (S6): all four optical envs (teensy41-optical, -slot-a, -slot-b, -fault) link; OCRAM free, ITCM free, _ebss and _VectorsRam re-recorded; the measured OCRAM gain (the ring in g_replay_service, plus g_replay_job, g_replay_transfer and g_replay_diag) recorded; this phase's commit moves every floor to its own link"
   - "host: sd-editor (replays.test.js deleted, its drawWaveform case (:687) moved to status.test.js with the Live processing card; a new case that every page's stylesheet links resolve to a file in firmware/sd/www; openapi, status, dsp-editor, mixer and upgrade tests without replay), www-bundle, measure-vectors (arming order, mixer set and read back, looped render, no /api/replays call), rate-gate-capture, rate-runner, recovery-runner, iec-fixtures (the moved generate.sh output passes validate.py and the IEC61937 parser oracle), registry: every remaining suite green; all four optical images build"
-  - "device (owner, U24 bench, step 1, before removal): measure_run.py with the aplay stimulus returns /api/measure results that match the last replay-driven run within the tool's tolerance; replay_retire.py archive pulls every card capture, the parent commits them, then delete-captures empties /aius/replays"
-  - "device (owner, after removal): source off, then AC-3 playing: /api/replays answers 404, no page links replays, every page styled, the Live processing card live on status.html, underrun_episode_count delta 0 across a page-load round, checkpoint_walltime_us[7] recorded against REPLAY's 1,060 us; then replay_retire.py delete-www"
+  - "device (owner, U24 bench, step 1, before removal; closure S3): the baseline is a replay-driven run with today's tool before measure-port lands: measure_run.py's measure session JSON for each corpus vector and its isr_cost output, saved as firmware/tools/measure_vectors/baseline-replay.json with the board's build_revision. The ported measure_run.py gains --baseline FILE and passes when, for every vector, the session retires with fail_reason none and each channel's thd_n_db, snr_db and thd_db sits within 1.0 dB of the baseline's (a figure at its floor, openapi.json's floors object, in both runs counts as equal), and isr_cost prints PASS under its existing ISR_GATE_CYCLES gate (measure_run.py:36). The owner OTAs the app_replay_delete change, replay_retire.py archive pulls every complete capture, the parent commits them with the manifest, then delete-captures ends with an empty /aius/replays listing, .part files included"
+  - "device (owner, after removal): source off, then AC-3 playing: /api/replays answers 404, no page links replays, every page styled, the Live processing card live on status.html, underrun_episode_count delta 0 across a page-load round, checkpoint_walltime_us[7] recorded against REPLAY's 1,060 us; then replay_retire.py delete-www, done when sd_flush.dirty reads 0 and GET of each deleted page answers 404"
 fan-out: # S3 order: measure-port first, committed and bench-proven by the owner; then firmware-removal, web-ui-removal, tools-and-tests and docs concurrently, with the handoffs named per unit
   - name: measure-port
     owned-paths:
@@ -6450,6 +6452,8 @@ fan-out: # S3 order: measure-port first, committed and bench-proven by the owner
       - firmware/test/measure-vectors/**
       - firmware/tools/replay_retire.py
       - docs/reference/datasheets.mdAIUS-REPLAY-CAPTURES/**
+      - firmware/src/optical_main.cpp # app_replay_delete only, step 1 (closure S2); it builds teensy41-optical-slot-a for the owner's OTA
+    handoff: the owner's baseline-replay.json run precedes the measure_run.py port (closure S3)
   - name: firmware-removal
     owned-paths:
       - firmware/lib/**
@@ -6509,6 +6513,7 @@ fan-out: # S3 order: measure-port first, committed and bench-proven by the owner
       - firmware/test/rate-gate-capture/**
       - firmware/test/rate-runner/**
       - firmware/test/recovery-runner/**
+    handoff: renames aius_recovery_smoke.py:123's REPLAY checkpoint label to SERVICE from firmware-removal's report of the checkpoint rename (closure N4)
   - name: docs
     owned-paths:
       - docs/reference/**
@@ -6522,13 +6527,13 @@ fan-out: # S3 order: measure-port first, committed and bench-proven by the owner
       - docs/plans/aius-output-jitter.md
       - docs/plans/aius-open-work-register.md
       - docs/plans/aius-eac3-support.md
-    handoff: updates firmware/README.md's suite list from firmware-removal's report; the registry run, which cross-checks it, goes last
+    handoff: updates firmware/README.md's suite list and usb-control-protocol.md:149's checkpoint 7 label (replay to service, closure N4) from firmware-removal's report; the registry run, which cross-checks it, goes last
 review-intensity: active
 commit-checkpoint:
   green: [measure-vectors, tx-gate, optical-app, optical-cutover, runtime-target, clock, clock-target, http, tx-governor, stack-bound, producer-isolation, sd, sd-target, web-cache, boot, runtime, json, ota, recorder, input-liveness, input-dark, pipeline, audio-ingress, tx-fill-sensor, dts, status-body-bound, itcm-placement, memory, sd-editor, www-bundle, rate-gate-capture, rate-runner, recovery-runner, ac3-vectors, iec-fixtures, registry]
   buildable: [teensy41-optical, teensy41-optical-slot-a, teensy41-optical-slot-b, teensy41-optical-fault]
   parent-commit: "refactor(aius): retire replay (Phase 4i)"
-  coordination: "measure-port commits alone first ('feat(aius): measure_run.py drives a U24 aplay stimulus; replay_retire.py archives card captures (Phase 4i step 1)'), the archived captures follow in their own commit, and removal waits for the owner's bench proof and delete-captures; the four removal units then run on disjoint paths with the handoffs above, firmware-removal alone building the optical envs; the parent edits this plan and promotes CLAUDE.md"
+  coordination: "measure-port commits alone first ('feat(aius): measure_run.py drives a U24 aplay stimulus; replay_retire.py archives card captures; app_replay_delete removes .part files (Phase 4i step 1)'), after the owner's baseline run; the owner OTAs it, the archived captures and manifest follow in their own commit, and removal waits for the owner's bench proof and delete-captures; the four removal units then run on disjoint paths with the handoffs above, firmware-removal alone building the optical envs; the parent edits this plan and promotes CLAUDE.md"
 ```
 
 **Order: land idle apply, port the stimulus, archive the captures,
@@ -6538,25 +6543,30 @@ while the replay routes exist. Phase 4j (a dependency) lands first, so
 a carrier-less save no longer waits for an audio block that only a
 carrier or a replay could supply.
 
-1. measure-port, committed alone. The owner runs the measure bench and
-   `replay_retire.py archive`; the parent commits the captures; the
-   owner runs `delete-captures`.
+1. The owner saves the replay-driven baseline
+   (`baseline-replay.json`); measure-port is committed alone, with the
+   `app_replay_delete` `.part` change. The owner OTAs that image, runs
+   the measure bench against the baseline and `replay_retire.py
+   archive`; the parent commits the captures and manifest; the owner
+   runs `delete-captures`.
 2. firmware-removal, web-ui-removal, tools-and-tests and docs, with the
    handoffs in the fan-out (S3).
 3. The parent rewrites this plan's replay text and 4h's replay
    artifacts (below), folds the cross-plan edits, re-records memory and
    checkpoint figures, and promotes `CLAUDE.md`.
 4. The owner's device run after removal, by OTA once the owner allows
-   one, then `replay_retire.py delete-www` and the tool's deletion.
+   one, then `replay_retire.py delete-www`; the parent deletes the tool
+   once `sd_flush.dirty` reads 0, since after 4h a www DELETE answers
+   200 at accept and flushes later.
 
 **What must survive.**
 
-- `aius_tx_gate.h`, moved to `firmware/lib/aius_audio/src` and included
-  by relative path, with `aius_codec.h` and `aius_pipeline.h` included
-  directly (S11).
+- `aius_tx_gate.h`, moved to `firmware/lib/aius_audio/src` and still
+  included by name, the tx-gate suite's `-I` pointing there, with
+  `aius_codec.h` and `aius_pipeline.h` included directly (S11).
 - Everything `platform_replay` runs besides replay: SD lifecycle and
-  4g's fill walk, sample rate, tx gate, input fault and dark, recorder
-  drain. The checkpoint keeps id 7, so its 1,060 µs (the figure behind
+  4g's fill walk, 4j's idle DSP apply, sample rate, tx gate, input fault
+  and dark, recorder drain. The checkpoint keeps id 7, so its 1,060 µs (the figure behind
   4f's bound D) loses only the three replay services, which idle with no
   replay running; expect a small drop and record it rather than assume
   it.
@@ -6583,8 +6593,12 @@ and :7338.
 non-replay half, or removed where it has none: the `dat3_remuxed`
 proof's replay listing half, "replay routes keep the gate", "507
 sd_upload stays for a replay upload", the Q3 rule that a flush has no
-replay interlock, and the walk proof's "a replay start answers 503
-fill_busy only while the walk is incomplete". **Re-run this dependency
+replay interlock, the walk proof's "a replay start answers 503
+fill_busy only while the walk is incomplete", and (closure S8) "the
+replay listing and the replay delete" among the direct card ops, "the
+replay gate (503 fill_busy ...) lifts" in the fill walk clause, and the
+case "a replay upload while a flush runs answers 507 sd_upload as
+today". **Re-run this dependency
 check once 4h closes**, since 4h's contract is still under revision.
 
 **Cross-plan edits.**
@@ -6699,6 +6713,29 @@ by its resolution.
   de-auth only, and the register's R-N5 and dead links: all folded into
   the seams, proofs and cross-plan edits above.
 
+**Closure review (2026-10-10): NOT READY, no blocker.** Each finding is
+followed by its resolution.
+
+- **S11 (open).** A `../lib/...` include resolves under
+  `firmware/test/` and `lib/aius_audio/src` is already on test.sh's
+  path. Resolved: plain include kept, the tx-gate `-I` at `:859`
+  re-pointed.
+- **S8 remainder.** Three more 4h replay passages. Resolved: added to
+  the 4h rewrite list.
+- **S1.** 4j adds `dsp_idle_apply_service` to the checkpoint. Resolved:
+  seam and proof count seven services, naming it.
+- **S2.** Owner, 2026-10-10: archive complete `<id>.iec` rows only,
+  fail on `truncated:true`, delete `.part` files with names and sizes in
+  the manifest. Resolved: `app_replay_delete` removes `<id>.part` in
+  step 1, shipped by OTA before the archive run.
+- **S3.** "The tool's tolerance" had no criterion. Resolved: a saved
+  replay-driven baseline, `--baseline` within 1.0 dB per figure, and
+  `isr_cost`'s existing gate.
+- **N1 to N5.** The ID bound's home, openapi's other replay mentions,
+  the unsourced card date dropped and `sd_busy` retried, the two label
+  handoffs, and the `sd_flush` drain before the tool's deletion: folded
+  above.
+
 ### Phase 4j Idle DSP apply
 
 ```yaml
@@ -6706,31 +6743,38 @@ phase: 4j
 title: A DSP save applies with no audio flowing
 status: planned
 depends-on: phase-4h
-prebuild-review: pending
+prebuild-review: folded, closure pending # NOT READY 2026-10-10 (B1, S1 to S4, N1 to N3), folded with owner answer
 outcome: >-
-  A DSP model staged while no audio is flowing (PUT /api/dsp/config, a
-  preset Apply, a card reload) applies within one service epoch:
-  g_active_model takes the staged model and its origin,
-  config_generation advances once and config_pending turns false. With
-  no audio flowing there is no DSP state to cross-fade, so the apply is
-  the model swap plus apply_config's coefficient build at the last
-  stream rate, or no build before the first stream, whose first block
-  builds them as today. aius_dsp_set.py --wait then exits 0 with no
-  carrier instead of timing out (exit 3), and its next run no longer
-  meets a lingering config_pending (exit 2). A carrier arriving later
-  plays the applied model with no second model step.
+  A DSP model staged while no block is reaching the DSP (PUT
+  /api/dsp/config, a preset Apply, a card reload; with or without a
+  carrier, owner 2026-10-10) applies within one service epoch:
+  g_active_model takes the staged model and its origin, apply_config
+  builds its coefficients at g_applied_stream_rate_hz (48 kHz from boot,
+  else the last stream's rate), config_generation advances once and
+  config_pending turns false. With no blocks flowing there is no DSP
+  state to cross-fade, so the apply is the model swap plus the build;
+  the built coefficients always match the reported model, a cold boot
+  included (B1). aius_dsp_set.py --wait then exits 0 with no carrier
+  instead of timing out (exit 3), and its next run no longer meets a
+  lingering config_pending (exit 2). A stream arriving later plays the
+  applied model with no second model step; one at a new rate rebuilds
+  at its first block as today.
 unit: parent-only
 seams:
-  - "firmware/src/optical_main.cpp: AiusAudioProcessor::enqueue stamps g_dsp_last_block_ms where it consumes g_dsp_apply_pending (:2394-2414). A new dsp_idle_apply_service(now_ms) runs in the service checkpoint (platform_replay today, platform_service after 4i) before sample_rate_service, and applies when aius_dsp_idle_apply_due() holds: the block arm's steps (copy the model, adopt g_pending_dsp_origin, advance g_config_generation, clear the flag), plus apply_config(g_active_model, g_applied_stream_rate_hz) when a stream has run. The staging comment at :3514-3522, which today describes a carrier-less board as never applying, is rewritten"
-  - "lib/aius_dsp_runtime_config: aius_dsp_idle_apply_due(apply_pending, gate_open, last_block_ms, now_ms), a pure predicate: true when an apply is pending, the tx gate is closed and no block has reached the apply point for AIUS_DSP_IDLE_APPLY_MS (100 ms)"
-  - "a carrier arriving: checkpoints never overlap (:3509-3512), so an idle apply completes inside the service checkpoint before the next AUDIO checkpoint, whose block then finds the flag clear and the model current; a block within 100 ms leaves the apply to the block boundary, so exactly one path consumes each arm; a stream at a new rate rebuilds coefficients at its first block as today"
-  - "notes: firmware/tools/dsp_config/aius_dsp_set.py:15-16 and :25-30, CONTRIBUTING.md:159-161 and docs/plans/aius-sd-mixer-dashboard.md:518-520 say a save applies at the next audio block or, with none flowing, within one service epoch; neither cites replay"
+  - "firmware/src/optical_main.cpp, AiusAudioProcessor::enqueue (cite by symbol; 4h is editing this file): every block that reaches the consume point (today's read of g_dsp_apply_pending, :2394) stamps g_dsp_last_block_ms, unconditionally, before and outside if (model_pending) (N2). The block arm's copy, build and generation decisions move into aius_dsp_apply_decide (below), which enqueue and the idle arm both call"
+  - "firmware/src/optical_main.cpp: a new dsp_idle_apply_service(now_ms) runs in the service checkpoint (platform_replay today, platform_service after 4i) before sample_rate_service, and applies when aius_dsp_idle_apply_due() holds: copy the model, adopt g_pending_dsp_origin, always call apply_config(g_active_model, g_applied_stream_rate_hz), advance g_config_generation once, clear the flag (B1). Chosen over a force-rebuild flag for the next block because the state it needs always exists (g_applied_stream_rate_hz starts at 48000, :2298, and begin_pipeline builds AIUS_OPTICAL_CONFIG at that rate, :2748), so the generation never advances for a model that is not built, and enqueue keeps one rebuild rule (model pending or rate changed, :2397-2398) instead of gaining a second flag to consume. Without it a cold boot with a card and the source off stages the card's model, the idle arm copies it with no build, a 48 kHz source finds neither condition true, and audio runs the factory default while GET reports the card's model"
+  - "lib/aius_dsp_runtime_config: aius_dsp_idle_apply_due(apply_pending, last_block_ms, now_ms), a pure predicate: true when an apply is pending and no block has reached the consume point for AIUS_DSP_IDLE_APPLY_MS (100 ms), gate open or not (S3, owner 2026-10-10: a carrier that is locked but delivers no blocks counts as idle). aius_dsp_apply_decide(pending, applied_rate_hz, block_rate_hz or 0 for the idle arm) returns copy, build rate and generation steps, so the block and idle arms share one host-testable rule (S2)"
+  - "concurrency (S1): checkpoints no longer exclude each other, since 4e's producer yield runs a nested AUDIO pass at a checkpoint yield point and inside the SD wait hook (aius_producer_yield_plat_run_pass, aius_sdio_wait_hook, optical_main.cpp:10492-10495 and :10517-10520). The rule is that dsp_idle_apply_service, apply_config included, reaches no yield point between reading g_dsp_apply_pending and clearing it, so no nested pass sees a half-applied arm; the service then completes before any later block, which finds the flag clear and the model built. A block within 100 ms leaves the apply to the block boundary, so exactly one path consumes each arm"
+  - "comments with stale no-carrier text (N1), rewritten to say a staged model applies at the next block or, with none reaching the DSP for 100 ms, within one service epoch: g_config_generation's comment above make_default_active_model (optical_main.cpp:710-712), g_staged_generation's (:744-746, 'nothing ever applies'), and http_dsp_config_json's head comment (:3496-3499, 'never applies', and :3509-3512's 'checkpoints never overlap'). The staged_generation paragraph (:3514-3522) is rewritten from 4h's version, which moves the advance to accept (N3)"
+  - "notes: firmware/tools/dsp_config/aius_dsp_set.py:15-16, :25-30, the exit-3 help at :49 and the timeout message at :339-340 ('no carrier?') (N1), CONTRIBUTING.md:159-161 and docs/plans/aius-sd-mixer-dashboard.md:518-520 say a save applies at the next audio block or, with none flowing, within one service epoch; none cites replay"
+  - "platform_service after 4i: 4j lands first, so 4i's platform_service seam and proof count dsp_idle_apply_service among its services (S4, folded in 4i as its S1)"
 targeted-proof:
-  - "host: dsp (test_dsp_runtime_config.c): the predicate is false with nothing pending, with the gate open, and under 100 ms since the last block; true at 100 ms with the gate closed; correct across a millis() wrap"
-  - "host: optical-cutover: dsp_idle_apply_service runs in the service checkpoint before sample_rate_service; enqueue stamps g_dsp_last_block_ms where it consumes the flag; the idle arm advances g_config_generation once and clears the flag"
-  - "host: dsp-config (test_aius_dsp_set.py): with a fake device whose config_pending clears with no carrier, --wait exits 0, and the next run is not refused"
-  - "device (owner, source off): aius_dsp_set.py --set features.limiter=true --wait 10 exits 0 within 2 s, config_generation advanced by one and config_pending false; the U24 re-authorised, AC-3 plays the applied model (GET unchanged) with underrun_episode_count delta 0"
-fan-out: none # one firmware file, one library predicate, one tool docstring and two notes
+  - "host: dsp (test_dsp_runtime_config.c): the predicate is false with nothing pending and under 100 ms since the last block; true at 100 ms whatever the gate (it takes no gate input); correct across a millis() wrap. B1 sequence through aius_dsp_apply_decide with a fake build recording the built model and rate: boot (default built at 48 kHz), stage a model at t 0, no block, idle step at 100 ms, then a 48 kHz block: the built model is the staged one, built once, and the generation advanced once; this case fails against a no-build idle arm (S2). A block at 50 ms consumes the arm and the idle step at 100 ms then does nothing"
+  - "host: optical-cutover: dsp_idle_apply_service runs in the service checkpoint before sample_rate_service; enqueue stamps g_dsp_last_block_ms ahead of and outside the if (model_pending) branch, so every block reaching the consume point stamps it (N2); both arms call aius_dsp_apply_decide; the idle arm calls apply_config unconditionally"
+  - "host: producer-isolation (S1): dsp_idle_apply_service is a root whose call graph, apply_config included, reaches no yield point (no aius_producer_yield_* call, no SD primitive that runs aius_sdio_wait_hook); a case that adds a yield call to the root fails"
+  - "host: dsp-config (test_aius_dsp_set.py): the exit-3 help and timeout message name no missing carrier, a case that fails before 4j (N1); the existing wait cases stay green"
+  - "device (owner, S2): cold boot with a card whose dsp.json enables the limiter at a threshold the AC-3 programme crosses (a setting the factory default lacks; read AIUS_OPTICAL_CONFIG), source off; wait 1 s; then a 48 kHz AC-3 source: the applied model is confirmed by measurement, limiter_gain_reduction_db non-zero under programme, not by GET; the control boot with the limiter off reads 0. Then, source off, aius_dsp_set.py --set features.limiter=false --wait 10 exits 0 within 2 s, config_generation advanced by one and config_pending false, and with the source back on limiter_gain_reduction_db reads 0, underrun_episode_count delta 0"
+fan-out: none # one firmware file, one library predicate and decision, one tool's text and two notes
 commit-checkpoint:
   green: [dsp, dsp-config, optical-cutover, optical-app, stack-bound, producer-isolation, memory]
   buildable: [teensy41-optical, teensy41-optical-slot-a, teensy41-optical-slot-b, teensy41-optical-fault]
@@ -6744,6 +6788,26 @@ review, and it ships once 4h lands without waiting for 4b. It follows
 `optical_main.cpp` lines; it precedes 4i's removal because a replay is
 today's only carrier-less way to apply a save, so retiring replay first
 would leave none.
+
+**Prebuild review (2026-10-10): NOT READY.** Each finding is followed
+by its resolution.
+
+- **B1.** A no-build idle apply left a cold boot running the factory
+  default while GET reported the card's model. Resolved: the idle arm
+  always builds at `g_applied_stream_rate_hz`, rather than a
+  force-rebuild flag (reasons in the seams).
+- **S1.** "Checkpoints never overlap" is stale since 4e's nested
+  passes. Resolved: the rule is no yield point between the flag read
+  and clear, proven by producer-isolation.
+- **S2.** The proof could not fail. Resolved: a host B1 sequence
+  through the shared decision, and a device run that confirms the model
+  by limiter gain reduction from a cold boot.
+- **S3.** Owner, 2026-10-10: a locked carrier delivering no blocks is
+  idle. Resolved: the gate input is dropped from the predicate.
+- **S4.** 4i omitted the new service. Resolved in 4i (its closure S1).
+- **N1 to N3.** Stale no-carrier comments and tool text named; the
+  stamp is per block at the consume point; the staged_generation
+  comment is rewritten from 4h's version.
 
 ### Phase 4c `test.sh` runs every `--suite` given ✓ SHIPPED 2026-10-06
 
