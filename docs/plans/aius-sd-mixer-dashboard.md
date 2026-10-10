@@ -408,6 +408,28 @@ several rounds with the user's review between each.
     top-middle dot amber. Round 1 follows the source.
   - Favicon on a light browser chrome. The off-white dots vanish, so either
     keep the black tile or add a `prefers-color-scheme: light` colour swap.
+- Owner on round 1, 2026-10-10: likes the text mark and the six-into-two
+  concept, but none of the five variants works. Round 2 widens the search
+  instead of narrowing it: 8 to 10 structurally different readings of
+  "six channels into two" paired with the wordmark, both grid orientations,
+  with the favicon and nav lockup shown for each. Page: `round-2.html`.
+- Round 2 delivered 2026-10-10 at
+  `https://apps.example.net/apps/preview/aius-logos/round-2.html`, nine
+  numbered concepts:
+  - 01 tittle-rails;
+  - 02 downmix-traces, the real 5.1 routing;
+  - 03 transpose-meters, 3x2 re-stacked into two meters with a phantom
+    centre;
+  - 04 knockout-tile;
+  - 05 rule-rhythm;
+  - 06 stereo-brackets;
+  - 07 mux-block;
+  - 08 split-centre;
+  - 09 braille-i.
+  The agent's picks are 03 and 02. Every favicon is a tile, so light
+  grounds need no colour swap. Generator:
+  `$CLAUDE_SESSION_SCRATCH/gen_logos_r2.py` (session `74c6ef4f`; reaped
+  after about a week). Awaiting the owner's picks.
 
 ### Phase 4: A committed DSP-config setter with `--auth-file` ✓ SHIPPED
 
@@ -460,6 +482,9 @@ tool `dsp_characterize.py` stays read-only.
   diff against a live GET.
 
 ### Phase 5: Enable the limiter on the board
+
+Owner, 2026-10-10: the owner runs this phase by hand; agents do not run it.
+The block below stays as the owner's reference.
 
 Settled by the owner, 2026-10-07: enable the limiter. The live config read at
 08:20 UTC had `features.limiter` false, with centre 1.5, surround 0.855,
