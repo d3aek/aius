@@ -54,18 +54,47 @@ typedef enum {
  * sending, so an application that owns one serializer buffer per response is
  * safe; one that reuses the buffer for another surface in the same epoch is
  * not. */
+typedef bool (*AiusHttpChunkFn)(void *ctx, uint32_t chunk, uint8_t *dst,
+	                            uint32_t *bytes);
+
 typedef struct {
 	AiusHttpApplicationResponseKind kind;
-	unsigned status;
+	/* Narrowed from unsigned so the cache flag bits below share its word:
+	 * the response is held twice in OCRAM, so its size is budgeted. */
+	uint16_t status;
+	/* Optional Content-Encoding / Vary / Cache-Control: no-cache headers for
+	 * the SUCCESS response (immediate, streamed, download); `etag` below
+	 * completes the set (NULL = none) and is copied at accept, so it need
+	 * not outlive the call. An IMMEDIATE status 304 sends headers only
+	 * (content_type may be NULL, the body must be empty). */
+	bool content_encoding_gzip : 1;
+	bool vary_accept_encoding : 1;
+	bool cache_no_cache : 1;
 	const char *content_type;
-	const uint8_t *body;
+	/* With body_chunk set this slot is the chunk source's context instead:
+	 * a chunk-sourced response has no borrowed body. */
+	union {
+		const uint8_t *body;
+		void *body_chunk_ctx;
+	};
 	size_t body_length;
+	const char *etag;
 	AiusSdJobRequest sd_job;
 	/* Nonzero emits "Cache-Control: max-age=<n>" on the SUCCESS response
 	 * (immediate, streamed, or download headers). Error substitutions the
 	 * transaction formats itself never carry it. The value is dispatcher-
 	 * authored, never wire input. */
 	uint32_t cache_max_age_s;
+	/* Optional per-chunk body source for an IMMEDIATE response (it takes the
+	 * place of `body`, whose slot then holds body_chunk_ctx; body_length is
+	 * the total, Content-Length comes from it, and it must be nonzero).
+	 * Chunk n covers body bytes
+	 * [n * AIUS_HTTP_TX_QUOTA, +AIUS_HTTP_TX_QUOTA); the source fills dst
+	 * with exactly that many bytes (fewer only for the last chunk) and sets
+	 * *bytes. It may be called again for the same chunk after a partial
+	 * write, so it must be repeatable. Returning false, or a wrong *bytes,
+	 * closes the connection as a transport fault; sd_settle still fires once.
+	 * Runs in the WRITE arm of the transport service, once per epoch. */
 	/* Optional completion hook (aius-ota-resilience.md Phase 4a), fired
 	 * EXACTLY ONCE at the response's terminal. Two uses:
 	 *
@@ -89,6 +118,7 @@ typedef struct {
 	 * NULL for every response that needs neither. */
 	void (*sd_settle)(void *ctx, bool committed);
 	void *sd_settle_ctx;
+	AiusHttpChunkFn body_chunk;
 } AiusHttpApplicationResponse;
 
 typedef enum {
@@ -150,13 +180,34 @@ typedef enum {
 typedef struct {
 	AiusHttpActionKind kind;
 	uint64_t action_id;
-	uint8_t *read_buffer;
+	/* WRITE of a chunk-sourced body: data is NULL; the executor fills a
+	 * chunk_length-byte buffer with body_chunk(body_chunk_ctx, chunk_index,
+	 * ...) and writes length bytes from chunk_offset into it. The chunk
+	 * fields reuse slots a WRITE never carries (read_buffer, request,
+	 * sd_request, sd_operation, fault), so the action keeps its HEAD size;
+	 * they are meaningful only when kind is WRITE and data is NULL. */
+	union {
+		uint8_t *read_buffer;
+		AiusHttpChunkFn body_chunk;
+	};
 	const uint8_t *data;
 	size_t length;
-	const AiusHttpRequest *request;
-	const AiusSdJobRequest *sd_request;
-	AiusHttpSdOperation sd_operation;
-	uint32_t fault;
+	union {
+		const AiusHttpRequest *request;
+		void *body_chunk_ctx;
+	};
+	union {
+		const AiusSdJobRequest *sd_request;
+		uint32_t chunk_length;
+	};
+	union {
+		AiusHttpSdOperation sd_operation;
+		uint32_t chunk_index;
+	};
+	union {
+		uint32_t fault;
+		uint32_t chunk_offset;
+	};
 } AiusHttpAction;
 
 typedef enum {
@@ -218,7 +269,16 @@ typedef struct {
 	void *sd_settle_ctx;
 	char sd_target_path[AIUS_SD_PATH_STORAGE];
 	char sd_temp_path[AIUS_SD_PATH_STORAGE];
-	char sd_backup_path[AIUS_SD_PATH_STORAGE];
+	/* An IMMEDIATE response owns no SD job, so its backup path is idle: the
+	 * chunk source lives there (valid only while chunk_active). Zero net
+	 * growth in the OCRAM-resident transaction. */
+	union {
+		char sd_backup_path[AIUS_SD_PATH_STORAGE];
+		struct {
+			bool (*fn)(void *ctx, uint32_t chunk, uint8_t *dst, uint32_t *bytes);
+			void *ctx;
+		} chunk;
+	};
 	char content_type[AIUS_HTTP_CONTENT_TYPE_STORAGE];
 	char sd_content_type[AIUS_HTTP_CONTENT_TYPE_STORAGE];
 	AiusHttpFault last_fault;
@@ -236,6 +296,11 @@ typedef struct {
 	bool response_started;
 	bool response_is_download;
 	bool response_streams_body;
+	/* The chunk source in `chunk` is live (IMMEDIATE chunk-sourced body). */
+	bool chunk_active;
+	/* Download cache options latched at accept (AIUS_HTTP_CACHE_*); the ETag
+	 * itself waits in sd_temp_path, idle for a download. */
+	uint8_t cache_flags;
 	bool sd_started;
 	bool sd_cancel_emitted;
 	bool sd_terminal;

@@ -200,6 +200,9 @@ EXPECTED_LDF_LIBS = frozenset({
     "aius_recorder",
     "aius_replay",
     "aius_usb_control",
+    # The PSRAM web cache (Phase 4g): resolved by LDF in every optical env,
+    # gated (every definition FLASHMEM, no `.text`), never allowlisted.
+    "aius_web_cache",
 })
 
 # LDF libraries permitted to emit `.text`. ADDING AN ENTRY HERE REMOVES THE WHOLE

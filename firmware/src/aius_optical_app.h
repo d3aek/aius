@@ -131,7 +131,10 @@ typedef enum {
 	AIUS_OPTICAL_APP_REPLAY_NOT_FOUND,
 	AIUS_OPTICAL_APP_REPLAY_ACTIVE,
 	AIUS_OPTICAL_APP_REPLAY_FAILED,
-	AIUS_OPTICAL_APP_REPLAY_CARRIER_PRESENT
+	AIUS_OPTICAL_APP_REPLAY_CARRIER_PRESENT,
+	/* Phase 4g (owner, audit finding 2): a replay start while the web-cache
+	 * fill walk is incomplete; the route answers 503 fill_busy. */
+	AIUS_OPTICAL_APP_REPLAY_FILL_BUSY
 } AiusOpticalAppReplayResult;
 
 /* One directory entry, as the application read it off the card. `name` is the
@@ -815,6 +818,13 @@ typedef struct {
 	bool recorder_lease_active;
 	bool valid;
 	uint8_t recorder_lease_slot;
+	/* Phase 4g: the web-cache lease a cache-served body holds (the entry
+	 * index and its guard), released by that response's settle hook
+	 * (web_cache_settle) exactly as the recorder lease above. Both sit in
+	 * the 2 B alignment hole before index_entries (ARM offsets 910, 911),
+	 * so the OCRAM instance does not grow. */
+	uint8_t web_lease_entry;
+	bool web_lease_active;
 	/* Scratch for one directory listing, ~3 KB. Written and read entirely
 	 * inside a single dispatch call -- the response borrows `body`, never this
 	 * -- so it does not extend the borrow invariant above. It lives here rather
@@ -878,6 +888,57 @@ bool aius_optical_app_init(AiusOpticalAppDispatcher *dispatcher,
 bool aius_optical_app_set_ota(AiusOpticalAppDispatcher *dispatcher,
                               const AiusOpticalAppOta *ota);
 
+/* ------------------------------------------------------------------ */
+/* Phase 4g: the PSRAM web cache seam (aius-sample-rate-following.md G1 to
+ * G3, G7). The cache itself (lib/aius_web_cache) is the composition's; the
+ * dispatcher reaches it only through this table, so the portable dispatcher
+ * stays free of the cache's carve and hooks.
+ *
+ * `path` arguments are relative to /sd/www with no leading '/'. `lookup`
+ * finds a VALID entry and writes its quoted strong ETag, NUL-terminated, into
+ * `etag`, and on a miss sets `*fault` when the miss is a manifest entry that
+ * failed its own CRC and was dropped (the dispatcher then calls `refill`);
+ * `lease` pins it (one `release` per true lease); `verify` is the
+ * pre-header chunk check with its producer yield point every 8 chunks;
+ * `copy_chunk` is the send-path copy of one 512 B chunk with its CRC on the
+ * copy; `refill` schedules the fill walk to refetch what a CRC fault
+ * dropped; `listing` fills `batch` from the manifest only when the fill has
+ * published every card file of directory `dir` ("presets/"), else returns
+ * false with `batch` untouched and the card is read. The seam is borrowed:
+ * it must outlive its installation. */
+#define AIUS_OPTICAL_APP_ETAG_STORAGE 24u
+/* The body source yields to the producer after every this many chunks. */
+#define AIUS_OPTICAL_APP_WEB_YIELD_CHUNKS 8u
+
+typedef struct {
+	uint8_t entry;
+	uint32_t length;
+} AiusOpticalAppWebHit;
+
+typedef struct {
+	void *context;
+	bool (*lookup)(void *context, const char *path, size_t length,
+	               AiusOpticalAppWebHit *hit, char *etag,
+	               size_t etag_capacity, bool *fault);
+	bool (*lease)(void *context, uint8_t entry);
+	void (*release)(void *context, uint8_t entry);
+	bool (*verify)(void *context, uint8_t entry);
+	bool (*copy_chunk)(void *context, uint8_t entry, uint16_t chunk,
+	                   uint8_t *dst, uint32_t *bytes);
+	void (*refill)(void *context);
+	bool (*listing)(void *context, const char *dir, size_t dir_length,
+	                AiusOpticalAppDirBatch *batch);
+} AiusOpticalAppWebCache;
+
+/* Installs the web cache seam (every member but `context` required), or
+ * removes it with NULL; call it after aius_optical_app_init(), which clears
+ * it. One seam per process: it is held in DTCM, not in the dispatcher, whose
+ * OCRAM instance has no room for a pointer. False for an invalid dispatcher
+ * or a half-wired table (the cache then stays absent: every GET reads the
+ * card). */
+bool aius_optical_app_set_web_cache(AiusOpticalAppDispatcher *dispatcher,
+                                    const AiusOpticalAppWebCache *web_cache);
+
 /* Drops a pending OTA absorb WITHOUT applying it -- the drain backstop for a
  * job whose owning connection was released before its terminal (the storage
  * service drains it ownerless, so the transaction's settle hook never fires).
@@ -920,6 +981,94 @@ const AiusHttpApplicationResponse *aius_optical_app_ota_dispatch(
 const AiusUsbApplicationResponse *aius_optical_app_usb_dispatch(
 	AiusOpticalAppDispatcher *dispatcher,
 	const AiusUsbApplicationRequest *request);
+
+/* ------------------------------------------------------------------ */
+/* Phase 4g G6, G9: the web-cache fill hold (aius-sample-rate-following.md).
+ * The decisions are portable and live here; optical_main.cpp holds the one
+ * instance, starts and cancels the fill jobs and calls these at their seams.
+ *
+ * A cancel latches the hold with no expiry (one latch per cancel). The
+ * canceller's end calls _hold_release(), which drops its latch and sets the
+ * expiry to AIUS_OPTICAL_WEB_FILL_HOLD_MS after that end; every HTTP SD job
+ * completion (_note_http_complete) also sets it to that long after the
+ * completion; a live hold's expiry only moves later (R5-S1), and a lapsed one
+ * stays lapsed however long ago it lapsed (no signed-wrap revival past
+ * 2^31 ms), the next completion or release arming it afresh. The scheduler
+ * starts no fill file while _held() is true. An HTTP SD start that finds a
+ * fill file in flight (_sd_start) cancels it once, latches as its canceller
+ * and is DEFERred at the SD_START arm until the fill has stopped; that
+ * request's HTTP SD job completion is its release. A route that reads the card
+ * directly (aius_optical_app_route_reads_card) does the same at the DISPATCH
+ * arm (_route); its admission is its canceller's release and its end
+ * (_route_end) extends the hold as a job completion does. */
+#define AIUS_OPTICAL_WEB_FILL_HOLD_MS 2000u
+
+typedef struct {
+	uint32_t hold_until_ms;
+	uint32_t holds;   /* cancels that latched the hold */
+	uint32_t cancels; /* cancels that stopped an in-flight fill file */
+	uint8_t latches;  /* latched cancels not yet released */
+	uint8_t armed;    /* hold_until_ms holds an expiry */
+	uint8_t http_canceller; /* the held HTTP SD start owns one latch */
+	uint8_t http_defer;     /* the held SD_START or DISPATCH is held by the fill */
+	uint8_t card_route;     /* an admitted direct-card route has not ended */
+} AiusOpticalWebFill;
+
+void aius_optical_web_fill_init(AiusOpticalWebFill *fill);
+/* Latches the hold. True when `fill_in_flight`: the caller cancels it. */
+bool aius_optical_web_fill_cancel(AiusOpticalWebFill *fill,
+                                  bool fill_in_flight);
+void aius_optical_web_fill_hold_release(AiusOpticalWebFill *fill,
+                                        uint32_t now_ms);
+/* Every HTTP SD job terminal; also the release of an HTTP canceller. */
+void aius_optical_web_fill_note_http_complete(AiusOpticalWebFill *fill,
+                                              uint32_t now_ms);
+/* The HTTP canceller's request ended with no job (shed, torn down): its
+ * release, as a completion would have been. */
+void aius_optical_web_fill_drop_http_canceller(AiusOpticalWebFill *fill,
+                                               uint32_t now_ms);
+bool aius_optical_web_fill_held(const AiusOpticalWebFill *fill,
+                                uint32_t now_ms);
+/* The scheduler's start gate: true (start no fill file) while _held() or
+ * while a replay plays (`replay_playing`: REPLAY or SWITCHING_TO_REPLAY;
+ * owner, closure nit A), so a walk restarted mid-replay waits for its end. */
+bool aius_optical_web_fill_paused(const AiusOpticalWebFill *fill,
+                                  uint32_t now_ms, bool replay_playing);
+/* The SD_START arm. True: DEFER this start; `*cancel` is set on the one
+ * consult that must cancel the in-flight fill file, through the platform's
+ * one cancel entry (which latches via aius_optical_web_fill_cancel). False:
+ * consult the 4f admission as usual. */
+bool aius_optical_web_fill_sd_start(AiusOpticalWebFill *fill,
+                                    bool fill_in_flight, bool *cancel);
+/* Whether the held SD_START was held only by the fill (so 4f's admission
+ * sees a first consult, not a re-consult of its own held start); clears it. */
+bool aius_optical_web_fill_take_defer(AiusOpticalWebFill *fill);
+
+/* The routes whose handlers read the card directly rather than through an SD
+ * job (Phase 4g, audit finding 3): GET /sd/<dir>/ (the index), GET and DELETE
+ * /api/replays. False for NULL. */
+bool aius_optical_app_route_reads_card(const AiusHttpRequest *request);
+/* The DISPATCH arm for such a route. True: DEFER the dispatch; `*cancel` as
+ * for _sd_start. False: run it now; a dispatch the fill held releases its
+ * canceller latch here (the hold then runs AIUS_OPTICAL_WEB_FILL_HOLD_MS from
+ * now), and the route's end is due (_route_end). */
+bool aius_optical_web_fill_route(AiusOpticalWebFill *fill, bool fill_in_flight,
+                                 uint32_t now_ms, bool *cancel);
+/* Any dispatch's end (or shed): when a direct-card route was admitted, its
+ * completion extends the hold like an HTTP SD job completion. */
+void aius_optical_web_fill_route_end(AiusOpticalWebFill *fill, uint32_t now_ms);
+/* Phase 4g (owner, audit finding 6): the cache follows the card. `ready` is
+ * the lifecycle's card-ready, `mounted` the adapter's trusted mount (cleared
+ * by every card-gone fault: a failed mount, a nonzero driver code, an absent
+ * media check, an explicit invalidation), `mounts` its mount count. True when
+ * the cache must be emptied: the card went (ready or mount lost while the walk
+ * belonged to a card), or a new mount appeared (the walk restarts on it).
+ * `*walk_card` (the walk belongs to a mounted card) and `*mounts_seen` are the
+ * caller's state; the walk runs only while `*walk_card`, so after a card-gone
+ * fault it restarts only after the next mount. */
+bool aius_optical_web_fill_follow_card(bool *walk_card, uint32_t *mounts_seen,
+                                       bool ready, bool mounted,
+                                       uint32_t mounts);
 
 #ifdef __cplusplus
 }

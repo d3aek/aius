@@ -45,6 +45,12 @@ os.makedirs(args.out, exist_ok=True)
 
 
 def req(path, body=None, method=None, timeout=5.0):
+    status, text, _ = req_full(path, body, method, timeout)
+    return status, text
+
+
+def req_full(path, body=None, method=None, timeout=5.0):
+    """As req, plus the Retry-After header: (status, text, retry_after)."""
     if method is None:
         method = "POST" if body is not None else "GET"
     r = urllib.request.Request(args.device + path,
@@ -56,20 +62,42 @@ def req(path, body=None, method=None, timeout=5.0):
         r.add_header("Content-Type", "application/json")
     try:
         with urllib.request.urlopen(r, timeout=timeout) as resp:
-            return resp.status, resp.read().decode()
+            return resp.status, resp.read().decode(), None
     except urllib.error.HTTPError as err:
-        return err.code, err.read().decode()
+        return (err.code, err.read().decode(),
+                err.headers.get("Retry-After") if err.headers else None)
     except Exception as err:  # unreachable / timeout
-        return None, str(err)
+        return None, str(err), None
 
 
 def log(msg):
     print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
-def start(replay_id):
-    return req("/api/replays/start",
-               json.dumps({"id": replay_id, "loop": True}))
+FILL_BUSY_BUDGET_S = 120.0
+
+
+def start(replay_id, post=None, sleep=time.sleep, clock=time.monotonic,
+          budget_s=FILL_BUSY_BUDGET_S):
+    """Start a looped replay; retry only `503 fill_busy` (web-cache fill walk
+    incomplete) per Retry-After (absent or bad = 1 s) within `budget_s`, then
+    raise RuntimeError. Any other status is returned for the caller."""
+    post = post or (lambda: req_full(
+        "/api/replays/start", json.dumps({"id": replay_id, "loop": True})))
+    started = clock()
+    while True:
+        status, text, retry_after = post()
+        if status != 503 or '"fill_busy"' not in text:
+            return status, text
+        try:
+            wait = max(float(retry_after), 0.0)
+        except (TypeError, ValueError):
+            wait = 1.0
+        if clock() - started + wait > budget_s:
+            raise RuntimeError(
+                f"replay start still 503 fill_busy after {budget_s:.0f} s "
+                "(web-cache fill walk never completed)")
+        sleep(wait)
 
 
 def stop():

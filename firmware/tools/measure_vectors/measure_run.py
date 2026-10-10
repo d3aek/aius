@@ -37,6 +37,12 @@ ISR_GATE_CYCLES = 30000  # the existing block-to-block dsp_cycles_max spread
 
 
 def call(method, path, data=None, headers=None, retries=4):
+    status, body, _ = call_full(method, path, data, headers, retries)
+    return status, body
+
+
+def call_full(method, path, data=None, headers=None, retries=4):
+    """As call, plus the response headers: (status, body, headers)."""
     last = None
     for attempt in range(retries):
         req = urllib.request.Request(BASE + path, data=data, method=method)
@@ -46,9 +52,9 @@ def call(method, path, data=None, headers=None, retries=4):
             req.add_header(key, value)
         try:
             with urllib.request.urlopen(req, timeout=10) as response:
-                return response.status, response.read()
+                return response.status, response.read(), response.headers
         except urllib.error.HTTPError as error:
-            return error.code, error.read()
+            return error.code, error.read(), error.headers
         except Exception as exc:  # RemoteDisconnected / timeout: defect 24
             last = exc
             time.sleep(1.5 * (attempt + 1))
@@ -60,6 +66,41 @@ def call_json(method, path, obj=None):
         method, path, json.dumps(obj).encode() if obj is not None else None,
         {"Content-Type": "application/json"} if obj is not None else None)
     return status, json.loads(body) if body else {}
+
+
+FILL_BUSY_BUDGET_S = 120.0
+
+
+def replay_start(vector, *, post=None, sleep=time.sleep,
+                 clock=time.monotonic, budget_s=FILL_BUSY_BUDGET_S):
+    """POST /api/replays/start for a looped replay; return (status, reply).
+
+    Retries only `503 fill_busy` (web-cache fill walk incomplete) per
+    Retry-After (absent or bad = 1 s) within `budget_s`, then raises
+    RuntimeError. Any other status is returned unretried."""
+    post = post or (lambda: call_full(
+        "POST", "/api/replays/start",
+        json.dumps({"id": vector, "loop": True}).encode(),
+        {"Content-Type": "application/json"}))
+    started = clock()
+    while True:
+        status, body, headers = post()
+        try:
+            reply = json.loads(body) if body else {}
+        except ValueError:
+            reply = {}
+        if status != 503 or not isinstance(reply, dict) \
+                or reply.get("error") != "fill_busy":
+            return status, reply
+        try:
+            wait = max(float((headers or {}).get("Retry-After")), 0.0)
+        except (TypeError, ValueError):
+            wait = 1.0
+        if clock() - started + wait > budget_s:
+            raise RuntimeError(
+                f"replay start still 503 fill_busy after {budget_s:.0f} s "
+                "(web-cache fill walk never completed)")
+        sleep(wait)
 
 
 def upload(names):
@@ -83,8 +124,7 @@ def measure(vector, f0_l, f0_r, probes):
     body = {"id": vector, "f0_l": f0_l, "f0_r": f0_r}
     if probes:
         body["probes"] = probes
-    status, reply = call_json("POST", "/api/replays/start",
-                              {"id": vector, "loop": True})
+    status, reply = replay_start(vector)
     if status != 200:
         print(f"replay start refused: {status} {reply}")
         return 1
@@ -121,8 +161,7 @@ def isr_phase(armed):
 
 
 def isr_cost():
-    status, reply = call_json("POST", "/api/replays/start",
-                              {"id": "pcm440_m6", "loop": True})
+    status, reply = replay_start("pcm440_m6")
     if status != 200:
         print(f"replay start refused: {status} {reply}")
         return 1
@@ -140,8 +179,7 @@ def isr_cost():
 
 def replay(vector, seconds):
     """Start a looped replay, hold it for `seconds`, stop it."""
-    status, reply = call_json("POST", "/api/replays/start",
-                              {"id": vector, "loop": True})
+    status, reply = replay_start(vector)
     if status != 200:
         print(f"replay start refused: {status} {reply}")
         return 1

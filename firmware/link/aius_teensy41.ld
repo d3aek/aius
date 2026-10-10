@@ -114,6 +114,7 @@ SECTIONS
 		*src/aius_optical_app.cpp.o(.rodata*)
 		*src/http_home_page.cpp.o(.rodata*)
 		*lib/aius_http/src/aius_http_transaction.c.o(.rodata*)
+		*lib/aius_http/src/aius_http.c.o(.rodata*)
 		*aius_usb_control.c.o(.rodata*)
 		. = ALIGN(4);
 	} > FLASH

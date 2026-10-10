@@ -84,6 +84,7 @@ FLASHRO_BLOCK = """\t/* AIUS ADDITION — read-only data pinned to flash (E-AC-3
 \t\t*src/aius_optical_app.cpp.o(.rodata*)
 \t\t*src/http_home_page.cpp.o(.rodata*)
 \t\t*lib/aius_http/src/aius_http_transaction.c.o(.rodata*)
+\t\t*lib/aius_http/src/aius_http.c.o(.rodata*)
 \t\t*aius_usb_control.c.o(.rodata*)
 \t\t. = ALIGN(4);
 \t} > FLASH

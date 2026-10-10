@@ -93,7 +93,8 @@ SD_ROWS = [SiteRow(n, o, c, SD_LIBRARY_ROW) for n, o, c in [
     # (hardware_*), the only functions that object takes the address of.
     SiteRow("aius_boot_storage_teensy_commit", "aius_boot_teensy.cpp.o", 10,
             ("taken_by", r"aius_boot_teensy\.cpp\.o")),
-    SiteRow("_ZL18app_read_directoryPvPKcP22AiusOpticalAppDirBatch", MAIN, 28, SDFILE_ROW),
+    # 25 since Phase 4g round 5 (SD.clearError and direct_card_settle(SD.sdErrorCode())).
+    SiteRow("_ZL18app_read_directoryPvPKcP22AiusOpticalAppDirBatch", MAIN, 25, SDFILE_ROW),
     SiteRow("_ZL21app_write_replay_listPvPhj", MAIN, 35, SDFILE_ROW),
     SiteRow("_ZL24ota_copy_staged_to_psramPhm", MAIN, 14, SDFILE_ROW),
     SiteRow("_Z22aius_sd_teensy_executeP12AiusSdTeensyPK12AiusSdAction", "aius_sd_teensy.cpp.o", 17,
@@ -195,8 +196,12 @@ TABLES = Tables(
     # diag_append in aius_runtime_storage.cpp's sd_diag section, both noinline)
     # are the render-append yield roots; every status section reaches the
     # yield through one of them.
+    # Phase 4g: the web cache's send loop (the chunk-sourced body's source,
+    # a yield every 8 chunks) and the pre-header verify's yield callback.
     yield_roots=[("_ZL19platform_checkpointPvt", MAIN), ("_ZL13status_appendPcjPjPKcz", MAIN),
-                 ("_ZN12_GLOBAL__N_1L11diag_appendEPcjPjPKcz", "aius_runtime_storage.cpp.o")],
+                 ("_ZN12_GLOBAL__N_1L11diag_appendEPcjPjPKcz", "aius_runtime_storage.cpp.o"),
+                 ("_ZL20web_cache_body_chunkPvmPhPm", "aius_optical_app.cpp.o"),
+                 ("_ZL22web_cache_verify_yieldPv", MAIN)],
     sd_windowed=[("_ZN12_GLOBAL__N_1L7advanceEP18AiusRuntimeStoragemb", "aius_runtime_storage.cpp.o"),
                  ("_ZL18app_read_directoryPvPKcP22AiusOpticalAppDirBatch", MAIN),
                  ("_ZL21app_write_replay_listPvPhj", MAIN), ("_ZL17app_replay_deletePvPKc", MAIN)],

@@ -18,8 +18,21 @@ typedef enum {
 	AIUS_SD_JOB_UPLOAD,
 	AIUS_SD_JOB_DOWNLOAD,
 	AIUS_SD_JOB_DELETE,
-	AIUS_SD_JOB_REPLAY_REFILL
+	AIUS_SD_JOB_REPLAY_REFILL,
+	/* Reads one file from initial_offset to its end (total 0, no
+	 * content_type), one capacity-sized chunk per READ/OUTPUT primitive
+	 * pair. initial_offset is 0 or a multiple of
+	 * AIUS_SD_CACHE_FILL_ALIGN (a cancelled fill resuming at its next
+	 * chunk, seeking as a ranged DOWNLOAD does; past the end is a RANGE
+	 * fault). Each OUTPUT action is the sink: the caller consumes
+	 * buffer/length/offset (absolute) and acknowledges with OK, or with a
+	 * FAULT event to fail the job. Read only: a cancel closes the file and
+	 * issues no write. */
+	AIUS_SD_JOB_CACHE_FILL
 } AiusSdJobKind;
+
+/* A CACHE_FILL's initial_offset granularity: the web cache's chunk. */
+#define AIUS_SD_CACHE_FILL_ALIGN 512u
 
 typedef enum {
 	AIUS_SD_INSTALL_REPLACE,

@@ -232,6 +232,7 @@ static FLASHMEM bool sd_request_fields_valid(const AiusSdJobRequest *request)
 		       target && !temp && !backup && request->content_type != NULL &&
 		       !request->publish;
 	case AIUS_SD_JOB_REPLAY_REFILL:
+	case AIUS_SD_JOB_CACHE_FILL: /* parent-driven fill, never an HTTP request */
 		return false;
 	case AIUS_SD_JOB_UPLOAD:
 		switch (request->install_mode) {
@@ -499,6 +500,7 @@ static FLASHMEM void reset_client(AiusHttpTransaction *transaction, uint32_t now
 	transaction->response_length = 0u;
 	transaction->response_offset = 0u;
 	transaction->stream_body = NULL;
+	transaction->chunk_active = false;
 	transaction->stream_body_length = 0u;
 	transaction->stream_body_offset = 0u;
 	transaction->download_data = NULL;
@@ -554,6 +556,7 @@ static FLASHMEM void restart_idle(AiusHttpTransaction *transaction)
 	transaction->response_length = 0u;
 	transaction->response_offset = 0u;
 	transaction->stream_body = NULL;
+	transaction->chunk_active = false;
 	transaction->stream_body_length = 0u;
 	transaction->stream_body_offset = 0u;
 	transaction->download_data = NULL;
@@ -563,6 +566,7 @@ static FLASHMEM void restart_idle(AiusHttpTransaction *transaction)
 	transaction->download_length = 0u;
 	transaction->download_offset = 0u;
 	transaction->cache_max_age_s = 0u;
+	transaction->cache_flags = 0u;
 	memset(&transaction->parsed_request, 0,
 	       sizeof(transaction->parsed_request));
 	memset(&transaction->sd_request, 0, sizeof(transaction->sd_request));
@@ -583,25 +587,54 @@ static FLASHMEM void restart_idle(AiusHttpTransaction *transaction)
 
 static FLASHMEM void clear_stream_body(AiusHttpTransaction *transaction)
 {
+	transaction->chunk_active = false;
 	transaction->stream_body = NULL;
 	transaction->stream_body_length = 0u;
 	transaction->stream_body_offset = 0u;
 	transaction->response_streams_body = false;
 }
 
+/* The latched options with the tag pointing at transaction storage. */
+#define CACHE_FLAG_GZIP 1u
+#define CACHE_FLAG_VARY 2u
+#define CACHE_FLAG_NO_CACHE 4u
+#define CACHE_FLAG_ETAG 8u
+
+/* A download's options, latched at accept: three flag bits plus the tag held
+ * in sd_temp_path (idle for a download), so no new OCRAM is spent. */
+static FLASHMEM const AiusHttpCacheOptions *latched_cache(
+	AiusHttpTransaction *transaction, AiusHttpCacheOptions *out)
+{
+	out->etag = (transaction->cache_flags & CACHE_FLAG_ETAG) != 0u ?
+		transaction->sd_temp_path : NULL;
+	out->content_encoding_gzip = (transaction->cache_flags & CACHE_FLAG_GZIP) != 0u;
+	out->vary_accept_encoding = (transaction->cache_flags & CACHE_FLAG_VARY) != 0u;
+	out->cache_no_cache = (transaction->cache_flags & CACHE_FLAG_NO_CACHE) != 0u;
+	return out;
+}
+
 static FLASHMEM bool format_response(AiusHttpTransaction *transaction, unsigned status,
 	                        const char *content_type, const uint8_t *body,
-	                        size_t body_length, uint32_t cache_max_age_s)
+	                        size_t body_length, uint32_t cache_max_age_s,
+	                        const AiusHttpCacheOptions *cache)
 {
 	size_t length;
 	/* Any reformat replaces the whole response, so a previously borrowed
 	 * body must not be appended to it. */
 	clear_stream_body(transaction);
-	length = aius_http_write_response(
-		transaction->response, transaction->response_capacity, status,
-		content_type, body, body_length, cache_max_age_s);
-	if (length == 0u)
+	if ((body_length != 0u && body == NULL) ||
+	    body_length > AIUS_HTTP_MAX_RESPONSE ||
+	    (status == 304u && body_length != 0u))
 		return false;
+	length = aius_http_write_headers_ex(
+		transaction->response, transaction->response_capacity, status,
+		content_type, (uint64_t)body_length, cache_max_age_s, cache);
+	if (length == 0u || body_length > transaction->response_capacity ||
+	    length > transaction->response_capacity - body_length)
+		return false;
+	if (body_length != 0u)
+		memcpy(transaction->response + length, body, body_length);
+	length += body_length;
 	transaction->response_length = length;
 	transaction->response_offset = 0u;
 	transaction->last_status = status;
@@ -616,21 +649,29 @@ static FLASHMEM bool format_response(AiusHttpTransaction *transaction, unsigned 
 static FLASHMEM bool format_stream_response(AiusHttpTransaction *transaction,
 	                               unsigned status, const char *content_type,
 	                               const uint8_t *body, size_t body_length,
-	                               uint32_t cache_max_age_s)
+	                               uint32_t cache_max_age_s,
+	                               const AiusHttpCacheOptions *cache,
+	                               AiusHttpChunkFn chunk_fn, void *chunk_ctx)
 {
 	size_t length;
-	if (body == NULL || body_length == 0u)
+	if ((body == NULL) == (chunk_fn == NULL) || body_length == 0u ||
+	    status == 304u)
 		return false;
-	length = aius_http_write_headers(transaction->response,
-	                                 transaction->response_capacity, status,
-	                                 content_type, (uint64_t)body_length,
-	                                 cache_max_age_s);
+	length = aius_http_write_headers_ex(transaction->response,
+	                                    transaction->response_capacity, status,
+	                                    content_type, (uint64_t)body_length,
+	                                    cache_max_age_s, cache);
 	if (length == 0u)
 		return false;
 	transaction->response_length = length;
 	transaction->response_offset = 0u;
 	transaction->last_status = status;
 	transaction->stream_body = body;
+	transaction->chunk_active = chunk_fn != NULL;
+	if (chunk_fn != NULL) {
+		transaction->chunk.fn = chunk_fn;
+		transaction->chunk.ctx = chunk_ctx;
+	}
 	transaction->stream_body_length = body_length;
 	transaction->stream_body_offset = 0u;
 	transaction->response_streams_body = true;
@@ -681,7 +722,7 @@ static FLASHMEM void select_fixed(AiusHttpTransaction *transaction, unsigned sta
 		return;
 	}
 	if (!format_response(transaction, status, "application/json", body,
-	                     body_length - 1u, 0u)) {
+	                     body_length - 1u, 0u, NULL)) {
 		transaction->last_fault = AIUS_HTTP_FAULT_RESPONSE_CAPACITY;
 		transaction->last_status = 0u;
 		transaction->response_length = 0u;
@@ -797,8 +838,17 @@ static FLASHMEM bool application_fields_valid(const AiusHttpApplicationResponse 
 	char ignored[AIUS_HTTP_CONTENT_TYPE_STORAGE];
 	if ((unsigned)reply->kind > (unsigned)AIUS_HTTP_APP_SD_JOB ||
 	    !supported_status(reply->status) ||
-	    !copy_string(ignored, sizeof(ignored), reply->content_type, true) ||
-	    (reply->body_length != 0u && reply->body == NULL))
+	    !copy_string(ignored, sizeof(ignored), reply->content_type,
+	                 reply->status != 304u) ||
+	    (reply->etag != NULL &&
+	     !copy_string(ignored, AIUS_HTTP_ETAG_MAX + 1u, reply->etag, true)) ||
+	    (reply->status == 304u &&
+	     (reply->kind != AIUS_HTTP_APP_IMMEDIATE || reply->body_length != 0u)) ||
+	    (reply->body_length != 0u && reply->body == NULL &&
+	     reply->body_chunk == NULL) ||
+	    (reply->body_chunk != NULL &&
+	     (reply->body_length == 0u ||
+	      reply->kind != AIUS_HTTP_APP_IMMEDIATE || reply->status == 304u)))
 		return false;
 	if (reply->kind == AIUS_HTTP_APP_IMMEDIATE)
 		/* An immediate response carries no SD job, but it MAY carry a
@@ -816,7 +866,7 @@ static FLASHMEM void response_overflow(AiusHttpTransaction *transaction)
 	transaction->last_fault = AIUS_HTTP_FAULT_RESPONSE_CAPACITY;
 	if (!format_response(transaction, 500u, "application/json",
 	                     response_large_body,
-	                     sizeof(response_large_body) - 1u, 0u)) {
+	                     sizeof(response_large_body) - 1u, 0u, NULL)) {
 		transaction->last_status = 0u;
 		transaction->response_length = 0u;
 	}
@@ -841,14 +891,27 @@ static FLASHMEM bool accept_application(AiusHttpTransaction *transaction,
 			discard_request_slices(transaction);
 			return true;
 		}
-		if (!format_response(transaction, reply->status, reply->content_type,
-		                     reply->body, reply->body_length,
-		                     reply->cache_max_age_s) &&
-		    !format_stream_response(transaction, reply->status,
-		                            reply->content_type, reply->body,
-		                            reply->body_length,
-		                            reply->cache_max_age_s))
-			response_overflow(transaction);
+		{
+			/* With a chunk source the body slot holds its context. */
+			const uint8_t *body =
+				reply->body_chunk != NULL ? NULL : reply->body;
+			AiusHttpCacheOptions cache;
+			cache.etag = reply->etag;
+			cache.content_encoding_gzip = reply->content_encoding_gzip;
+			cache.vary_accept_encoding = reply->vary_accept_encoding;
+			cache.cache_no_cache = reply->cache_no_cache;
+			if (!format_response(transaction, reply->status,
+			                     reply->content_type, body,
+			                     reply->body_length, reply->cache_max_age_s,
+			                     &cache) &&
+			    !format_stream_response(transaction, reply->status,
+			                            reply->content_type, body,
+			                            reply->body_length,
+			                            reply->cache_max_age_s, &cache,
+			                            reply->body_chunk,
+			                            reply->body_chunk_ctx))
+				response_overflow(transaction);
+		}
 		if (!transaction->cleanup_requested) {
 			transaction->state = AIUS_HTTP_TX_SEND;
 			arm_deadline(transaction, now_ms, RESPONSE_TIMEOUT_MS);
@@ -900,9 +963,19 @@ static FLASHMEM bool accept_application(AiusHttpTransaction *transaction,
 		/* Latched for the deferred header write at DOWNLOAD_DATA /
 		 * zero-length COMPLETE; error substitutions never read it. */
 		transaction->cache_max_age_s = reply->cache_max_age_s;
+		transaction->cache_flags =
+			(reply->content_encoding_gzip ? CACHE_FLAG_GZIP : 0u) |
+			(reply->vary_accept_encoding ? CACHE_FLAG_VARY : 0u) |
+			(reply->cache_no_cache ? CACHE_FLAG_NO_CACHE : 0u);
+		if (reply->etag != NULL) {
+			/* A download has no temp path, so sd_temp_path is free. */
+			memcpy(transaction->sd_temp_path, reply->etag,
+			       strlen(reply->etag) + 1u);
+			transaction->cache_flags |= CACHE_FLAG_ETAG;
+		}
 	} else if (!format_response(transaction, reply->status,
 	                            transaction->content_type, reply->body,
-	                            reply->body_length, 0u)) {
+	                            reply->body_length, 0u, NULL)) {
 		response_overflow(transaction);
 	}
 	if (transaction->cleanup_requested) {
@@ -1011,7 +1084,7 @@ static FLASHMEM void select_sd_error(AiusHttpTransaction *transaction,
 	if (!transaction->response_started &&
 	    transaction->last_transport_fault == 0u) {
 		if (!format_response(transaction, status, "application/json", body,
-		                     size - 1u, 0u)) {
+		                     size - 1u, 0u, NULL)) {
 			transaction->last_fault = AIUS_HTTP_FAULT_RESPONSE_CAPACITY;
 			transaction->last_status = 0u;
 			transaction->response_length = 0u;
@@ -1121,13 +1194,15 @@ static FLASHMEM bool consume_sd_result(AiusHttpTransaction *transaction,
 		if (transaction->cleanup_requested)
 			break;
 		if (transaction->response_length == 0u) {
-			transaction->response_length = aius_http_write_headers(
+			AiusHttpCacheOptions view;
+			transaction->response_length = aius_http_write_headers_ex(
 				transaction->response,
 				transaction->response_capacity,
 				transaction->last_status,
 				transaction->content_type,
 				event->sd_size,
-				transaction->cache_max_age_s);
+				transaction->cache_max_age_s,
+				latched_cache(transaction, &view));
 			if (transaction->response_length == 0u) {
 				response_overflow(transaction);
 				request_cleanup(transaction);
@@ -1149,12 +1224,14 @@ static FLASHMEM bool consume_sd_result(AiusHttpTransaction *transaction,
 			break;
 		} else if (transaction->sd_request.kind == AIUS_SD_JOB_DOWNLOAD &&
 		    transaction->download_size == 0u) {
-			transaction->response_length = aius_http_write_headers(
+			AiusHttpCacheOptions view;
+			transaction->response_length = aius_http_write_headers_ex(
 				transaction->response,
 				transaction->response_capacity,
 				transaction->last_status,
 				transaction->content_type, 0u,
-				transaction->cache_max_age_s);
+				transaction->cache_max_age_s,
+				latched_cache(transaction, &view));
 			if (transaction->response_length == 0u)
 				response_overflow(transaction);
 			else {
@@ -1484,6 +1561,26 @@ static FLASHMEM void drive_send(AiusHttpTransaction *transaction,
 		emit_write(transaction, action,
 		           transaction->response + transaction->response_offset,
 		           offer);
+		return;
+	}
+	if (transaction->response_streams_body &&
+	    transaction->chunk_active &&
+	    transaction->stream_body_offset < transaction->stream_body_length) {
+		size_t in_chunk = transaction->stream_body_offset % AIUS_HTTP_TX_QUOTA;
+		size_t chunk_start = transaction->stream_body_offset - in_chunk;
+		remaining = transaction->stream_body_length - chunk_start;
+		if (remaining > AIUS_HTTP_TX_QUOTA)
+			remaining = AIUS_HTTP_TX_QUOTA;
+		if (!emit_action(transaction, action, AIUS_HTTP_ACTION_WRITE))
+			return;
+		action->data = NULL;
+		action->length = remaining - in_chunk;
+		action->body_chunk = transaction->chunk.fn;
+		action->body_chunk_ctx = transaction->chunk.ctx;
+		action->chunk_index = (uint32_t)(chunk_start / AIUS_HTTP_TX_QUOTA);
+		action->chunk_offset = (uint32_t)in_chunk;
+		action->chunk_length = (uint32_t)remaining;
+		transaction->outstanding_length = action->length;
 		return;
 	}
 	if (transaction->response_streams_body &&

@@ -231,7 +231,22 @@ FLASHMEM void root_terminal(AiusRuntimeStorage *service, bool failed,
 		return;
 	service->root_state = failed ? AIUS_RUNTIME_STORAGE_ROOT_FAILED :
 	                               AIUS_RUNTIME_STORAGE_ROOT_COMPLETE;
+	if (service->root_cancelling) {
+		/* Phase 4g: a requested cancel is not a failure. */
+		service->root_cancelling = false;
+		if (failed && service->diag.cancellations != UINT32_MAX)
+			service->diag.cancellations++;
+		return;
+	}
 	if (!failed)
+		return;
+	/* Phase 4g: a CACHE_FILL the sink refused (capacity full, read-back
+	 * mismatch) is a cache event, counted by the sink as fill_refusals: it
+	 * must not replace the record of a real card fault. A CLOSE fault after
+	 * it replaced the code (CLEANUP) and falls through. */
+	if (service->job.kind == AIUS_SD_JOB_CACHE_FILL &&
+	    service->job.last_fault == AIUS_SD_FAULT_IO &&
+	    service->job.last_driver_fault == AIUS_RUNTIME_STORAGE_FILL_SINK_FAULT)
 		return;
 	if (service->diag.root_failures != UINT32_MAX)
 		service->diag.root_failures++;
@@ -257,10 +272,30 @@ FLASHMEM bool route_action(AiusRuntimeStorage *service, const AiusSdAction *acti
 
 	case AIUS_SD_ACTION_OUTPUT:
 		if (!authoritative) {
-			/* No HTTP owner: refuse the chunk so the job drains. */
+			/* Phase 4g: a root CACHE_FILL's chunk goes to the sink;
+			 * OK lets advance() take the next READ this epoch. The
+			 * size is the whole file's (end_offset, total 0), also
+			 * for a resumed fill's nonzero initial_offset. */
+			const bool fill =
+				service->root_state ==
+					AIUS_RUNTIME_STORAGE_ROOT_RUNNING &&
+				service->job.kind == AIUS_SD_JOB_CACHE_FILL;
+			if (fill &&
+			    aius_runtime_storage_root_output(
+				    &service->job, action->buffer, action->length,
+				    action->offset, service->job.end_offset)) {
+				service->pending_event = sd_event(
+					AIUS_SD_EVENT_OK, action->action_id, 0u);
+				service->event_present = true;
+				return true;
+			}
+			/* No HTTP owner: refuse the chunk so the job drains. A
+			 * fill's sink refusal carries its own code, settled by
+			 * root_terminal() as a cache event. */
 			service->pending_event = sd_event(
 				AIUS_SD_EVENT_FAULT, action->action_id,
-				AIUS_HTTP_SD_OUTPUT_CANCEL_FAULT);
+				fill ? AIUS_RUNTIME_STORAGE_FILL_SINK_FAULT
+				     : AIUS_HTTP_SD_OUTPUT_CANCEL_FAULT);
 			service->event_present = true;
 			return true;
 		}
@@ -375,7 +410,34 @@ FLASHMEM bool advance(AiusRuntimeStorage *service, uint32_t now_ms,
 
 	memset(&action, 0, sizeof(action));
 	aius_sd_job_step(&service->job, now_ms, event, &action);
-	return route_action(service, &action, authoritative, now_ms);
+	/* One route_action call site, so it stays inlined here: `advance` is the
+	 * storage execute's W2 windowed row (producer-isolation), and a second
+	 * call site outlines it (Phase 4g link). */
+	for (bool fill_output_done = false;;) {
+		/* Phase 4g: a fill chunk's OUTPUT is memory only (the sink copies
+		 * and checks it), so its OK is delivered now and the job's next
+		 * action, the next READ or the CLOSE, is this epoch's one
+		 * primitive: one 512 B card read per epoch. */
+		const bool fill_output =
+			!fill_output_done && !authoritative &&
+			action.kind == AIUS_SD_ACTION_OUTPUT &&
+			service->job.kind == AIUS_SD_JOB_CACHE_FILL &&
+			service->root_state == AIUS_RUNTIME_STORAGE_ROOT_RUNNING;
+		const bool routed =
+			route_action(service, &action, authoritative, now_ms);
+		if (!fill_output)
+			return routed;
+		fill_output_done = true;
+		if (!service->event_present ||
+		    service->pending_event.kind != AIUS_SD_EVENT_OK)
+			return true;
+		event = service->pending_event;
+		service->event_present = false;
+		memset(&service->pending_event, 0,
+		       sizeof(service->pending_event));
+		memset(&action, 0, sizeof(action));
+		aius_sd_job_step(&service->job, now_ms, event, &action);
+	}
 }
 
 } // namespace
@@ -408,6 +470,7 @@ FLASHMEM void aius_runtime_storage_construct(AiusRuntimeStorage *service)
 	memset(&service->diag, 0, sizeof(service->diag));
 	service->job_mounts_at_start = 0u;
 	service->job_owner = (uint8_t)AIUS_RUNTIME_STORAGE_OWNER_NONE;
+	service->root_cancelling = false;
 	aius_sd_teensy_init(&service->target);
 	aius_sd_job_init(&service->job, service->sd_transfer,
 	                 sizeof(service->sd_transfer));
@@ -447,6 +510,7 @@ FLASHMEM bool aius_runtime_storage_start_root_job(
 		return false;
 
 	service->cancelling = false;
+	service->root_cancelling = false;
 	service->terminal_seen = false;
 	service->output_outstanding = false;
 	service->output_action_id = 0u;
@@ -461,6 +525,36 @@ FLASHMEM bool aius_runtime_storage_start_root_job(
 		(void)advance(service, now_ms, false);
 		return false;
 	}
+	return true;
+}
+
+__attribute__((weak)) FLASHMEM bool aius_runtime_storage_root_output(
+	const AiusSdJob *job, const uint8_t *data, size_t length,
+	uint64_t offset, uint64_t size)
+{
+	(void)job;
+	(void)data;
+	(void)length;
+	(void)offset;
+	(void)size;
+	return false;
+}
+
+__attribute__((weak)) FLASHMEM bool aius_runtime_storage_fill_step_defer(
+	const AiusSdJob *job)
+{
+	(void)job;
+	return false;
+}
+
+FLASHMEM bool aius_runtime_storage_cancel_root(AiusRuntimeStorage *service)
+{
+	if (service == nullptr ||
+	    service->root_state != AIUS_RUNTIME_STORAGE_ROOT_RUNNING ||
+	    service->terminal_seen)
+		return false;
+	service->root_cancelling = true;
+	aius_sd_job_cancel(&service->job);
 	return true;
 }
 
@@ -615,8 +709,19 @@ FLASHMEM bool aius_runtime_storage_service(
 		 * F2/F9: never deferred here. sd_fifo_defer() holds a root job
 		 * only at its start gate (optical_main.cpp); a started job steps
 		 * every epoch to its end, as a started HTTP job does, so it
-		 * never parks as ROOT_RUNNING with every SD route on sd_busy. */
-		(void)advance(service, now_ms, false);
+		 * never parks as ROOT_RUNNING with every SD route on sd_busy.
+		 * Phase 4g G8 (owner, 2026-10-10) is the one exception: an
+		 * uncancelled CACHE_FILL root job's step waits while the
+		 * platform's fill gate holds; an HTTP SD request cancels a
+		 * paused fill, and a cancelled fill always steps. */
+		const bool fill_paused =
+			!service->draining &&
+			service->root_state == AIUS_RUNTIME_STORAGE_ROOT_RUNNING &&
+			service->job.kind == AIUS_SD_JOB_CACHE_FILL &&
+			!service->root_cancelling &&
+			aius_runtime_storage_fill_step_defer(&service->job);
+		if (!fill_paused)
+			(void)advance(service, now_ms, false);
 	}
 
 	if (service->http_event_present)

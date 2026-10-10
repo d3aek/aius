@@ -3,7 +3,7 @@
  * OWNS: the whole /sd/www/replays.html page -- the replay library and its
  * per-row actions, the selection and start/stop controls, the resumable
  * chunked upload with its progress and cancel, the 1 Hz playback poll, the
- * 5 s library poll, and the 4 Hz meter render.
+ * on-demand library refresh (no timer), and the 4 Hz meter render.
  *
  * DOES NOT OWN: the shared chrome behaviours -- pills, the never-throw fetch
  * discipline, the formatters, SD-auth token storage and the waveform renderer
@@ -27,7 +27,6 @@
 
   const STATUS_POLL_MS = 1000; /* the replay status is an epoch-latched snapshot */
   const METER_POLL_MS = 250; /* faster than the status tick so the envelope moves (UX finding R-N7) */
-  const LIBRARY_POLL_MS = 5000; /* the listing walks the card; leave it the slowest tick */
   const UPLOAD_CHUNK_BYTES = 4096; /* one HTTP body per SD append job */
   const REPLAY_ID_PATTERN = /^[A-Za-z0-9_-]{1,48}$/; /* AIUS_HTTP_MAX_REPLAY_ID and its charset */
 
@@ -335,6 +334,7 @@
     if (!result.ok) {
       showCardError(card, `Could not start "${id}" -- ${describeReplayFailure(result)}.`);
       setCardStatus('playback', 'Playback unchanged.');
+      await refreshFiles();
       return;
     }
     state.selected = id;
@@ -370,6 +370,7 @@
     });
     if (!result.ok) {
       showCardError('library', `Could not delete "${id}" -- ${describeReplayFailure(result)}.`);
+      await refreshFiles();
       return;
     }
     state.uploadTotals.delete(id);
@@ -567,7 +568,13 @@
         onError: cardSink(card),
       });
     startPoller('/api/replays/status', STATUS_POLL_MS, 'playback', renderStatusAnswer, markStatusUnreachable);
-    startPoller('/api/replays', LIBRARY_POLL_MS, 'library', renderFilesAnswer, markFilesUnreachable);
+    /* Replay is test-only: the listing walks the card and its reads cancel the
+     * cache fill, so it loads once, after a start/delete, and when the tab
+     * returns -- never on a timer. */
+    void guard(refreshFiles, cardSink('library'));
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') void guard(refreshFiles, cardSink('library'));
+    });
     startPoller('/api/meters', METER_POLL_MS, 'playback', (result) => renderMeters(result.body), markMetersUnreachable);
   }
   document.body.dataset.uiContractReady = 'aius-firmware-replays';

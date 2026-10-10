@@ -714,8 +714,160 @@ static void test_status_brief_and_retry_after(void)
 	assert(strstr((const char *)headers, "Retry-After") == NULL);
 }
 
+static bool gzip_for(const char *accept_encoding_line)
+{
+	char text[256];
+	AiusHttpRequest request;
+	snprintf(text, sizeof(text), "GET /sd/index.html HTTP/1.0\r\n%s\r\n\r\n",
+	         accept_encoding_line);
+	assert(aius_http_parse((const uint8_t *)text, strlen(text), &request) ==
+	       AIUS_HTTP_OK);
+	return request.accepts_gzip;
+}
+
+static void test_accept_encoding(void)
+{
+	AiusHttpRequest request;
+	const char *none = "GET /sd/index.html HTTP/1.0\r\n\r\n";
+	assert(aius_http_parse((const uint8_t *)none, strlen(none), &request) ==
+	       AIUS_HTTP_OK);
+	assert(!request.accepts_gzip);
+	assert(gzip_for("Accept-Encoding: gzip"));
+	assert(gzip_for("accept-encoding:gzip"));
+	assert(gzip_for("Accept-Encoding: GZIP"));
+	assert(gzip_for("Accept-Encoding: gzip, deflate, br"));
+	assert(gzip_for("Accept-Encoding: deflate ,  gzip ;q=0.5 , br"));
+	assert(gzip_for("Accept-Encoding: gzip;q=1.0"));
+	assert(gzip_for("Accept-Encoding: gzip; q=0.001"));
+	assert(!gzip_for("Accept-Encoding: gzip;q=0"));
+	assert(!gzip_for("Accept-Encoding: gzip;q=0.0"));
+	assert(!gzip_for("Accept-Encoding: gzip ; q = 0.000"));
+	assert(!gzip_for("Accept-Encoding: deflate, gzip;q=0, br"));
+	assert(!gzip_for("Accept-Encoding: deflate, br"));
+	assert(!gzip_for("Accept-Encoding: identity"));
+	assert(!gzip_for("Accept-Encoding: gzipx"));
+	assert(!gzip_for("Accept-Encoding:"));
+}
+
+static void test_if_none_match(void)
+{
+	const char *etag = "\"1a2b3c4d-512\"";
+	AiusHttpRequest request;
+	const char *none = "GET /sd/index.html HTTP/1.0\r\n\r\n";
+	const char *one = "GET /sd/index.html HTTP/1.0\r\nIf-None-Match: \"1a2b3c4d-512\"\r\n\r\n";
+	const char *lower = "GET /sd/index.html HTTP/1.0\r\nif-none-match:   \"x\" , W/\"1a2b3c4d-512\"  \r\n\r\n";
+	const char *other = "GET /sd/index.html HTTP/1.0\r\nIf-None-Match: \"1a2b3c4d-513\", \"zz\"\r\n\r\n";
+	const char *star = "GET /sd/index.html HTTP/1.0\r\nIf-None-Match: *\r\n\r\n";
+	const char *bad = "GET /sd/index.html HTTP/1.0\r\nIf-None-Match: 1a2b3c4d-512\r\n\r\n";
+	const char *empty = "GET /sd/index.html HTTP/1.0\r\nIf-None-Match:\r\n\r\n";
+
+	assert(aius_http_parse((const uint8_t *)none, strlen(none), &request) == AIUS_HTTP_OK);
+	assert(request.if_none_match_offset == 0u);
+	assert(!aius_http_if_none_match(&request, etag));
+	assert(aius_http_parse((const uint8_t *)one, strlen(one), &request) == AIUS_HTTP_OK);
+	assert(request.if_none_match_offset != 0u &&
+	       memcmp(one + request.if_none_match_offset, etag, strlen(etag)) == 0);
+	assert(aius_http_if_none_match(&request, etag));
+	assert(!aius_http_if_none_match(&request, "\"1a2b3c4d-51\""));
+	assert(aius_http_parse((const uint8_t *)lower, strlen(lower), &request) == AIUS_HTTP_OK);
+	assert(aius_http_if_none_match(&request, etag));
+	assert(aius_http_parse((const uint8_t *)other, strlen(other), &request) == AIUS_HTTP_OK);
+	assert(!aius_http_if_none_match(&request, etag));
+	assert(aius_http_parse((const uint8_t *)star, strlen(star), &request) == AIUS_HTTP_OK);
+	assert(aius_http_if_none_match(&request, etag));
+	assert(aius_http_parse((const uint8_t *)bad, strlen(bad), &request) == AIUS_HTTP_OK);
+	assert(!aius_http_if_none_match(&request, etag));
+	assert(aius_http_parse((const uint8_t *)empty, strlen(empty), &request) == AIUS_HTTP_OK);
+	assert(request.if_none_match_offset == 0u);
+	assert(!aius_http_if_none_match(NULL, etag));
+}
+
+static void test_cache_response_headers(void)
+{
+	uint8_t out[384];
+	AiusHttpCacheOptions options;
+	size_t length;
+	memset(&options, 0, sizeof(options));
+	options.etag = "\"1a2b3c4d-512\"";
+	options.content_encoding_gzip = true;
+	options.vary_accept_encoding = true;
+	options.cache_no_cache = true;
+	length = aius_http_write_headers_ex(out, sizeof(out), 200, "text/html",
+	                                    512, 0u, &options);
+	assert(length != 0);
+	out[length] = 0;
+	assert(strcmp((const char *)out,
+	              "HTTP/1.0 200 OK\r\n"
+	              "Content-Type: text/html\r\n"
+	              "Content-Length: 512\r\n"
+	              "Cache-Control: no-cache\r\n"
+	              "Content-Encoding: gzip\r\n"
+	              "ETag: \"1a2b3c4d-512\"\r\n"
+	              "Vary: Accept-Encoding\r\n"
+	              "Connection: close\r\n\r\n") == 0);
+
+	/* Plain representation: ETag + Vary + max-age, no Content-Encoding. */
+	options.content_encoding_gzip = false;
+	options.cache_no_cache = false;
+	length = aius_http_write_headers_ex(out, sizeof(out), 200, "text/css",
+	                                    7, 86400u, &options);
+	out[length] = 0;
+	assert(strstr((const char *)out, "Cache-Control: max-age=86400\r\n") != NULL);
+	assert(strstr((const char *)out, "Content-Encoding") == NULL);
+	assert(strstr((const char *)out, "ETag: \"1a2b3c4d-512\"\r\n") != NULL);
+	assert(strstr((const char *)out, "Vary: Accept-Encoding\r\n") != NULL);
+
+	/* NULL and zeroed options equal the legacy header set byte for byte. */
+	{
+		uint8_t legacy[256];
+		AiusHttpCacheOptions zero;
+		size_t legacy_length;
+		memset(&zero, 0, sizeof(zero));
+		legacy_length = aius_http_write_headers(legacy, sizeof(legacy), 200,
+		                                        "text/plain", 3, 60u);
+		length = aius_http_write_headers_ex(out, sizeof(out), 200, "text/plain",
+		                                    3, 60u, NULL);
+		assert(length == legacy_length && memcmp(out, legacy, length) == 0);
+		length = aius_http_write_headers_ex(out, sizeof(out), 200, "text/plain",
+		                                    3, 60u, &zero);
+		assert(length == legacy_length && memcmp(out, legacy, length) == 0);
+	}
+
+	/* 304: status line, validators and Connection only; no body framing. */
+	options.cache_no_cache = true;
+	options.content_encoding_gzip = true;
+	length = aius_http_write_headers_ex(out, sizeof(out), 304, NULL, 999, 0u,
+	                                    &options);
+	assert(length != 0);
+	out[length] = 0;
+	assert(strcmp((const char *)out,
+	              "HTTP/1.0 304 Not Modified\r\n"
+	              "Cache-Control: no-cache\r\n"
+	              "ETag: \"1a2b3c4d-512\"\r\n"
+	              "Vary: Accept-Encoding\r\n"
+	              "Connection: close\r\n\r\n") == 0);
+	assert(strstr((const char *)out, "Content-Length") == NULL);
+	assert(strstr((const char *)out, "Content-Type") == NULL);
+	assert(strstr((const char *)out, "Content-Encoding") == NULL);
+	/* The headers end the message: nothing follows the blank line. */
+	assert(length >= 4u && memcmp(out + length - 4u, "\r\n\r\n", 4) == 0);
+	assert(strlen("HTTP/1.0 304 Not Modified\r\n") < length);
+	assert(aius_http_write_headers(out, sizeof(out), 304, "text/plain", 0, 0u) == 0);
+
+	/* Rejections: bad ETag, overflow. */
+	options.etag = "bad\r\nX: y";
+	assert(aius_http_write_headers_ex(out, sizeof(out), 200, "text/plain", 1, 0u,
+	                                  &options) == 0);
+	options.etag = "\"1a2b3c4d-512\"";
+	assert(aius_http_write_headers_ex(out, 40, 200, "text/plain", 1, 0u,
+	                                  &options) == 0);
+}
+
 int main(void)
 {
+	test_accept_encoding();
+	test_if_none_match();
+	test_cache_response_headers();
 	test_status_brief_and_retry_after();
 	test_sd_mode_route();
 	AiusHttpRequest request;

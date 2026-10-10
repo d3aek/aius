@@ -133,6 +133,14 @@ typedef struct {
 	AiusHttpRoute route;
 	uint32_t cursor;
 	uint8_t has_body;
+	/* Phase 4g: Accept-Encoding lists gzip with a nonzero q. Sits in the
+	 * padding after has_body so the request struct does not grow. */
+	bool accepts_gzip;
+	/* Phase 4g: If-None-Match value start as a byte offset from the request
+	 * start (0 = absent or empty; the request line precedes every header, so a
+	 * real offset is never 0). Also in padding. It runs to the line's CR.
+	 * Compare with aius_http_if_none_match(); the base is body - header_length. */
+	uint16_t if_none_match_offset;
 	size_t header_length;
 	bool has_content_length;
 	uint64_t content_length;
@@ -168,6 +176,11 @@ typedef struct {
 AiusHttpResult aius_http_parse(const uint8_t *data, size_t length,
 	                               AiusHttpRequest *request);
 
+/* True when the request's If-None-Match matches `etag` (a full quoted strong
+ * tag, e.g. "\"1a2b3c4d-512\""): a list member equal to it, W/ weak form
+ * included (weak comparison, RFC 9110 13.1.2), or "*". False when absent. */
+bool aius_http_if_none_match(const AiusHttpRequest *request, const char *etag);
+
 const char *aius_http_reason(unsigned status);
 /* A 503 also carries "Retry-After: 1"; every other status keeps its header
  * set byte-identical. */
@@ -177,6 +190,27 @@ size_t aius_http_write_headers(uint8_t *output, size_t capacity,
 	                           unsigned status, const char *content_type,
 	                           uint64_t content_length,
 	                           uint32_t cache_max_age_s);
+
+#define AIUS_HTTP_ETAG_MAX 40u /* longest accepted ETag, quotes included */
+
+/* Optional cache headers for aius_http_write_headers_ex. A zeroed struct is the
+ * plain header set. */
+typedef struct {
+	const char *etag;          /* full quoted tag, or NULL for no ETag header */
+	bool content_encoding_gzip; /* "Content-Encoding: gzip" */
+	bool vary_accept_encoding;  /* "Vary: Accept-Encoding" */
+	bool cache_no_cache;        /* "Cache-Control: no-cache"; wins over max-age */
+} AiusHttpCacheOptions;
+
+/* As aius_http_write_headers plus `options` (NULL = none). Status 304 writes
+ * no Content-Type, Content-Length or Content-Encoding (content_type may be
+ * NULL; the caller sends no body) but keeps ETag, Vary and Cache-Control.
+ * Returns 0 on any invalid input or overflow. */
+size_t aius_http_write_headers_ex(uint8_t *output, size_t capacity,
+	                              unsigned status, const char *content_type,
+	                              uint64_t content_length,
+	                              uint32_t cache_max_age_s,
+	                              const AiusHttpCacheOptions *options);
 size_t aius_http_write_response(uint8_t *output, size_t capacity,
 	                              unsigned status, const char *content_type,
 	                              const uint8_t *body, size_t body_length,

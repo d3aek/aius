@@ -195,7 +195,17 @@ function createDevice(options = {}) {
   return stub;
 }
 
+/* Each boot evaluates the page script again in the same document; drop the
+ * previous boots' visibilitychange listeners so only the live page answers. */
+const visibilityListeners = [];
+const addDocumentListener = document.addEventListener.bind(document);
+document.addEventListener = (type, listener, options) => {
+  if (type === 'visibilitychange') visibilityListeners.push(listener);
+  return addDocumentListener(type, listener, options);
+};
+
 async function boot(options) {
+  for (const listener of visibilityListeners.splice(0)) document.removeEventListener('visibilitychange', listener);
   device = createDevice(options);
   document.body.innerHTML = bodyMarkup;
   installCanvas();
@@ -331,14 +341,13 @@ describe('Aius SD replay manager — library rows', () => {
 });
 
 describe('Aius SD replay manager — selection', () => {
-  it('keeps the operator selection across the 5 s library refresh', async () => {
+  it('keeps the operator selection across a library refresh', async () => {
     /* UX finding P2: the refresh rebuilt the select with innerHTML and wiped
      * the choice out from under the pointer. */
     await boot({ files: [completeFile('alpha', 2097152), completeFile('beta', 4194304)] });
     await selectReplay('beta');
 
-    await vi.advanceTimersByTimeAsync(5000);
-    await settle();
+    await click(el('refresh'));
 
     expect(el('selected').value).toBe('beta');
     expect(optionsOf()).toEqual(['', 'alpha', 'beta']);
@@ -358,8 +367,7 @@ describe('Aius SD replay manager — selection', () => {
     await selectReplay('beta');
 
     device.files = [completeFile('alpha', 2097152)];
-    await vi.advanceTimersByTimeAsync(5000);
-    await settle();
+    await click(el('refresh'));
 
     expect(el('selected').value).toBe('');
     expect(errorsShown('playback')).toContain('"beta" is no longer on the card');
@@ -733,6 +741,61 @@ describe('Aius SD replay manager — meters', () => {
     expect(el('meter-state').textContent).not.toBe('unreachable');
     expect(el('library-state').textContent).not.toBe('unreachable');
     expect(el('playback-grid').dataset.stale).toBeUndefined();
+  });
+
+  describe('library listing is on demand, never timed', () => {
+    const listings = () => device.calls.filter((call) => call.url === '/api/replays' && call.method === 'GET').length;
+    const setVisibility = (value) => {
+      Object.defineProperty(document, 'visibilityState', { value, configurable: true });
+      document.dispatchEvent(new Event('visibilitychange'));
+    };
+    afterEach(() => {
+      delete document.visibilityState;
+    });
+
+    it('loads once and issues no further /api/replays over 60 s', async () => {
+      await boot({ files: [completeFile('alpha', 2097152)] });
+      expect(listings()).toBe(1);
+
+      await vi.advanceTimersByTimeAsync(60000);
+      await settle();
+
+      expect(listings()).toBe(1);
+      expect(device.calls.filter((call) => call.url === '/api/replays/status').length).toBeGreaterThan(1);
+    });
+
+    it('refreshes after a start, success or failure', async () => {
+      await boot({ files: [completeFile('alpha', 2097152)] });
+      await setToken('secret');
+      await click(actionIn(rowFor('alpha'), 'play'));
+      expect(listings()).toBe(2);
+
+      device.startResult = jsonResponse(409, { ok: false, error: 'replay_carrier_present' });
+      await click(actionIn(rowFor('alpha'), 'play'));
+      expect(listings()).toBe(3);
+    });
+
+    it('refreshes after a delete, success or failure', async () => {
+      await boot({ files: [completeFile('alpha', 2097152)] });
+      await setToken('secret');
+      await click(actionIn(rowFor('alpha'), 'delete'));
+      expect(listings()).toBe(2);
+
+      device.deleteResult = jsonResponse(500, { ok: false, error: 'sd_unavailable' });
+      await click(actionIn(rowFor('alpha'), 'delete'));
+      expect(listings()).toBe(3);
+    });
+
+    it('refreshes when the tab becomes visible, not when it hides', async () => {
+      await boot({ files: [completeFile('alpha', 2097152)] });
+      setVisibility('hidden');
+      await settle();
+      expect(listings()).toBe(1);
+
+      setVisibility('visible');
+      await settle();
+      expect(listings()).toBe(2);
+    });
   });
 
   it('polls meters faster than the 1 Hz status tick', async () => {

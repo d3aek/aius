@@ -427,7 +427,7 @@ Suites (all build with `-Wall -Wextra -Werror` + ASan/UBSan):
 | `eac3` | E-AC-3 decode differential vs FFmpeg (committed corpus), regression hash, arena/no-alloc steady state, malformed family. |
 | `eac3-fuzz` | E-AC-3 adapter robustness fuzz: seam hunt + random corruption under the termination oracle. |
 | `iec61937`, `iec61937-fuzz` | IEC 61937 parser known-answer + fuzz. |
-| `replay-samples` | Generate additive DTS/AC-3 replay packs, validate AC-3 IEC periods and payloads, and consume them through the production IEC parser. |
+| `replay-samples` | Generate additive DTS/AC-3 replay packs, validate AC-3 IEC periods and payloads, and consume them through the production IEC parser, plus the E-AC-3 acceptance unittests (`test_eac3_acceptance.py`). |
 | `pipeline` | Classifier + parser→decoder end-to-end, including the AC-3 / E-AC-3 syncframe CRC gate (corpus spans, single-bit flips) and its silent substitution (output-jitter Phase I). |
 | `capability-protocol`, `capability` | USB protocol goldens + sim device round-trip. |
 | `dsp`, `dsp-vectors` | Downmix + EQ known-answer, shared production-model runtime resolution, and the public DSP interface over the DTS corpus. |
@@ -471,6 +471,9 @@ Suites (all build with `-Wall -Wextra -Werror` + ASan/UBSan):
 | `stack-bound` | Worst-case call depth over the same walk plus the exception chain, against the canonical image's DTCM stack zone less 2,048 B. Fixture ELFs always; real-ELF cases need a build. |
 | `itcm-placement` | The post-link ITCM checks, re-run over an existing optical build, plus the host-only tests of the LDF-library gate, the producer-yield pin and the `-flto` precondition. |
 | `fake-fidelity` | Every host fake's constants against the real framework headers, three ways: a listed constant must exist upstream with the same value, *every* enum member `fake/fnet.h` declares must match FNET's own (no name list, so a positional renumber cannot hide), and a fake must not invent a constant. Each kind is then re-run over a mutated copy of the fake, so the suite proves it can still see the defects it was written for. A fake with a wrong constant agrees with itself and with the tests asserting the same macro, so only an external reference catches it. |
+| `www-bundle` | The inlined gzip page bundles (`tools/www_bundle.py`) and the 503 Retry-After retry in `tools/aius-sd-sync.sh` (Phase 4g); Python only. |
+| `measure-vectors` | The measurement-vector runner (`tools/measure_vectors/measure_run.py`, Phase 4g); Python only. |
+| `web-cache` | The PSRAM web cache (`lib/aius_web_cache`): pad-2 placement and disjointness, per-chunk fill read-back, a publish that reads no chunk, verify order and yields, flipped bits, leases across invalidate, capacity fallback, the listing. |
 | `registry` | The guard on this table: fails when it, the `# Suites:` header in `scripts/test.sh` and that script's `case` arms disagree with the directories under `test/`. |
 | `sd-editor` | The SD-card web pages (status, DSP editor, replay manager, upgrade) as vitest suites at the repo root's `test/sd-editor/`, run with this repo as the vitest root; needs `pnpm` (resolved through the superproject when this repo is a submodule). |
 

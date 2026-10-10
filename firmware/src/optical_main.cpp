@@ -139,6 +139,7 @@ extern "C" const uint8_t _flashimagelen;
 #include "aius_fault_teensy.h"
 #include "aius_network_teensy.h"
 #include "aius_runtime_teensy.h"
+#include "aius_web_cache.h"
 #include "http_home_page.h"
 
 #ifndef AIUS_BUILD_GIT_REV
@@ -1395,6 +1396,261 @@ static FLASHMEM bool sd_job_active(void)
 	       g_replay_job_active;
 }
 
+/* Phase 4g: the PSRAM web cache (aius-sample-rate-following.md G1 to G10).
+ * The control block is the cache's only DTCM state; the carve is pad 2's tail
+ * (setup, beside the recorder), absent on 8 MiB fitments. g_web_fill is the
+ * portable hold (aius_optical_app.h); g_web_fill_walk is the fill scheduler's
+ * cursor over /aius/www and its one level of subdirectories. */
+static AiusWebCache g_web_cache;
+static AiusOpticalWebFill g_web_fill;
+static struct {
+	uint32_t mounts_seen;  /* the adapter's mount count the cache belongs to */
+	uint32_t published;    /* files published since boot */
+	/* Fill sink refusals (capacity full, read-back mismatch): a cache
+	 * event, never a card fault in sd_diag. Saturating. */
+	uint16_t fill_refusals;
+	uint8_t dir_ordinal;   /* 0: www/ itself; k: its k-th subdirectory */
+	uint8_t entry_index;   /* next directory batch position to consider */
+	bool running;          /* our CACHE_FILL root job is in flight */
+	bool begun;            /* _fill_begin done for the running file */
+	bool ready_seen;       /* the walk belongs to a mounted card (cleared by a
+	                          card-gone fault until the next mount) */
+	bool walk_complete;    /* every reachable file was attempted */
+	bool dir_clean;        /* every file of this directory published */
+	bool presets_complete; /* www/presets/ wholly in the manifest */
+	bool refill_pending;   /* a CRC fault dropped an entry: restart the walk */
+	char dir[AIUS_OPTICAL_APP_INDEX_NAME_STORAGE]; /* subdirectory name */
+} g_web_fill_walk;
+
+/* A CACHE_FILL root job owns the volume. */
+static FLASHMEM bool web_cache_fill_in_flight(void)
+{
+	const AiusRuntimeStorage &storage = g_runtime.storage;
+	return storage.root_state == AIUS_RUNTIME_STORAGE_ROOT_RUNNING &&
+	       storage.job.kind == AIUS_SD_JOB_CACHE_FILL;
+}
+
+/* The card as an HTTP SD request sees it (G6): a fill file in flight is not
+ * busy, because the request cancels it at the SD_START arm (a direct-card
+ * route: at the DISPATCH arm) and waits there for its next primitive boundary
+ * (aius_runtime_http_admit), so no route runs beside it. Every other job
+ * keeps the 503 sd_busy answer. */
+static FLASHMEM bool sd_job_active_for_http(void)
+{
+	return sd_job_active() &&
+	       !(web_cache_fill_in_flight() && !g_runtime.storage.draining &&
+	         !g_replay_job_active);
+}
+
+/* G9: the one cancel entry (an HTTP SD request here, 4h's flush start and
+ * its H9 freeze): latches the hold with no expiry and stops a fill file in
+ * flight at its next primitive boundary; its partial entry is kept and the
+ * file resumes at its next chunk (owner, clean-room finding 1;
+ * web_cache_fill_settle(), web_cache_fill_next()). */
+static FLASHMEM void web_cache_fill_cancel(void)
+{
+	if (aius_optical_web_fill_cancel(&g_web_fill, web_cache_fill_in_flight()))
+		(void)aius_runtime_storage_cancel_root(&g_runtime.storage);
+}
+
+/* G9: the canceller's end (4h's flush end and unfreeze; an HTTP canceller's
+ * end is its job completion, aius_optical_web_fill_note_http_complete()). */
+static FLASHMEM __attribute__((unused)) void web_cache_fill_hold_release(void)
+{
+	aius_optical_web_fill_hold_release(&g_web_fill, millis());
+}
+
+/* `path` relative to /sd/www (the cache's key), or null outside it. */
+static FLASHMEM const char *web_cache_rel(const char *path)
+{
+	static const char kRoot[] PROGMEM = "/aius/www/";
+	if (path == nullptr || strncmp(path, kRoot, sizeof(kRoot) - 1u) != 0)
+		return nullptr;
+	return path + sizeof(kRoot) - 1u;
+}
+
+static FLASHMEM void web_cache_walk_reset(void)
+{
+	g_web_fill_walk.dir_ordinal = 0u;
+	g_web_fill_walk.entry_index = 0u;
+	g_web_fill_walk.walk_complete = false;
+	g_web_fill_walk.dir_clean = true;
+	g_web_fill_walk.presets_complete = false;
+	g_web_fill_walk.dir[0] = '\0';
+}
+
+/* The card changed under the cache: every entry goes, the walk restarts, and
+ * a fill in flight stops unlatched (it is re-queued by the restart). */
+static FLASHMEM void web_cache_invalidate_all(void)
+{
+	aius_web_cache_invalidate(&g_web_cache, nullptr, 0u);
+	web_cache_walk_reset();
+	if (g_web_fill_walk.running)
+		(void)aius_runtime_storage_cancel_root(&g_runtime.storage);
+}
+
+/* An HTTP UPLOAD or DELETE under /aius/www reached its terminal: that path's
+ * entry goes and the walk restarts, so the refill (after the hold) refetches
+ * it and the presets listing waits for it. */
+static FLASHMEM void web_cache_invalidate_job(const AiusSdJob *job)
+{
+	const char *rel;
+
+	if (job->kind != AIUS_SD_JOB_UPLOAD && job->kind != AIUS_SD_JOB_DELETE)
+		return;
+	rel = web_cache_rel(job->target_path);
+	if (rel == nullptr)
+		return;
+	aius_web_cache_invalidate(&g_web_cache, rel, strlen(rel));
+	web_cache_walk_reset();
+}
+
+/* Audit finding 6: a direct card op (the /sd/ index, the replay listing and
+ * delete, the fill walk's directory read) ended with the driver's error code
+ * `code`, cleared before its first primitive. Nonzero is the card failing, the
+ * class the adapter answers by dropping its trusted mount (4e; a not-found
+ * open leaves 0 and keeps it). The adapter never sees these ops, so the mount
+ * is dropped here, and the cache follows it (web_cache_fill_settle()). Never
+ * under an open adapter file; memory only. */
+static FLASHMEM void direct_card_settle(uint32_t code)
+{
+	if (code != 0u && !g_runtime.storage.target.file_open)
+		aius_sd_teensy_invalidate_mount(&g_runtime.storage.target);
+}
+
+/* G7: dcache lines of a chunk written back and dropped, so the next read of
+ * it comes from the chip. FLASHMEM, so the inline core helper is not
+ * instantiated out of line in ITCM. */
+static FLASHMEM void web_cache_flush_delete(void *addr, uint32_t bytes)
+{
+	arm_dcache_flush_delete(addr, bytes);
+}
+
+/* G3: the pre-header verify's producer yield point, every
+ * AIUS_WEB_CACHE_VERIFY_YIELD_CHUNKS chunks. noinline: the verify's
+ * yield-root row (producer-isolation W2) and its stack-bound chain root. */
+static FLASHMEM __attribute__((noinline)) void web_cache_verify_yield(void *)
+{
+	(void)aius_producer_yield_point();
+}
+
+/* The dispatcher's web cache seam (aius_optical_app.h), one adapter per
+ * member over g_web_cache. A path over AIUS_WEB_CACHE_PATH_MAX is never
+ * cached, so it misses here without a manifest scan. */
+static FLASHMEM bool web_cache_seam_lookup(void *, const char *path,
+                                           size_t length,
+                                           AiusOpticalAppWebHit *out,
+                                           char *etag, size_t etag_capacity,
+                                           bool *fault)
+{
+	AiusWebCacheHit hit;
+	*fault = false;
+	if (length > AIUS_WEB_CACHE_PATH_MAX ||
+	    !aius_web_cache_lookup(&g_web_cache, path, length, &hit, fault) ||
+	    aius_web_cache_etag(&hit, etag, etag_capacity) == 0u)
+		return false;
+	out->entry = hit.entry;
+	out->length = hit.length;
+	return true;
+}
+
+static FLASHMEM bool web_cache_seam_lease(void *, uint8_t entry)
+{
+	return aius_web_cache_lease(&g_web_cache, entry);
+}
+
+static FLASHMEM void web_cache_seam_release(void *, uint8_t entry)
+{
+	aius_web_cache_release(&g_web_cache, entry);
+}
+
+static FLASHMEM bool web_cache_seam_verify(void *, uint8_t entry)
+{
+	return aius_web_cache_verify(&g_web_cache, entry, web_cache_verify_yield,
+	                             nullptr);
+}
+
+static FLASHMEM bool web_cache_seam_copy_chunk(void *, uint8_t entry,
+                                               uint16_t chunk, uint8_t *dst,
+                                               uint32_t *bytes)
+{
+	return aius_web_cache_copy_chunk(&g_web_cache, entry, chunk, dst, bytes);
+}
+
+/* A CRC fault (manifest entry, pre-header or mid-stream) dropped an entry:
+ * the walk restarts once no fill file is in flight (web_cache_fill_settle()),
+ * so the refill refetches only what is missing. The entry count is the
+ * cache's own (aius_web_cache_entry_count()), so nothing is counted here. */
+static FLASHMEM void web_cache_seam_refill(void *)
+{
+	g_web_fill_walk.refill_pending = true;
+}
+
+/* One manifest row into the listing batch, under the card listing's rules: a
+ * name the batch cannot hold is hidden, and a full batch says more. */
+static FLASHMEM bool web_cache_listing_row(void *context, const char *name,
+                                           size_t name_length,
+                                           uint32_t size_bytes,
+                                           bool is_directory)
+{
+	AiusOpticalAppDirBatch *batch = (AiusOpticalAppDirBatch *)context;
+	if (batch->count >= batch->capacity) {
+		batch->more = true;
+		return false;
+	}
+	if (name_length > AIUS_OPTICAL_APP_INDEX_NAME_MAX) {
+		batch->hidden++;
+		return true;
+	}
+	AiusOpticalAppDirEntry *entry = &batch->entries[batch->count++];
+	memcpy(entry->name, name, name_length);
+	entry->name[name_length] = '\0';
+	entry->size_bytes = size_bytes;
+	entry->is_directory = is_directory;
+	return true;
+}
+
+/* The presets listing comes from the manifest only once the walk since the
+ * last mount, upload or delete has published every card file of www/presets/
+ * (presets_complete); any other directory, or an incomplete one, reads the
+ * card. A manifest entry that fails its own CRC during the listing is dropped
+ * and its row omitted, so the manifest is no longer complete: the flag drops,
+ * a refill is scheduled and this request reads the card (the batch reset). */
+static FLASHMEM bool web_cache_seam_listing(void *, const char *dir,
+                                            size_t dir_length,
+                                            AiusOpticalAppDirBatch *batch)
+{
+	static const char kPresets[] PROGMEM = "presets/";
+	uint32_t faults;
+	if (!g_web_fill_walk.presets_complete ||
+	    dir_length != sizeof(kPresets) - 1u ||
+	    memcmp(dir, kPresets, dir_length) != 0)
+		return false;
+	faults = g_web_cache.crc_faults;
+	(void)aius_web_cache_listing(&g_web_cache, dir, dir_length,
+	                             web_cache_listing_row, batch);
+	if (g_web_cache.crc_faults == faults)
+		return true;
+	g_web_fill_walk.presets_complete = false;
+	g_web_fill_walk.refill_pending = true;
+	batch->count = 0u;
+	batch->more = false;
+	batch->hidden = 0u;
+	return false;
+}
+
+/* PROGMEM: the table stays in flash, out of DTCM .rodata. */
+static const AiusOpticalAppWebCache g_web_cache_seam PROGMEM = {
+	nullptr,
+	web_cache_seam_lookup,
+	web_cache_seam_lease,
+	web_cache_seam_release,
+	web_cache_seam_verify,
+	web_cache_seam_copy_chunk,
+	web_cache_seam_refill,
+	web_cache_seam_listing,
+};
+
 static FLASHMEM uint32_t sd_job_id(void)
 {
 	return ++g_sd_job_sequence ^ millis() ^ g_boot_epoch;
@@ -2527,6 +2783,22 @@ FLASHMEM void AiusAudioProcessor::begin_pipeline(void)
 		(void)aius_recorder_bank_init(&g_recorder_bank, nullptr, 0u, 0u,
 		                              nullptr, nullptr, 0u, 0u,
 		                              AIUS_OPTICAL_SAMPLE_RATE_HZ);
+	/* Phase 4g G4: the web cache's carve, pad 2's tail above the recorder's
+	 * staging and ring (2 MiB from 0x70808000 on 16 MiB); absent on 8 MiB
+	 * fitments, where every lookup misses and the card serves. Memory only:
+	 * init empties the manifest; the fill starts after the first mount. */
+	{
+		AiusWebCachePlacement placement;
+		if (aius_web_cache_place(psram_bytes,
+		                         RECORDER_STAGING_BYTES + recorder_ring_bytes,
+		                         &placement))
+			(void)aius_web_cache_init(&g_web_cache, psram + placement.offset,
+			                          placement.capacity,
+			                          web_cache_flush_delete, nullptr);
+		else
+			(void)aius_web_cache_init(&g_web_cache, nullptr, 0u, nullptr,
+			                          nullptr);
+	}
 	/* Take the S/PDIF transmit DMA interrupt from the retained snapshot's
 	 * 16-bit filler. After this the wire carries our 24-bit ring verbatim;
 	 * before it, the vendor ISR transmits block_silent, which is the same
@@ -3045,16 +3317,43 @@ extern "C" FLASHMEM AiusHttpAdmitVerdict aius_runtime_http_admit(
 {
 	const AiusOpticalAdmitSample sample = admit_sample();
 	const bool sd_start = query->kind == AIUS_HTTP_ADMIT_SD_START;
+	/* Phase 4g G6, G9: an HTTP SD start that finds a fill file in flight
+	 * cancels it once and waits here until the fill has stopped, as for a
+	 * 4f DEFER (and outside F9's timer: the wait is the cancel's one or two
+	 * epochs). Once it stops, 4f's admission sees a first consult. */
+	bool fill_cancel = false;
+	if (sd_start &&
+	    aius_optical_web_fill_sd_start(&g_web_fill, web_cache_fill_in_flight(),
+	                                   &fill_cancel)) {
+		if (fill_cancel)
+			web_cache_fill_cancel();
+		return AIUS_HTTP_VERDICT_DEFER;
+	}
+	/* Audit finding 3: a route that reads the card directly (the /sd/ index,
+	 * the replay listing and delete) takes the same wait at the DISPATCH arm,
+	 * which holds the dispatch while this DEFERs; its end is
+	 * app_dispatch_end() (or a shed below). */
+	if (!sd_start && aius_optical_app_route_reads_card(query->request) &&
+	    aius_optical_web_fill_route(&g_web_fill, web_cache_fill_in_flight(),
+	                                sample.now_ms, &fill_cancel)) {
+		if (fill_cancel)
+			web_cache_fill_cancel();
+		return AIUS_HTTP_VERDICT_DEFER;
+	}
+	const bool reconsult = g_runtime.network_http.deferred_start_present &&
+	                       !(sd_start &&
+	                         aius_optical_web_fill_take_defer(&g_web_fill));
 	const AiusOpticalAdmitVerdict verdict =
 		sd_start
 			? aius_optical_admission_sd_start(
-				&g_http_admission, query->sd_job, &sample,
-				g_runtime.network_http.deferred_start_present)
+				&g_http_admission, query->sd_job, &sample, reconsult)
 			: aius_optical_admission_route(&g_http_admission, query->route,
 			                               query->method, &sample);
 	if (verdict == AIUS_OPTICAL_ADMIT_VERDICT_SHED) {
 		if (sd_start)
 			sd_disarm_shed_staging(query->sd_job);
+		else
+			aius_optical_web_fill_route_end(&g_web_fill, sample.now_ms);
 		return AIUS_HTTP_VERDICT_SHED;
 	}
 	if (verdict == AIUS_OPTICAL_ADMIT_VERDICT_DEFER)
@@ -6269,6 +6568,40 @@ static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
 	                                    &g_runtime.network_http.http,
 	                                    (char *)body, capacity, &length))
 		return 0;
+	/* Phase 4g: the web cache. entries counts VALID manifest entries (of
+	 * AIUS_WEB_CACHE_ENTRIES, the cache's own count), published the files
+	 * filled since boot; fill_holds counts cancels that latched the fill hold,
+	 * fill_cancels those that stopped a fill file in flight; crc_faults every
+	 * chip CRC mismatch (fill read-back, pre-header verify, send copy,
+	 * manifest entry); fill_refusals every fill chunk the cache refused
+	 * (capacity full, read-back mismatch), kept out of sd_diag. */
+	{
+		static const char format_www_cache[] PROGMEM =
+			",\"www_cache\":{\"present\":%s,\"entries\":%lu,"
+			"\"capacity\":%u,\"published\":%lu,\"fill_holds\":%lu,"
+			"\"fill_cancels\":%lu,\"crc_faults\":%lu,"
+			"\"fill_refusals\":%u,"
+			"\"fill_complete\":%s,\"presets_complete\":%s,"
+			"\"held\":%s}";
+		if (!status_append((char *)body, capacity, &length,
+		                   format_www_cache,
+		                   g_web_cache.base != nullptr ? "true" : "false",
+		                   (unsigned long)aius_web_cache_entry_count(
+			                   &g_web_cache),
+		                   (unsigned)AIUS_WEB_CACHE_ENTRIES,
+		                   (unsigned long)g_web_fill_walk.published,
+		                   (unsigned long)g_web_fill.holds,
+		                   (unsigned long)g_web_fill.cancels,
+		                   (unsigned long)g_web_cache.crc_faults,
+		                   (unsigned)g_web_fill_walk.fill_refusals,
+		                   g_web_fill_walk.walk_complete ? "true" : "false",
+		                   g_web_fill_walk.presets_complete ? "true"
+		                                                    : "false",
+		                   aius_optical_web_fill_held(&g_web_fill, millis())
+		                           ? "true"
+		                           : "false"))
+			return 0;
+	}
 	/* The refill job's own record, BESIDE sd_diag rather than inside it. The
 	 * two are different job streams with different owners: sd_diag belongs to
 	 * AiusRuntimeStorage, which never sees g_replay_job, so a refill fault has
@@ -6521,9 +6854,11 @@ static FLASHMEM size_t http_replay_list_json(uint8_t *body, size_t capacity)
 	const ProducerSdWindow window;
 	if (!g_sd_ready) return (size_t)snprintf((char *)body, capacity,
 		"{\"ok\":false,\"error\":\"sd_unavailable\"}");
+	SD.clearError();
 	File directory = SD.open("/aius/replays");
 	if (!directory || !directory.isDirectory()) {
 		if (directory) directory.close();
+		direct_card_settle(SD.sdErrorCode());
 		return (size_t)snprintf((char *)body, capacity,
 			"{\"ok\":true,\"files\":[],\"truncated\":false}");
 	}
@@ -6595,6 +6930,7 @@ static FLASHMEM size_t http_replay_list_json(uint8_t *body, size_t capacity)
 		}
 	}
 	directory.close();
+	direct_card_settle(SD.sdErrorCode());
 	written = snprintf((char *)body + length, capacity - length,
 	                   "],\"truncated\":%s}", truncated ? "true" : "false");
 	if (written < 0 || (size_t)written >= capacity - length) return 0u;
@@ -6632,7 +6968,7 @@ static FLASHMEM bool app_sd_ready(void *)
 
 static FLASHMEM bool app_sd_busy(void *)
 {
-	return sd_job_active();
+	return sd_job_active_for_http();
 }
 
 static FLASHMEM bool app_auth_matches(void *, const uint8_t *token, size_t length)
@@ -6708,6 +7044,8 @@ static FLASHMEM void app_dispatch_end(void *, AiusHttpRoute route,
 	aius_optical_admission_note_dispatch(&g_http_admission, route, method,
 	                                     aius_producer_yield_meter_end_us(),
 	                                     millis());
+	/* Phase 4g: a direct-card route's completion extends the fill hold. */
+	aius_optical_web_fill_route_end(&g_web_fill, millis());
 }
 
 static FLASHMEM size_t app_write_events(void *, uint32_t cursor, uint8_t *body,
@@ -6758,7 +7096,7 @@ static FLASHMEM AiusOpticalAppStoreResult app_store_public_config(
 		g_config_error_count++;
 		return AIUS_OPTICAL_APP_STORE_INVALID;
 	}
-	if (sd_job_active())
+	if (sd_job_active_for_http())
 		return AIUS_OPTICAL_APP_STORE_BUSY;
 	g_pending_config = parsed;
 	g_config_upload_pending = true;
@@ -6786,7 +7124,7 @@ static FLASHMEM AiusOpticalAppStoreResult app_store_dsp_config(
 		return AIUS_OPTICAL_APP_STORE_INVALID;
 	if (parsed.base_generation != g_config_generation)
 		return AIUS_OPTICAL_APP_STORE_STALE;
-	if (sd_job_active())
+	if (sd_job_active_for_http())
 		return AIUS_OPTICAL_APP_STORE_BUSY;
 	g_pending_dsp_model = parsed;
 	g_pending_dsp_origin = DSP_ORIGIN_PUT;
@@ -6836,6 +7174,12 @@ static FLASHMEM AiusOpticalAppReplayResult app_replay_start(void *,
 		return AIUS_OPTICAL_APP_REPLAY_CARRIER_PRESENT;
 	if (!g_sd_ready || !aius_replay_id_is_valid(id))
 		return AIUS_OPTICAL_APP_REPLAY_FAILED;
+	/* Phase 4g (owner, audit finding 2): replay is a test facility, and one
+	 * started during the fill walk lost the card at every file boundary. With
+	 * the cache present, no start until the walk is complete (status
+	 * www_cache.fill_complete); an 8 MiB fitment (no cache) never gates. */
+	if (g_web_cache.base != nullptr && !g_web_fill_walk.walk_complete)
+		return AIUS_OPTICAL_APP_REPLAY_FILL_BUSY;
 	written = snprintf(g_replay_path, sizeof(g_replay_path),
 	                   "/aius/replays/%s.iec", id);
 	if (written <= 0 || (size_t)written >= sizeof(g_replay_path))
@@ -6874,10 +7218,13 @@ static FLASHMEM AiusOpticalAppReplayResult app_replay_delete(void *,
 		return AIUS_OPTICAL_APP_REPLAY_ACTIVE;
 	snprintf(path, sizeof(path), "/aius/replays/%s.iec", id);
 	const ProducerSdWindow window;
-	if (!SD.exists(path))
-		return AIUS_OPTICAL_APP_REPLAY_NOT_FOUND;
-	return SD.remove(path) ? AIUS_OPTICAL_APP_REPLAY_OK :
-	                         AIUS_OPTICAL_APP_REPLAY_FAILED;
+	SD.clearError();
+	const AiusOpticalAppReplayResult result =
+		!SD.exists(path) ? AIUS_OPTICAL_APP_REPLAY_NOT_FOUND
+		: SD.remove(path) ? AIUS_OPTICAL_APP_REPLAY_OK
+		                  : AIUS_OPTICAL_APP_REPLAY_FAILED;
+	direct_card_settle(SD.sdErrorCode());
+	return result;
 }
 
 /* Stop is memory only for the same reason start is: the in-flight refill is
@@ -7109,15 +7456,21 @@ static FLASHMEM uint32_t app_upload_id(void *)
  *
  * The handle is never retained past the call, and `entries`/`capacity` belong
  * to the caller. */
-static FLASHMEM AiusOpticalAppDirResult app_read_directory(
+/* noinline (Phase 4g): the fill walk calls it directly too, and it must stay
+ * its own symbol, the W2 windowed SD-root row, never inlined into
+ * web_cache_fill_next(). */
+static FLASHMEM __attribute__((noinline)) AiusOpticalAppDirResult app_read_directory(
 	void *, const char *path, AiusOpticalAppDirBatch *batch)
 {
 	if (!g_sd_ready)
 		return AIUS_OPTICAL_APP_DIR_FAILED;
 	const ProducerSdWindow window;
+	SD.clearError();
 	File directory = SD.open(path);
-	if (!directory)
+	if (!directory) {
+		direct_card_settle(SD.sdErrorCode());
 		return AIUS_OPTICAL_APP_DIR_NOT_FOUND;
+	}
 	if (!directory.isDirectory()) {
 		directory.close();
 		return AIUS_OPTICAL_APP_DIR_NOT_DIRECTORY;
@@ -7128,6 +7481,7 @@ static FLASHMEM AiusOpticalAppDirResult app_read_directory(
 		File entry = directory.openNextFile();
 		if (!entry) {
 			directory.close();
+			direct_card_settle(SD.sdErrorCode());
 			return AIUS_OPTICAL_APP_DIR_OK;
 		}
 		scanned++;
@@ -7153,6 +7507,7 @@ static FLASHMEM AiusOpticalAppDirResult app_read_directory(
 		extra.close();
 	}
 	directory.close();
+	direct_card_settle(SD.sdErrorCode());
 	return AIUS_OPTICAL_APP_DIR_OK;
 }
 
@@ -8243,6 +8598,11 @@ static FLASHMEM void sd_settle_http_write(void)
 		return;
 	g_sd_http_job_seen = false;
 	committed = storage.job.state == AIUS_SD_DONE;
+	/* Phase 4g G6, G9: every HTTP SD job completion holds the fill until
+	 * 2 s after it (and is an HTTP canceller's release); an UPLOAD or DELETE
+	 * under /aius/www drops that path's entry, committed or not. */
+	aius_optical_web_fill_note_http_complete(&g_web_fill, millis());
+	web_cache_invalidate_job(&storage.job);
 #if AIUS_OTA
 	/* The OTA deferred-absorb backstop (aius-ota-resilience.md Phase 4a):
 	 * normally the transaction's sd_settle hook consumed this terminal and
@@ -8488,6 +8848,324 @@ static FLASHMEM void sd_step_complete(uint32_t now_ms)
 	}
 }
 
+/* ------------------------------------------------------------------ */
+/* Phase 4g: the web-cache fill scheduler (G6, G8, G9, G10)            */
+/* ------------------------------------------------------------------ */
+
+/* G8 (owner, 2026-10-10: fill-only step gate). The one predicate every fill
+ * start and every fill primitive consults: a CACHE_FILL waits while
+ * sd_fifo_defer() holds. Every other root job keeps 4f's rule (held at its
+ * start only, then stepped every epoch), aius_runtime_storage.cpp. */
+static FLASHMEM bool web_cache_fill_defer(void)
+{
+	return sd_fifo_defer();
+}
+
+/* The storage service's per-epoch consult for a RUNNING, uncancelled fill
+ * (aius_runtime_storage.h); overrides its never-defer weak default. */
+extern "C" FLASHMEM bool aius_runtime_storage_fill_step_defer(const AiusSdJob *)
+{
+	return web_cache_fill_defer();
+}
+
+/* The fill job's chunk sink (aius_runtime_storage.h), at checkpoint 8: a
+ * job's first chunk opens the entry at the file's size (chunk 0) or, for a
+ * cancelled file resumed at its next chunk (owner, clean-room finding 1),
+ * continues the kept partial entry, which the library drops when the card's
+ * size changed since (the job then fails and web_cache_fill_settle() restarts
+ * the file from 0). Each chunk is copied, flush-deleted and CRC'd read back
+ * from the chip inside the call (G10). A false return faults the job:
+ * capacity full or a read-back mismatch leaves the file uncached, served from
+ * the card. The refusal is a cache event, counted here
+ * (www_cache.fill_refusals; a read-back mismatch also in crc_faults; a
+ * resume mismatch is no refusal); the storage service settles it apart from a
+ * card fault, so sd_diag's root_failures and last_failure keep describing the
+ * card. */
+static FLASHMEM bool web_cache_fill_sink(const AiusSdJob *job,
+                                         const uint8_t *data, size_t length,
+                                         uint64_t offset, uint64_t size)
+{
+	const char *rel = web_cache_rel(job->target_path);
+	if (rel == nullptr || !g_web_fill_walk.running || size > UINT32_MAX)
+		return false;
+	if (!g_web_fill_walk.begun) {
+		const bool open =
+			offset == 0u
+				? aius_web_cache_fill_begin(&g_web_cache, rel,
+				                            strlen(rel),
+				                            (uint32_t)size)
+				: aius_web_cache_fill_resume(&g_web_cache, rel,
+				                             strlen(rel),
+				                             (uint32_t)offset,
+				                             (uint32_t)size);
+		if (!open)
+			return false;
+		g_web_fill_walk.begun = true;
+	}
+	return aius_web_cache_fill_chunk(&g_web_cache, data, (uint32_t)length);
+}
+
+extern "C" FLASHMEM bool aius_runtime_storage_root_output(
+	const AiusSdJob *job, const uint8_t *data, size_t length,
+	uint64_t offset, uint64_t size)
+{
+	if (web_cache_fill_sink(job, data, length, offset, size))
+		return true;
+	if ((g_web_fill_walk.begun || offset == 0u) &&
+	    g_web_fill_walk.fill_refusals != UINT16_MAX)
+		g_web_fill_walk.fill_refusals++;
+	return false;
+}
+
+/* The directory listing's link rule: one component of [A-Za-z0-9._-]. */
+static FLASHMEM bool web_cache_name_servable(const char *name)
+{
+	if (name[0] == '\0' || name[0] == '.')
+		return false;
+	for (const char *p = name; *p != '\0'; p++) {
+		const char ch = *p;
+		if (!((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+		      (ch >= '0' && ch <= '9') || ch == '.' || ch == '_' ||
+		      ch == '-'))
+			return false;
+	}
+	return true;
+}
+
+/* Settles the fill file that just ended, then follows the card: a card gone
+ * or a new mount (remount, card swap, mode change) drops every entry and
+ * restarts the walk. Also releases an HTTP canceller whose request ended
+ * with no job (shed or torn down), so its latch cannot outlive it. Memory
+ * only; runs first in each lifecycle pass, after sd_settle_http_write(). */
+static FLASHMEM void web_cache_fill_settle(uint32_t now_ms)
+{
+	const AiusRuntimeStorage &storage = g_runtime.storage;
+
+	if (g_web_fill.http_canceller &&
+	    !g_runtime.network_http.deferred_start_present &&
+	    !g_runtime.network_http.deferred_dispatch_present &&
+	    !g_runtime.storage_action_present && !storage.http_owned &&
+	    !storage.http_authority && !g_sd_http_job_seen)
+		aius_optical_web_fill_drop_http_canceller(&g_web_fill, now_ms);
+
+	if (g_web_fill_walk.running &&
+	    storage.root_state != AIUS_RUNTIME_STORAGE_ROOT_RUNNING) {
+		const AiusSdResult *result =
+			aius_runtime_storage_root_result(&storage);
+		const char *rel = web_cache_rel(storage.job.target_path);
+		/* Started at a cancelled file's next chunk (finding 1). */
+		const bool resumed = storage.job.initial_offset != 0u;
+		g_web_fill_walk.running = false;
+		if (result != nullptr && result->kind != AIUS_SD_RESULT_FAULT &&
+		    rel != nullptr) {
+			/* A job that emitted no chunk opens here: an empty file,
+			 * or a resume whose file ends at its offset (the card's
+			 * size checked against the begun length). */
+			const bool begun =
+				g_web_fill_walk.begun ||
+				(resumed
+					 ? aius_web_cache_fill_resume(
+						   &g_web_cache, rel, strlen(rel),
+						   (uint32_t)storage.job.initial_offset,
+						   (uint32_t)storage.job.end_offset)
+					 : aius_web_cache_fill_begin(
+						   &g_web_cache, rel, strlen(rel), 0u));
+			if (begun && aius_web_cache_publish(&g_web_cache)) {
+				g_web_fill_walk.published++;
+				g_web_fill_walk.entry_index++;
+			} else if (!resumed) {
+				g_web_fill_walk.dir_clean = false;
+				g_web_fill_walk.entry_index++;
+			}
+			/* A resume that failed restarts the file from 0 (the
+			 * partial was dropped); the cursor stays. */
+		} else if (result == nullptr ||
+		           result->fault != AIUS_SD_FAULT_CANCELLED) {
+			/* Owner (clean-room finding 1): only a failure drops the
+			 * partial. A failed fresh file is skipped, served from the
+			 * card; a failed resume (a size change at resume, a range
+			 * or card fault) restarts the file from 0 once, the cursor
+			 * staying. */
+			aius_web_cache_fill_abort(&g_web_cache);
+			if (!resumed) {
+				g_web_fill_walk.entry_index++;
+				g_web_fill_walk.dir_clean = false;
+			}
+		} else if (g_web_fill_walk.begun && rel != nullptr &&
+		           aius_web_cache_fill_resume_offset(&g_web_cache, rel,
+		                                             strlen(rel)) ==
+		                   storage.job.end_offset &&
+		           aius_web_cache_publish(&g_web_cache)) {
+			/* Cancelled after its last chunk: every chunk was checked
+			 * (G10), so it publishes as its completion would have (a
+			 * tail chunk's end is no chunk boundary to resume at). */
+			g_web_fill_walk.published++;
+			g_web_fill_walk.entry_index++;
+		}
+		/* Any other cancelled file keeps its partial entry (checked
+		 * chunks and running CRC) and the cursor: the next start resumes
+		 * it at its next chunk (web_cache_fill_next()). */
+		g_web_fill_walk.begun = false;
+	}
+	/* A CRC fault's refill (web_cache_seam_refill()): the walk restarts
+	 * only between fill files, so a settling file cannot advance the new
+	 * walk's cursor. */
+	if (g_web_fill_walk.refill_pending && !g_web_fill_walk.running) {
+		g_web_fill_walk.refill_pending = false;
+		web_cache_walk_reset();
+	}
+
+	/* Audit finding 6 (owner: card swap while powered is unsupported, so the
+	 * cache takes the accidental-disconnect posture): any card-gone fault, on
+	 * an SD job or a direct card op (each clears the adapter's trusted mount,
+	 * direct_card_settle()), empties the cache and parks the walk until the
+	 * next mount; a remount or volume change restarts it. The 1 Hz probe stays
+	 * skipped during playback (4e), so a playback remount comes from a job. */
+	if (aius_optical_web_fill_follow_card(&g_web_fill_walk.ready_seen,
+	                                      &g_web_fill_walk.mounts_seen,
+	                                      g_sd_ready, storage.target.mounted,
+	                                      storage.target.mounts))
+		web_cache_invalidate_all();
+}
+
+/* Owner (closure nit A): a playing replay pauses the fill, SWITCHING_TO_REPLAY
+ * (prebuffering, its refill already reading the card) included, so replay and
+ * fill never share the card in either order. */
+static FLASHMEM bool web_cache_replay_playing(void)
+{
+	return g_replay_service.source == AIUS_REPLAY_SOURCE_REPLAY ||
+	       g_replay_service.source == AIUS_REPLAY_SOURCE_SWITCHING_TO_REPLAY;
+}
+
+/* Starts the next fill file: one CACHE_FILL root job per file (G6), only
+ * with the cache present, the card ready, the volume idle, the hold lapsed
+ * (G9), no replay playing (nit A) and the G8 gate open. Each call reads at most one directory (a
+ * windowed app_read_directory() scan) and starts at most one job; the job's
+ * primitives run at checkpoint 8, one per epoch. Files already cached, names
+ * the listing would not link and paths over AIUS_WEB_CACHE_PATH_MAX are
+ * passed over; a directory ends in its subdirectories, one level deep. */
+static FLASHMEM void web_cache_fill_next(uint32_t now_ms)
+{
+	char path[AIUS_SD_PATH_STORAGE];
+	AiusOpticalAppDirBatch batch;
+	AiusOpticalAppDirEntry *const entries = g_runtime.app.index_entries;
+
+	if (g_web_cache.base == nullptr || !g_sd_ready ||
+	    !g_web_fill_walk.ready_seen || g_web_fill_walk.walk_complete ||
+	    g_web_fill_walk.running ||
+	    aius_optical_web_fill_paused(&g_web_fill, now_ms,
+	                                 web_cache_replay_playing()) ||
+	    !sd_storage_idle())
+		return;
+	/* G8: the fill start site consults sd_fifo_defer(). */
+	if (web_cache_fill_defer())
+		return;
+
+	memset(&batch, 0, sizeof(batch));
+	batch.entries = entries;
+	batch.capacity = AIUS_OPTICAL_APP_INDEX_MAX_ENTRIES;
+	if (g_web_fill_walk.dir_ordinal != 0u &&
+	    g_web_fill_walk.dir[0] == '\0') {
+		/* Find the k-th subdirectory of www/; none left ends the walk. */
+		unsigned seen = 0u;
+		if (app_read_directory(nullptr, "/aius/www", &batch) ==
+		    AIUS_OPTICAL_APP_DIR_OK) {
+			for (size_t i = 0; i < batch.count; i++) {
+				if (!entries[i].is_directory ||
+				    !web_cache_name_servable(entries[i].name))
+					continue;
+				if (++seen == g_web_fill_walk.dir_ordinal) {
+					snprintf(g_web_fill_walk.dir,
+					         sizeof(g_web_fill_walk.dir), "%s",
+					         entries[i].name);
+					return;
+				}
+			}
+		}
+		g_web_fill_walk.walk_complete = true;
+		return;
+	}
+
+	if (g_web_fill_walk.dir_ordinal == 0u)
+		snprintf(path, sizeof(path), "/aius/www");
+	else
+		snprintf(path, sizeof(path), "/aius/www/%s",
+		         g_web_fill_walk.dir);
+	if (app_read_directory(nullptr, path, &batch) !=
+	    AIUS_OPTICAL_APP_DIR_OK) {
+		if (g_web_fill_walk.dir_ordinal == 0u) {
+			g_web_fill_walk.walk_complete = true;
+		} else {
+			/* An unread subdirectory is not a cached one: presets/
+			 * stays incomplete and its listing comes from the card. */
+			batch.count = 0u;
+			g_web_fill_walk.dir_clean = false;
+		}
+	}
+	if (g_web_fill_walk.walk_complete)
+		return;
+
+	for (size_t i = g_web_fill_walk.entry_index; i < batch.count; i++) {
+		const AiusOpticalAppDirEntry *entry = &entries[i];
+		AiusWebCacheHit hit;
+		AiusSdJobRequest request;
+		int written;
+		const char *rel;
+
+		g_web_fill_walk.entry_index = (uint8_t)i;
+		if (entry->is_directory || !web_cache_name_servable(entry->name)) {
+			/* The manifest cannot list it: a file the listing hides, or a
+			 * second-level directory the walk does not enter. */
+			if (!entry->is_directory || g_web_fill_walk.dir_ordinal != 0u)
+				g_web_fill_walk.dir_clean = false;
+			continue;
+		}
+		written = g_web_fill_walk.dir_ordinal == 0u
+			? snprintf(path, sizeof(path), "/aius/www/%s", entry->name)
+			: snprintf(path, sizeof(path), "/aius/www/%s/%s",
+			           g_web_fill_walk.dir, entry->name);
+		rel = web_cache_rel(path);
+		if (written <= 0 || (size_t)written >= sizeof(path) ||
+		    rel == nullptr || strlen(rel) > AIUS_WEB_CACHE_PATH_MAX) {
+			g_web_fill_walk.dir_clean = false;
+			continue;
+		}
+		/* A faulted entry is dropped by the lookup, so it fills here. */
+		if (aius_web_cache_lookup(&g_web_cache, rel, strlen(rel), &hit,
+		                          nullptr))
+			continue;
+		memset(&request, 0, sizeof(request));
+		request.kind = AIUS_SD_JOB_CACHE_FILL;
+		request.target_path = path;
+		/* Owner (clean-room finding 1): a cancelled file resumes at its
+		 * next chunk; any other file starts at 0. */
+		request.initial_offset =
+			aius_web_cache_fill_resume_offset(&g_web_cache, rel,
+			                                  strlen(rel));
+		if (aius_runtime_teensy_start_storage_job(&g_runtime, &request)) {
+			g_web_fill_walk.running = true;
+			g_web_fill_walk.begun = false;
+		} else {
+			/* Rejected outright: retrying would spin, skip it. */
+			g_web_fill_walk.entry_index = (uint8_t)(i + 1u);
+			g_web_fill_walk.dir_clean = false;
+		}
+		return;
+	}
+
+	/* This directory is done; G6's presets listing comes from the manifest
+	 * only once every presets file was published. */
+	if (g_web_fill_walk.dir_ordinal != 0u &&
+	    strcmp(g_web_fill_walk.dir, "presets") == 0)
+		g_web_fill_walk.presets_complete =
+			g_web_fill_walk.dir_clean && !batch.more &&
+			batch.hidden == 0u;
+	g_web_fill_walk.dir_ordinal++;
+	g_web_fill_walk.entry_index = 0u;
+	g_web_fill_walk.dir_clean = true;
+	g_web_fill_walk.dir[0] = '\0';
+}
+
 /* One SD lifecycle pass, at checkpoint 7. Memory only -- every card access it
  * causes happens at checkpoint 8, one primitive at a time.
  *
@@ -8503,14 +9181,19 @@ static FLASHMEM void sd_lifecycle_service(uint32_t now_ms)
 	sd_settle_http_write();
 	sd_drop_orphan_staging();
 
+	web_cache_fill_settle(now_ms);
+
 	if (g_runtime.storage.root_state ==
 	    AIUS_RUNTIME_STORAGE_ROOT_RUNNING)
 		return;
 	if (g_sd_step_running)
 		sd_step_complete(now_ms);
 	if (g_sd_step == SD_STEP_NONE) {
-		if ((int32_t)(now_ms - g_sd_probe_at_ms) < 0)
+		/* Phase 4g: with no lifecycle step due, the next fill file. */
+		if ((int32_t)(now_ms - g_sd_probe_at_ms) < 0) {
+			web_cache_fill_next(now_ms);
 			return;
+		}
 		/* No routine card touch while live audio is on the wire: every
 		 * probe is one SdioCard primitive at checkpoint 8, and a card
 		 * that wanders into internal wear-leveling holds that primitive
@@ -8552,8 +9235,10 @@ static FLASHMEM void sd_lifecycle_service(uint32_t now_ms)
 		 * probe runs regardless of the carrier; steady-state deferral
 		 * (hot swap detection, usage refresh) is unchanged. */
 		if (g_sd_bringup_done &&
-		    (g_tx_gate_open || AudioInputSPDIF3::pllLocked()))
+		    (g_tx_gate_open || AudioInputSPDIF3::pllLocked())) {
+			web_cache_fill_next(now_ms);
 			return;
+		}
 		g_sd_step = SD_STEP_PROBE;
 	}
 	if (!sd_storage_idle())
@@ -10094,6 +10779,10 @@ FLASHMEM void setup(void)
 	/* Phase 4f: every class window at its declared seed before the first
 	 * epoch can consult aius_runtime_http_admit(). Memory only. */
 	aius_optical_admission_init(&g_http_admission);
+	/* Phase 4g: the dispatcher reaches the web cache through this seam; it
+	 * misses everything while the carve is absent (8 MiB fitments). After
+	 * the runtime's aius_optical_app_init(), which clears it. */
+	(void)aius_optical_app_set_web_cache(&g_runtime.app, &g_web_cache_seam);
 #if AIUS_OTA
 	/* Install the OTA seam AFTER the dispatcher is constructed: the runtime's
 	 * aius_optical_app_init() zeroes the OTA slot, and ota_compose() then binds

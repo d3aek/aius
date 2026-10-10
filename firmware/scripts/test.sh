@@ -15,7 +15,7 @@
 #         usb-control, replay, replay-samples, tx-gate, tx-governor, tx-fill-sensor, tx-fill-witness, underrun-episodes, input-liveness, input-dark, event-ring, recorder, boot, boot-target, fault-target, ota,
 #         build-metadata, runtime, network-transport, sd, sd-target, optical-app,
 #         optical-cutover, status-body-bound, runtime-target, memory, itcm-placement, fake-fidelity,
-#         sdfat-vendor, producer-yield, producer-isolation, stack-bound, registry, sd-editor.
+#         sdfat-vendor, producer-yield, producer-isolation, stack-bound, www-bundle, measure-vectors, web-cache, registry, sd-editor.
 #
 # That list is not documentation: the `registry` suite fails when it, the suites
 # table in README.md, and the arms of the `case` below disagree with the
@@ -844,6 +844,9 @@ replay-samples)
 	"$replay_samples_out" \
 		"$replay_samples_generated/cinematic_program_51.ac3" \
 		"$replay_samples_generated/cinematic_program_51_ac3.iec"
+	# Discovers "$fw_root/test/replay-samples/test_eac3_acceptance.py".
+	python3 -B -m unittest discover -s "$fw_root/test/replay-samples" \
+		-p 'test_eac3_acceptance.py'
 	;;
 tx-gate)
 	# Header-only predicate: the test compiles against the replay lib's
@@ -1374,6 +1377,34 @@ stack-bound)
 	# the canonical image's DTCM stack zone (AIUS_STACK_ENV, default
 	# teensy41-optical-slot-a); fixtures always, real-ELF cases need a build.
 	python3 "$fw_root/test/stack-bound/test_stack_bound.py"
+	;;
+www-bundle)
+	# The inlined gzip page bundles (tools/www_bundle.py) and the 503
+	# Retry-After retry in tools/aius-sd-sync.sh (Phase 4g). Python only.
+	# Discovers "$fw_root/test/www-bundle/test_www_bundle.py".
+	python3 -B -m unittest discover -s "$fw_root/test/www-bundle"
+	;;
+measure-vectors)
+	# The measurement-vector runner (tools/measure_vectors/measure_run.py,
+	# Phase 4g). Python only.
+	# Discovers "$fw_root/test/measure-vectors/test_measure_run.py".
+	python3 -B -m unittest discover -s "$fw_root/test/measure-vectors" -p 'test_*.py'
+	;;
+web-cache)
+	# The PSRAM web cache (lib/aius_web_cache, Phase 4g) over a fake
+	# flush-delete and a counting chip reader. Same build as
+	# test/web-cache/run.sh, inline so the registry sees the entry point.
+	web_cache_out="$build_dir/web-cache"
+	"$cc" "${cflags[@]}" \
+		"-I$fw_root/lib/aius_web_cache/include" \
+		"-I$fw_root/lib/aius_ota/include" \
+		"-I$fw_root/lib/aius_recorder/include" \
+		"$fw_root/test/web-cache/test_web_cache.c" \
+		"$fw_root/lib/aius_web_cache/src/aius_web_cache.c" \
+		"$fw_root/lib/aius_ota/src/aius_ota_staging.c" \
+		"$fw_root/lib/aius_recorder/src/aius_recorder.c" \
+		-lm -o "$web_cache_out"
+	"$web_cache_out"
 	;;
 registry)
 	# The guard on this file. Every other arm is hand-maintained, so a suite

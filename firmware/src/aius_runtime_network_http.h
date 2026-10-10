@@ -55,14 +55,17 @@ extern "C" {
  *   SHED   answer 503 now: a ROUTE query gets {"error":"audio_busy"} without
  *          dispatching; an SD_START query fails the start the same way. Both
  *          carry "Retry-After: 1" and call aius_runtime_http_note_shed().
- *   DEFER  SD_START only (a ROUTE DEFER is treated as ADMIT): hold the start
- *          and ask again next HTTP epoch, with no transaction step. The
- *          callback owns the deadline (it returns SHED when its 500 ms millis()
- *          timer from the first deferral expires) and any sd_fifo_defer()
+ *   DEFER  hold the outstanding action (the SD_START, or the DISPATCH before
+ *          the application sees the request) and ask again next HTTP epoch,
+ *          with no transaction step. The callback owns any deadline (an
+ *          SD_START's 500 ms F9 timer; Phase 4g's wait for a fill file to stop
+ *          at its next primitive boundary) and any sd_fifo_defer()
  *          bookkeeping; this module only obeys.
  *
  * sd_job is the transaction's job request (kind, incl. OTA staging); NULL for
- * ROUTE. Mode lives in the callback (it reads the SD mode itself). */
+ * ROUTE. request is the parsed request for ROUTE (route and method repeat
+ * it); NULL for SD_START. Mode lives in the callback (it reads the SD mode
+ * itself). */
 typedef enum {
 	AIUS_HTTP_ADMIT_ROUTE = 0,
 	AIUS_HTTP_ADMIT_SD_START
@@ -79,6 +82,7 @@ typedef struct {
 	AiusHttpRoute route;
 	AiusHttpMethod method;
 	const AiusSdJobRequest *sd_job;
+	const AiusHttpRequest *request;
 } AiusHttpAdmitQuery;
 
 /* Link-time hooks. The platform (optical_main.cpp) defines both; this module
@@ -110,13 +114,13 @@ typedef struct {
 	 * given. The root clears the storage event only then, so an offline
 	 * epoch cannot silently drop a correlated SD result. */
 	bool http_stepped;
-	/* A DEFERred SD_START is held: the transaction's SD_START action is still
-	 * outstanding and is re-issued from its state when admitted. Sits in the
-	 * padding before the counters (no struct growth); cleared by teardown. */
+	/* A DEFERred SD_START (deferred_start_present) or DISPATCH
+	 * (deferred_dispatch_present) is held: the transaction's action is still
+	 * outstanding and is re-issued from its state when admitted. Both sit in
+	 * the padding before the counters (no struct growth); cleared by
+	 * teardown. */
 	bool deferred_start_present;
-	/* A DEFERred SD_START is held: the transaction's SD_START action is still
-	 * outstanding and is re-issued from its state when admitted. Sits in the
-	 * padding before the counters (no struct growth); cleared by teardown. */
+	bool deferred_dispatch_present;
 	/* Status counters, observed at this seam because the legacy producers
 	 * died with service_http() at the cutover. They survive a network
 	 * teardown (http_init() re-inits only the transaction) and reset at

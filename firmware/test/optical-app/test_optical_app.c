@@ -1113,7 +1113,9 @@ static void test_sd_media_and_paths(void)
 		{ "GET /sd/www/app.css", "text/css", 86400u },
 		{ "GET /sd/www/model.json", "application/json", 0u },
 		{ "GET /sd/www/logo.png", "application/octet-stream", 0u },
-		{ "GET /sd/www/a/b/c/d.bin", "application/octet-stream", 0u }
+		{ "GET /sd/www/a/b/c/d.bin", "application/octet-stream", 0u },
+		/* Phase 4g G2: fonts join the day-long set. */
+		{ "GET /sd/www/fonts/a.woff2", "application/octet-stream", 86400u }
 	};
 	fixture_init(&fixture);
 
@@ -1141,6 +1143,12 @@ static void test_sd_media_and_paths(void)
 		assert(!response->sd_job.publish);
 		assert(!response->sd_job.require_existing);
 		assert(response->cache_max_age_s == accepted[i].max_age);
+		/* Phase 4g G2, G7: every www/ read varies by encoding, and what is
+		 * not day-long is no-cache; the card fallback carries no ETag. */
+		assert(response->vary_accept_encoding);
+		assert(response->cache_no_cache == (accepted[i].max_age == 0u));
+		assert(response->etag == NULL);
+		assert(!response->content_encoding_gzip);
 	}
 
 	{
@@ -1158,6 +1166,8 @@ static void test_sd_media_and_paths(void)
 		              "/aius/replays/take1.iec") == 0);
 		/* Replay vectors are re-listed and re-fetched by id; never cached. */
 		assert(response->cache_max_age_s == 0u);
+		assert(!response->vary_accept_encoding);
+		assert(!response->cache_no_cache);
 	}
 
 	/* The /aius/<name> builder the config routes now share, at its limit: the
@@ -1884,6 +1894,13 @@ static void test_replay_control(void)
 	                                  "X-Aius-SD-Auth: token\r\n",
 	                                  "{\"id\":\"take1\"}", -1),
 	                 409, "{\"ok\":false,\"error\":\"replay_carrier_present\"}");
+	/* Phase 4g (owner, audit finding 2): the fill walk refuses a start with
+	 * a retryable 503 of its own (the 503 carries Retry-After). */
+	fixture.fake.replay_start_result = AIUS_OPTICAL_APP_REPLAY_FILL_BUSY;
+	expect_immediate(dispatch_request(&fixture, "POST /api/replays/start",
+	                                  "X-Aius-SD-Auth: token\r\n",
+	                                  "{\"id\":\"take1\"}", -1),
+	                 503, "{\"ok\":false,\"error\":\"fill_busy\"}");
 
 	/* A malformed or unusable id never reaches the application. */
 	static const char *const bad_bodies[] = {
@@ -4135,6 +4152,299 @@ static void test_admission_sd_start(void)
  * admission once its outlier's buckets age out on the fake clock (a bucket
  * closes 2,000 ms after it opened; the outlier's slot is overwritten at the
  * fifth close, 10 s after its bucket opened). */
+/* Phase 4g G6, G9, R5-S1: the web-cache fill hold. "Starts" means the
+ * scheduler would start a fill file: aius_optical_web_fill_held() false. */
+static void test_web_fill_hold(void)
+{
+	AiusOpticalWebFill f;
+	bool cancel = false;
+
+	/* Idle: nothing holds; an HTTP SD start with no fill in flight goes to
+	 * 4f admission untouched and latches nothing. */
+	aius_optical_web_fill_init(&f);
+	assert(!aius_optical_web_fill_held(&f, 0u));
+	assert(!aius_optical_web_fill_sd_start(&f, false, &cancel));
+	assert(!cancel && f.holds == 0u && f.latches == 0u);
+	assert(!aius_optical_web_fill_take_defer(&f));
+
+	/* A page miss finding a fill in flight: the first consult cancels
+	 * once (the platform's cancel entry latches), later consults defer
+	 * without cancelling again; the hold has no expiry while latched. */
+	assert(aius_optical_web_fill_sd_start(&f, true, &cancel));
+	assert(cancel);
+	assert(aius_optical_web_fill_cancel(&f, true));
+	assert(f.holds == 1u && f.cancels == 1u && f.latches == 1u);
+	assert(aius_optical_web_fill_sd_start(&f, true, &cancel));
+	assert(!cancel && f.cancels == 1u && f.latches == 1u);
+	/* The fill has stopped: the held start goes to admission as a first
+	 * consult exactly once, then starts; no fill starts in between. */
+	assert(!aius_optical_web_fill_sd_start(&f, false, &cancel));
+	assert(aius_optical_web_fill_take_defer(&f));
+	assert(!aius_optical_web_fill_take_defer(&f));
+	for (uint32_t t = 0u; t <= 600000u; t += 50000u)
+		assert(aius_optical_web_fill_held(&f, t));
+	/* Its job completes at 1000 ms: the release, 2 s after it. */
+	aius_optical_web_fill_note_http_complete(&f, 1000u);
+	assert(f.latches == 0u && f.http_canceller == 0u);
+	assert(aius_optical_web_fill_held(&f, 2999u));
+	assert(!aius_optical_web_fill_held(&f, 3000u));
+
+	/* Every HTTP SD job completion extends to 2 s after it; an expiry only
+	 * moves later (a completion stamped earlier does not pull it in). */
+	aius_optical_web_fill_note_http_complete(&f, 4000u);
+	aius_optical_web_fill_note_http_complete(&f, 5000u);
+	aius_optical_web_fill_note_http_complete(&f, 4500u);
+	assert(aius_optical_web_fill_held(&f, 6999u));
+	assert(!aius_optical_web_fill_held(&f, 7000u));
+
+	/* The 4h flush and freeze shape: a cancel with no HTTP job after it
+	 * keeps the hold with no expiry until its release, then the next file
+	 * starts 2 s after the release and never before. */
+	aius_optical_web_fill_init(&f);
+	assert(!aius_optical_web_fill_cancel(&f, false));
+	assert(f.holds == 1u && f.cancels == 0u);
+	assert(aius_optical_web_fill_held(&f, 1000000u));
+	aius_optical_web_fill_note_http_complete(&f, 10000u);
+	assert(aius_optical_web_fill_held(&f, 20000u)); /* still latched */
+	aius_optical_web_fill_hold_release(&f, 30000u);
+	for (uint32_t t = 30000u; t < 32000u; t += 100u)
+		assert(aius_optical_web_fill_held(&f, t));
+	assert(!aius_optical_web_fill_held(&f, 32000u));
+	/* Two cancellers: the hold lapses only after both release. */
+	aius_optical_web_fill_init(&f);
+	(void)aius_optical_web_fill_cancel(&f, true);
+	(void)aius_optical_web_fill_cancel(&f, false);
+	aius_optical_web_fill_hold_release(&f, 100u);
+	assert(aius_optical_web_fill_held(&f, 100000u));
+	aius_optical_web_fill_hold_release(&f, 200u);
+	assert(!aius_optical_web_fill_held(&f, 2200u));
+	/* Expiry wraps with millis(). */
+	aius_optical_web_fill_init(&f);
+	aius_optical_web_fill_note_http_complete(&f, UINT32_MAX - 500u);
+	assert(aius_optical_web_fill_held(&f, 1000u));
+	assert(!aius_optical_web_fill_held(&f, 1500u));
+
+	/* An HTTP canceller whose request ends with no job (shed, teardown)
+	 * releases as its completion would have. */
+	aius_optical_web_fill_init(&f);
+	assert(aius_optical_web_fill_sd_start(&f, true, &cancel) && cancel);
+	(void)aius_optical_web_fill_cancel(&f, true);
+	aius_optical_web_fill_drop_http_canceller(&f, 50u);
+	assert(f.latches == 0u && f.http_defer == 0u);
+	assert(aius_optical_web_fill_held(&f, 2049u));
+	assert(!aius_optical_web_fill_held(&f, 2050u));
+	aius_optical_web_fill_drop_http_canceller(&f, 9000u); /* no-op */
+	assert(!aius_optical_web_fill_held(&f, 9000u));
+}
+
+/* A lapsed hold stays lapsed however long ago it lapsed, and a later
+ * completion or release sets the expiry to now + 2 s: "only later" applies
+ * to a live hold alone. Warm-cache hits never call _note_http_complete, so a
+ * gap past 2^31 ms between completions is the steady state, not a corner. */
+static void test_web_fill_hold_long_lapse(void)
+{
+	static const uint32_t k_two31 = UINT32_C(0x80000000);
+	static const uint32_t k_ten_days = UINT32_C(864000000);
+	static const uint32_t k_gaps[] = {
+		/* lapse (ms after the 14000 expiry) just under, at and just over
+		 * 2^31, the audit's probe and nearly a whole wrap */
+		UINT32_C(0x80000000) - 1u, UINT32_C(0x80000000),
+		UINT32_C(0x80000000) + 1u, UINT32_C(0x80000000) + 3000u,
+		UINT32_C(0xFFFFFFFF) - 5000u,
+	};
+	AiusOpticalWebFill f;
+	uint32_t now;
+
+	/* The audit's probe: complete at 12000, again at 12000 + 2^31 + 1000. */
+	aius_optical_web_fill_init(&f);
+	aius_optical_web_fill_note_http_complete(&f, 12000u);
+	assert(f.hold_until_ms == 14000u);
+	now = 12000u + k_two31 + 1000u;
+	assert(!aius_optical_web_fill_held(&f, now));
+	aius_optical_web_fill_note_http_complete(&f, now);
+	assert(f.hold_until_ms == now + AIUS_OPTICAL_WEB_FILL_HOLD_MS);
+	assert(aius_optical_web_fill_held(&f, now + 1999u));
+	assert(!aius_optical_web_fill_held(&f, now + 2000u));
+	assert(!aius_optical_web_fill_held(&f, now + k_ten_days));
+
+	for (size_t i = 0; i < sizeof(k_gaps) / sizeof(k_gaps[0]); i++) {
+		/* Never observed in between: held() alone sees it lapsed. */
+		aius_optical_web_fill_init(&f);
+		aius_optical_web_fill_note_http_complete(&f, 12000u);
+		now = 14000u + k_gaps[i];
+		assert(!aius_optical_web_fill_held(&f, now));
+		assert(!aius_optical_web_fill_held(&f, now + k_ten_days));
+		/* A completion re-arms from now. */
+		aius_optical_web_fill_note_http_complete(&f, now);
+		assert(f.hold_until_ms == now + AIUS_OPTICAL_WEB_FILL_HOLD_MS);
+		assert(aius_optical_web_fill_held(&f, now + 1u));
+		assert(!aius_optical_web_fill_held(&f, now + 2000u));
+		/* So does a canceller's release. */
+		aius_optical_web_fill_init(&f);
+		aius_optical_web_fill_note_http_complete(&f, 12000u);
+		(void)aius_optical_web_fill_cancel(&f, true);
+		assert(aius_optical_web_fill_held(&f, now)); /* latched */
+		aius_optical_web_fill_hold_release(&f, now);
+		assert(f.latches == 0u);
+		assert(f.hold_until_ms == now + AIUS_OPTICAL_WEB_FILL_HOLD_MS);
+		assert(aius_optical_web_fill_held(&f, now + 1999u));
+		assert(!aius_optical_web_fill_held(&f, now + 2000u));
+	}
+
+	/* A live hold still only moves later, a stale stamp included. */
+	aius_optical_web_fill_init(&f);
+	aius_optical_web_fill_note_http_complete(&f, 5000u);
+	aius_optical_web_fill_note_http_complete(&f, 4500u);
+	assert(f.hold_until_ms == 7000u);
+}
+
+/* Phase 4g, audit finding 3: the routes that read the card directly, and the
+ * DISPATCH-arm wait they take while a fill file is in flight: one cancel, a
+ * DEFER until the fill stops, the latch released at admission (hold 2 s from
+ * then), and the route's end extending the hold like a job completion. */
+static void test_web_fill_route(void)
+{
+	static const struct {
+		AiusHttpRoute route;
+		AiusHttpMethod method;
+		const char *resource;
+		bool reads_card;
+	} k_routes[] = {
+		{ AIUS_HTTP_ROUTE_REPLAYS, AIUS_HTTP_GET, NULL, true },
+		{ AIUS_HTTP_ROUTE_REPLAYS, AIUS_HTTP_DELETE, NULL, true },
+		{ AIUS_HTTP_ROUTE_SD_FILE, AIUS_HTTP_GET, "www/presets/", true },
+		{ AIUS_HTTP_ROUTE_SD_FILE, AIUS_HTTP_GET, "www/", true },
+		{ AIUS_HTTP_ROUTE_SD_FILE, AIUS_HTTP_GET, "www/index.html", false },
+		{ AIUS_HTTP_ROUTE_SD_FILE, AIUS_HTTP_PUT, "www/presets/", false },
+		{ AIUS_HTTP_ROUTE_SD_FILE, AIUS_HTTP_DELETE, "www/x.js", false },
+		{ AIUS_HTTP_ROUTE_REPLAYS_START, AIUS_HTTP_POST, NULL, false },
+		{ AIUS_HTTP_ROUTE_REPLAYS_STATUS, AIUS_HTTP_GET, NULL, false },
+		{ AIUS_HTTP_ROUTE_STATUS, AIUS_HTTP_GET, NULL, false },
+	};
+	AiusOpticalWebFill f;
+	AiusHttpRequest request;
+	bool cancel = true;
+
+	for (size_t i = 0; i < ARRAY_LENGTH(k_routes); i++) {
+		memset(&request, 0, sizeof(request));
+		request.route = k_routes[i].route;
+		request.method = k_routes[i].method;
+		if (k_routes[i].resource != NULL) {
+			request.resource = (const uint8_t *)k_routes[i].resource;
+			request.resource_length = strlen(k_routes[i].resource);
+		}
+		assert(aius_optical_app_route_reads_card(&request) ==
+		       k_routes[i].reads_card);
+	}
+	assert(!aius_optical_app_route_reads_card(NULL));
+
+	/* No fill in flight: admitted at once, nothing latched; its end extends
+	 * the hold 2 s past the end, and only an admitted route's end does. */
+	aius_optical_web_fill_init(&f);
+	aius_optical_web_fill_route_end(&f, 100u);
+	assert(!aius_optical_web_fill_held(&f, 100u));
+	assert(!aius_optical_web_fill_route(&f, false, 200u, &cancel));
+	assert(!cancel && f.latches == 0u && f.holds == 0u);
+	assert(!aius_optical_web_fill_held(&f, 200u));
+	aius_optical_web_fill_route_end(&f, 300u);
+	assert(aius_optical_web_fill_held(&f, 2299u));
+	assert(!aius_optical_web_fill_held(&f, 2300u));
+	aius_optical_web_fill_route_end(&f, 5000u); /* consumed: no-op */
+	assert(!aius_optical_web_fill_held(&f, 5000u));
+
+	/* A fill in flight: the first consult cancels, later ones only wait;
+	 * the hold is latched with no expiry while the dispatch is held. */
+	aius_optical_web_fill_init(&f);
+	assert(aius_optical_web_fill_route(&f, true, 1000u, &cancel) && cancel);
+	assert(aius_optical_web_fill_cancel(&f, true));
+	assert(f.cancels == 1u && f.latches == 1u && f.http_canceller == 1u);
+	assert(aius_optical_web_fill_route(&f, true, 1010u, &cancel) && !cancel);
+	assert(f.cancels == 1u && f.latches == 1u);
+	assert(aius_optical_web_fill_held(&f, 900000u));
+	/* The fill stopped: admitted, the latch released at admission. */
+	assert(!aius_optical_web_fill_route(&f, false, 1020u, &cancel) && !cancel);
+	assert(f.latches == 0u && f.http_canceller == 0u && f.http_defer == 0u);
+	assert(aius_optical_web_fill_held(&f, 3019u));
+	assert(!aius_optical_web_fill_held(&f, 3020u));
+	/* The route ran 500 ms (a long listing): the hold runs 2 s past its end. */
+	aius_optical_web_fill_route_end(&f, 1520u);
+	assert(aius_optical_web_fill_held(&f, 3519u));
+	assert(!aius_optical_web_fill_held(&f, 3520u));
+	/* A later held SD start is a fresh canceller, not a stale one. */
+	assert(aius_optical_web_fill_sd_start(&f, true, &cancel) && cancel);
+}
+
+/* Phase 4g, audit finding 6: the cache follows the card. A card-gone fault
+ * (the adapter's trusted mount lost, card still "ready" to the lifecycle,
+ * the probe skipped in playback) empties the cache at once and parks the
+ * walk; it restarts only once a mount appears, never on the stale mount. */
+/* Owner (closure nit A): a playing replay pauses the fill. A walk restarted
+ * mid-replay (an upload's invalidation, a refill) starts no file while the
+ * replay plays or switches to replay, whatever the hold says; once it stops
+ * the walk resumes, the hold's own rule unchanged. */
+static void test_web_fill_replay_pause(void)
+{
+	AiusOpticalWebFill f;
+
+	aius_optical_web_fill_init(&f);
+	assert(!aius_optical_web_fill_paused(&f, 0u, false));
+	/* Replay playing (REPLAY or SWITCHING_TO_REPLAY), hold lapsed: paused
+	 * across any time, including long after any hold could lapse. */
+	for (uint32_t t = 0u; t <= 600000u; t += 50000u)
+		assert(aius_optical_web_fill_paused(&f, t, true));
+	/* The replay stops: the walk resumes at once. */
+	assert(!aius_optical_web_fill_paused(&f, 600001u, false));
+	/* A cancel's hold during the replay: the replay's end does not release
+	 * it; the hold's own release does, 2 s after its end. */
+	assert(aius_optical_web_fill_cancel(&f, true));
+	assert(aius_optical_web_fill_paused(&f, 700000u, true));
+	assert(aius_optical_web_fill_paused(&f, 700000u, false));
+	aius_optical_web_fill_hold_release(&f, 700000u);
+	assert(aius_optical_web_fill_paused(&f, 701999u, false));
+	assert(aius_optical_web_fill_paused(&f, 702000u, true));
+	assert(!aius_optical_web_fill_paused(&f, 702000u, false));
+	assert(!aius_optical_web_fill_paused(NULL, 0u, false));
+	assert(aius_optical_web_fill_paused(NULL, 0u, true));
+}
+
+static void test_web_fill_follow_card(void)
+{
+	bool walk_card = false;
+	uint32_t mounts_seen = 0u;
+
+	/* Boot: no card, nothing to empty; the first mount starts the walk. */
+	assert(!aius_optical_web_fill_follow_card(&walk_card, &mounts_seen, false,
+	                                          false, 0u));
+	assert(!walk_card);
+	assert(aius_optical_web_fill_follow_card(&walk_card, &mounts_seen, true,
+	                                         true, 1u));
+	assert(walk_card && mounts_seen == 1u);
+	assert(!aius_optical_web_fill_follow_card(&walk_card, &mounts_seen, true,
+	                                          true, 1u));
+	/* An HTTP SD job's card-gone fault drops the mount: emptied once. */
+	assert(aius_optical_web_fill_follow_card(&walk_card, &mounts_seen, true,
+	                                         false, 1u));
+	assert(!walk_card);
+	for (int i = 0; i < 4; i++)
+		assert(!aius_optical_web_fill_follow_card(&walk_card, &mounts_seen,
+		                                          true, false, 1u));
+	assert(!walk_card); /* the walk stays parked while unmounted */
+	/* The next mount (count advanced): the walk restarts on it. */
+	assert(aius_optical_web_fill_follow_card(&walk_card, &mounts_seen, true,
+	                                         true, 2u));
+	assert(walk_card && mounts_seen == 2u);
+	/* A remount with no fault seen between (swap, mode change). */
+	assert(aius_optical_web_fill_follow_card(&walk_card, &mounts_seen, true,
+	                                         true, 3u));
+	assert(walk_card && mounts_seen == 3u);
+	/* The lifecycle's card-absent transition. */
+	assert(aius_optical_web_fill_follow_card(&walk_card, &mounts_seen, false,
+	                                         true, 3u));
+	assert(!walk_card);
+	assert(!aius_optical_web_fill_follow_card(NULL, &mounts_seen, true, true,
+	                                          4u));
+}
+
 static void test_admission_time_ageing(void)
 {
 	AiusOpticalAdmission a;
@@ -4228,13 +4538,566 @@ static void test_admission_first_measurement_outlier(void)
 	}
 }
 
+/* ------------------------------------------------------------------ */
+/* Phase 4g: cache-first /sd/www reads against a fake web cache seam    */
+/* ------------------------------------------------------------------ */
+
+/* The dispatcher's direct yield point (lib/aius_producer_yield on target):
+ * the host suite counts the body source's calls. */
+static unsigned g_producer_yields;
+
+bool aius_producer_yield_point(void)
+{
+	g_producer_yields++;
+	return false;
+}
+
+#define FAKE_WEB_ENTRIES 4u
+
+typedef struct {
+	const char *path;
+	const uint8_t *data;
+	uint32_t length;
+	const char *etag;
+	bool verify_fails;
+	bool entry_fault; /* its manifest entry fails its own CRC at lookup */
+	long copy_fail_chunk; /* -1: never */
+	int leased;
+} FakeWebEntry;
+
+typedef struct {
+	FakeWebEntry entries[FAKE_WEB_ENTRIES];
+	size_t count;
+	unsigned lookups;
+	unsigned leases;
+	unsigned releases;
+	unsigned verifies;
+	unsigned copies;
+	unsigned refills;
+	unsigned listings;
+	bool listing_complete;
+	char last_lookup[64];
+} FakeWeb;
+
+static uint8_t g_web_bytes[5000];
+
+static bool fake_web_lookup(void *context, const char *path, size_t length,
+                            AiusOpticalAppWebHit *hit, char *etag,
+                            size_t etag_capacity, bool *fault)
+{
+	FakeWeb *web = (FakeWeb *)context;
+	web->lookups++;
+	assert(fault != NULL);
+	*fault = false;
+	assert(length < sizeof(web->last_lookup));
+	memcpy(web->last_lookup, path, length);
+	web->last_lookup[length] = '\0';
+	for (size_t i = 0; i < web->count; ++i) {
+		FakeWebEntry *entry = &web->entries[i];
+		if (strlen(entry->path) != length ||
+		    memcmp(entry->path, path, length) != 0)
+			continue;
+		if (entry->entry_fault) {
+			/* Dropped by the cache: a fault once, then a plain miss. */
+			entry->path = "";
+			*fault = true;
+			return false;
+		}
+		assert(strlen(entry->etag) < etag_capacity);
+		snprintf(etag, etag_capacity, "%s", entry->etag);
+		hit->entry = (uint8_t)i;
+		hit->length = entry->length;
+		return true;
+	}
+	return false;
+}
+
+static bool fake_web_lease(void *context, uint8_t entry)
+{
+	FakeWeb *web = (FakeWeb *)context;
+	assert(entry < web->count);
+	web->leases++;
+	web->entries[entry].leased++;
+	return true;
+}
+
+static void fake_web_release(void *context, uint8_t entry)
+{
+	FakeWeb *web = (FakeWeb *)context;
+	assert(entry < web->count);
+	assert(web->entries[entry].leased > 0);
+	web->releases++;
+	web->entries[entry].leased--;
+}
+
+static bool fake_web_verify(void *context, uint8_t entry)
+{
+	FakeWeb *web = (FakeWeb *)context;
+	assert(web->entries[entry].leased > 0); /* leased before the check */
+	web->verifies++;
+	return !web->entries[entry].verify_fails;
+}
+
+static bool fake_web_copy_chunk(void *context, uint8_t entry, uint16_t chunk,
+                                uint8_t *dst, uint32_t *bytes)
+{
+	FakeWeb *web = (FakeWeb *)context;
+	const FakeWebEntry *e = &web->entries[entry];
+	uint32_t offset = (uint32_t)chunk * 512u;
+	assert(e->leased > 0);
+	web->copies++;
+	if ((long)chunk == e->copy_fail_chunk || offset >= e->length)
+		return false;
+	*bytes = e->length - offset < 512u ? e->length - offset : 512u;
+	memcpy(dst, e->data + offset, *bytes);
+	return true;
+}
+
+static void fake_web_refill(void *context)
+{
+	((FakeWeb *)context)->refills++;
+}
+
+static bool fake_web_listing(void *context, const char *dir, size_t dir_length,
+                             AiusOpticalAppDirBatch *batch)
+{
+	FakeWeb *web = (FakeWeb *)context;
+	web->listings++;
+	if (!web->listing_complete || dir_length != 8u ||
+	    memcmp(dir, "presets/", 8u) != 0)
+		return false;
+	snprintf(batch->entries[0].name, sizeof(batch->entries[0].name), "a.json");
+	batch->entries[0].size_bytes = 10u;
+	snprintf(batch->entries[1].name, sizeof(batch->entries[1].name), "b.json");
+	batch->entries[1].size_bytes = 20u;
+	batch->count = 2u;
+	return true;
+}
+
+static AiusOpticalAppWebCache fake_web_seam(FakeWeb *web)
+{
+	AiusOpticalAppWebCache seam;
+	memset(&seam, 0, sizeof(seam));
+	seam.context = web;
+	seam.lookup = fake_web_lookup;
+	seam.lease = fake_web_lease;
+	seam.release = fake_web_release;
+	seam.verify = fake_web_verify;
+	seam.copy_chunk = fake_web_copy_chunk;
+	seam.refill = fake_web_refill;
+	seam.listing = fake_web_listing;
+	return seam;
+}
+
+static void fake_web_add(FakeWeb *web, const char *path, uint32_t length,
+                         const char *etag)
+{
+	FakeWebEntry *entry;
+	assert(web->count < FAKE_WEB_ENTRIES);
+	assert(length <= sizeof(g_web_bytes));
+	entry = &web->entries[web->count++];
+	memset(entry, 0, sizeof(*entry));
+	entry->path = path;
+	entry->data = g_web_bytes;
+	entry->length = length;
+	entry->etag = etag;
+	entry->copy_fail_chunk = -1;
+}
+
+/* Streams a chunk-sourced body the way the transport does, one chunk per
+ * call into a 512 B buffer; false at the first refused chunk. */
+static bool drain_body(const AiusHttpApplicationResponse *response,
+                       uint32_t *chunks_out)
+{
+	uint8_t chunk[512];
+	uint32_t total = 0u;
+	uint32_t n = 0u;
+	assert(response->body_chunk != NULL);
+	while (total < response->body_length) {
+		uint32_t bytes = 0u;
+		if (!response->body_chunk(response->body_chunk_ctx, n, chunk, &bytes)) {
+			*chunks_out = n;
+			return false;
+		}
+		assert(bytes == (response->body_length - total < 512u
+		                         ? response->body_length - total : 512u));
+		assert(memcmp(chunk, g_web_bytes + total, bytes) == 0);
+		total += bytes;
+		n++;
+	}
+	*chunks_out = n;
+	return true;
+}
+
+static void expect_cached_200(const AiusHttpApplicationResponse *response,
+                              const char *type, uint32_t length,
+                              const char *etag, bool gzip, uint32_t max_age)
+{
+	assert(response != NULL);
+	assert(response->kind == AIUS_HTTP_APP_IMMEDIATE);
+	assert(response->status == 200u);
+	assert(strcmp(response->content_type, type) == 0);
+	/* body and body_chunk_ctx share one slot: a chunk-sourced response
+	 * carries the source context there, never a borrowed body. */
+	assert(response->body_chunk_ctx != NULL);
+	assert(response->body_length == length);
+	assert(response->body_chunk != NULL);
+	assert(response->sd_settle != NULL);
+	assert(response->etag != NULL);
+	assert(strcmp(response->etag, etag) == 0);
+	assert(response->content_encoding_gzip == gzip);
+	assert(response->vary_accept_encoding);
+	assert(response->cache_max_age_s == max_age);
+	assert(response->cache_no_cache == (max_age == 0u));
+	assert(response->sd_job.kind == AIUS_SD_JOB_PROBE);
+	assert(response->sd_job.target_path == NULL);
+}
+
+static void test_web_cache_seam_install(void)
+{
+	Fixture fixture;
+	FakeWeb web;
+	AiusOpticalAppWebCache seam;
+	AiusOpticalAppDispatcher invalid;
+
+	memset(&web, 0, sizeof(web));
+	seam = fake_web_seam(&web);
+	fixture_init(&fixture);
+	memset(&invalid, 0, sizeof(invalid));
+	assert(!aius_optical_app_set_web_cache(NULL, &seam));
+	assert(!aius_optical_app_set_web_cache(&invalid, &seam));
+	seam.listing = NULL;
+	assert(!aius_optical_app_set_web_cache(&fixture.dispatcher, &seam));
+	/* A half-wired table leaves the cache absent: the card serves. */
+	fake_web_add(&web, "app.js", 100u, "\"00000001-100\"");
+	expect_response(dispatch_get(&fixture, "GET /sd/www/app.js"),
+	                AIUS_HTTP_APP_SD_JOB, 200, "application/javascript", NULL);
+	assert(web.lookups == 0u);
+	seam = fake_web_seam(&web);
+	assert(aius_optical_app_set_web_cache(&fixture.dispatcher, &seam));
+	assert(dispatch_get(&fixture, "GET /sd/www/app.js")->kind ==
+	       AIUS_HTTP_APP_IMMEDIATE);
+	assert(aius_optical_app_set_web_cache(&fixture.dispatcher, NULL));
+	/* Removal drops the outstanding lease. */
+	assert(web.releases == 1u && web.entries[0].leased == 0);
+	assert(dispatch_get(&fixture, "GET /sd/www/app.js")->kind ==
+	       AIUS_HTTP_APP_SD_JOB);
+	/* Re-init clears the seam. */
+	assert(aius_optical_app_set_web_cache(&fixture.dispatcher, &seam));
+	fixture_init(&fixture);
+	assert(dispatch_get(&fixture, "GET /sd/www/app.js")->kind ==
+	       AIUS_HTTP_APP_SD_JOB);
+}
+
+/* Hit, miss, 304, the body source's chunks, yields, lease and settle. */
+static void test_web_cache_hit_miss_304(void)
+{
+	Fixture fixture;
+	FakeWeb web;
+	AiusOpticalAppWebCache seam;
+	const AiusHttpApplicationResponse *response;
+	uint32_t chunks = 0u;
+
+	for (size_t i = 0; i < sizeof(g_web_bytes); ++i)
+		g_web_bytes[i] = (uint8_t)(i * 7u + 3u);
+	memset(&web, 0, sizeof(web));
+	seam = fake_web_seam(&web);
+	fixture_init(&fixture);
+	assert(aius_optical_app_set_web_cache(&fixture.dispatcher, &seam));
+
+	/* Miss: the card's download job, with the G2 policy and no ETag. */
+	response = dispatch_get(&fixture, "GET /sd/www/app.js");
+	expect_response(response, AIUS_HTTP_APP_SD_JOB, 200,
+	                "application/javascript", NULL);
+	assert(response->sd_job.kind == AIUS_SD_JOB_DOWNLOAD);
+	assert(strcmp(web.last_lookup, "app.js") == 0);
+	assert(response->etag == NULL && response->vary_accept_encoding);
+	assert(response->cache_max_age_s == 86400u);
+	assert(web.leases == 0u);
+	/* A miss on a busy card is still 503 sd_busy. */
+	fixture.fake.sd_busy = true;
+	expect_immediate(dispatch_get(&fixture, "GET /sd/www/app.js"), 503,
+	                 "{\"ok\":false,\"error\":\"sd_busy\"}");
+
+	/* Hit, with the volume busy: no card, no idle volume needed. */
+	fake_web_add(&web, "app.js", 9u * 512u + 100u, "\"0badf00d-4708\"");
+	response = dispatch_get(&fixture, "GET /sd/www/app.js");
+	expect_cached_200(response, "application/javascript", 9u * 512u + 100u,
+	                  "\"0badf00d-4708\"", false, 86400u);
+	assert(web.leases == 1u && web.verifies == 1u);
+	assert(fixture.dispatcher.web_lease_active);
+	/* Ten chunks, the last short; a yield after every eighth. */
+	g_producer_yields = 0u;
+	assert(drain_body(response, &chunks));
+	assert(chunks == 10u);
+	assert(g_producer_yields == 1u);
+	/* A partial write re-calls the same chunk: repeatable. */
+	{
+		uint8_t again[512];
+		uint32_t bytes = 0u;
+		assert(response->body_chunk(response->body_chunk_ctx, 9u, again,
+		                            &bytes));
+		assert(bytes == 100u &&
+		       memcmp(again, g_web_bytes + 9u * 512u, 100u) == 0);
+	}
+	assert(web.refills == 0u);
+	/* The settle hook releases exactly once. */
+	response->sd_settle(response->sd_settle_ctx, false);
+	response->sd_settle(response->sd_settle_ctx, false);
+	assert(web.releases == 1u && web.entries[0].leased == 0);
+	assert(!fixture.dispatcher.web_lease_active);
+	fixture.fake.sd_busy = false;
+
+	/* 304 on a matching If-None-Match: no lease, no verify, no body. */
+	response = dispatch_request(&fixture, "GET /sd/www/app.js",
+	                            "If-None-Match: \"0badf00d-4708\"\r\n", NULL,
+	                            -1);
+	assert(response->kind == AIUS_HTTP_APP_IMMEDIATE);
+	assert(response->status == 304u);
+	assert(response->body == NULL && response->body_length == 0u);
+	assert(response->body_chunk == NULL && response->sd_settle == NULL);
+	assert(strcmp(response->etag, "\"0badf00d-4708\"") == 0);
+	assert(response->vary_accept_encoding);
+	assert(response->cache_max_age_s == 86400u);
+	assert(web.leases == 1u && web.verifies == 1u);
+	/* A stale tag gets the 200. */
+	response = dispatch_request(&fixture, "GET /sd/www/app.js",
+	                            "If-None-Match: \"00000000-1\"\r\n", NULL, -1);
+	assert(response->status == 200u && response->body_chunk != NULL);
+	assert(web.leases == 2u);
+	/* A lease the previous response never settled is dropped, not
+	 * overwritten, at the next cache serve. */
+	response = dispatch_get(&fixture, "GET /sd/www/app.js");
+	assert(response->status == 200u);
+	assert(web.releases == 2u && web.leases == 3u);
+	assert(web.entries[0].leased == 1);
+	response->sd_settle(response->sd_settle_ctx, false);
+	assert(web.entries[0].leased == 0);
+
+	/* Writes and the out-of-www carve-out never consult the cache. */
+	web.lookups = 0u;
+	(void)dispatch_request(&fixture, "DELETE /sd/www/app.js",
+	                       "X-Aius-SD-Auth: token\r\n", NULL, -1);
+	(void)dispatch_get(&fixture, "GET /sd/aius/dsp.json");
+	(void)dispatch_get(&fixture, "GET /sd/replays/take1");
+	assert(web.lookups == 0u);
+
+	/* An empty cached file is a 200 with no body source and no lease. */
+	fake_web_add(&web, "empty.css", 0u, "\"00000000-0\"");
+	response = dispatch_get(&fixture, "GET /sd/www/empty.css");
+	assert(response->kind == AIUS_HTTP_APP_IMMEDIATE && response->status == 200u);
+	assert(response->body_length == 0u && response->body_chunk == NULL);
+	assert(strcmp(response->etag, "\"00000000-0\"") == 0);
+	assert(web.leases == 3u);
+}
+
+/* G1: a gzip-accepting client gets <page>.html.gz with Content-Encoding;
+ * any other gets the plain page; a missing bundle falls back to the plain
+ * entry. Pages are no-cache. */
+static void test_web_cache_gzip_negotiation(void)
+{
+	Fixture fixture;
+	FakeWeb web;
+	AiusOpticalAppWebCache seam;
+	const AiusHttpApplicationResponse *response;
+	uint32_t chunks = 0u;
+
+	memset(&web, 0, sizeof(web));
+	seam = fake_web_seam(&web);
+	fixture_init(&fixture);
+	assert(aius_optical_app_set_web_cache(&fixture.dispatcher, &seam));
+	fake_web_add(&web, "index.html", 700u, "\"11111111-700\"");
+	fake_web_add(&web, "index.html.gz", 300u, "\"22222222-300\"");
+
+	response = dispatch_request(&fixture, "GET /sd/www/index.html",
+	                            "Accept-Encoding: gzip, deflate\r\n", NULL, -1);
+	expect_cached_200(response, "text/html; charset=utf-8", 300u,
+	                  "\"22222222-300\"", true, 0u);
+	assert(strcmp(web.last_lookup, "index.html.gz") == 0);
+	assert(drain_body(response, &chunks) && chunks == 1u);
+	response->sd_settle(response->sd_settle_ctx, false);
+
+	/* The bundle's own tag revalidates the bundle. */
+	response = dispatch_request(&fixture, "GET /sd/www/index.html",
+	                            "Accept-Encoding: gzip\r\n"
+	                            "If-None-Match: \"22222222-300\"\r\n", NULL, -1);
+	assert(response->status == 304u && response->content_encoding_gzip);
+
+	/* No Accept-Encoding, or gzip refused with q=0: the plain page. */
+	response = dispatch_get(&fixture, "GET /sd/www/index.html");
+	expect_cached_200(response, "text/html; charset=utf-8", 700u,
+	                  "\"11111111-700\"", false, 0u);
+	assert(strcmp(web.last_lookup, "index.html") == 0);
+	response->sd_settle(response->sd_settle_ctx, false);
+	response = dispatch_request(&fixture, "GET /sd/www/index.html",
+	                            "Accept-Encoding: gzip;q=0\r\n", NULL, -1);
+	expect_cached_200(response, "text/html; charset=utf-8", 700u,
+	                  "\"11111111-700\"", false, 0u);
+	response->sd_settle(response->sd_settle_ctx, false);
+
+	/* Only a page is negotiated: a script is looked up as itself. */
+	web.lookups = 0u;
+	(void)dispatch_request(&fixture, "GET /sd/www/app.js",
+	                       "Accept-Encoding: gzip\r\n", NULL, -1);
+	assert(web.lookups == 1u && strcmp(web.last_lookup, "app.js") == 0);
+
+	/* Bundle not cached (yet): the plain entry, unencoded. */
+	web.entries[1].path = "absent.gz";
+	response = dispatch_request(&fixture, "GET /sd/www/index.html",
+	                            "Accept-Encoding: gzip\r\n", NULL, -1);
+	expect_cached_200(response, "text/html; charset=utf-8", 700u,
+	                  "\"11111111-700\"", false, 0u);
+	response->sd_settle(response->sd_settle_ctx, false);
+	assert(web.entries[0].leased == 0 && web.entries[1].leased == 0);
+}
+
+/* G3, G7: a pre-header CRC fault serves the card's download job and schedules
+ * a refill; a mid-stream fault closes the connection (false) and schedules a
+ * refill; the lease is released either way. */
+static void test_web_cache_crc_faults(void)
+{
+	Fixture fixture;
+	FakeWeb web;
+	AiusOpticalAppWebCache seam;
+	const AiusHttpApplicationResponse *response;
+	uint32_t chunks = 0u;
+
+	memset(&web, 0, sizeof(web));
+	seam = fake_web_seam(&web);
+	fixture_init(&fixture);
+	assert(aius_optical_app_set_web_cache(&fixture.dispatcher, &seam));
+	fake_web_add(&web, "status.html", 2000u, "\"33333333-2000\"");
+
+	web.entries[0].verify_fails = true;
+	response = dispatch_get(&fixture, "GET /sd/www/status.html");
+	expect_response(response, AIUS_HTTP_APP_SD_JOB, 200,
+	                "text/html; charset=utf-8", NULL);
+	assert(response->sd_job.kind == AIUS_SD_JOB_DOWNLOAD);
+	assert(strcmp(response->sd_job.target_path, "/aius/www/status.html") == 0);
+	assert(response->etag == NULL);
+	assert(response->cache_no_cache && response->vary_accept_encoding);
+	assert(web.verifies == 1u && web.refills == 1u);
+	assert(web.leases == 1u && web.releases == 1u);
+	assert(!fixture.dispatcher.web_lease_active);
+	/* ... and a busy card answers 503 sd_busy rather than a faulted entry. */
+	fixture.fake.sd_busy = true;
+	expect_immediate(dispatch_get(&fixture, "GET /sd/www/status.html"), 503,
+	                 "{\"ok\":false,\"error\":\"sd_busy\"}");
+	fixture.fake.sd_busy = false;
+	assert(web.refills == 2u && web.entries[0].leased == 0);
+
+	web.entries[0].verify_fails = false;
+	web.entries[0].copy_fail_chunk = 2;
+	response = dispatch_get(&fixture, "GET /sd/www/status.html");
+	expect_cached_200(response, "text/html; charset=utf-8", 2000u,
+	                  "\"33333333-2000\"", false, 0u);
+	assert(!drain_body(response, &chunks));
+	assert(chunks == 2u);
+	assert(web.refills == 3u);
+	response->sd_settle(response->sd_settle_ctx, false);
+	assert(web.entries[0].leased == 0 && web.releases == 3u);
+	/* After the settle, the source refuses: no lease, no bytes. */
+	{
+		uint8_t buffer[512];
+		uint32_t bytes = 0u;
+		assert(!response->body_chunk(response->body_chunk_ctx, 0u, buffer,
+		                             &bytes));
+	}
+}
+
+/* Finding 5: a manifest entry that fails its own CRC at lookup is not a
+ * plain miss. The card serves and a refill is scheduled once; the dropped
+ * entry is a plain miss after that. A faulted .gz refills and falls back to
+ * the plain page. */
+static void test_web_cache_entry_fault_refills(void)
+{
+	Fixture fixture;
+	FakeWeb web;
+	AiusOpticalAppWebCache seam;
+	const AiusHttpApplicationResponse *response;
+
+	memset(&web, 0, sizeof(web));
+	seam = fake_web_seam(&web);
+	fixture_init(&fixture);
+	assert(aius_optical_app_set_web_cache(&fixture.dispatcher, &seam));
+	fake_web_add(&web, "app.css", 900u, "\"44444444-900\"");
+	web.entries[0].entry_fault = true;
+
+	response = dispatch_get(&fixture, "GET /sd/www/app.css");
+	expect_response(response, AIUS_HTTP_APP_SD_JOB, 200, "text/css", NULL);
+	assert(response->sd_job.kind == AIUS_SD_JOB_DOWNLOAD);
+	assert(web.refills == 1u && web.leases == 0u);
+	/* Dropped: the next request is a plain miss, no second refill. */
+	response = dispatch_get(&fixture, "GET /sd/www/app.css");
+	assert(response->kind == AIUS_HTTP_APP_SD_JOB);
+	assert(web.refills == 1u);
+
+	/* The bundle's entry faults: refill, then the plain page serves. */
+	fake_web_add(&web, "index.html", 700u, "\"11111111-700\"");
+	fake_web_add(&web, "index.html.gz", 300u, "\"22222222-300\"");
+	web.entries[2].entry_fault = true;
+	response = dispatch_request(&fixture, "GET /sd/www/index.html",
+	                            "Accept-Encoding: gzip\r\n", NULL, -1);
+	expect_cached_200(response, "text/html; charset=utf-8", 700u,
+	                  "\"11111111-700\"", false, 0u);
+	assert(web.refills == 2u);
+	response->sd_settle(response->sd_settle_ctx, false);
+}
+
+/* The presets listing from the manifest once complete (no card read, even
+ * on a busy volume); from the card otherwise. */
+static void test_web_cache_presets_listing(void)
+{
+	Fixture fixture;
+	FakeWeb web;
+	AiusOpticalAppWebCache seam;
+
+	memset(&web, 0, sizeof(web));
+	seam = fake_web_seam(&web);
+	fixture_init(&fixture);
+	assert(aius_optical_app_set_web_cache(&fixture.dispatcher, &seam));
+	fake_dir_add(&fixture.fake, "card.json", 5u, false);
+
+	expect_index(dispatch_get(&fixture, "GET /sd/www/presets/"),
+	             INDEX_PROLOGUE("www/presets/") INDEX_PARENT
+	             "<li><a href=\"card.json\">card.json</a> 5</li>"
+	             INDEX_FOOTER("1", "0", "no"));
+	assert(web.listings == 1u);
+	assert(strcmp(fixture.fake.dir_path, "/aius/www/presets") == 0);
+
+	web.listing_complete = true;
+	fixture.fake.sd_busy = true;
+	fixture.fake.dir_path[0] = '\0';
+	expect_index(dispatch_get(&fixture, "GET /sd/www/presets/"),
+	             INDEX_PROLOGUE("www/presets/") INDEX_PARENT
+	             "<li><a href=\"a.json\">a.json</a> 10</li>"
+	             "<li><a href=\"b.json\">b.json</a> 20</li>"
+	             INDEX_FOOTER("2", "0", "no"));
+	assert(fixture.fake.dir_path[0] == '\0');
+	/* Any other directory still reads the card (and honours sd_busy). */
+	expect_immediate(dispatch_get(&fixture, "GET /sd/www/"), 503,
+	                 "{\"ok\":false,\"error\":\"sd_busy\"}");
+	assert(web.listings == 3u);
+}
+
 int main(void)
 {
+	RUN_TEST(test_web_cache_seam_install);
+	RUN_TEST(test_web_cache_hit_miss_304);
+	RUN_TEST(test_web_cache_gzip_negotiation);
+	RUN_TEST(test_web_cache_crc_faults);
+	RUN_TEST(test_web_cache_entry_fault_refills);
+	RUN_TEST(test_web_cache_presets_listing);
 	RUN_TEST(test_status_brief_and_dispatch_hooks);
 	RUN_TEST(test_admission_classes);
 	RUN_TEST(test_admission_outlier_window);
 	RUN_TEST(test_admission_sd_start);
 	RUN_TEST(test_admission_time_ageing);
+	RUN_TEST(test_web_fill_hold);
+	RUN_TEST(test_web_fill_route);
+	RUN_TEST(test_web_fill_replay_pause);
+	RUN_TEST(test_web_fill_follow_card);
+	RUN_TEST(test_web_fill_hold_long_lapse);
 	RUN_TEST(test_admission_first_measurement_outlier);
 	RUN_TEST(test_init_validation);
 	RUN_TEST(test_golden_immediate_routes);

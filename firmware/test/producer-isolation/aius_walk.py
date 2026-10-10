@@ -281,11 +281,22 @@ class Image:
         if re.match(r"^pc, \[sp\]", ops):
             return  # pop-shaped return
         if re.match(r"^pc, \[(r\d+|ip|sl|fp), (r\d+|ip|sl|fp), lsl #2\]", ops):
+            # The table's length is the bounds check before it (`cmp rN, #k`
+            # then `bhi`): k + 1 entries. Without it the run of .word lines
+            # is the table; with it, words past the table are a literal pool
+            # the assembler placed after it (Phase 4g link:
+            # aius_http_transaction_step), not entries.
+            limit = None
+            for x in reversed(body[max(0, k - 6):k]):
+                m = re.match(r"^(r\d+|ip|sl|fp|lr), #(\d+)", x[2]) if x[1].startswith("cmp") else None
+                if m:
+                    limit = int(m.group(2)) + 1
+                    break
             tbl = []
             for x in body[k + 1:]:
                 if x[1] == "nop" and not tbl:
                     continue
-                if x[1] != ".word":
+                if x[1] != ".word" or (limit is not None and len(tbl) == limit):
                     break
                 tbl.append(int(x[2].split()[0], 16) & ~1)
             if tbl:

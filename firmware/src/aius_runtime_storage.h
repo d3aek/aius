@@ -74,6 +74,14 @@ static_assert(AIUS_RUNTIME_STORAGE_PUBLISH_CAPACITY >=
  * from AIUS_HTTP_SD_OUTPUT_CANCEL_FAULT so the two are told apart in a log. */
 #define AIUS_RUNTIME_STORAGE_PUBLISH_REJECT_FAULT UINT32_C(0x50554243)
 
+/* Phase 4g: driver_fault of the FAULT event that answers a CACHE_FILL chunk
+ * the sink refused (aius_runtime_storage_root_output false: cache capacity
+ * full, read-back mismatch). The job closes its file and fails with
+ * AIUS_SD_FAULT_IO and this value; that terminal is a cache event the sink
+ * counted, so it is neither a root failure nor latched in last_failure. A
+ * CLOSE that then faults replaces it (CLEANUP) and counts as usual. */
+#define AIUS_RUNTIME_STORAGE_FILL_SINK_FAULT UINT32_C(0x46494C4C)
+
 extern "C" {
 
 /* Lifecycle of the most recent root-initiated job. HTTP-owned jobs never move
@@ -228,7 +236,42 @@ typedef struct {
 	 * owner without re-deriving it from flags that the terminal itself
 	 * clears. */
 	uint8_t job_owner;
+	/* Phase 4g: the running root job was cancelled by
+	 * aius_runtime_storage_cancel_root(), so its CANCELLED terminal counts
+	 * a cancellation, not a root failure. Sits in the tail padding. */
+	bool root_cancelling;
 } AiusRuntimeStorage;
+
+/* Phase 4g (aius-sample-rate-following.md G6, G8, G9): link-time hooks for the
+ * one root job kind that streams, AIUS_SD_JOB_CACHE_FILL. Weak defaults keep
+ * every other build unchanged; optical_main.cpp defines both.
+ *
+ * aius_runtime_storage_root_output: the sink for a CACHE_FILL root job's
+ * AIUS_SD_ACTION_OUTPUT chunk (`offset` into a file of `size` bytes, both
+ * absolute, also for a fill resumed at a nonzero initial_offset). True
+ * answers OK and the job's next READ runs in the same epoch (the OUTPUT is
+ * memory only, so the epoch still spends one card primitive); false faults the
+ * job. The default refuses, which is the pre-4g answer to a root OUTPUT. Any
+ * other root job's OUTPUT keeps that refusal and never reaches the hook.
+ *
+ * aius_runtime_storage_fill_step_defer: consulted once per epoch before a
+ * RUNNING, uncancelled CACHE_FILL root job is advanced; true skips this
+ * epoch's step (no primitive, no state change). Never consulted for any other
+ * root job, a drain or an HTTP job, which keep 4f's every-epoch rule, nor for
+ * a fill being cancelled, so a cancel always closes its file promptly. The
+ * default never defers. */
+bool aius_runtime_storage_root_output(const AiusSdJob *job,
+                                      const uint8_t *data, size_t length,
+                                      uint64_t offset, uint64_t size);
+bool aius_runtime_storage_fill_step_defer(const AiusSdJob *job);
+
+/* Phase 4g G9: cancels the running root job at its next primitive boundary
+ * (aius_sd_job_cancel: CLOSE, then FAIL with AIUS_SD_FAULT_CANCELLED, one
+ * primitive per epoch). Memory only. Its terminal is root_state FAILED with
+ * that fault, counted in diag.cancellations rather than root_failures and
+ * never latched as a failure. Returns false when no root job is RUNNING or it
+ * already reached its terminal. */
+bool aius_runtime_storage_cancel_root(AiusRuntimeStorage *service);
 
 /* Memory only: initializes the job against the embedded transfer buffer, the
  * embedded publication buffer and the SD adapter, with no publication consumer.

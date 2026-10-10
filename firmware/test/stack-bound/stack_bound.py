@@ -35,6 +35,10 @@ def obj_stem(obj: str) -> str:
 
 def su_key(name: str) -> str:
     """'bool SdioCard::readSector(uint32_t, uint8_t*)' and 'foo.constprop.0' -> 'SdioCard::readSector', 'foo'."""
+    # The demangler spells an anonymous namespace "(anonymous namespace)",
+    # GCC's .su "{anonymous}"; one spelling, so both name the same key
+    # (Phase 4g: write_body_chunk in aius_runtime_network_http.cpp).
+    name = name.replace("(anonymous namespace)", "{anonymous}")
     n = aw.base_name(name.split("(", 1)[0].strip())
     return n.split()[-1] if n else n
 

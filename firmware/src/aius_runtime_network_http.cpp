@@ -11,11 +11,18 @@
 #include <Arduino.h>
 #endif
 
+#include <stddef.h>
 #include <string.h>
 
 #ifndef FLASHMEM
 #define FLASHMEM
 #endif
+
+/* Phase 4g: the held-DISPATCH flag took the padding byte before the counters,
+ * so the OCRAM-resident service did not grow. */
+static_assert(offsetof(AiusRuntimeNetworkHttp, http_requests) ==
+	              offsetof(AiusRuntimeNetworkHttp, deferred_dispatch_present) + 1u,
+              "deferred_dispatch_present must sit in the padding before the counters");
 
 namespace {
 
@@ -41,6 +48,7 @@ FLASHMEM void http_init(AiusRuntimeNetworkHttp *service, uint32_t now_ms)
 	service->http_event_present = false;
 	service->application_response_present = false;
 	service->deferred_start_present = false;
+	service->deferred_dispatch_present = false;
 }
 
 /* Retains one correlated transport result for the next HTTP step. Transport
@@ -83,6 +91,37 @@ FLASHMEM void retain_application_response(
 	service->http_event_present = true;
 }
 
+/* Transport fault code for a body source that failed or returned a wrong
+ * length; the transaction closes the connection exactly as for any write
+ * fault. */
+const uint32_t kBodyChunkFault = 0xB0D1u;
+
+/* One chunk-sourced body write. The 512 B chunk buffer lives only in this
+ * frame (about 512 B plus ~40 B of saved registers and locals) and noinline
+ * keeps it off every other path through the service step. The transport copies
+ * the bytes during write_once, so the buffer need not outlive the call. */
+__attribute__((noinline)) FLASHMEM AiusIoEvent write_body_chunk(
+	AiusRuntimeNetworkHttp *service, const AiusHttpAction *action)
+{
+	uint8_t chunk[AIUS_HTTP_TX_QUOTA];
+	uint32_t bytes = 0u;
+	AiusIoEvent fault;
+
+	if (!action->body_chunk(action->body_chunk_ctx, action->chunk_index, chunk,
+	                        &bytes) ||
+	    bytes != action->chunk_length ||
+	    action->chunk_offset >= bytes ||
+	    action->length > bytes - action->chunk_offset) {
+		fault.result = AIUS_IO_FAULT;
+		fault.bytes = 0u;
+		fault.fault = kBodyChunkFault;
+		return fault;
+	}
+	return aius_network_teensy_write_once(&service->target,
+	                                      chunk + action->chunk_offset,
+	                                      action->length);
+}
+
 /* Flash-resident (const). Shed route dispatches answer this without reaching
  * the application; Retry-After comes from aius_http_write_headers (503). */
 const uint8_t kShedBody[] = "{\"ok\":false,\"error\":\"audio_busy\"}";
@@ -102,6 +141,7 @@ FLASHMEM AiusHttpAdmitVerdict consult(const AiusRuntimeNetworkHttp *service,
 		query.method = request->method;
 	}
 	query.sd_job = sd_job;
+	query.request = request;
 	return aius_runtime_http_admit(&query);
 }
 
@@ -127,6 +167,43 @@ FLASHMEM void shed_sd_start(AiusRuntimeNetworkHttp *service,
 FLASHMEM bool adapter_busy(const AiusRuntimeNetworkHttp *service)
 {
 	return service->target.active_action.kind != AIUS_NET_ACTION_NONE;
+}
+
+/* One DISPATCH, fresh or held: a SHED answers the audio_busy 503 without
+ * reaching the application; a DEFER holds the dispatch (the transaction's
+ * DISPATCH action stays outstanding and the next HTTP epoch asks again,
+ * without a step); an ADMIT hands the request to the application. */
+FLASHMEM void dispatch_route(AiusRuntimeNetworkHttp *service,
+                             AiusOpticalAppDispatcher *app,
+                             const AiusHttpAction *action)
+{
+	const AiusHttpApplicationResponse *response;
+	const AiusHttpAdmitVerdict verdict =
+		consult(service, AIUS_HTTP_ADMIT_ROUTE, action->request, nullptr);
+
+	service->deferred_dispatch_present = verdict == AIUS_HTTP_VERDICT_DEFER;
+	if (verdict == AIUS_HTTP_VERDICT_DEFER)
+		return;
+	if (verdict == AIUS_HTTP_VERDICT_SHED) {
+		AiusHttpApplicationResponse shed;
+
+		memset(&shed, 0, sizeof(shed));
+		shed.kind = AIUS_HTTP_APP_IMMEDIATE;
+		shed.status = 503u;
+		shed.content_type = "application/json";
+		shed.body = kShedBody;
+		shed.body_length = sizeof(kShedBody) - 1u;
+		aius_runtime_http_note_shed();
+		retain_application_response(service, action, &shed);
+		return;
+	}
+	response = aius_optical_app_http_dispatch(app, action->request);
+	/* A null return means an invalid dispatcher or request, which cannot be
+	 * expressed as an application response. Retaining no event makes the
+	 * next step's NONE a protocol fault, i.e. the deterministic fixed 400 the
+	 * transaction owns. */
+	if (response != nullptr)
+		retain_application_response(service, action, response);
 }
 
 } // namespace
@@ -304,6 +381,20 @@ FLASHMEM bool aius_runtime_http_service(
 		return true;
 	}
 
+	/* Likewise a held DISPATCH (counted once, when first issued): the
+	 * transaction still waits on it, so it is re-issued from its state and
+	 * nothing steps until the application has answered. */
+	if (service->deferred_dispatch_present) {
+		AiusHttpAction held;
+
+		memset(&held, 0, sizeof(held));
+		held.kind = AIUS_HTTP_ACTION_DISPATCH;
+		held.action_id = service->http.outstanding_action_id;
+		held.request = &service->http.parsed_request;
+		dispatch_route(service, app, &held);
+		return true;
+	}
+
 	memset(&event, 0, sizeof(event));
 	if (service->http_event_present) {
 		event = service->pending_http_event;
@@ -355,6 +446,10 @@ FLASHMEM bool aius_runtime_http_service(
 		                                        action.length));
 		break;
 	case AIUS_HTTP_ACTION_WRITE:
+		if (action.body_chunk != nullptr) {
+			retain_io(service, &action, write_body_chunk(service, &action));
+			break;
+		}
 		retain_io(service, &action,
 		          aius_network_teensy_write_once(&service->target,
 		                                         action.data,
@@ -364,33 +459,10 @@ FLASHMEM bool aius_runtime_http_service(
 		retain_io(service, &action,
 		          aius_network_teensy_close_once(&service->target));
 		break;
-	case AIUS_HTTP_ACTION_DISPATCH: {
-		const AiusHttpApplicationResponse *response;
-
+	case AIUS_HTTP_ACTION_DISPATCH:
 		service->http_requests++;
-		if (consult(service, AIUS_HTTP_ADMIT_ROUTE, action.request,
-		            nullptr) == AIUS_HTTP_VERDICT_SHED) {
-			AiusHttpApplicationResponse shed;
-
-			memset(&shed, 0, sizeof(shed));
-			shed.kind = AIUS_HTTP_APP_IMMEDIATE;
-			shed.status = 503u;
-			shed.content_type = "application/json";
-			shed.body = kShedBody;
-			shed.body_length = sizeof(kShedBody) - 1u;
-			aius_runtime_http_note_shed();
-			retain_application_response(service, &action, &shed);
-			break;
-		}
-		response = aius_optical_app_http_dispatch(app, action.request);
-		/* A null return means an invalid dispatcher or request, which
-		 * cannot be expressed as an application response. Retaining no
-		 * event makes the next step's NONE a protocol fault, i.e. the
-		 * deterministic fixed 400 the transaction owns. */
-		if (response != nullptr)
-			retain_application_response(service, &action, response);
+		dispatch_route(service, app, &action);
 		break;
-	}
 	case AIUS_HTTP_ACTION_SD_START:
 		switch (consult(service, AIUS_HTTP_ADMIT_SD_START, nullptr,
 		                action.sd_request)) {

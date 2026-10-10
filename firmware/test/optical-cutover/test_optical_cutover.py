@@ -5334,6 +5334,12 @@ RENDER_APPEND_YIELD_ROOTS = frozenset({
     (OPTICAL_MAIN_SOURCE, "status_append"),
     (STORAGE_SOURCE, "diag_append"),
 })
+# Phase 4g: the web cache's yield points (G3, G7): the send loop's body
+# source and the pre-header verify's yield callback (their yield-root rows).
+WEB_CACHE_YIELD_ROOTS = frozenset({
+    ("src/aius_optical_app.cpp", "web_cache_body_chunk"),
+    (OPTICAL_MAIN_SOURCE, "web_cache_verify_yield"),
+})
 YIELD_POINT_GUARDED = re.compile(
     r"if\s*\(\s*checkpoint\s*!=\s*AIUS_BOOT_CHECKPOINT_EPOCH_COMPLETE\s*\)"
     r"\s*\(void\)\s*aius_producer_yield_point\s*\(\s*\)\s*;"
@@ -5450,11 +5456,11 @@ def assert_no_yield_point_at_epoch_complete(sources):
         if YIELD_POINT_CALL + "(" in body:
             callers.append((path, name, body))
     expected = sorted({(OPTICAL_MAIN_SOURCE, "platform_checkpoint")}
-                      | RENDER_APPEND_YIELD_ROOTS)
+                      | RENDER_APPEND_YIELD_ROOTS | WEB_CACHE_YIELD_ROOTS)
     assert sorted((path, name) for path, name, _ in callers) == expected, (
         "aius_producer_yield_point's callers must be exactly "
-        "platform_checkpoint and the Phase 4f render appends (the yield-root "
-        "table): "
+        "platform_checkpoint, the Phase 4f render appends and the Phase 4g "
+        "web cache yields (the yield-root table): "
         + ", ".join(f"{path}:{name}" for path, name, _ in callers)
     )
     for path, name, body in callers:
@@ -5621,13 +5627,27 @@ def assert_audio_service_run_is_bracketed(sources):
 APP_SOURCE = "src/aius_optical_app.cpp"
 ROOT_SD_START_CALLS = ("aius_runtime_teensy_start_storage_job(", "aius_sd_job_start(")
 FIFO_DEFER_CALL = "sd_fifo_defer()"
+# Phase 4g G8 (owner, 2026-10-10): the fill's one isolated predicate. It must
+# be exactly sd_fifo_defer(), and it counts as a consult of it.
+FILL_DEFER_NAME = "web_cache_fill_defer"
+FILL_DEFER_CALL = FILL_DEFER_NAME + "()"
+FILL_STEP_HOOK = "aius_runtime_storage_fill_step_defer"
 # Round 4: a root job is held only at its start gate. The storage service's
 # ownerless branch (a drain or a ROOT_RUNNING job) advances one primitive every
-# epoch with no condition, so a started root job never parks as ROOT_RUNNING.
+# epoch, so a started root job never parks as ROOT_RUNNING. Phase 4g G8 is the
+# one exception: an uncancelled, non-draining CACHE_FILL root job's step waits
+# while the platform's fill hook holds; no other job is ever gated.
 STORAGE_OWNERLESS_ADVANCE = re.compile(
     r"\(\s*service\s*->\s*draining\s*\|\|\s*"
     r"service\s*->\s*root_state\s*==\s*AIUS_RUNTIME_STORAGE_ROOT_RUNNING\s*\)\s*"
     r"&&\s*!\s*service\s*->\s*terminal_seen\s*\)\s*\{\s*"
+    r"const\s+bool\s+fill_paused\s*=\s*"
+    r"!\s*service\s*->\s*draining\s*&&\s*"
+    r"service\s*->\s*root_state\s*==\s*AIUS_RUNTIME_STORAGE_ROOT_RUNNING\s*&&\s*"
+    r"service\s*->\s*job\s*\.\s*kind\s*==\s*AIUS_SD_JOB_CACHE_FILL\s*&&\s*"
+    r"!\s*service\s*->\s*root_cancelling\s*&&\s*"
+    r"aius_runtime_storage_fill_step_defer\s*\(\s*&\s*service\s*->\s*job\s*\)\s*;\s*"
+    r"if\s*\(\s*!\s*fill_paused\s*\)\s*"
     r"\(void\)\s*advance\s*\(\s*service\s*,\s*now_ms\s*,\s*false\s*\)\s*;\s*\}"
 )
 OWNERSHIP_BODY = re.compile(
@@ -5653,12 +5673,41 @@ def assert_root_sd_starts_consult_fifo_defer(sources):
     """F2: each optical_main function that starts a root SD job is reached
     only from callers that consult sd_fifo_defer() before the call."""
     defs = _clean_definitions(sources[OPTICAL_MAIN_SOURCE])
+    # G8: the fill's isolated predicate is sd_fifo_defer() and nothing else,
+    # and the storage service's fill step hook decides through it.
+    fill_defer = defs.get(FILL_DEFER_NAME)
+    if fill_defer is not None:
+        assert re.fullmatch(r"\s*return\s+sd_fifo_defer\s*\(\s*\)\s*;\s*",
+                            fill_defer), (
+            f"{FILL_DEFER_NAME}() must be exactly `return sd_fifo_defer();` "
+            "(G8, the fill's one predicate)"
+        )
+    step_hook = defs.get(FILL_STEP_HOOK)
+    if step_hook is not None:
+        assert re.fullmatch(rf"\s*return\s+{FILL_DEFER_NAME}\s*\(\s*\)\s*;\s*",
+                            step_hook), (
+            f"{FILL_STEP_HOOK} must return {FILL_DEFER_CALL} (G8: each fill "
+            "primitive consults the same predicate as the fill start)"
+        )
+
+    def consult_at(body):
+        hits = [body.find(token) for token in (FIFO_DEFER_CALL, FILL_DEFER_CALL)
+                if token != FILL_DEFER_CALL or fill_defer is not None]
+        hits = [h for h in hits if h > -1]
+        return min(hits) if hits else -1
+
     starters = sorted(
         name for name, body in defs.items()
         if any(call in body for call in ROOT_SD_START_CALLS)
     )
     assert starters, "no root SD job start site found in optical_main.cpp"
     for starter in starters:
+        # A starter that consults the predicate before its own start call is
+        # gated by itself (4g's fill start, G8), whatever its callers do.
+        own = defs[starter]
+        own_call = min(own.find(c) for c in ROOT_SD_START_CALLS if c in own)
+        if -1 < consult_at(own) < own_call:
+            continue
         callers = sorted(
             name for name, body in defs.items()
             if name != starter and re.search(rf"\b{starter}\s*\(", body)
@@ -5682,9 +5731,14 @@ def assert_root_sd_starts_consult_fifo_defer(sources):
     assert stepping == ["aius_runtime_storage_service"], (
         "aius_runtime_storage_service's ownerless branch must read `} else if "
         "((service->draining || service->root_state == "
-        "AIUS_RUNTIME_STORAGE_ROOT_RUNNING) && !service->terminal_seen) { "
+        "AIUS_RUNTIME_STORAGE_ROOT_RUNNING) && !service->terminal_seen) { const "
+        "bool fill_paused = !service->draining && service->root_state == "
+        "AIUS_RUNTIME_STORAGE_ROOT_RUNNING && service->job.kind == "
+        "AIUS_SD_JOB_CACHE_FILL && !service->root_cancelling && "
+        "aius_runtime_storage_fill_step_defer(&service->job); if (!fill_paused) "
         "(void)advance(service, now_ms, false); }` (a started root job is never "
-        "held; only its start gate defers): " + ", ".join(stepping)
+        "held, its start gate alone defers, except an uncancelled CACHE_FILL "
+        "per G8): " + ", ".join(stepping)
     )
 
 
@@ -5918,7 +5972,190 @@ def assert_orphan_staging_dropped(sources):
         )
 
 
+HTTP_SERVICE_SOURCE = "src/aius_runtime_network_http.cpp"
+DIRECT_CARD_OPS = ("http_replay_list_json", "app_replay_delete", "app_read_directory")
+ROUTE_FILL_WAIT = re.compile(
+    r"!\s*sd_start\s*&&\s*aius_optical_app_route_reads_card\s*\(\s*query\s*->\s*request\s*\)"
+    r"\s*&&\s*aius_optical_web_fill_route\s*\(\s*&\s*g_web_fill\s*,\s*"
+    r"web_cache_fill_in_flight\s*\(\s*\)\s*,[^;]*\)\s*\)\s*\{\s*"
+    r"if\s*\(\s*fill_cancel\s*\)\s*web_cache_fill_cancel\s*\(\s*\)\s*;\s*"
+    r"return\s+AIUS_HTTP_VERDICT_DEFER\s*;\s*\}"
+)
+FOLLOW_CARD = re.compile(
+    r"if\s*\(\s*aius_optical_web_fill_follow_card\s*\(\s*&\s*g_web_fill_walk\s*\.\s*ready_seen\s*,"
+    r"\s*&\s*g_web_fill_walk\s*\.\s*mounts_seen\s*,\s*g_sd_ready\s*,\s*storage\s*\.\s*target\s*\.\s*"
+    r"mounted\s*,\s*storage\s*\.\s*target\s*\.\s*mounts\s*\)\s*\)\s*web_cache_invalidate_all\s*\(\s*\)\s*;"
+)
+REPLAY_FILL_GATE = re.compile(
+    r"if\s*\(\s*g_web_cache\s*\.\s*base\s*!=\s*nullptr\s*&&\s*!\s*g_web_fill_walk\s*\.\s*"
+    r"walk_complete\s*\)\s*return\s+AIUS_OPTICAL_APP_REPLAY_FILL_BUSY\s*;"
+)
+
+
+def assert_fill_route_and_card_wiring(sources):
+    """Phase 4g delivery audit. Finding 3: a ROUTE DEFER holds the DISPATCH
+    (it was an ADMIT): dispatch_route() records the hold from the verdict and
+    returns before the application on DEFER, the service re-issues a held
+    dispatch before any transaction step, the admission sends a direct-card
+    route through the fill wait (one cancel entry) before 4f's route verdict,
+    app_dispatch_end() ends it, and the HTTP canceller is never dropped under a
+    held dispatch. Finding 2: app_replay_start() refuses FILL_BUSY while the
+    cache is present and the walk incomplete, before any replay starts.
+    Finding 6: the walk follows the adapter's trusted mount, and each
+    direct-card op clears the driver code first and settles it after."""
+    http = _clean_definitions(sources[HTTP_SERVICE_SOURCE])
+    route = http.get("dispatch_route", "")
+    flag = re.search(r"\bservice\s*->\s*deferred_dispatch_present\s*=\s*verdict\s*==\s*"
+                     r"AIUS_HTTP_VERDICT_DEFER\s*;", route)
+    hold = re.search(r"if\s*\(\s*verdict\s*==\s*AIUS_HTTP_VERDICT_DEFER\s*\)\s*return\s*;", route)
+    app_call = route.find("aius_optical_app_http_dispatch(")
+    assert flag and hold and -1 < hold.start() < app_call, (
+        "dispatch_route must hold a DEFERred DISPATCH: `service->deferred_dispatch_present "
+        "= verdict == AIUS_HTTP_VERDICT_DEFER;` and `if (verdict == "
+        "AIUS_HTTP_VERDICT_DEFER) return;` before aius_optical_app_http_dispatch (4g F3)"
+    )
+    service = http.get("aius_runtime_http_service", "")
+    held = re.search(r"if\s*\(\s*service\s*->\s*deferred_dispatch_present\s*\)\s*\{[^{}]*"
+                     r"\bdispatch_route\s*\([^;]*;\s*return\s+true\s*;\s*\}", service)
+    step = service.find("aius_http_transaction_step(")
+    fresh = re.search(r"case\s+AIUS_HTTP_ACTION_DISPATCH\s*:[^:]*\bdispatch_route\s*\(", service)
+    assert held and fresh and -1 < held.start() < step < fresh.start(), (
+        "aius_runtime_http_service must re-issue a held DISPATCH through dispatch_route "
+        "before the transaction step, and route a fresh DISPATCH through it (4g F3)"
+    )
+    defs = _clean_definitions(sources[OPTICAL_MAIN_SOURCE])
+    admit = defs.get("aius_runtime_http_admit", "")
+    wait = ROUTE_FILL_WAIT.search(admit)
+    verdict = admit.find("aius_optical_admission_route(")
+    assert wait and -1 < wait.start() < verdict, (
+        "aius_runtime_http_admit must DEFER a direct-card route through "
+        "aius_optical_web_fill_route(&g_web_fill, web_cache_fill_in_flight(), ...) "
+        "and the one cancel entry before 4f's route verdict (4g F3)"
+    )
+    assert re.search(r"\baius_optical_web_fill_route_end\s*\(\s*&\s*g_web_fill\s*,",
+                     defs.get("app_dispatch_end", "")), (
+        "app_dispatch_end must end a direct-card route (its completion extends the hold, 4g F3)"
+    )
+    settle = defs.get("web_cache_fill_settle", "")
+    drop = settle.find("aius_optical_web_fill_drop_http_canceller(")
+    assert -1 < settle.find("deferred_dispatch_present") < drop, (
+        "web_cache_fill_settle must not drop the HTTP canceller under a held DISPATCH (4g F3)"
+    )
+    assert FOLLOW_CARD.search(settle), (
+        "web_cache_fill_settle must follow the card through aius_optical_web_fill_follow_card"
+        "(&g_web_fill_walk.ready_seen, &g_web_fill_walk.mounts_seen, g_sd_ready, "
+        "storage.target.mounted, storage.target.mounts) and empty the cache (4g F6)"
+    )
+    assert re.search(r"\baius_sd_teensy_invalidate_mount\s*\(",
+                     defs.get("direct_card_settle", "")), (
+        "direct_card_settle must drop the adapter's trusted mount (4g F6)"
+    )
+    for name in DIRECT_CARD_OPS:
+        body = defs.get(name, "")
+        clear = re.search(r"\bSD\s*\.\s*clearError\s*\(", body)
+        first = re.search(r"\bSD\s*\.\s*(open|exists|remove)\s*\(", body)
+        assert clear and first and clear.start() < first.start(), (
+            f"{name} must clear the driver code before its first card op (4g F6)"
+        )
+        assert re.search(r"\bdirect_card_settle\s*\(\s*SD\s*\.\s*sdErrorCode\s*\(\s*\)\s*\)",
+                         body[first.start():]), (
+            f"{name} must settle its driver code through direct_card_settle (4g F6)"
+        )
+    start = defs.get("app_replay_start", "")
+    gate = REPLAY_FILL_GATE.search(start)
+    begin = start.find("aius_replay_service_start(")
+    assert gate and -1 < begin and gate.start() < begin, (
+        "app_replay_start must refuse AIUS_OPTICAL_APP_REPLAY_FILL_BUSY while "
+        "g_web_cache.base != nullptr && !g_web_fill_walk.walk_complete, before any "
+        "replay starts (4g F2)"
+    )
+
+
+FILL_RESUME_START = re.compile(
+    r"\brequest\s*\.\s*initial_offset\s*=\s*aius_web_cache_fill_resume_offset\s*\(\s*"
+    r"&\s*g_web_cache\s*,\s*rel\s*,\s*strlen\s*\(\s*rel\s*\)\s*\)\s*;"
+)
+FILL_RESUME_SINK = re.compile(
+    r"\boffset\s*==\s*0u?\s*\?\s*aius_web_cache_fill_begin\s*\([^;]*:\s*"
+    r"aius_web_cache_fill_resume\s*\(\s*&\s*g_web_cache\s*,\s*rel\s*,"
+)
+FILL_RESUMED_FLAG = re.compile(
+    r"\bconst\s+bool\s+resumed\s*=\s*storage\s*\.\s*job\s*\.\s*initial_offset\s*!=\s*0u?\s*;"
+)
+FILL_CANCEL_KEEPS = re.compile(
+    r"\}\s*else\s+if\s*\(\s*result\s*==\s*nullptr\s*\|\|\s*result\s*->\s*fault\s*!=\s*"
+    r"AIUS_SD_FAULT_CANCELLED\s*\)\s*\{\s*aius_web_cache_fill_abort\s*\(\s*&\s*g_web_cache\s*\)"
+    r"\s*;\s*if\s*\(\s*!\s*resumed\s*\)\s*\{\s*g_web_fill_walk\s*\.\s*entry_index\s*\+\+\s*;"
+)
+FILL_CANCEL_COMPLETE = re.compile(
+    r"\}\s*else\s+if\s*\(\s*g_web_fill_walk\s*\.\s*begun\s*&&\s*rel\s*!=\s*nullptr\s*&&\s*"
+    r"aius_web_cache_fill_resume_offset\s*\(\s*&\s*g_web_cache\s*,\s*rel\s*,\s*strlen\s*\(\s*rel\s*\)"
+    r"\s*\)\s*==\s*storage\s*\.\s*job\s*\.\s*end_offset\s*&&\s*aius_web_cache_publish\s*\("
+)
+FILL_REPLAY_PAUSE = re.compile(
+    r"\baius_optical_web_fill_paused\s*\(\s*&\s*g_web_fill\s*,\s*now_ms\s*,\s*"
+    r"web_cache_replay_playing\s*\(\s*\)\s*\)"
+)
+FILL_PRESETS_UNREAD = re.compile(
+    r"\bbatch\s*\.\s*count\s*=\s*0u?\s*;\s*g_web_fill_walk\s*\.\s*dir_clean\s*=\s*false\s*;"
+)
+
+
+def assert_fill_resume_pause_and_presets(sources):
+    """Phase 4g clean-room round. Finding 1 (owner): a cancelled fill file
+    resumes at its next chunk: the start asks the cache for the resume
+    offset, a job's first chunk continues the partial (dropped on a size
+    change), a cancel keeps the partial and the cursor, and a failed resume
+    restarts the file from 0 without skipping it. Nit A (owner): a playing
+    replay (REPLAY or SWITCHING_TO_REPLAY) pauses the fill start. Nit: a
+    failed subdirectory read leaves the directory unclean, so presets/ is
+    never published complete from an unread listing."""
+    defs = _clean_definitions(sources[OPTICAL_MAIN_SOURCE])
+    nxt = defs.get("web_cache_fill_next", "")
+    start = nxt.find("aius_runtime_teensy_start_storage_job(")
+    offset = FILL_RESUME_START.search(nxt)
+    assert offset and -1 < offset.start() < start, (
+        "web_cache_fill_next must set request.initial_offset = "
+        "aius_web_cache_fill_resume_offset(&g_web_cache, rel, strlen(rel)) before "
+        "the start (finding 1: resume)"
+    )
+    pause = FILL_REPLAY_PAUSE.search(nxt)
+    assert pause and -1 < pause.start() < start and "aius_optical_web_fill_held(" not in nxt, (
+        "web_cache_fill_next must gate on aius_optical_web_fill_paused(&g_web_fill, "
+        "now_ms, web_cache_replay_playing()) before the start (nit A: replay pauses)"
+    )
+    playing = defs.get("web_cache_replay_playing", "")
+    for state in ("AIUS_REPLAY_SOURCE_REPLAY", "AIUS_REPLAY_SOURCE_SWITCHING_TO_REPLAY"):
+        assert re.search(rf"\bg_replay_service\s*\.\s*source\s*==\s*{state}\b", playing), (
+            f"web_cache_replay_playing must count {state} (nit A: replay pauses)"
+        )
+    assert FILL_PRESETS_UNREAD.search(nxt), (
+        "web_cache_fill_next must mark an unread subdirectory unclean: "
+        "`batch.count = 0u; g_web_fill_walk.dir_clean = false;` (presets nit)"
+    )
+    assert FILL_RESUME_SINK.search(defs.get("web_cache_fill_sink", "")), (
+        "web_cache_fill_sink must open chunk 0 with aius_web_cache_fill_begin and a "
+        "resumed job's first chunk with aius_web_cache_fill_resume (finding 1: resume)"
+    )
+    settle = defs.get("web_cache_fill_settle", "")
+    assert FILL_RESUMED_FLAG.search(settle) and FILL_CANCEL_KEEPS.search(settle), (
+        "web_cache_fill_settle must drop the partial only on a non-cancel failure "
+        "and keep a failed resume's cursor (finding 1: a cancel keeps the partial)"
+    )
+    assert settle.count("aius_web_cache_fill_abort(") == 1, (
+        "web_cache_fill_settle must drop the partial only on a non-cancel failure "
+        "(finding 1: a cancel keeps the partial)"
+    )
+    assert FILL_CANCEL_COMPLETE.search(settle), (
+        "web_cache_fill_settle must publish a file cancelled after its last chunk "
+        "(resume offset == storage.job.end_offset): a tail's end is no chunk "
+        "boundary to resume at (finding 1)"
+    )
+
+
 ADMISSION_CHECKS = (
+    ("fill-resume-pause-and-presets", assert_fill_resume_pause_and_presets),
+    ("fill-route-and-card-wiring", assert_fill_route_and_card_wiring),
     ("root-sd-starts-consult-fifo-defer", assert_root_sd_starts_consult_fifo_defer),
     ("ota-staging-exempt-before-margin", assert_ota_staging_exempt_before_margin),
     ("single-ownership-predicate", assert_single_ownership_predicate),
@@ -5939,8 +6176,73 @@ def _admission_fixture():
         "\tconst AiusHttpAdmitQuery *query)\n{\n"
         "\tconst AiusOpticalAdmitSample sample = admit_sample();\n"
         "\tv = decide(&sample, g_runtime.network_http.deferred_start_present);\n"
+        "\tif (!sd_start && aius_optical_app_route_reads_card(query->request) &&\n"
+        "\t    aius_optical_web_fill_route(&g_web_fill, web_cache_fill_in_flight(),\n"
+        "\t                                sample.now_ms, &fill_cancel)) {\n"
+        "\t\tif (fill_cancel)\n\t\t\tweb_cache_fill_cancel();\n"
+        "\t\treturn AIUS_HTTP_VERDICT_DEFER;\n\t}\n"
+        "\tv = aius_optical_admission_route(&g_http_admission, query->route);\n"
         "\tif (v == SHED)\n\t\tsd_disarm_shed_staging(query->sd_job);\n"
         "\treturn v;\n}\n"
+        "static FLASHMEM void app_dispatch_end(void *, AiusHttpRoute r, AiusHttpMethod m)\n{\n"
+        "\taius_optical_admission_note_dispatch(&g_http_admission, r, m, 0u, 0u);\n"
+        "\taius_optical_web_fill_route_end(&g_web_fill, millis());\n}\n"
+        "static FLASHMEM void web_cache_fill_settle(uint32_t now_ms)\n{\n"
+        "\tif (g_web_fill.http_canceller &&\n"
+        "\t    !g_runtime.network_http.deferred_start_present &&\n"
+        "\t    !g_runtime.network_http.deferred_dispatch_present &&\n"
+        "\t    !g_sd_http_job_seen)\n"
+        "\t\taius_optical_web_fill_drop_http_canceller(&g_web_fill, now_ms);\n"
+        "\tif (g_web_fill_walk.running && storage.root_state != RUNNING) {\n"
+        "\t\tconst bool resumed = storage.job.initial_offset != 0u;\n"
+        "\t\tg_web_fill_walk.running = false;\n"
+        "\t\tif (ok) {\n"
+        "\t\t\tconst bool begun = g_web_fill_walk.begun ||\n"
+        "\t\t\t\t(resumed ? aius_web_cache_fill_resume(&g_web_cache, rel, n, o, l)\n"
+        "\t\t\t\t         : aius_web_cache_fill_begin(&g_web_cache, rel, n, 0u));\n"
+        "\t\t\tif (begun && aius_web_cache_publish(&g_web_cache))\n"
+        "\t\t\t\tg_web_fill_walk.entry_index++;\n"
+        "\t\t} else if (result == nullptr ||\n"
+        "\t\t           result->fault != AIUS_SD_FAULT_CANCELLED) {\n"
+        "\t\t\taius_web_cache_fill_abort(&g_web_cache);\n"
+        "\t\t\tif (!resumed) {\n"
+        "\t\t\t\tg_web_fill_walk.entry_index++;\n"
+        "\t\t\t\tg_web_fill_walk.dir_clean = false;\n\t\t\t}\n"
+        "\t\t} else if (g_web_fill_walk.begun && rel != nullptr &&\n"
+        "\t\t           aius_web_cache_fill_resume_offset(&g_web_cache, rel,\n"
+        "\t\t                                             strlen(rel)) ==\n"
+        "\t\t                   storage.job.end_offset &&\n"
+        "\t\t           aius_web_cache_publish(&g_web_cache)) {\n"
+        "\t\t\tg_web_fill_walk.entry_index++;\n\t\t}\n"
+        "\t\tg_web_fill_walk.begun = false;\n\t}\n"
+        "\tif (aius_optical_web_fill_follow_card(&g_web_fill_walk.ready_seen,\n"
+        "\t                                      &g_web_fill_walk.mounts_seen,\n"
+        "\t                                      g_sd_ready, storage.target.mounted,\n"
+        "\t                                      storage.target.mounts))\n"
+        "\t\tweb_cache_invalidate_all();\n}\n"
+        "static FLASHMEM void direct_card_settle(uint32_t code)\n{\n"
+        "\tif (code != 0u && !g_runtime.storage.target.file_open)\n"
+        "\t\taius_sd_teensy_invalidate_mount(&g_runtime.storage.target);\n}\n"
+        "static FLASHMEM int app_replay_start(void *, const char *id, bool loop)\n{\n"
+        "\tif (!g_sd_ready)\n\t\treturn AIUS_OPTICAL_APP_REPLAY_FAILED;\n"
+        "\tif (g_web_cache.base != nullptr && !g_web_fill_walk.walk_complete)\n"
+        "\t\treturn AIUS_OPTICAL_APP_REPLAY_FILL_BUSY;\n"
+        "\tif (aius_replay_service_start(&g_replay_service, id, loop) != AIUS_OK)\n"
+        "\t\treturn AIUS_OPTICAL_APP_REPLAY_FAILED;\n"
+        "\treturn AIUS_OPTICAL_APP_REPLAY_OK;\n}\n"
+        "static FLASHMEM size_t http_replay_list_json(uint8_t *b)\n{\n"
+        "\tconst ProducerSdWindow window;\n\tSD.clearError();\n"
+        "\tFile directory = SD.open(\"/aius/replays\");\n"
+        "\tdirectory.close();\n\tdirect_card_settle(SD.sdErrorCode());\n\treturn 0;\n}\n"
+        "static FLASHMEM int app_replay_delete(void *, const char *id)\n{\n"
+        "\tconst ProducerSdWindow window;\n\tSD.clearError();\n"
+        "\tconst bool removed = SD.exists(id) && SD.remove(id);\n"
+        "\tdirect_card_settle(SD.sdErrorCode());\n\treturn removed;\n}\n"
+        "static FLASHMEM int app_read_directory(void *, const char *p)\n{\n"
+        "\tconst ProducerSdWindow window;\n\tSD.clearError();\n"
+        "\tFile directory = SD.open(p);\n"
+        "\tif (!directory) {\n\t\tdirect_card_settle(SD.sdErrorCode());\n\t\treturn 1;\n\t}\n"
+        "\treturn 0;\n}\n"
         "static FLASHMEM bool sd_fifo_defer(void)\n{\n"
         "\tconst AiusOpticalAdmitSample sample = admit_sample();\n"
         "\treturn aius_optical_admission_sd_fifo_defer(&g_http_admission, &sample);\n}\n"
@@ -5986,8 +6288,37 @@ def _admission_fixture():
         "\tg_sd_commit_target = SD_COMMIT_NONE;\n}\n"
         "static FLASHMEM void sd_lifecycle_service(void)\n{\n"
         "\tsd_settle_http_write();\n\tsd_drop_orphan_staging();\n"
+        "\tweb_cache_fill_next(now_ms);\n"
         "\tif (sd_fifo_defer())\n\t\treturn;\n"
         "\tif (sd_start_step(g_sd_step))\n\t\tg_sd_step_running = true;\n}\n"
+        "static FLASHMEM bool web_cache_fill_defer(void)\n{\n"
+        "\treturn sd_fifo_defer();\n}\n"
+        "extern \"C\" FLASHMEM bool aius_runtime_storage_fill_step_defer(const AiusSdJob *)\n{\n"
+        "\treturn web_cache_fill_defer();\n}\n"
+        "static FLASHMEM bool web_cache_fill_sink(const AiusSdJob *job, uint64_t offset)\n{\n"
+        "\tif (!g_web_fill_walk.begun) {\n"
+        "\t\tconst bool open = offset == 0u\n"
+        "\t\t\t? aius_web_cache_fill_begin(&g_web_cache, rel, n, s)\n"
+        "\t\t\t: aius_web_cache_fill_resume(&g_web_cache, rel, n, o, s);\n"
+        "\t\tif (!open)\n\t\t\treturn false;\n\t\tg_web_fill_walk.begun = true;\n\t}\n"
+        "\treturn aius_web_cache_fill_chunk(&g_web_cache, data, l);\n}\n"
+        "static FLASHMEM bool web_cache_replay_playing(void)\n{\n"
+        "\treturn g_replay_service.source == AIUS_REPLAY_SOURCE_REPLAY ||\n"
+        "\t       g_replay_service.source == AIUS_REPLAY_SOURCE_SWITCHING_TO_REPLAY;\n}\n"
+        "static FLASHMEM void web_cache_fill_next(uint32_t now_ms)\n{\n"
+        "\tif (g_web_fill_walk.running ||\n"
+        "\t    aius_optical_web_fill_paused(&g_web_fill, now_ms,\n"
+        "\t                                 web_cache_replay_playing()) ||\n"
+        "\t    !sd_storage_idle())\n\t\treturn;\n"
+        "\tif (web_cache_fill_defer())\n\t\treturn;\n"
+        "\tif (app_read_directory(nullptr, path, &batch) != DIR_OK) {\n"
+        "\t\tif (g_web_fill_walk.dir_ordinal == 0u) {\n"
+        "\t\t\tg_web_fill_walk.walk_complete = true;\n\t\t} else {\n"
+        "\t\t\tbatch.count = 0u;\n\t\t\tg_web_fill_walk.dir_clean = false;\n\t\t}\n\t}\n"
+        "\trequest.initial_offset =\n"
+        "\t\taius_web_cache_fill_resume_offset(&g_web_cache, rel, strlen(rel));\n"
+        "\tif (aius_runtime_teensy_start_storage_job(&g_runtime, &request))\n"
+        "\t\tg_web_fill_walk.running = true;\n}\n"
         "static FLASHMEM void replay_job_start(const AiusReplayRefill *r)\n{\n"
         "\taius_sd_job_start(&g_replay_job, &request, now_ms, 0u);\n}\n"
         "static FLASHMEM void replay_refill_service(uint32_t now_ms)\n{\n"
@@ -6006,7 +6337,14 @@ def _admission_fixture():
         "\t            service->root_state ==\n"
         "\t                    AIUS_RUNTIME_STORAGE_ROOT_RUNNING) &&\n"
         "\t           !service->terminal_seen) {\n"
-        "\t\t(void)advance(service, now_ms, false);\n\t}\n\treturn true;\n}\n"
+        "\t\tconst bool fill_paused =\n"
+        "\t\t\t!service->draining &&\n"
+        "\t\t\tservice->root_state == AIUS_RUNTIME_STORAGE_ROOT_RUNNING &&\n"
+        "\t\t\tservice->job.kind == AIUS_SD_JOB_CACHE_FILL &&\n"
+        "\t\t\t!service->root_cancelling &&\n"
+        "\t\t\taius_runtime_storage_fill_step_defer(&service->job);\n"
+        "\t\tif (!fill_paused)\n"
+        "\t\t\t(void)advance(service, now_ms, false);\n\t}\n\treturn true;\n}\n"
         "FLASHMEM bool aius_runtime_storage_diag_json(const AiusRuntimeStorage *s)\n{\n"
         "\treturn diag_append(o, c, l, \"x\");\n}\n"
     )
@@ -6034,7 +6372,28 @@ def _admission_fixture():
         "\t       http->state != AIUS_HTTP_TX_SD_START &&\n"
         "\t       http->state != AIUS_HTTP_TX_SD_TRANSFER;\n}\n"
     )
-    return {OPTICAL_MAIN_SOURCE: main, STORAGE_SOURCE: storage, APP_SOURCE: app}
+    http = (
+        "namespace {\n"
+        "FLASHMEM void dispatch_route(AiusRuntimeNetworkHttp *service,\n"
+        "                             AiusOpticalAppDispatcher *app,\n"
+        "                             const AiusHttpAction *action)\n{\n"
+        "\tconst AiusHttpAdmitVerdict verdict =\n"
+        "\t\tconsult(service, AIUS_HTTP_ADMIT_ROUTE, action->request, nullptr);\n"
+        "\tservice->deferred_dispatch_present = verdict == AIUS_HTTP_VERDICT_DEFER;\n"
+        "\tif (verdict == AIUS_HTTP_VERDICT_DEFER)\n\t\treturn;\n"
+        "\tresponse = aius_optical_app_http_dispatch(app, action->request);\n}\n"
+        "}\n"
+        "FLASHMEM bool aius_runtime_http_service(AiusRuntimeNetworkHttp *service)\n{\n"
+        "\tif (service->deferred_dispatch_present) {\n"
+        "\t\tdispatch_route(service, app, &held);\n\t\treturn true;\n\t}\n"
+        "\taius_http_transaction_step(&service->http, now_ms, event, &action);\n"
+        "\tswitch (action.kind) {\n"
+        "\tcase AIUS_HTTP_ACTION_DISPATCH:\n"
+        "\t\tservice->http_requests++;\n\t\tdispatch_route(service, app, &action);\n"
+        "\t\tbreak;\n\tdefault:\n\t\tbreak;\n\t}\n\treturn true;\n}\n"
+    )
+    return {OPTICAL_MAIN_SOURCE: main, STORAGE_SOURCE: storage, APP_SOURCE: app,
+            HTTP_SERVICE_SOURCE: http}
 
 
 def run_admission_self_test():
@@ -6055,10 +6414,75 @@ def run_admission_self_test():
         "\tif (sd_start_step(g_sd_step))\n\t\treturn;\n\tif (sd_fifo_defer())",
     ), "starts/consulted-after", "sd_lifecycle_service")
     _expect_fail(starts, _mutated(
-        good, STORAGE_SOURCE, "\t\t(void)advance(service, now_ms, false);\n",
-        "\t\tif (!service->event_present)\n"
-        "\t\t\t(void)advance(service, now_ms, false);\n",
+        good, STORAGE_SOURCE, "\t\tif (!fill_paused)\n",
+        "\t\tif (!fill_paused && !service->event_present)\n",
     ), "starts/ownerless-gated", "never held")
+    # G8 (owner, 2026-10-10): the fill step gate is fill-only, skips a
+    # cancelled fill, and decides through the fill start's own predicate.
+    _expect_fail(starts, _mutated(
+        good, STORAGE_SOURCE,
+        "\t\t\tservice->job.kind == AIUS_SD_JOB_CACHE_FILL &&\n", "",
+    ), "g8/every-root-job-gated", "never held")
+    _expect_fail(starts, _mutated(
+        good, STORAGE_SOURCE, "\t\t\t!service->root_cancelling &&\n", "",
+    ), "g8/cancel-gated", "never held")
+    _expect_fail(starts, _mutated(
+        good, OPTICAL_MAIN_SOURCE, "\treturn web_cache_fill_defer();\n",
+        "\treturn false;\n",
+    ), "g8/step-not-deferred", "each fill primitive")
+    _expect_fail(starts, _mutated(
+        good, OPTICAL_MAIN_SOURCE,
+        "{\n\treturn sd_fifo_defer();\n}\nextern",
+        "{\n\treturn live_owns_ring();\n}\nextern",
+    ), "g8/predicate-not-fifo-defer", "exactly")
+    _expect_fail(starts, _mutated(
+        good, OPTICAL_MAIN_SOURCE,
+        "\tif (web_cache_fill_defer())\n\t\treturn;\n\tif (app_read_directory",
+        "\tif (app_read_directory",
+    ), "g8/fill-start-unguarded", "web_cache_fill_next")
+    # Phase 4g clean-room round: finding 1 (resume), nit A (replay pauses),
+    # the presets nit.
+    resume = assert_fill_resume_pause_and_presets
+    _expect_fail(resume, _mutated(
+        good, OPTICAL_MAIN_SOURCE,
+        "\trequest.initial_offset =\n"
+        "\t\taius_web_cache_fill_resume_offset(&g_web_cache, rel, strlen(rel));\n", "",
+    ), "f1/restarts-at-zero", "initial_offset")
+    _expect_fail(resume, _mutated(
+        good, OPTICAL_MAIN_SOURCE,
+        "\t\t\t: aius_web_cache_fill_resume(&g_web_cache, rel, n, o, s);\n",
+        "\t\t\t: false;\n",
+    ), "f1/sink-no-resume", "first chunk")
+    _expect_fail(resume, _mutated(
+        good, OPTICAL_MAIN_SOURCE,
+        "\t\tg_web_fill_walk.running = false;\n\t\tif (ok) {\n",
+        "\t\tg_web_fill_walk.running = false;\n"
+        "\t\taius_web_cache_fill_abort(&g_web_cache);\n\t\tif (ok) {\n",
+    ), "f1/cancel-drops-partial", "keeps the partial")
+    _expect_fail(resume, _mutated(
+        good, OPTICAL_MAIN_SOURCE,
+        "\t\t\tif (!resumed) {\n\t\t\t\tg_web_fill_walk.entry_index++;\n",
+        "\t\t\tif (true) {\n\t\t\t\tg_web_fill_walk.entry_index++;\n",
+    ), "f1/failed-resume-skips", "failed resume")
+    _expect_fail(resume, _mutated(
+        good, OPTICAL_MAIN_SOURCE, "\t\t                   storage.job.end_offset &&\n",
+        "\t\t                   0u &&\n",
+    ), "f1/complete-cancel-unpublished", "last chunk")
+    _expect_fail(resume, _mutated(
+        good, OPTICAL_MAIN_SOURCE, "\t                                 web_cache_replay_playing()) ||\n",
+        "\t                                 false) ||\n",
+    ), "nit-a/replay-unpaused", "replay pauses")
+    _expect_fail(resume, _mutated(
+        good, OPTICAL_MAIN_SOURCE,
+        "\treturn g_replay_service.source == AIUS_REPLAY_SOURCE_REPLAY ||\n"
+        "\t       g_replay_service.source == AIUS_REPLAY_SOURCE_SWITCHING_TO_REPLAY;\n",
+        "\treturn g_replay_service.source == AIUS_REPLAY_SOURCE_REPLAY;\n",
+    ), "nit-a/prebuffering-unpaused", "SWITCHING_TO_REPLAY")
+    _expect_fail(resume, _mutated(
+        good, OPTICAL_MAIN_SOURCE,
+        "\t\t\tbatch.count = 0u;\n\t\t\tg_web_fill_walk.dir_clean = false;\n",
+        "\t\t\tbatch.count = 0u;\n",
+    ), "presets/unread-dir-clean", "unclean")
     ota = assert_ota_staging_exempt_before_margin
     _expect_fail(ota, _mutated(
         good, APP_SOURCE,
@@ -6099,10 +6523,10 @@ def run_admission_self_test():
         "\treturn snprintf(o, c, \"x\") > 0;",
     ), "render/storage-bare", "diag_append")
     _expect_fail(starts, _mutated(
-        good, STORAGE_SOURCE, "\t\t(void)advance(service, now_ms, false);\n",
-        "\t\tif (service->job.phase != AIUS_SD_PHASE_BEGIN ||\n"
-        "\t\t    !aius_runtime_storage_sd_fifo_defer())\n"
-        "\t\t\t(void)advance(service, now_ms, false);\n",
+        good, STORAGE_SOURCE, "\t\tif (!fill_paused)\n",
+        "\t\tif (!fill_paused &&\n"
+        "\t\t    (service->job.phase != AIUS_SD_PHASE_BEGIN ||\n"
+        "\t\t     !aius_runtime_storage_sd_fifo_defer()))\n",
     ), "starts/begin-hold-back", "must not consult")
     latch = assert_bringup_latch_at_load_dsp_end
     note_line = "\t\taius_optical_admission_note_bringup_loaded(&g_http_admission);\n"
@@ -6169,6 +6593,58 @@ def run_admission_self_test():
         "\tadmission_sd_window_sample();\n\taius_sd_teensy_set_mode(target, dma);",
         "\taius_sd_teensy_set_mode(target, dma);\n\tadmission_sd_window_sample();",
     ), "r3/sample-after-switch", "F-S3")
+    # Phase 4g delivery audit: findings 3, 2 and 6.
+    wiring = assert_fill_route_and_card_wiring
+    _expect_fail(wiring, _mutated(
+        good, HTTP_SERVICE_SOURCE, "\tif (verdict == AIUS_HTTP_VERDICT_DEFER)\n\t\treturn;\n", "",
+    ), "f3/route-defer-admits", "hold a DEFERred DISPATCH")
+    _expect_fail(wiring, _mutated(
+        good, HTTP_SERVICE_SOURCE,
+        "\tif (service->deferred_dispatch_present) {\n"
+        "\t\tdispatch_route(service, app, &held);\n\t\treturn true;\n\t}\n"
+        "\taius_http_transaction_step(&service->http, now_ms, event, &action);\n",
+        "\taius_http_transaction_step(&service->http, now_ms, event, &action);\n"
+        "\tif (service->deferred_dispatch_present) {\n"
+        "\t\tdispatch_route(service, app, &held);\n\t\treturn true;\n\t}\n",
+    ), "f3/held-after-step", "before the transaction step")
+    _expect_fail(wiring, _mutated(
+        good, OPTICAL_MAIN_SOURCE,
+        "\tif (!sd_start && aius_optical_app_route_reads_card(query->request) &&\n",
+        "\tif (!sd_start && false &&\n",
+    ), "f3/no-route-wait", "direct-card route")
+    _expect_fail(wiring, _mutated(
+        good, OPTICAL_MAIN_SOURCE,
+        "\t\tif (fill_cancel)\n\t\t\tweb_cache_fill_cancel();\n\t\treturn AIUS_HTTP_VERDICT_DEFER;\n",
+        "\t\treturn AIUS_HTTP_VERDICT_DEFER;\n",
+    ), "f3/route-wait-no-cancel", "one cancel entry")
+    _expect_fail(wiring, _mutated(
+        good, OPTICAL_MAIN_SOURCE, "\taius_optical_web_fill_route_end(&g_web_fill, millis());\n", "",
+    ), "f3/route-end-missing", "app_dispatch_end")
+    _expect_fail(wiring, _mutated(
+        good, OPTICAL_MAIN_SOURCE, "\t    !g_runtime.network_http.deferred_dispatch_present &&\n", "",
+    ), "f3/drop-under-held-dispatch", "held DISPATCH")
+    _expect_fail(wiring, _mutated(
+        good, OPTICAL_MAIN_SOURCE, "g_sd_ready, storage.target.mounted,", "g_sd_ready, true,",
+    ), "f6/follow-ignores-mount", "follow the card")
+    _expect_fail(wiring, _mutated(
+        good, OPTICAL_MAIN_SOURCE,
+        "\tdirect_card_settle(SD.sdErrorCode());\n\treturn removed;", "\treturn removed;",
+    ), "f6/delete-unsettled", "app_replay_delete")
+    _expect_fail(wiring, _mutated(
+        good, OPTICAL_MAIN_SOURCE,
+        "\tconst ProducerSdWindow window;\n\tSD.clearError();\n\tFile directory = SD.open(p);",
+        "\tconst ProducerSdWindow window;\n\tFile directory = SD.open(p);",
+    ), "f6/listing-stale-code", "app_read_directory")
+    _expect_fail(wiring, _mutated(
+        good, OPTICAL_MAIN_SOURCE,
+        "\tif (g_web_cache.base != nullptr && !g_web_fill_walk.walk_complete)\n"
+        "\t\treturn AIUS_OPTICAL_APP_REPLAY_FILL_BUSY;\n", "",
+    ), "f2/replay-ungated", "FILL_BUSY")
+    _expect_fail(wiring, _mutated(
+        good, OPTICAL_MAIN_SOURCE,
+        "g_web_cache.base != nullptr && !g_web_fill_walk.walk_complete",
+        "!g_web_fill_walk.walk_complete",
+    ), "f2/gates-without-cache", "FILL_BUSY")
 
 
 PRODUCER_YIELD_CHECKS = (
@@ -6227,6 +6703,11 @@ def _producer_yield_fixture():
         "\taius_boot_record_checkpoint(&g_boot_ledger, checkpoint);\n"
         "\tif (checkpoint != AIUS_BOOT_CHECKPOINT_EPOCH_COMPLETE)\n"
         "\t\t(void)aius_producer_yield_point();\n}\n"
+        "static FLASHMEM __attribute__((noinline)) void web_cache_verify_yield(void *)\n{\n"
+        "\t(void)aius_producer_yield_point();\n}\n"
+        "static FLASHMEM bool web_cache_seam_verify(void *, uint8_t entry)\n{\n"
+        "\treturn aius_web_cache_verify(&g_web_cache, entry,\n"
+        "\t                             web_cache_verify_yield, nullptr);\n}\n"
         "static constexpr uintptr_t kStackTrapBytes = 32u;\n"
         "static inline __attribute__((always_inline)) uint32_t *stack_paint_base(void)\n{\n"
         "\treturn (uint32_t *)((((uintptr_t)&_ebss) & ~(kStackTrapBytes - 1u)) +\n"
@@ -6262,9 +6743,18 @@ def _producer_yield_fixture():
         "FLASHMEM AiusSdEvent aius_sd_teensy_execute(AiusSdTeensy *a)\n{\n"
         "\tFile opened = SD.open(\"/x\");\n\treturn ok();\n}\n"
     )
+    app = (
+        "static FLASHMEM __attribute__((noinline)) bool web_cache_body_chunk(\n"
+        "\tvoid *ctx, uint32_t chunk, uint8_t *dst, uint32_t *bytes)\n{\n"
+        "\tif ((chunk + 1u) % AIUS_OPTICAL_APP_WEB_YIELD_CHUNKS == 0u)\n"
+        "\t\t(void)aius_producer_yield_point();\n\treturn true;\n}\n"
+        "static FLASHMEM const void *dispatch_www_cached(void *d)\n{\n"
+        "\treturn d;\n}\n"
+    )
     return {
         STORAGE_SOURCE: storage,
         OPTICAL_MAIN_SOURCE: main,
+        "src/aius_optical_app.cpp": app,
         PRODUCER_YIELD_SOURCE: library,
         SD_ADAPTER_SOURCE: adapter,
         "lib/aius_other/src/other.c": "/* fopen and Print in a comment */\n"
@@ -6339,6 +6829,16 @@ def run_producer_yield_self_test():
         "\t(void)aius_producer_yield_point();\n\treturn true;\n}\n",
         "\treturn true;\n}\n",
     ), "epoch/render-append-lost", "callers must be exactly")
+    _expect_fail(epoch, _mutated(
+        good, "src/aius_optical_app.cpp",
+        "\t\t(void)aius_producer_yield_point();\n\treturn true;\n}\n",
+        "\treturn true;\n}\n",
+    ), "epoch/web-cache-send-yield-lost", "callers must be exactly")
+    _expect_fail(epoch, _mutated(
+        good, "src/aius_optical_app.cpp",
+        "\treturn d;\n}\n",
+        "\t(void)aius_producer_yield_point();\n\treturn d;\n}\n",
+    ), "epoch/web-cache-dispatch-yield", "callers must be exactly")
 
     naming = assert_sd_naming_functions_are_w2_sources
     _expect_fail(naming, _mutated(

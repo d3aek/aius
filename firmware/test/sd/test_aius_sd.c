@@ -250,6 +250,7 @@ static AiusSdJobRequest request_for(AiusSdJobKind kind)
 		break;
 	case AIUS_SD_JOB_DELETE:
 	case AIUS_SD_JOB_REPLAY_REFILL:
+	case AIUS_SD_JOB_CACHE_FILL:
 		request.target_path = "/audio/file.bin";
 		break;
 	default:
@@ -1009,6 +1010,237 @@ static void test_download_and_refill(void)
 		&job, 0u, bytes_event(action.action_id, 0u), AIUS_SD_ACTION_CLOSE);
 	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_FAIL);
 	CHECK(action.fault == AIUS_SD_FAULT_SHORT_IO, "download zero read mismatch");
+}
+
+#define CF_CHUNK 512u
+#define CF_FILE (2u * CF_CHUNK + 76u)
+
+static unsigned cf_writes;
+
+static AiusSdAction cf_step(AiusSdJob *job, AiusSdEvent event,
+	                    AiusSdActionKind expected)
+{
+	AiusSdAction action = step_action(job, 0u, event, expected);
+	switch (action.kind) {
+	case AIUS_SD_ACTION_MKDIR:
+	case AIUS_SD_ACTION_OPEN_WRITE_BEGIN:
+	case AIUS_SD_ACTION_OPEN_APPEND:
+	case AIUS_SD_ACTION_TRUNCATE:
+	case AIUS_SD_ACTION_WRITE:
+	case AIUS_SD_ACTION_RENAME:
+	case AIUS_SD_ACTION_REMOVE:
+		cf_writes++;
+		break;
+	default:
+		break;
+	}
+	return action;
+}
+
+/* Drives a CACHE_FILL up to the OUTPUT of chunk `chunks`, checking the chunk
+ * bytes, offset and length at the sink each time; returns the OUTPUT action
+ * of the last chunk driven (or the SEEK action for chunks == 0). */
+static AiusSdAction cf_drive(AiusSdJob *job, uint8_t *buffer, unsigned chunks)
+{
+	AiusSdAction action = cf_step(job, none_event(), AIUS_SD_ACTION_BEGIN);
+	action = cf_step(job, ok_event(action.action_id), AIUS_SD_ACTION_OPEN_READ);
+	action = cf_step(job, ok_event(action.action_id), AIUS_SD_ACTION_FILE_SIZE);
+	action = cf_step(job, size_event(action.action_id, CF_FILE),
+	                 AIUS_SD_ACTION_SEEK);
+	for (unsigned index = 0u; index < chunks; index++) {
+		size_t length = index < 2u ? CF_CHUNK : CF_FILE - 2u * CF_CHUNK;
+
+		action = cf_step(job, ok_event(action.action_id), AIUS_SD_ACTION_READ);
+		CHECK(action.buffer == buffer && action.length == length &&
+		      action.offset == (uint64_t)index * CF_CHUNK,
+		      "cache fill read geometry mismatch");
+		memset(buffer, (int)(0x30u + index), length);
+		action = cf_step(job, bytes_event(action.action_id, length),
+		                 AIUS_SD_ACTION_OUTPUT);
+		CHECK(action.buffer == buffer && action.length == length &&
+		      action.offset == (uint64_t)index * CF_CHUNK &&
+		      buffer[0] == 0x30u + index,
+		      "cache fill sink chunk mismatch");
+	}
+	return action;
+}
+
+static void test_cache_fill(void)
+{
+	uint8_t buffer[CF_CHUNK];
+	AiusSdJob job;
+	AiusSdAction action;
+	AiusSdJobRequest request = request_for(AIUS_SD_JOB_CACHE_FILL);
+
+	scenario = "cache fill request shape";
+	request.total = 1u;
+	start_valid(&job, buffer, sizeof(buffer), &request);
+	expect_terminal(&job, AIUS_SD_ACTION_FAIL, AIUS_SD_RESULT_FAULT,
+	                AIUS_SD_FAULT_INVALID_REQUEST, 0u);
+	request = request_for(AIUS_SD_JOB_CACHE_FILL);
+	request.content_type = "text/plain";
+	start_valid(&job, buffer, sizeof(buffer), &request);
+	expect_terminal(&job, AIUS_SD_ACTION_FAIL, AIUS_SD_RESULT_FAULT,
+	                AIUS_SD_FAULT_INVALID_REQUEST, 0u);
+
+	scenario = "cache fill reads a file chunk by chunk";
+	request = request_for(AIUS_SD_JOB_CACHE_FILL);
+	cf_writes = 0u;
+	start_valid(&job, buffer, sizeof(buffer), &request);
+	action = cf_drive(&job, buffer, 3u);
+	action = cf_step(&job, ok_event(action.action_id), AIUS_SD_ACTION_CLOSE);
+	action = cf_step(&job, ok_event(action.action_id), AIUS_SD_ACTION_COMPLETE);
+	expect_result(&job, AIUS_SD_RESULT_BYTES, AIUS_SD_FAULT_NONE, 0u);
+	CHECK(job.result.transferred_bytes == CF_FILE, "cache fill byte count");
+	CHECK(cf_writes == 0u, "cache fill issued a card write");
+
+	scenario = "cache fill sink failure fails the job";
+	start_valid(&job, buffer, sizeof(buffer), &request);
+	action = cf_drive(&job, buffer, 1u);
+	action = cf_step(&job, fault_event(action.action_id, 77u),
+	                 AIUS_SD_ACTION_CLOSE);
+	action = cf_step(&job, ok_event(action.action_id), AIUS_SD_ACTION_FAIL);
+	CHECK(job.result.kind == AIUS_SD_RESULT_FAULT && job.result.driver_fault == 77u,
+	      "cache fill sink failure result");
+	CHECK(!job.file_open, "cache fill sink failure left the file open");
+
+	/* boundary 0: before the first read; 1: after chunk 1; 3: after the last */
+	static const unsigned cancel_after[] = {0u, 1u, 3u};
+	for (size_t row = 0u; row < ARRAY_COUNT(cancel_after); row++) {
+		scenario = "cache fill cancel at a primitive boundary";
+		cf_writes = 0u;
+		start_valid(&job, buffer, sizeof(buffer), &request);
+		action = cf_drive(&job, buffer, cancel_after[row]);
+		CHECK(job.file_open, "cache fill file not open before cancel");
+		aius_sd_job_cancel(&job);
+		action = cf_step(&job, ok_event(action.action_id), AIUS_SD_ACTION_CLOSE);
+		action = cf_step(&job, ok_event(action.action_id), AIUS_SD_ACTION_FAIL);
+		CHECK(action.fault == (uint32_t)AIUS_SD_FAULT_CANCELLED,
+		      "cache fill cancel fault mismatch");
+		CHECK(!job.file_open, "cache fill cancel left the file open");
+		CHECK(cf_writes == 0u, "cache fill cancel issued a card write");
+		cf_step(&job, none_event(), AIUS_SD_ACTION_NONE);
+		cf_step(&job, none_event(), AIUS_SD_ACTION_NONE);
+		CHECK(job.state == AIUS_SD_FAILED, "cache fill cancel not terminal");
+		expect_result(&job, AIUS_SD_RESULT_FAULT, AIUS_SD_FAULT_CANCELLED, 0u);
+
+		/* the job object restarts cleanly after the cancel */
+		start_valid(&job, buffer, sizeof(buffer), &request);
+		cf_step(&job, none_event(), AIUS_SD_ACTION_BEGIN);
+	}
+
+	/* The other boundaries a cancel can land on: with OPEN_READ, FILE_SIZE
+	 * or a READ outstanding. The READ row is the state production cancels
+	 * from: advance() runs the OUTPUT inline, so between epochs a fill sits
+	 * with its next READ issued. Each closes, writes nothing and never hands
+	 * the sink another chunk. */
+	for (unsigned row = 0u; row < 3u; row++) {
+		scenario = row == 0u ? "cache fill cancel with OPEN_READ pending"
+		         : row == 1u ? "cache fill cancel with FILE_SIZE pending"
+		                     : "cache fill cancel with a READ pending";
+		cf_writes = 0u;
+		start_valid(&job, buffer, sizeof(buffer), &request);
+		action = cf_step(&job, none_event(), AIUS_SD_ACTION_BEGIN);
+		action = cf_step(&job, ok_event(action.action_id),
+		                 AIUS_SD_ACTION_OPEN_READ);
+		if (row == 0u) {
+			aius_sd_job_cancel(&job);
+			action = cf_step(&job, ok_event(action.action_id),
+			                 AIUS_SD_ACTION_CLOSE);
+		} else if (row == 1u) {
+			action = cf_step(&job, ok_event(action.action_id),
+			                 AIUS_SD_ACTION_FILE_SIZE);
+			aius_sd_job_cancel(&job);
+			action = cf_step(&job, size_event(action.action_id, CF_FILE),
+			                 AIUS_SD_ACTION_CLOSE);
+		} else {
+			action = cf_step(&job, ok_event(action.action_id),
+			                 AIUS_SD_ACTION_FILE_SIZE);
+			action = cf_step(&job, size_event(action.action_id, CF_FILE),
+			                 AIUS_SD_ACTION_SEEK);
+			action = cf_step(&job, ok_event(action.action_id),
+			                 AIUS_SD_ACTION_READ);
+			memset(buffer, 0x41, CF_CHUNK);
+			action = cf_step(&job, bytes_event(action.action_id, CF_CHUNK),
+			                 AIUS_SD_ACTION_OUTPUT);
+			action = cf_step(&job, ok_event(action.action_id),
+			                 AIUS_SD_ACTION_READ);
+			CHECK(job.file_open, "cache fill file not open before cancel");
+			aius_sd_job_cancel(&job);
+			/* The pending READ's bytes arrive: CLOSE, not an OUTPUT. */
+			action = cf_step(&job, bytes_event(action.action_id, CF_CHUNK),
+			                 AIUS_SD_ACTION_CLOSE);
+		}
+		action = cf_step(&job, ok_event(action.action_id), AIUS_SD_ACTION_FAIL);
+		CHECK(action.fault == (uint32_t)AIUS_SD_FAULT_CANCELLED,
+		      "cache fill cancel fault mismatch");
+		CHECK(!job.file_open, "cache fill cancel left the file open");
+		CHECK(cf_writes == 0u, "cache fill cancel issued a card write");
+		cf_step(&job, none_event(), AIUS_SD_ACTION_NONE);
+		CHECK(job.state == AIUS_SD_FAILED, "cache fill cancel not terminal");
+		expect_result(&job, AIUS_SD_RESULT_FAULT, AIUS_SD_FAULT_CANCELLED, 0u);
+		start_valid(&job, buffer, sizeof(buffer), &request);
+		cf_step(&job, none_event(), AIUS_SD_ACTION_BEGIN);
+	}
+
+	/* Phase 4g (owner, clean-room finding 1): a cancelled fill resumes at
+	 * its next chunk. A chunk-aligned initial_offset seeks there and reads
+	 * on to the end, offsets absolute; an unaligned one is refused. */
+	scenario = "cache fill resume refuses an unaligned offset";
+	static const uint64_t unaligned[] = {1u, 511u, 513u, 1000u};
+	for (size_t row = 0u; row < ARRAY_COUNT(unaligned); row++) {
+		request = request_for(AIUS_SD_JOB_CACHE_FILL);
+		request.initial_offset = unaligned[row];
+		start_valid(&job, buffer, sizeof(buffer), &request);
+		expect_terminal(&job, AIUS_SD_ACTION_FAIL, AIUS_SD_RESULT_FAULT,
+		                AIUS_SD_FAULT_INVALID_REQUEST, 0u);
+	}
+
+	scenario = "cache fill resume reads from an aligned offset";
+	request = request_for(AIUS_SD_JOB_CACHE_FILL);
+	request.initial_offset = CF_CHUNK;
+	cf_writes = 0u;
+	start_valid(&job, buffer, sizeof(buffer), &request);
+	action = cf_step(&job, none_event(), AIUS_SD_ACTION_BEGIN);
+	action = cf_step(&job, ok_event(action.action_id), AIUS_SD_ACTION_OPEN_READ);
+	action = cf_step(&job, ok_event(action.action_id), AIUS_SD_ACTION_FILE_SIZE);
+	action = cf_step(&job, size_event(action.action_id, CF_FILE),
+	                 AIUS_SD_ACTION_SEEK);
+	CHECK(action.offset == CF_CHUNK, "cache fill resume seek offset");
+	for (unsigned index = 1u; index < 3u; index++) {
+		size_t length = index < 2u ? CF_CHUNK : CF_FILE - 2u * CF_CHUNK;
+
+		action = cf_step(&job, ok_event(action.action_id), AIUS_SD_ACTION_READ);
+		CHECK(action.length == length &&
+		      action.offset == (uint64_t)index * CF_CHUNK,
+		      "cache fill resume read geometry");
+		memset(buffer, (int)(0x30u + index), length);
+		action = cf_step(&job, bytes_event(action.action_id, length),
+		                 AIUS_SD_ACTION_OUTPUT);
+		CHECK(action.length == length &&
+		      action.offset == (uint64_t)index * CF_CHUNK,
+		      "cache fill resume sink offset is absolute");
+	}
+	action = cf_step(&job, ok_event(action.action_id), AIUS_SD_ACTION_CLOSE);
+	action = cf_step(&job, ok_event(action.action_id), AIUS_SD_ACTION_COMPLETE);
+	expect_result(&job, AIUS_SD_RESULT_BYTES, AIUS_SD_FAULT_NONE, 0u);
+	CHECK(job.result.transferred_bytes == CF_FILE - CF_CHUNK,
+	      "cache fill resume byte count");
+	CHECK(job.end_offset == CF_FILE, "cache fill resume end is the file size");
+	CHECK(cf_writes == 0u, "cache fill resume issued a card write");
+
+	scenario = "cache fill resume past a shrunk file is a range fault";
+	request.initial_offset = 4u * CF_CHUNK;
+	start_valid(&job, buffer, sizeof(buffer), &request);
+	action = cf_step(&job, none_event(), AIUS_SD_ACTION_BEGIN);
+	action = cf_step(&job, ok_event(action.action_id), AIUS_SD_ACTION_OPEN_READ);
+	action = cf_step(&job, ok_event(action.action_id), AIUS_SD_ACTION_FILE_SIZE);
+	action = cf_step(&job, size_event(action.action_id, CF_FILE),
+	                 AIUS_SD_ACTION_CLOSE);
+	action = cf_step(&job, ok_event(action.action_id), AIUS_SD_ACTION_FAIL);
+	CHECK(action.fault == (uint32_t)AIUS_SD_FAULT_RANGE,
+	      "cache fill resume past the end fault");
+	CHECK(!job.file_open, "cache fill resume range fault left the file open");
 }
 
 static AiusSdJobRequest upload_request(AiusSdInstallMode mode)
@@ -5085,6 +5317,7 @@ int main(void)
 	test_config_load();
 	test_publish_buffer();
 	test_download_and_refill();
+	test_cache_fill();
 	test_upload_modes();
 	test_install_publication_and_authority();
 	test_request_boundaries();

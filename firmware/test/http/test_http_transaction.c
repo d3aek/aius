@@ -80,14 +80,21 @@ static void assert_action_shape(const AiusHttpAction *action)
 		assert(action->fault == 0);
 		break;
 	case AIUS_HTTP_ACTION_WRITE:
-		assert(action->read_buffer == NULL);
-		assert(action->data != NULL);
+		/* Exactly one of a borrowed pointer or a chunk source; the chunk
+		 * fields reuse the slots a WRITE never carries. */
+		assert((action->data != NULL) != (action->body_chunk != NULL));
 		assert(action->length > 0);
 		assert(action->length <= AIUS_HTTP_TX_QUOTA);
-		assert(action->request == NULL);
-		assert(action->sd_request == NULL);
-		assert(action->sd_operation == AIUS_HTTP_SD_OP_NONE);
-		assert(action->fault == 0);
+		if (action->body_chunk != NULL) {
+			assert(action->chunk_length <= AIUS_HTTP_TX_QUOTA);
+			assert(action->chunk_offset + action->length == action->chunk_length);
+		} else {
+			assert(action->read_buffer == NULL);
+			assert(action->request == NULL);
+			assert(action->sd_request == NULL);
+			assert(action->sd_operation == AIUS_HTTP_SD_OP_NONE);
+			assert(action->fault == 0);
+		}
 		break;
 	case AIUS_HTTP_ACTION_DISPATCH:
 		assert(action->read_buffer == NULL);
@@ -2317,6 +2324,342 @@ static void test_download_cache_control(void)
 		assert(action.kind == AIUS_HTTP_ACTION_WRITE);
 		assert(contains_bytes(action.data, action.length,
 		                      "Cache-Control: max-age=5"));
+	}
+}
+
+static unsigned g_cache_settles;
+static void count_settle(void *ctx, bool committed)
+{
+	(void)ctx;
+	(void)committed;
+	g_cache_settles++;
+}
+
+static void test_cache_headers_on_wire(void)
+{
+	static const char expect_tail[] =
+		"Content-Encoding: gzip\r\nETag: \"1a2b3c4d-9\"\r\n"
+		"Vary: Accept-Encoding\r\nConnection: close\r\n\r\n";
+	/* Immediate: options reach the wire; the tag is copied, so scribbling the
+	 * source string and the request buffer afterwards changes nothing. */
+	{
+		Fixture fixture;
+		init_fixture(&fixture);
+		char tag[] = "\"1a2b3c4d-9\"";
+		static const uint8_t body[] = "123456789";
+		AiusHttpAction action = feed_request(
+			&fixture, "GET /sd/index.html HTTP/1.0\r\n\r\n");
+		AiusHttpApplicationResponse response =
+			immediate(200, "text/html", body, sizeof(body) - 1u);
+		response.etag = tag;
+		response.content_encoding_gzip = true;
+		response.vary_accept_encoding = true;
+		response.cache_no_cache = true;
+		action = call_step(&fixture, 0, application_result(&action, &response));
+		memset(tag, 'X', sizeof(tag) - 1u);
+		memset(fixture.request, 0xee, sizeof(fixture.request));
+		assert(action.kind == AIUS_HTTP_ACTION_WRITE);
+		assert(contains_bytes(action.data, action.length, "Cache-Control: no-cache\r\n"));
+		assert(contains_bytes(action.data, action.length, expect_tail));
+		assert(contains_bytes(action.data, action.length, "123456789"));
+	}
+	/* Streamed (body does not fit beside the headers). */
+	{
+		Fixture fixture;
+		init_fixture_at(&fixture, sizeof(fixture.request), 300, 0);
+		static uint8_t big[600];
+		memset(big, 'b', sizeof(big));
+		AiusHttpAction action = feed_request(
+			&fixture, "GET /sd/index.html HTTP/1.0\r\n\r\n");
+		AiusHttpApplicationResponse response =
+			immediate(200, "text/html", big, sizeof(big));
+		response.etag = "\"1a2b3c4d-9\"";
+		response.content_encoding_gzip = true;
+		response.vary_accept_encoding = true;
+		action = call_step(&fixture, 0, application_result(&action, &response));
+		assert(action.kind == AIUS_HTTP_ACTION_WRITE);
+		assert(fixture.transaction.response_streams_body);
+		assert(contains_bytes(action.data, action.length, expect_tail));
+		assert(contains_bytes(action.data, action.length, "Content-Length: 600"));
+	}
+	/* SD download, data-led and zero-length; tag copied before the deferred write. */
+	for (unsigned zero = 0; zero < 2u; ++zero) {
+		Fixture fixture;
+		init_fixture(&fixture);
+		char tag[] = "\"1a2b3c4d-9\"";
+		AiusHttpAction action = feed_request(
+			&fixture, "GET /sd/www/index.html.gz HTTP/1.0\r\n\r\n");
+		AiusHttpApplicationResponse response =
+			sd_job(AIUS_SD_JOB_DOWNLOAD, 200, "text/html", NULL, 0, 0);
+		response.etag = tag;
+		response.content_encoding_gzip = true;
+		response.vary_accept_encoding = true;
+		action = call_step(&fixture, 0, application_result(&action, &response));
+		assert(action.kind == AIUS_HTTP_ACTION_SD_START);
+		memset(tag, 'X', sizeof(tag) - 1u);
+		memset(fixture.request, 0xee, sizeof(fixture.request));
+		AiusHttpEvent started = sd_result(&action, AIUS_HTTP_SD_STARTED);
+		started.sd_capacity = 8;
+		action = call_step(&fixture, 0, started);
+		if (zero) {
+			AiusHttpEvent complete = sd_result(&action, AIUS_HTTP_SD_COMPLETE);
+			complete.sd_size = 0;
+			action = call_step(&fixture, 0, complete);
+		} else {
+			static const uint8_t chunk[] = "abc";
+			AiusHttpEvent data = sd_result(&action, AIUS_HTTP_SD_DOWNLOAD_DATA);
+			data.sd_data = chunk;
+			data.sd_length = 3;
+			data.sd_size = 3;
+			action = call_step(&fixture, 0, data);
+		}
+		assert(action.kind == AIUS_HTTP_ACTION_WRITE);
+		assert(contains_bytes(action.data, action.length, expect_tail));
+	}
+	/* A failure substitution on a response with options carries none. */
+	{
+		Fixture fixture;
+		init_fixture(&fixture);
+		AiusHttpAction action = feed_request(
+			&fixture, "GET /sd/www/a.html.gz HTTP/1.0\r\n\r\n");
+		AiusHttpApplicationResponse response =
+			sd_job(AIUS_SD_JOB_DOWNLOAD, 200, "text/html", NULL, 0, 0);
+		response.etag = "\"1a2b3c4d-9\"";
+		response.vary_accept_encoding = true;
+		action = call_step(&fixture, 0, application_result(&action, &response));
+		AiusHttpEvent started = sd_result(&action, AIUS_HTTP_SD_STARTED);
+		started.sd_capacity = 8;
+		action = call_step(&fixture, 0, started);
+		AiusHttpEvent failed = sd_result(&action, AIUS_HTTP_SD_FAILED);
+		failed.sd_fault = AIUS_SD_FAULT_NOT_FOUND;
+		action = call_step(&fixture, 0, failed);
+		assert(action.kind == AIUS_HTTP_ACTION_WRITE);
+		assert(!contains_bytes(action.data, action.length, "ETag"));
+		assert(!contains_bytes(action.data, action.length, "Vary"));
+	}
+	/* Zeroed options: byte-identical to the plain writer. */
+	{
+		Fixture fixture;
+		init_fixture(&fixture);
+		static const uint8_t body[] = "{}";
+		uint8_t plain[256];
+		AiusHttpAction action = feed_request(
+			&fixture, "GET /api/dsp/config HTTP/1.0\r\n\r\n");
+		AiusHttpApplicationResponse response =
+			immediate(200, "application/json", body, sizeof(body) - 1u);
+		response.cache_max_age_s = 5u;
+		action = call_step(&fixture, 0, application_result(&action, &response));
+		size_t plain_length = aius_http_write_response(
+			plain, sizeof(plain), 200, "application/json", body,
+			sizeof(body) - 1u, 5u);
+		assert(action.length == plain_length);
+		assert(memcmp(action.data, plain, plain_length) == 0);
+	}
+	/* An invalid tag is rejected at acceptance. */
+	{
+		Fixture fixture;
+		init_fixture(&fixture);
+		AiusHttpAction action = feed_request(
+			&fixture, "GET /sd/index.html HTTP/1.0\r\n\r\n");
+		AiusHttpApplicationResponse response =
+			immediate(200, "text/html", NULL, 0);
+		response.etag = "\"bad\r\nX: y\"";
+		AiusHttpEvent event = application_result(&action, &response);
+		aius_http_transaction_step(&fixture.transaction, 0, event, &action);
+		assert(!contains_bytes(action.data, action.length, "X: y"));
+	}
+}
+
+typedef struct {
+	unsigned calls;
+	unsigned fail_at_chunk; /* 0 = never */
+	uint32_t total;
+} ChunkSource;
+
+static bool chunk_source(void *ctx, uint32_t chunk, uint8_t *dst, uint32_t *bytes)
+{
+	ChunkSource *source = (ChunkSource *)ctx;
+	uint32_t start = chunk * AIUS_HTTP_TX_QUOTA;
+	uint32_t count = source->total - start;
+	source->calls++;
+	if (source->fail_at_chunk != 0u && chunk + 1u == source->fail_at_chunk)
+		return false;
+	if (count > AIUS_HTTP_TX_QUOTA)
+		count = AIUS_HTTP_TX_QUOTA;
+	for (uint32_t i = 0; i < count; ++i)
+		dst[i] = (uint8_t)((start + i) * 7u + 3u);
+	*bytes = count;
+	return true;
+}
+
+/* Plays a WRITE action the way the transport service does. */
+static size_t play_chunk_write(const AiusHttpAction *action, uint8_t *wire)
+{
+	uint8_t buffer[AIUS_HTTP_TX_QUOTA];
+	uint32_t bytes = 0;
+	assert(action->body_chunk(action->body_chunk_ctx, action->chunk_index,
+	                          buffer, &bytes));
+	assert(bytes == action->chunk_length);
+	memcpy(wire, buffer + action->chunk_offset, action->length);
+	return action->length;
+}
+
+static void test_chunk_source_body(void)
+{
+	enum { TOTAL = 1300 };
+	static uint8_t wire[4096];
+	ChunkSource source = { 0, 0, TOTAL };
+	Fixture fixture;
+	init_fixture(&fixture);
+	g_cache_settles = 0;
+	AiusHttpAction action = feed_request(
+		&fixture, "GET /sd/index.html HTTP/1.0\r\n\r\n");
+	AiusHttpApplicationResponse response =
+		immediate(200, "text/html", NULL, TOTAL);
+	response.body_chunk = chunk_source;
+	response.body_chunk_ctx = &source;
+	response.sd_settle = count_settle;
+	action = call_step(&fixture, 0, application_result(&action, &response));
+	assert(action.kind == AIUS_HTTP_ACTION_WRITE);
+	assert(contains_bytes(action.data, action.length, "Content-Length: 1300"));
+	assert(source.calls == 0);
+	action = finish_response_headers(&fixture, action);
+	size_t wire_length = 0;
+	unsigned writes = 0;
+	unsigned partial_done = 0;
+	while (action.kind == AIUS_HTTP_ACTION_WRITE) {
+		assert(action.body_chunk == chunk_source);
+		assert(action.data == NULL);
+		size_t got = play_chunk_write(&action, wire + wire_length);
+		size_t step = got;
+		/* One partial write inside the first chunk: the retry carries the offset. */
+		if (!partial_done && action.chunk_index == 0u && got == 512u) {
+			step = 100;
+			partial_done = 1;
+		}
+		wire_length += step;
+		writes++;
+		action = call_step(&fixture, 0,
+		                   io_result(&action, AIUS_IO_PROGRESS, step, 0));
+	}
+	assert(partial_done);
+	assert(writes == 4u); /* 512 split 100 + 412, 512, 276 */
+	assert(wire_length == TOTAL);
+	for (uint32_t i = 0; i < TOTAL; ++i)
+		assert(wire[i] == (uint8_t)(i * 7u + 3u));
+	assert(action.kind == AIUS_HTTP_ACTION_CLOSE);
+	finish_close(&fixture, action);
+	assert(g_cache_settles == 1u);
+}
+
+static void test_chunk_source_failure_and_validation(void)
+{
+	enum { TOTAL = 1300 };
+	ChunkSource source = { 0, 2, TOTAL };
+	static uint8_t wire[2048];
+	Fixture fixture;
+	init_fixture(&fixture);
+	g_cache_settles = 0;
+	AiusHttpAction action = feed_request(
+		&fixture, "GET /sd/index.html HTTP/1.0\r\n\r\n");
+	AiusHttpApplicationResponse response =
+		immediate(200, "text/html", NULL, TOTAL);
+	response.body_chunk = chunk_source;
+	response.body_chunk_ctx = &source;
+	response.sd_settle = count_settle;
+	action = call_step(&fixture, 0, application_result(&action, &response));
+	action = finish_response_headers(&fixture, action);
+	assert(action.kind == AIUS_HTTP_ACTION_WRITE);
+	assert(play_chunk_write(&action, wire) == 512u);
+	action = call_step(&fixture, 0, io_result(&action, AIUS_IO_PROGRESS, 512, 0));
+	assert(action.kind == AIUS_HTTP_ACTION_WRITE);
+	assert(action.chunk_index == 1u);
+	/* The second chunk's source returns false: the executor reports a
+	 * transport fault, and the connection closes with settle once. */
+	uint8_t scratch[AIUS_HTTP_TX_QUOTA];
+	uint32_t bytes = 0;
+	assert(!action.body_chunk(action.body_chunk_ctx, action.chunk_index,
+	                          scratch, &bytes));
+	action = call_step(&fixture, 0, io_result(&action, AIUS_IO_FAULT, 0, 0xB0D1u));
+	assert(action.kind == AIUS_HTTP_ACTION_CLOSE);
+	assert(fixture.transaction.last_fault == AIUS_HTTP_FAULT_TRANSPORT);
+	finish_close(&fixture, action);
+	assert(g_cache_settles == 1u);
+
+	/* body and body_chunk share a slot (the source's ctx), so "both" is
+	 * unrepresentable; a source on an SD job is rejected at accept. */
+	{
+		Fixture f2;
+		init_fixture(&f2);
+		ChunkSource s2 = { 0, 0, 3 };
+		AiusHttpAction a2 = feed_request(&f2, "GET /sd/www/a HTTP/1.0\r\n\r\n");
+		AiusHttpApplicationResponse job =
+			sd_job(AIUS_SD_JOB_DOWNLOAD, 200, "text/html", NULL, 0, 0);
+		job.body_chunk = chunk_source;
+		job.body_chunk_ctx = &s2;
+		AiusHttpEvent event = application_result(&a2, &job);
+		aius_http_transaction_step(&f2.transaction, 0, event, &a2);
+		assert(a2.kind != AIUS_HTTP_ACTION_SD_START);
+		/* Zero length with a source likewise. */
+		Fixture f3;
+		init_fixture(&f3);
+		AiusHttpAction a3 = feed_request(&f3, "GET /sd/index.html HTTP/1.0\r\n\r\n");
+		AiusHttpApplicationResponse zero = immediate(200, "text/html", NULL, 0);
+		zero.body_chunk = chunk_source;
+		zero.body_chunk_ctx = &s2;
+		event = application_result(&a3, &zero);
+		aius_http_transaction_step(&f3.transaction, 0, event, &a3);
+		assert(!(a3.kind == AIUS_HTTP_ACTION_WRITE &&
+		         contains_bytes(a3.data, a3.length, "200 OK")));
+		assert(s2.calls == 0);
+	}
+}
+
+static void test_not_modified_has_no_body(void)
+{
+	Fixture fixture;
+	init_fixture(&fixture);
+	g_cache_settles = 0;
+	AiusHttpAction action = feed_request(
+		&fixture, "GET /sd/index.html HTTP/1.0\r\nIf-None-Match: \"1a2b3c4d-9\"\r\n\r\n");
+	AiusHttpApplicationResponse response = immediate(304, NULL, NULL, 0);
+	response.etag = "\"1a2b3c4d-9\"";
+	response.vary_accept_encoding = true;
+	response.cache_no_cache = true;
+	response.sd_settle = count_settle;
+	action = call_step(&fixture, 0, application_result(&action, &response));
+	assert(action.kind == AIUS_HTTP_ACTION_WRITE);
+	assert(fixture.transaction.last_status == 304);
+	assert(!fixture.transaction.response_streams_body);
+	assert(action.length == fixture.transaction.response_length);
+	assert(contains_bytes(action.data, action.length, "304 Not Modified"));
+	assert(contains_bytes(action.data, action.length, "ETag: \"1a2b3c4d-9\"\r\n"));
+	assert(!contains_bytes(action.data, action.length, "Content-Length"));
+	assert(!contains_bytes(action.data, action.length, "Content-Type"));
+	/* The wire ends at the blank line: total bytes written == headers only. */
+	assert(action.length >= 4u &&
+	       memcmp(action.data + action.length - 4u, "\r\n\r\n", 4) == 0);
+	size_t wire = 0;
+	while (action.kind == AIUS_HTTP_ACTION_WRITE) {
+		wire += action.length;
+		action = call_step(&fixture, 0, io_result(&action, AIUS_IO_PROGRESS,
+		                                          action.length, 0));
+	}
+	assert(wire == fixture.transaction.response_length);
+	assert(action.kind == AIUS_HTTP_ACTION_CLOSE);
+	finish_close(&fixture, action);
+	assert(g_cache_settles == 1u);
+	/* A 304 with a body or on an SD job is refused. */
+	{
+		Fixture f2;
+		init_fixture(&f2);
+		static const uint8_t b[] = "x";
+		AiusHttpAction a2 = feed_request(&f2, "GET /sd/index.html HTTP/1.0\r\n\r\n");
+		AiusHttpApplicationResponse bad = immediate(304, NULL, b, 1);
+		AiusHttpEvent event = application_result(&a2, &bad);
+		aius_http_transaction_step(&f2.transaction, 0, event, &a2);
+		assert(a2.kind != AIUS_HTTP_ACTION_WRITE ||
+		       !contains_bytes(a2.data, a2.length, "304"));
 	}
 }
 
@@ -4957,6 +5300,10 @@ int main(void)
 		  test_download_stable_chunks_and_ack },
 		{ "download.zero", test_zero_download },
 		{ "download.cache-control", test_download_cache_control },
+		{ "response.cache-headers-on-wire", test_cache_headers_on_wire },
+		{ "response.not-modified-no-body", test_not_modified_has_no_body },
+		{ "response.chunk-source-body", test_chunk_source_body },
+		{ "response.chunk-source-failure", test_chunk_source_failure_and_validation },
 		{ "download.peer-fail-release-drain",
 		  test_download_peer_fault_release_close_cancel_drain },
 		{ "sd.failure-map", test_sd_failure_mapping },
@@ -4987,7 +5334,7 @@ int main(void)
 		{ "recorder.data-slot-parses-through-dispatch",
 		  test_recorder_data_slot_parses_through_dispatch },
 	};
-	assert(ARRAY_LENGTH(registry) == 44);
+	assert(ARRAY_LENGTH(registry) == 48);
 	for (size_t i = 0; i < ARRAY_LENGTH(registry); ++i) {
 		assert(registry[i].key[0] != '\0');
 		for (size_t j = 0; j < i; ++j)

@@ -269,6 +269,12 @@ class RealTableTests(unittest.TestCase):
             "aius_dsp_runtime_config", VERIFY.ITCM_ALLOWED_LDF_LIBS
         )
 
+    def test_the_web_cache_is_gated_not_allowlisted(self) -> None:
+        """Phase 4g: the PSRAM web cache runs from the HTTP send path, never
+        per audio block, so the gate holds it to zero `.text`."""
+        self.assertIn("aius_web_cache", VERIFY.EXPECTED_LDF_LIBS)
+        self.assertNotIn("aius_web_cache", VERIFY.ITCM_ALLOWED_LDF_LIBS)
+
 
 GOOD_INI = """; Fake project.
 [common]

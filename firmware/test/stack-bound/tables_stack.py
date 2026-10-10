@@ -33,11 +33,17 @@ EPOCH = [("loop", None, "call"), ("aius_runtime_teensy_epoch", RT, "call"), ("ai
 # runtime_service > runtime->platform.replay (platform_replay, optical_main.cpp:9645)
 REPLAY = EPOCH + [("_ZL15platform_replayPvPK17AiusRuntimeBudgetm", MAIN,
                    "indirect: ops.replay, optical_main.cpp:9645")]
-# runtime_service > aius_runtime_http_service > aius_optical_app_http_dispatch > app op
+# runtime_service > aius_runtime_http_service > dispatch_route (Phase 4g: the
+# fresh and the held DISPATCH share it) > aius_optical_app_http_dispatch > app op
 HTTP = EPOCH + [("aius_runtime_http_service", None, "call"),
+                ("_ZN12_GLOBAL__N_1L14dispatch_routeEP22AiusRuntimeNetworkHttpP24AiusOpticalAppDispatcherPK14AiusHttpAction",
+                 "aius_runtime_network_http.cpp.o", "call"),
                 ("aius_optical_app_http_dispatch", "aius_optical_app.cpp.o", "call")]
 APP_OP = "indirect: AiusOpticalApp platform op registered by optical_main.cpp"
-ADVANCE = ("_ZN12_GLOBAL__N_1L7advanceEP18AiusRuntimeStoragemb", "aius_runtime_storage.cpp.o", "call")
+APP = "aius_optical_app.cpp.o"
+WRITE_BODY_CHUNK = ("_ZN12_GLOBAL__N_1L16write_body_chunkEP22AiusRuntimeNetworkHttpPK14AiusHttpAction",
+                    "aius_runtime_network_http.cpp.o", "call")
+ADVANCE =("_ZN12_GLOBAL__N_1L7advanceEP18AiusRuntimeStoragemb", "aius_runtime_storage.cpp.o", "call")
 
 CHAINS = [
     Chain("storage execute (replay root job)", REPLAY + [
@@ -53,6 +59,23 @@ CHAINS = [
     # section), so its deepest path runs to the yield point and a nested pass.
     Chain("HTTP app_write_status (render-append yields)",
           HTTP + [("_ZL16app_write_statusPvPhj", MAIN, APP_OP)], hook=YIELD_POINT),
+    # Phase 4g: the fill walk's directory scan, from the SD lifecycle pass
+    # (sd_lifecycle_service, inlined into platform_replay).
+    Chain("fill walk app_read_directory", REPLAY + [
+        ("_ZL19web_cache_fill_nextm", MAIN, "call"),
+        ("_ZL18app_read_directoryPvPKcP22AiusOpticalAppDirBatch", MAIN, "call")]),
+    # Phase 4g: the cache-served body's send loop, a yield point every 8
+    # chunks under write_body_chunk's 512 B copy buffer.
+    Chain("HTTP web cache send (body source yields)", EPOCH + [
+        ("aius_runtime_http_service", None, "call"), WRITE_BODY_CHUNK,
+        ("_ZL20web_cache_body_chunkPvmPhPm", APP, "indirect: response.body_chunk, set by dispatch_www_cached")],
+        hook=YIELD_POINT),
+    # Phase 4g: the pre-header verify's yield callback.
+    Chain("HTTP web cache verify (yields)", HTTP + [
+        ("_ZL21web_cache_seam_verifyPvh", MAIN, "indirect: AiusOpticalAppWebCache.verify (g_web_cache_seam)"),
+        ("aius_web_cache_verify", None, "call"),
+        ("_ZL22web_cache_verify_yieldPv", MAIN, "indirect: AiusWebCacheYield, web_cache_seam_verify")],
+        hook=YIELD_POINT),
     Chain("unwindowed replay_job_advance", REPLAY + [("_ZL18replay_job_advancem", MAIN, "call")], unwindowed=True),
     Chain("unwindowed ota_copy_staged_to_psram",
           [("loop", None, "call"), ("_ZL24ota_copy_staged_to_psramPhm", MAIN, "call")], unwindowed=True),
@@ -64,6 +87,16 @@ EXTRA_SITES = [
     # which is platform_publish_config (optical_main.cpp:9649).
     SiteRow("_ZN12_GLOBAL__N_1L7advanceEP18AiusRuntimeStoragemb", "aius_runtime_storage.cpp.o", 1,
             ("names", [("_ZL23platform_publish_configPvPKhj", MAIN)])),
+    # Phase 4g: the body source's seam calls (aius_optical_app.cpp
+    # web_cache_body_chunk), registered by g_web_cache_seam (optical_main.cpp).
+    SiteRow("_ZL20web_cache_body_chunkPvmPhPm", APP, 2,
+            ("names", [("_ZL25web_cache_seam_copy_chunkPvhtPhPm", MAIN), ("_ZL21web_cache_seam_refillPv", MAIN)])),
+    # Phase 4g: the fill primitive's hooks under the storage execute (the
+    # root_output sink, optical_main.cpp): flush_delete is
+    # web_cache_flush_delete (aius_web_cache_init in optical_main.cpp), and
+    # chip_crc NULL selects aius_web_cache_crc32.
+    SiteRow("aius_web_cache_fill_chunk", "aius_web_cache.c.o", 3,
+            ("names", [("_ZL22web_cache_flush_deletePvm", MAIN), ("aius_web_cache_crc32", None)])),
     # Handler paths.
     SiteRow("_Z12software_isrv", "AudioStream.cpp.o", 1,  # every AudioStream's update()
             ("vtables", ["_ZTV16AudioInputSPDIF3", "_ZTV17AudioOutputSPDIF3", "_ZTV18AiusAudioProcessor"])),

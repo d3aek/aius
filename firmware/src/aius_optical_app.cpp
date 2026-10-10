@@ -20,6 +20,20 @@
 #ifndef FLASHMEM
 #define FLASHMEM
 #endif
+#ifndef PROGMEM
+#define PROGMEM
+#endif
+
+/* lib/aius_producer_yield's yield point (aius_producer_yield.h), declared here
+ * rather than included so the host dispatcher suite links its own counting
+ * fake without the library on its include path. The cache-served body source
+ * below is its direct caller (the send loop's producer-isolation yield-root
+ * row, Phase 4g). */
+extern "C" bool aius_producer_yield_point(void);
+
+/* Phase 4g: the web cache seam (aius_optical_app_set_web_cache). DTCM, not a
+ * dispatcher member: the dispatcher's OCRAM instance has no free word. */
+static const AiusOpticalAppWebCache *s_web_cache;
 
 #define AIUS_OPTICAL_APP_SD_ROOT "/aius/"
 #define AIUS_OPTICAL_APP_REPLAY_ROOT "/aius/replays/"
@@ -212,12 +226,30 @@ static FLASHMEM const char *resource_content_type(const AiusHttpRequest *request
  * hard refresh after an asset deploy, accepted 2026-07-27. */
 #define AIUS_OPTICAL_APP_ASSET_MAX_AGE_S 86400u
 
+/* Phase 4g G2: fonts join the day-long set (they also gain an ETag when served
+ * from the web cache). PROGMEM: new literals stay out of DTCM .rodata. */
+static const char kSuffixWoff2[] PROGMEM = ".woff2";
+
 static FLASHMEM uint32_t resource_cache_max_age(const AiusHttpRequest *request)
 {
 	if (resource_suffix_is(request, ".js") ||
-	    resource_suffix_is(request, ".css"))
+	    resource_suffix_is(request, ".css") ||
+	    resource_suffix_is(request, kSuffixWoff2))
 		return AIUS_OPTICAL_APP_ASSET_MAX_AGE_S;
 	return 0u;
+}
+
+/* Phase 4g G2, G7: the cache headers of every /sd/www file response, from the
+ * cache or the card. Everything outside the day-long set (pages, bundles,
+ * .json, presets) is `no-cache`, so it is always revalidated (a 304 from the
+ * cache is cheap); `Vary: Accept-Encoding` on all, since one page URL has a
+ * gzip and a plain representation. The ETag is set by the cache path only. */
+static FLASHMEM void www_cache_policy(const AiusHttpRequest *request,
+                                      AiusHttpApplicationResponse *response)
+{
+	response->cache_max_age_s = resource_cache_max_age(request);
+	response->cache_no_cache = response->cache_max_age_s == 0u;
+	response->vary_accept_encoding = true;
 }
 
 /* Rejects traversal, percent-encoding, backslashes, empty or over-long path
@@ -975,6 +1007,147 @@ static FLASHMEM const AiusHttpApplicationResponse *sd_download(
 	return response;
 }
 
+/* ------------------------------------------------------------------ */
+/* Phase 4g: cache-first /sd/www reads (G1 to G3, G7)                  */
+/* ------------------------------------------------------------------ */
+
+static const char kSuffixGz[] PROGMEM = ".gz";
+
+/* Gives back an outstanding web-cache lease, if any; single-shot as
+ * recorder_lease_drop() is. */
+static FLASHMEM bool web_lease_drop(AiusOpticalAppDispatcher *dispatcher)
+{
+	const AiusOpticalAppWebCache *web = s_web_cache;
+	if (!dispatcher->web_lease_active)
+		return false;
+	dispatcher->web_lease_active = false;
+	if (web != NULL)
+		web->release(web->context, dispatcher->web_lease_entry);
+	return true;
+}
+
+/* The completion hook of a cache-served body: fires exactly once at the
+ * borrow's end (sent, aborted, timed out or discarded) and drops the lease,
+ * as recorder_read_settle does for the recorder data read. */
+static FLASHMEM void web_cache_settle(void *ctx, bool committed)
+{
+	AiusOpticalAppDispatcher *dispatcher = (AiusOpticalAppDispatcher *)ctx;
+	(void)committed;
+	if (dispatcher != NULL)
+		(void)web_lease_drop(dispatcher);
+}
+
+/* The body source of a cache-served response (AiusHttpChunkFn), called from
+ * the transport's write_body_chunk() with its 512 B stack buffer: chunk
+ * `chunk` is flush-deleted, copied into `dst` and CRC'd on the copy
+ * (copy_chunk), so the bytes checked are the bytes sent (G7). A mismatch
+ * (counted in www_cache.crc_faults by the cache) schedules a refill and
+ * returns false, which closes the connection; the browser retries. Repeatable
+ * for a partial write's re-call. A producer yield point every
+ * AIUS_OPTICAL_APP_WEB_YIELD_CHUNKS chunks; noinline: it is the send loop's
+ * yield-root row (producer-isolation W2) and stack-bound's chain root under
+ * write_body_chunk's frame. */
+static FLASHMEM __attribute__((noinline)) bool web_cache_body_chunk(
+	void *ctx, uint32_t chunk, uint8_t *dst, uint32_t *bytes)
+{
+	AiusOpticalAppDispatcher *dispatcher = (AiusOpticalAppDispatcher *)ctx;
+	const AiusOpticalAppWebCache *web = s_web_cache;
+
+	if (dispatcher == NULL || web == NULL || !dispatcher->web_lease_active ||
+	    chunk > UINT16_MAX)
+		return false;
+	if (!web->copy_chunk(web->context, dispatcher->web_lease_entry,
+	                     (uint16_t)chunk, dst, bytes)) {
+		web->refill(web->context);
+		return false;
+	}
+	if ((chunk + 1u) % AIUS_OPTICAL_APP_WEB_YIELD_CHUNKS == 0u)
+		(void)aius_producer_yield_point();
+	return true;
+}
+
+/* The cache-first GET of a /sd/www file whose card path is already in
+ * target_path. NULL: not served from the cache (absent, a miss, or a
+ * manifest-entry or pre-header CRC fault, which also schedules a refill; a
+ * faulted .gz entry refills and falls back to the plain one), so the caller
+ * reads the card. A client accepting gzip asks for `<page>.html.gz` first (G1). A
+ * matching If-None-Match answers 304 with no lease and no verify. Otherwise
+ * the entry is leased before the headers, every chunk verified on the chip,
+ * and the body streamed per chunk from the lease, released by the settle
+ * hook. The ETag waits in temp_path and the gzip name in backup_path, both
+ * idle for a read and borrowed until the next dispatch. */
+static FLASHMEM const AiusHttpApplicationResponse *dispatch_www_cached(
+	AiusOpticalAppDispatcher *dispatcher, const AiusHttpRequest *request,
+	const char *content_type)
+{
+	static const size_t kRelOffset =
+		sizeof(AIUS_OPTICAL_APP_SD_ROOT "www/") - 1u;
+	const AiusOpticalAppWebCache *web = s_web_cache;
+	const char *rel = dispatcher->target_path + kRelOffset;
+	size_t rel_length;
+	char *etag = dispatcher->temp_path;
+	AiusOpticalAppWebHit hit;
+	AiusHttpApplicationResponse *response;
+	bool gzip = false;
+	bool found;
+	bool fault = false;
+	bool plain_fault = false;
+
+	if (web == NULL)
+		return NULL;
+	rel_length = strlen(rel);
+	/* The previous cache-served response's hook has fired by now (the
+	 * single-transaction model); a lease still held is dropped, never
+	 * overwritten. */
+	(void)web_lease_drop(dispatcher);
+	if (request->accepts_gzip && resource_suffix_is(request, ".html") &&
+	    rel_length + sizeof(kSuffixGz) <= sizeof(dispatcher->backup_path)) {
+		memcpy(dispatcher->backup_path, rel, rel_length);
+		memcpy(dispatcher->backup_path + rel_length, kSuffixGz,
+		       sizeof(kSuffixGz));
+		gzip = web->lookup(web->context, dispatcher->backup_path,
+		                   rel_length + sizeof(kSuffixGz) - 1u, &hit, etag,
+		                   sizeof(dispatcher->temp_path), &fault);
+	}
+	found = gzip || web->lookup(web->context, rel, rel_length, &hit, etag,
+	                            sizeof(dispatcher->temp_path), &plain_fault);
+	/* A manifest entry that failed its own CRC was dropped (the cache's
+	 * count follows it): refetch it, as a chunk fault does. */
+	if (fault || plain_fault)
+		web->refill(web->context);
+	if (!found)
+		return NULL;
+
+	if (aius_http_if_none_match(request, etag)) {
+		response = (AiusHttpApplicationResponse *)http_immediate(
+			dispatcher, 304, NULL, NULL, 0u);
+	} else if (hit.length == 0u) {
+		response = (AiusHttpApplicationResponse *)http_immediate(
+			dispatcher, 200, content_type, NULL, 0u);
+	} else {
+		if (!web->lease(web->context, hit.entry))
+			return NULL;
+		if (!web->verify(web->context, hit.entry)) {
+			web->release(web->context, hit.entry);
+			web->refill(web->context);
+			return NULL;
+		}
+		response = (AiusHttpApplicationResponse *)http_immediate(
+			dispatcher, 200, content_type, NULL, 0u);
+		response->body_length = hit.length;
+		response->body_chunk = web_cache_body_chunk;
+		response->body_chunk_ctx = dispatcher;
+		response->sd_settle = web_cache_settle;
+		response->sd_settle_ctx = dispatcher;
+		dispatcher->web_lease_entry = hit.entry;
+		dispatcher->web_lease_active = true;
+	}
+	www_cache_policy(request, response);
+	response->etag = etag;
+	response->content_encoding_gzip = gzip;
+	return response;
+}
+
 static FLASHMEM const AiusHttpApplicationResponse *sd_delete(
 	AiusOpticalAppDispatcher *dispatcher)
 {
@@ -1203,12 +1376,37 @@ static FLASHMEM size_t index_write(AiusOpticalAppDispatcher *dispatcher,
 	return length + (size_t)written;
 }
 
+/* The listing body for one batch, from the card or the manifest. */
+static FLASHMEM const AiusHttpApplicationResponse *index_respond(
+	AiusOpticalAppDispatcher *dispatcher, const AiusHttpRequest *request,
+	AiusOpticalAppDirBatch *batch)
+{
+	/* An application that over-reports is held to the cap here rather than
+	 * trusted: the storage is the dispatcher's and so is the bound. */
+	if (batch->count > AIUS_OPTICAL_APP_INDEX_MAX_ENTRIES) {
+		batch->count = AIUS_OPTICAL_APP_INDEX_MAX_ENTRIES;
+		batch->more = true;
+	}
+	batch->entries = dispatcher->index_entries;
+	for (size_t i = 0; i < batch->count; i++)
+		dispatcher->index_entries[i].name[AIUS_OPTICAL_APP_INDEX_NAME_MAX] =
+			'\0';
+	return http_serialized_html(dispatcher,
+	                            index_write(dispatcher, request, batch));
+}
+
 /* GET /sd/<dir>/ -- the /sd/ resource tree describing itself.
  *
  * Order of refusal: the method is a fact about the request, so it answers
  * first; then the capability, the media, the path, and finally the volume. The
  * sd_busy() gate is load-bearing rather than cosmetic -- read_directory reaches
- * the card directly, so it must never run while an SD job owns the volume. */
+ * the card directly, so it must not run while a job writes the volume. Phase
+ * 4g (G6): a CACHE_FILL file in flight never reaches here. This GET reads the
+ * card directly (aius_optical_app_route_reads_card), so the runtime's DISPATCH
+ * arm holds it while the composition's admission cancels the fill and waits
+ * for it to stop (a held DISPATCH, aius_runtime_network_http.cpp); its end
+ * extends the fill hold like an HTTP SD job's completion. sd_busy() is
+ * therefore never true because of a fill. */
 static FLASHMEM const AiusHttpApplicationResponse *dispatch_sd_index(
 	AiusOpticalAppDispatcher *dispatcher, const AiusHttpRequest *request)
 {
@@ -1228,13 +1426,22 @@ static FLASHMEM const AiusHttpApplicationResponse *dispatch_sd_index(
 	                     (const char *)request->resource,
 	                     request->resource_length - 1u))
 		return http_error(dispatcher, 404, "sd_path");
-	if (app->sd_busy(app->context))
-		return http_error(dispatcher, 503, "sd_busy");
 
 	memset(dispatcher->index_entries, 0, sizeof(dispatcher->index_entries));
 	memset(&batch, 0, sizeof(batch));
 	batch.entries = dispatcher->index_entries;
 	batch.capacity = AIUS_OPTICAL_APP_INDEX_MAX_ENTRIES;
+	/* Phase 4g: a directory the fill has wholly published (presets/) lists
+	 * from the manifest, with no card read and no idle volume needed. The
+	 * resource is "www/<dir>/", so its tail is the cache's directory key. */
+	if (s_web_cache != NULL &&
+	    s_web_cache->listing(s_web_cache->context,
+	                         (const char *)request->resource + 4u,
+	                         request->resource_length - 4u, &batch))
+		return index_respond(dispatcher, request, &batch);
+	if (app->sd_busy(app->context))
+		return http_error(dispatcher, 503, "sd_busy");
+
 	switch (app->read_directory(app->context, dispatcher->target_path,
 	                            &batch)) {
 	case AIUS_OPTICAL_APP_DIR_OK:
@@ -1247,18 +1454,7 @@ static FLASHMEM const AiusHttpApplicationResponse *dispatch_sd_index(
 	default:
 		return http_error(dispatcher, 503, "sd_index");
 	}
-	/* An application that over-reports is held to the cap here rather than
-	 * trusted: the storage is the dispatcher's and so is the bound. */
-	if (batch.count > AIUS_OPTICAL_APP_INDEX_MAX_ENTRIES) {
-		batch.count = AIUS_OPTICAL_APP_INDEX_MAX_ENTRIES;
-		batch.more = true;
-	}
-	batch.entries = dispatcher->index_entries;
-	for (size_t i = 0; i < batch.count; i++)
-		dispatcher->index_entries[i].name[AIUS_OPTICAL_APP_INDEX_NAME_MAX] =
-			'\0';
-	return http_serialized_html(dispatcher,
-	                            index_write(dispatcher, request, &batch));
+	return index_respond(dispatcher, request, &batch);
 }
 
 static FLASHMEM const AiusHttpApplicationResponse *dispatch_sd(
@@ -1267,6 +1463,7 @@ static FLASHMEM const AiusHttpApplicationResponse *dispatch_sd(
 	const AiusOpticalApp *app = &dispatcher->app;
 	const char *content_type;
 	uint32_t cache_max_age_s = 0u;
+	bool www = false;
 	/* A resource naming a directory is a listing on GET and nothing else on any
 	 * other method -- it is not an upload target and not a delete target. */
 	if (request->route == AIUS_HTTP_ROUTE_SD_FILE &&
@@ -1315,6 +1512,7 @@ static FLASHMEM const AiusHttpApplicationResponse *dispatch_sd(
 			return http_error(dispatcher, 404, "sd_path");
 		content_type = resource_content_type(request);
 		cache_max_age_s = resource_cache_max_age(request);
+		www = true;
 	}
 	if (request->method != AIUS_HTTP_GET && resource_is_config(request))
 		return http_error(dispatcher, 403, "config_public_only");
@@ -1322,10 +1520,25 @@ static FLASHMEM const AiusHttpApplicationResponse *dispatch_sd(
 	    !app->auth_matches(app->context, request->sd_auth,
 	                       request->sd_auth_length))
 		return http_error(dispatcher, 401, "sd_auth");
+	/* Phase 4g: a www/ read is served from the PSRAM cache first, so a warm
+	 * page load needs no card and no idle volume. */
+	if (www && request->method == AIUS_HTTP_GET) {
+		const AiusHttpApplicationResponse *cached =
+			dispatch_www_cached(dispatcher, request, content_type);
+		if (cached != NULL)
+			return cached;
+	}
 	if (app->sd_busy(app->context))
 		return http_error(dispatcher, 503, "sd_busy");
-	if (request->method == AIUS_HTTP_GET)
-		return sd_download(dispatcher, content_type, cache_max_age_s);
+	if (request->method == AIUS_HTTP_GET) {
+		const AiusHttpApplicationResponse *download =
+			sd_download(dispatcher, content_type, cache_max_age_s);
+		/* The card fallback keeps the G2 policy minus the ETag (the card
+		 * file's CRC is not known until the fill has read it). */
+		if (www)
+			www_cache_policy(request, &dispatcher->http_response);
+		return download;
+	}
 	if (request->method == AIUS_HTTP_DELETE)
 		return sd_delete(dispatcher);
 	return http_error(dispatcher, 405, "sd_method");
@@ -1463,6 +1676,12 @@ static FLASHMEM const AiusHttpApplicationResponse *dispatch_replays(
 			 * the audio path, so this refusal clears when the carrier goes
 			 * away rather than when the request changes. */
 			return http_error(dispatcher, 409, "replay_carrier_present");
+		case AIUS_OPTICAL_APP_REPLAY_FILL_BUSY:
+			/* Phase 4g (owner, audit finding 2): no replay while the
+			 * web-cache fill walk is incomplete; a 503 carries
+			 * Retry-After (aius_http_write_headers) and the replay tools
+			 * retry on it. */
+			return http_error(dispatcher, 503, "fill_busy");
 		case AIUS_OPTICAL_APP_REPLAY_ACTIVE:
 		case AIUS_OPTICAL_APP_REPLAY_FAILED:
 		default:
@@ -1482,7 +1701,10 @@ static FLASHMEM const AiusHttpApplicationResponse *dispatch_replays(
 		 * could walk /aius/replays while a refill, an upload or a probe held
 		 * the volume. A busy volume answers 503 sd_busy, so the caller is told
 		 * to retry rather than handed a listing read across someone else's
-		 * transaction. */
+		 * transaction. Phase 4g: like the DELETE below, this route never runs
+		 * beside a CACHE_FILL file in flight: its dispatch is held until the
+		 * fill it cancelled has stopped (see dispatch_sd_index), and its end
+		 * extends the fill hold. */
 		if (app->sd_busy(app->context))
 			return http_error(dispatcher, 503, "sd_busy");
 		return http_serialized(dispatcher, kContentJson,
@@ -2013,6 +2235,26 @@ FLASHMEM bool aius_optical_app_init(AiusOpticalAppDispatcher *dispatcher,
 	dispatcher->body = body;
 	dispatcher->body_capacity = body_capacity;
 	dispatcher->valid = true;
+	s_web_cache = NULL;
+	return true;
+}
+
+FLASHMEM bool aius_optical_app_set_web_cache(
+	AiusOpticalAppDispatcher *dispatcher,
+	const AiusOpticalAppWebCache *web_cache)
+{
+	if (dispatcher == NULL || !dispatcher->valid)
+		return false;
+	(void)web_lease_drop(dispatcher);
+	s_web_cache = NULL;
+	if (web_cache == NULL)
+		return true; /* deliberate removal */
+	if (web_cache->lookup == NULL || web_cache->lease == NULL ||
+	    web_cache->release == NULL || web_cache->verify == NULL ||
+	    web_cache->copy_chunk == NULL || web_cache->refill == NULL ||
+	    web_cache->listing == NULL)
+		return false;
+	s_web_cache = web_cache;
 	return true;
 }
 
@@ -2587,4 +2829,196 @@ FLASHMEM AiusOpticalAdmitVerdict aius_optical_admission_sd_start(
 	admission->defer_timing = 0u;
 	admission->shed[klass]++;
 	return AIUS_OPTICAL_ADMIT_VERDICT_SHED;
+}
+
+/* ------------------------------------------------------------------ */
+/* Phase 4g G6, G9: the web-cache fill hold (see aius_optical_app.h)   */
+/* ------------------------------------------------------------------ */
+
+FLASHMEM void aius_optical_web_fill_init(AiusOpticalWebFill *fill)
+{
+	if (fill != NULL)
+		memset(fill, 0, sizeof(*fill));
+}
+
+/* Whether the armed expiry is still ahead of `now_ms`. Every expiry is set
+ * AIUS_OPTICAL_WEB_FILL_HOLD_MS after the `now_ms` of its call, so a live hold
+ * is at most that far ahead; the window allows one more hold length for a
+ * caller's stale stamp (R5-S1's "only later"). Anything else has lapsed,
+ * however long ago: a signed difference would read a hold that lapsed more
+ * than 2^31 ms back (warm-cache hits never call _note_http_complete, so long
+ * idle gaps are the steady state) as live again. A gap within the window of
+ * a whole 2^32 ms wrap aliases for at most 4 s. */
+static FLASHMEM bool web_fill_live(const AiusOpticalWebFill *fill,
+                                   uint32_t now_ms)
+{
+	const uint32_t ahead = fill->hold_until_ms - now_ms;
+	return fill->armed && ahead != 0u &&
+	       ahead <= 2u * AIUS_OPTICAL_WEB_FILL_HOLD_MS;
+}
+
+/* Sets the expiry to AIUS_OPTICAL_WEB_FILL_HOLD_MS after `now_ms`; a live
+ * hold's expiry only moves later (R5-S1), a lapsed one is replaced. */
+static FLASHMEM void web_fill_extend(AiusOpticalWebFill *fill, uint32_t now_ms)
+{
+	const uint32_t until = now_ms + AIUS_OPTICAL_WEB_FILL_HOLD_MS;
+	if (!web_fill_live(fill, now_ms) ||
+	    (int32_t)(until - fill->hold_until_ms) > 0)
+		fill->hold_until_ms = until;
+	fill->armed = 1u;
+}
+
+FLASHMEM bool aius_optical_web_fill_cancel(AiusOpticalWebFill *fill,
+                                           bool fill_in_flight)
+{
+	if (fill == NULL)
+		return false;
+	if (fill->latches != UINT8_MAX)
+		fill->latches++;
+	if (fill->holds != UINT32_MAX)
+		fill->holds++;
+	if (fill_in_flight && fill->cancels != UINT32_MAX)
+		fill->cancels++;
+	return fill_in_flight;
+}
+
+FLASHMEM void aius_optical_web_fill_hold_release(AiusOpticalWebFill *fill,
+                                                 uint32_t now_ms)
+{
+	if (fill == NULL)
+		return;
+	if (fill->latches != 0u)
+		fill->latches--;
+	web_fill_extend(fill, now_ms);
+}
+
+FLASHMEM void aius_optical_web_fill_note_http_complete(
+	AiusOpticalWebFill *fill, uint32_t now_ms)
+{
+	if (fill == NULL)
+		return;
+	if (fill->http_canceller) {
+		fill->http_canceller = 0u;
+		aius_optical_web_fill_hold_release(fill, now_ms);
+		return;
+	}
+	web_fill_extend(fill, now_ms);
+}
+
+FLASHMEM void aius_optical_web_fill_drop_http_canceller(
+	AiusOpticalWebFill *fill, uint32_t now_ms)
+{
+	if (fill == NULL || !fill->http_canceller)
+		return;
+	fill->http_canceller = 0u;
+	fill->http_defer = 0u;
+	aius_optical_web_fill_hold_release(fill, now_ms);
+}
+
+FLASHMEM bool aius_optical_web_fill_held(const AiusOpticalWebFill *fill,
+                                         uint32_t now_ms)
+{
+	if (fill == NULL)
+		return false;
+	return fill->latches != 0u || web_fill_live(fill, now_ms);
+}
+
+FLASHMEM bool aius_optical_web_fill_paused(const AiusOpticalWebFill *fill,
+                                           uint32_t now_ms,
+                                           bool replay_playing)
+{
+	return replay_playing || aius_optical_web_fill_held(fill, now_ms);
+}
+
+FLASHMEM bool aius_optical_web_fill_sd_start(AiusOpticalWebFill *fill,
+                                             bool fill_in_flight,
+                                             bool *cancel)
+{
+	if (cancel != NULL)
+		*cancel = false;
+	if (fill == NULL || !fill_in_flight)
+		return false;
+	/* The first consult of this held start cancels: the caller calls its
+	 * one cancel entry (which latches through aius_optical_web_fill_cancel),
+	 * and this request's completion is that latch's release. */
+	if (!fill->http_canceller) {
+		fill->http_canceller = 1u;
+		if (cancel != NULL)
+			*cancel = true;
+	}
+	fill->http_defer = 1u;
+	return true;
+}
+
+FLASHMEM bool aius_optical_web_fill_take_defer(AiusOpticalWebFill *fill)
+{
+	bool held;
+	if (fill == NULL)
+		return false;
+	held = fill->http_defer != 0u;
+	fill->http_defer = 0u;
+	return held;
+}
+
+FLASHMEM bool aius_optical_app_route_reads_card(const AiusHttpRequest *request)
+{
+	if (request == NULL)
+		return false;
+	if (request->route == AIUS_HTTP_ROUTE_REPLAYS)
+		return request->method == AIUS_HTTP_GET ||
+		       request->method == AIUS_HTTP_DELETE;
+	return request->route == AIUS_HTTP_ROUTE_SD_FILE &&
+	       request->method == AIUS_HTTP_GET && resource_is_directory(request);
+}
+
+FLASHMEM bool aius_optical_web_fill_route(AiusOpticalWebFill *fill,
+                                          bool fill_in_flight, uint32_t now_ms,
+                                          bool *cancel)
+{
+	if (cancel != NULL)
+		*cancel = false;
+	if (fill == NULL)
+		return false;
+	/* The same wait as an HTTP SD start: cancel once, hold until stopped. */
+	if (aius_optical_web_fill_sd_start(fill, fill_in_flight, cancel))
+		return true;
+	/* Stopped (or never in flight): a held dispatch's canceller ends its
+	 * latch now, since the route runs to completion in this call. */
+	if (aius_optical_web_fill_take_defer(fill) && fill->http_canceller) {
+		fill->http_canceller = 0u;
+		aius_optical_web_fill_hold_release(fill, now_ms);
+	}
+	fill->card_route = 1u;
+	return false;
+}
+
+FLASHMEM void aius_optical_web_fill_route_end(AiusOpticalWebFill *fill,
+                                              uint32_t now_ms)
+{
+	if (fill == NULL || fill->card_route == 0u)
+		return;
+	fill->card_route = 0u;
+	web_fill_extend(fill, now_ms);
+}
+
+FLASHMEM bool aius_optical_web_fill_follow_card(bool *walk_card,
+                                                uint32_t *mounts_seen,
+                                                bool ready, bool mounted,
+                                                uint32_t mounts)
+{
+	if (walk_card == NULL || mounts_seen == NULL)
+		return false;
+	if (!ready || !mounted) {
+		/* Card gone: empty now; the walk waits for the next mount. */
+		if (!*walk_card)
+			return false;
+		*walk_card = false;
+		return true;
+	}
+	if (*walk_card && mounts == *mounts_seen)
+		return false;
+	/* A first or new mount: the walk restarts on it, from an empty cache. */
+	*walk_card = true;
+	*mounts_seen = mounts;
+	return true;
 }

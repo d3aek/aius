@@ -25,6 +25,9 @@ def fixture(environment=ENV):
         9: (".bss", 0x20020000, 0x22000),
         11: (".bss.dma", 0x202000A0, 0x5FDE0),
         12: (".bss.aius_staging", 0x2025FE80, 0),
+        # ITCM high-water 183,708 B of 6 x 32 KiB: 12,900 B free (post-4f).
+        13: (".text.itcm", 0x0, 183704),
+        14: (".fini", 0x2CD98, 4),
     }
     symbols = [
         verify.Symbol(
@@ -37,6 +40,9 @@ def fixture(environment=ENV):
         ),
         verify.Symbol(verify.OCRAM_END - floor, 0, 12, "_heap_start"),
         verify.Symbol(verify.OCRAM_END, 0, None, "_heap_end"),
+        verify.Symbol(6, 0, None, "_itcm_block_count"),
+        verify.Symbol(0x20049900, 0, 18, "_ebss"),
+        verify.Symbol(0x20007C00, 704, 14, "_VectorsRam"),
     ]
     return sections, symbols
 
@@ -117,6 +123,58 @@ def main():
         verify.OCRAM_END - floor + 1, 0, 12, "_heap_start",
     )
     expect_failure(sections, low_headroom, "below its committed")
+
+    # Canonical RAM1 budgets: the post-4g link passes with its allowances.
+    assert verify.canonical_budgets(sections, symbols) == (
+        12900, 0x20049900, 0x20007C00
+    )
+    assert verify.ITCM_FREE_FLOOR_BYTES == 12900 - 1000
+    assert verify.DTCM_EBSS_CEILING == 0x20049900 + 256
+
+    def with_symbol(name, value):
+        out = [s for s in symbols if s.name != name]
+        old = next(s for s in symbols if s.name == name)
+        out.append(verify.Symbol(value, old.size, old.section_index, name))
+        return out
+
+    # ITCM free 1 B under the floor (high-water grown) fails.
+    itcm_full = deepcopy(sections)
+    grown = 6 * 32768 - verify.ITCM_FREE_FLOOR_BYTES + 1
+    itcm_full[13] = (".text.itcm", 0x0, grown)
+    assert verify.canonical_budgets(itcm_full, symbols)[0] == (
+        verify.ITCM_FREE_FLOOR_BYTES - 1
+    )
+    expect_failure(itcm_full, symbols, "ITCM free")
+    # Exactly on the floor passes.
+    itcm_edge = deepcopy(sections)
+    itcm_edge[13] = (".text.itcm", 0x0, grown - 1)
+    verify.verify_snapshot(itcm_edge, symbols, ENV)
+
+    # DTCM statics 1 B over the ceiling fails; on it passes.
+    expect_failure(
+        sections, with_symbol("_ebss", verify.DTCM_EBSS_CEILING + 1),
+        "_ebss",
+    )
+    verify.verify_snapshot(
+        sections, with_symbol("_ebss", verify.DTCM_EBSS_CEILING), ENV
+    )
+
+    # `.data` growth that moves _VectorsRam to the next 1,024 B step fails.
+    expect_failure(
+        sections,
+        with_symbol(
+            "_VectorsRam",
+            verify.VECTORS_RAM_ADDRESS + verify.VECTORS_RAM_STEP_BYTES,
+        ),
+        "_VectorsRam moved",
+    )
+
+    # Other envs are not held to the canonical budgets.
+    other = with_symbol("_ebss", verify.DTCM_EBSS_CEILING + 4096)
+    plain_sections, plain_symbols = fixture("teensy41-optical")
+    plain_symbols = [s for s in plain_symbols if s.name != "_ebss"]
+    plain_symbols.append(other[-1])
+    verify.verify_snapshot(plain_sections, plain_symbols, "teensy41-optical")
 
     parsed = verify.parse_symbols(
         "  1: 20021720 0x35640 OBJECT GLOBAL DEFAULT 9 "

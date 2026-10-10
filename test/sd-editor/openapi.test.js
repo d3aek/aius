@@ -1523,6 +1523,7 @@ describe("Aius OpenAPI contract", () => {
       ["net_diag", "NetDiag"],
       ["tx_gate", "TxGate"],
       ["sd_diag", "SdDiag"],
+      ["www_cache", "WwwCache"],
       ["replay_diag", "ReplayDiag"],
       ["audio_diag", "AudioDiag"],
       ["clock", "Clock"],
@@ -1739,6 +1740,24 @@ describe("Aius OpenAPI contract", () => {
     }
     const get = document.paths["/api/status/brief"].get;
     expect(get.responses["200"].content["application/json"].examples.live.value).toEqual(fixture);
+  });
+
+  it("refuses a replay start with 503 fill_busy and Retry-After while the fill walk is incomplete (Phase 4g)", () => {
+    const document = JSON.parse(readFileSync(documentPath, "utf8"));
+    const post = document.paths["/api/replays/start"].post;
+    expect(Object.keys(post.responses).sort()).toEqual(["200", "400", "401", "404", "409", "503"]);
+    const busy = post.responses["503"];
+    expect(busy.headers["Retry-After"]).toEqual({ $ref: "#/components/headers/RetryAfter" });
+    expect(busy.content["application/json"].schema).toEqual({ $ref: "#/components/schemas/Error" });
+    expect(busy.content["application/json"].examples).toEqual({
+      fill_busy: { value: { ok: false, error: "fill_busy" } },
+    });
+    // The gate is readable from the status surface the client already polls.
+    expect(busy.description).toContain("www_cache.fill_complete");
+    expect(busy.description).toContain("www_cache.present");
+    expect(document.components.schemas.WwwCache.properties.fill_complete).toBeDefined();
+    // Never shed: a replay start is not an admission class.
+    expect(JSON.stringify(post)).not.toContain("audio_busy");
   });
 
   it("lists audio_busy with Retry-After on every sheddable route (Phase 4f)", () => {

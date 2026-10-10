@@ -32,15 +32,14 @@ built); replace wholesale on the next handover.
 
 - **Status.** Phases 1, 2, 3 DONE; 4a, 4c, 4d DONE. Phase 4 BUILT (gate 7
   at fill-write cadence on the U24 bench is its last proof, owner
-  needed). **4e BUILT** (`21c8f52`) and **4f BUILT** (`9c9bd88`): host
-  suites green, all four optical images with every post-link guard and
-  OCRAM at each env's floor, each delivery audit FAIL then closure PASS;
-  their device runs are the owner's and none has run. 4g and 4h PLANNED
-  and READY (contracts through prebuild rounds 2 to 5, three clean-room
-  rounds and closures; 4h rewritten as copy-before-write after the
-  owner overturned the journal). 4b (acceptance umbrella) PLANNED: it
-  closes after 4e to 4h's device runs. No open question for the owner;
-  the owner holds two gates (below).
+  needed). **4e BUILT** (`21c8f52`), **4f BUILT** (`9c9bd88`) and **4g
+  BUILT** (2026-10-10): host suites green, optical images with every
+  post-link guard and OCRAM at each env's floor, delivery audits and
+  closures passed; their device runs are the owner's and none has run.
+  4h PLANNED: its card-swap hold narrows to accidental disconnect (owner,
+  2026-10-10), so its contract is revised and takes one focused prebuild
+  review before dispatch. 4b (acceptance umbrella) PLANNED: it closes
+  after 4e to 4h's device runs. The owner holds two gates (below).
 - **Board.** Runs `df966f17b370` (Phase 4a) in slot 1, deployed by OTA
   2026-10-06, healthy-boot self-commit. It is the owner's **fail-safe
   rollback candidate** (2026-10-07): tag `fw-rollback-df966f17b370`,
@@ -51,24 +50,24 @@ built); replace wholesale on the next handover.
   another bench round may be needed first, not on 2026-10-07. Builds,
   signing and host suites proceed; staging, rehearsal and activation
   wait.
-- **Orchestration posture: autonomous** (owner, 2026-10-06): resolve
-  calls on their recommendation, record them with their why, and collect
-  calls wanting confirmation in a closing interrogate phase (the owner
-  found one-line digests that pack several calls too dense to weigh:
-  give each call its own line). Every device session (OTAs and
+- **Orchestration posture: checkpoint** (owner, 2026-10-10; was
+  autonomous from 2026-10-06): surface each decision point and
+  human-review gate as it arises and wait for the owner; give each call
+  its own line, never a packed digest. Every device session (OTAs and
   source-off checks included) and anything destructive goes to the owner
   (ruling 2026-10-07).
 - **Owner gates (not questions).** (1) No OTA deploy, stage, rehearsal
   or activation until the owner's go-ahead; another bench round may come
   first. (2) Every device session is the owner's: 4e runs 1 and 2 (run 1
   ends with an OTA stage and rehearsal) and its E7 verdict, then 4f's
-  source-off and AC-3 runs. An E7 verdict of B2 re-plans 4f to 4h before
+  source-off and AC-3 runs, then 4g's run 1 (source off, after a full
+  sync that uploads the bundles) and run 2 (AC-3 page loads). An E7 verdict of B2 re-plans 4f to 4h before
   their device runs (4f's body records this).
-- **Next action.** Re-enter `orchestrate-plan` on this doc and dispatch
-  Phase 4g per its fan-out (www-bundle, web-cache, http-cache-headers
-  concurrently; parent-wiring after web-cache's header), starting from
-  4g's "Starting figures" and "Carried in from 4e and 4f" paragraphs.
-  Prove, audit and commit 4g as 4e and 4f were; then 4h.
+- **Next action.** Re-enter `orchestrate-plan` on this doc for Phase 4h:
+  first revise its contract per "Carried in from 4g" (card-swap hold
+  narrowed to accidental disconnect; memory figures from 4g's link;
+  three tooling nits), take one focused prebuild review, then dispatch.
+  4g's device runs 1 and 2 join the owner's queue with 4e's and 4f's.
 - **What landed this run** (aius commits; each followed by a upstream repository
   pointer bump; foreign commits from the mixer session omitted):
 
@@ -4544,7 +4543,7 @@ clean-room, and implementation carries a delivery audit per phase.
 ```yaml
 phase: 4g
 title: The web app is served from a CRC-checked PSRAM cache as gzip page bundles with ETag validation
-status: planned
+status: built # 2026-10-10: host proof green (18 suites, verifier run), both images with every post-link guard and OCRAM at each floor, delivery audit FAIL then closure PASS, clean-room HOLD (fill restart livelock) then closure; device runs 1 and 2 are the owner's (no OTA until the owner's go-ahead)
 depends-on: phase-4f
 prebuild-review: ready # 2026-10-07: rounds 2 to 5, clean-room, clean-room closure, clean-room round 3 and two closures; second closure READY; CR5-S1 to S4 folded; no further clean-room: the closing reviewer was itself clean-room and implementation carries a delivery audit per phase
 outcome: >-
@@ -4573,6 +4572,7 @@ seams:
   - "firmware/src/aius_optical_app.cpp dispatch_sd and dispatch_sd_index: cache first (gzip negotiation, 304, verify before the headers, then per chunk copy to a 512 B stack buffer, CRC the copy, send the copy, a producer yield point every 8 chunks, added to the producer-isolation yield-root table; lease released by sd_settle, as the recorder data read does), the SD download job on a miss or a pre-header CRC fault; an HTTP SD request (page miss, upload, delete, listing) that finds a fill file in flight is not refused: it requests the fill's cancel, waits at the SD_START arm (as for an sd_fifo_defer() hold) until the fill stops at its next primitive boundary, then starts (G6, G9, R3-N1); the presets listing from the manifest"
   - "firmware/src/optical_main.cpp: the carve at setup, the fill scheduler (one CACHE_FILL job per file in the SD checkpoint; web_cache_fill_cancel(), the one cancel entry used by an HTTP SD request here, by 4h's flush start and by 4h's H9 freeze, stops the in-flight file at its next primitive boundary, drops its unpublished entry and re-queues the file; no next file starts while the fill hold is set; a cancel latches the hold with no expiry, and the canceller's end (its HTTP SD job's completion, the 4h flush job's end, the H9 unfreeze) calls web_cache_fill_hold_release(), which sets the expiry to 2 s after that end; every HTTP SD job completion also extends it to 2 s after it, and an expiry only ever moves later (R5-S1); each start through 4f's sd_fifo_defer(); each fill primitive reads one 512 B chunk, copies it to PSRAM, flush-deletes it and CRCs that chunk read back from the chip in the same primitive, folding the card bytes into the file's running CRC for the ETag; publish does no per-byte work, it checks every chunk was read back, writes the manifest entry and its CRC, G10, CR-S6), invalidation on upload completion, delete, remount and volume change, www_cache status keys (fill_holds and fill_cancels included)"
   - "firmware/lib/aius_sd (CACHE_FILL root job kind, one file, cancellable at any primitive boundary: it only reads the card, so a cancel closes the file and writes nothing) and firmware/sd/www/openapi.json"
+  - "added in build (owner, §Build decisions): firmware/lib/aius_http transaction (cache options, 304, body_chunk source, unions holding HEAD sizes), firmware/src/aius_runtime_network_http.{h,cpp} (write_body_chunk, held DISPATCH for card-reading routes), firmware/link/aius_teensy41.ld (aius_http.c rodata in flash), firmware/test/memory budgets, the replay tools' fill_busy retry, firmware/sd/www/replays.js (no /api/replays poll)"
 targeted-proof:
   - "host: www-bundle (new): deterministic output (gzip mtime 0), every stylesheet and script of a page inlined in document order, closing script and style tags escaped, gzip round trip equals the inlined page, a missing asset fails the build, all five pages bundled (mixer.html included unconditionally, tracked since 4b68103), no inlined script reads document.currentScript.src; the sync tool retries a 503 per Retry-After and gives up after 15 s"
   - "host: web-cache (new): placement is the pad-2 tail from 0x70808000 on a 16 MiB fitment and absent on 8 MiB fitments, disjoint from the recorder ring and every aius_ota_staging_place result; fill, read-back and publish; _fill_chunk calls the flush-delete hook and CRCs that chunk before returning, a chunk whose read-back CRC differs from the card bytes fails the fill, and _publish of a 175,913 B entry reads no chunk (a counting fake PSRAM reader sees zero reads at publish, G10, CR-S6); verify calls the flush-delete hook for each chunk before its CRC; a flipped bit in any chunk fails verify and drops the entry; a lease holds an entry across invalidate while the replacement serves the next request; capacity full falls back to SD; the listing comes from the manifest"
@@ -4655,6 +4655,61 @@ every env's floor. The stack-bound deepest hook path is HTTP
   repeats the `deferred_start_present` comment; drop one when the file
   is next touched.
 
+**Build decisions (2026-10-10).**
+
+- **Scope widened to the HTTP transaction (owner).** `aius_http` could
+  send no cache header or 304 and had no per-chunk seam for G7, so 4g
+  also owns `firmware/lib/aius_http/**` and
+  `firmware/src/aius_runtime_network_http.cpp`: the app response carries
+  `AiusHttpCacheOptions` and an optional `body_chunk` source; the WRITE
+  arm's `write_body_chunk()` fills a 512 B stack buffer from it. FNET
+  copies the bytes before `send` returns (`fnet_netbuf.c:264`).
+- **All three CRC checks kept (owner):** fill read-back, pre-header
+  verify, send-copy CRC. Pad 2 is the marginal chip and a CRC over
+  512 B costs microseconds.
+- **G8 is a fill-only step gate (owner).** A fill start and each fill
+  primitive wait on `sd_fifo_defer()`; every other root job keeps 4f's
+  every-epoch rule; a cancelled fill is never paused.
+- **A replay start is refused while the fill walk is incomplete
+  (owner, after delivery-audit finding 2).** Replay is a test facility,
+  never a normal operating mode. A replay during the walk lost the card
+  at every file boundary and could underrun, so a replay start answers
+  `503 fill_busy` with `Retry-After` until the walk completes, and the
+  replay-starting test tools retry on it for up to 120 s. `Retry-After`
+  is the HTTP library's fixed 1 s: a computed value needed another
+  `aius_http` change for no gain, since the tools' budget is fixed.
+- **A playing replay pauses the fill (owner, closure nit A).** The fill
+  starts no next file while a replay is playing or switching to replay,
+  so replay and fill never share the card in either order.
+- **A cancelled fill file resumes at its next chunk (owner, clean-room
+  finding 1).** G9 dropped the unpublished entry and restarted the file
+  from chunk 0; with `replays.html` open its 5 s poll cancelled every
+  cycle, `openapi.json` (262,071 B, about 4.5 s) never finished, the
+  walk never completed and the replay gate refused forever. A cancel now
+  keeps the checked chunks and the running file CRC; the restart reopens
+  and seeks to the next chunk, so a cancel costs at most one primitive.
+  Upload, delete, remount and card loss still drop the partial entry.
+- **Card swap while powered is unsupported (owner, after audit finding
+  6); the cache takes the accidental-disconnect defensive posture.** The
+  outcome's "follows every card swap" is narrowed: a card fault that
+  means the card is gone invalidates the whole cache and restarts the
+  walk after the next mount; a remount or volume-serial change already
+  does. The card probe stays skipped during playback (4e).
+- **OCRAM unchanged by reuse, not growth.** `AiusHttpRequest` (104 B)
+  and `AiusHttpTransaction` (864 B) keep HEAD's size: `If-None-Match` is
+  a `uint16_t` offset, the chunk source shares `sd_backup_path` (idle
+  for an IMMEDIATE response), a download's ETag rides in
+  `sd_temp_path`. `root_cancelling` sits in `AiusRuntimeStorage` tail
+  padding.
+- **Local calls.** Bundles build to scratch, never into `sd/www`; the
+  sync tool's 15 s is summed `Retry-After` (absent counts 1 s), non-503
+  failures keep four tries 1 s apart. The CACHE_FILL sink is the SD
+  library's `OUTPUT` action, not a callback; a cancelled fill ends
+  `FAILED`/`CANCELLED`. The fill walk re-reads one directory window per
+  file start rather than keep a path queue in DTCM. `www_cache.entries`
+  is counted in `optical_main.cpp`. The memory suite's `_VectorsRam`
+  check fires only once the table has moved, not on approach.
+
 Implements the owner's PSRAM web cache (pad 2, CRC per 512 B chunk, SD
 fallback, recorder ring unchanged) and gzip bundling with cache
 validation. A fill during playback is safe only because 4e makes its card
@@ -4735,8 +4790,9 @@ waits run the producer.
   representations.
 - **G9, a fill file is cancellable (R3-N1, R4-S3).** A CACHE_FILL job
   only reads the card into PSRAM, so stopping it at a primitive boundary
-  loses nothing: the file closes, its unpublished entry is dropped and
-  the file is re-queued. One entry point, `web_cache_fill_cancel()`,
+  loses nothing: the file closes, its unpublished entry keeps its
+  checked chunks and the file resumes at its next chunk (amended
+  2026-10-10, §Build decisions). One entry point, `web_cache_fill_cancel()`,
   serves every consumer that must not wait out a whole file (about 3 s
   for `dsp-editor.js` at 512 B per epoch): an HTTP SD request here, and
   in 4h the flush start (H8) and the OTA and reboot SD-writes freeze
@@ -4762,7 +4818,16 @@ marginal: the CRC catches corrupt data but not a FlexSPI2 bus hold (the
 line; if pad 2 misbehaves, P2 (halve the recorder ring to free pad 1) is
 an owner call. Inlined bundles duplicate `dsp-editor.js` between the
 index and mixer pages (about 50 KB gzip each) and drop per-file browser
-caching across pages.
+caching across pages. The fill hold reads as live for up to 4 s after
+a lapse that lands within about 4 s of an exact 2^32 ms `millis()`
+wrap (every 49.7 days). A warm cache with no card traffic keeps serving
+during an unnoticed disconnect until a card operation faults; the card
+probe stays skipped during playback (4e). A cache-served response torn
+down between dispatch and accept keeps its lease until the next www GET
+drops it, the same bounded window the recorder data read has. A
+`presets/` listing the manifest answers still cancels a fill in flight,
+since the route cannot know in advance that a CRC-fault fallback will
+not read the card.
 
 **Prebuild review round 2 (2026-10-07, `reviewer` `opus`): NOT READY.**
 
@@ -5070,6 +5135,45 @@ CR4-B2's UNLINK_ENTRY and FIRST_CLUSTER) are history.
 H12, H13, H16 and H17. With Phase 5 gone, H12 and H13 are stated in H9,
 H16 in the residual risks and H17 in H1 and H3. Overturned and
 replaced: H4, H10 and H14 (above).
+
+**Carried in from 4g (found during its build):**
+
+- **The card-swap hold narrows to accidental disconnect (owner,
+  2026-10-10).** A card swap while powered is unsupported (4g §Build
+  decisions). Keep only what protects data on an accidental disconnect
+  (PSRAM-held writes retained and flushed after remount); drop the
+  deliberate-swap handling. Revise this contract and its proof lines
+  accordingly, then take one focused prebuild review before dispatch.
+- **Memory budgets start from 4g's link.** `firmware/test/memory`
+  enforces slot-a ITCM free at least 11,900 B (4g used none, so 4h's
+  1,000 B is whole), `_ebss` at most 0x20049A00 (4g's 0x20049900 plus
+  4h's 256 B) and `_VectorsRam` at 0x20007c00; OCRAM sits exactly at
+  every env's floor, so any OCRAM growth needs reuse, as 4g did.
+- **`aius_ab` is missing from `EXPECTED_LDF_LIBS`**
+  (`firmware/test/itcm-placement/verify_target.py`); it is LDF-resolved
+  in both optical envs. Add it with a case.
+- **Sync `--file` needs every page bundleable** (4g closure nit B).
+  `aius-sd-sync.sh --file x.js --www <tree>` runs `www_bundle.py
+  --inlined` unconditionally, so it exits 1 after uploading the file
+  when any of the five pages or their assets is missing from the tree.
+  Skip the bundle step when no selected file is a page or an inlined
+  asset; this phase's card-sync uploads touch the same branch.
+- **The `<!--` escape breaks a `u`-flag regex literal** (4g closure nit
+  C, `firmware/tools/www_bundle.py:83`). `<\!--` is a SyntaxError inside
+  `/.../u`; no current asset contains `<!--`. Escape it as `<\x21--`
+  inside regex literals, or make the bundler fail loudly when a script
+  contains `<!--`.
+- **`Accept-Encoding: *` gets the plain representation** (4g audit nit
+  13, `firmware/lib/aius_http/src/aius_http.c:399`). RFC 9110 lets `*`
+  match gzip; harmless today because browsers name gzip.
+- **Cache keys are case-sensitive, FAT names are not** (4g clean-room
+  closure nit; `firmware/lib/aius_web_cache/src/aius_web_cache.c:179-184`,
+  `firmware/src/optical_main.cpp:1504`). A raw `PUT /sd/www/INDEX.HTML`
+  overwrites `index.html` but invalidates only `INDEX.HTML`, so the old
+  entry keeps serving, and an equal-length overwrite during a resumable
+  fill could publish mixed bytes. The editor and the sync tool use exact
+  names. Case-fold the invalidate compare, or reject case-variant www
+  PUTs; this phase's PSRAM store takes every upload, so fix it here.
 
 Implements the owner's write-behind (flushing within seconds during
 playback; a power cut may lose the last few seconds), Apply at PSRAM

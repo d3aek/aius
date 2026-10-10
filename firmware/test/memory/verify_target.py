@@ -53,6 +53,29 @@ OCRAM_FREE_FLOORS = {
     "teensy41-optical-fault": 131776,
 }
 
+# Canonical-image RAM1 budgets (aius-sample-rate-following.md Phase 4g,
+# "Starting figures"). They apply to CANONICAL_ENV only, the slot-a image
+# the 4e/4f figures quote. Each figure below moves ONLY in a phase commit
+# that records the new figure in the plan; never to make a build pass.
+CANONICAL_ENV = "teensy41-optical-slot-a"
+ITCM_ORIGIN = 0x00000000
+ITCM_REGION_BYTES = 512 * 1024
+ITCM_BLOCK_BYTES = 32 * 1024
+ITCM_SECTIONS = frozenset({".text.itcm", ".ARM.exidx", ".fini"})
+# ITCM free = _itcm_block_count * 32 KiB minus the ITCM high-water mark (the
+# mem_report.py figure). Set from the Phase 4g link (2026-10-10): 12,900 B
+# free (4g used no ITCM), less an allowance of 1,000 B.
+ITCM_FREE_FLOOR_BYTES = 11900
+# DTCM statics end (`_ebss`). Set from the Phase 4g link (2026-10-10):
+# 0x20049900, plus the next phase's allowance of 256 B.
+DTCM_EBSS_CEILING = 0x20049A00
+# `_VectorsRam` (the 1,024 B-aligned RAM vector table, last in `.data`) sits
+# at 0x20007c00, set from the Phase 4g link (2026-10-10); `.data` growth past
+# that step moves it to the next 1,024 B step and costs 1,024 B of DTCM. New
+# strings and tables go in flash.
+VECTORS_RAM_ADDRESS = 0x20007c00
+VECTORS_RAM_STEP_BYTES = 1024
+
 SECTION_RE = re.compile(
     r"^\s*\[\s*(\d+)\]\s+(\S+)\s+\S+\s+"
     r"([0-9a-fA-F]+)\s+[0-9a-fA-F]+\s+([0-9a-fA-F]+)\s+"
@@ -147,6 +170,49 @@ def ocram_floor(environment: str) -> int:
     return OCRAM_FREE_FLOORS[environment]
 
 
+def canonical_budgets(
+    sections: dict[int, tuple[str, int, int]], symbols: list[Symbol]
+) -> tuple[int, int, int]:
+    """(ITCM free, `_ebss`, `_VectorsRam`) of a linked image."""
+    block_count = _one_symbol(symbols, "_itcm_block_count").value
+    high_water = max(
+        (
+            addr + size
+            for name, addr, size in sections.values()
+            if name in ITCM_SECTIONS and addr < ITCM_REGION_BYTES
+        ),
+        default=ITCM_ORIGIN,
+    )
+    itcm_free = block_count * ITCM_BLOCK_BYTES - (high_water - ITCM_ORIGIN)
+    return (
+        itcm_free,
+        _one_symbol(symbols, "_ebss").value,
+        _one_symbol(symbols, "_VectorsRam").value,
+    )
+
+
+def check_canonical_budgets(
+    sections: dict[int, tuple[str, int, int]], symbols: list[Symbol]
+) -> tuple[int, int, int]:
+    itcm_free, ebss, vectors = canonical_budgets(sections, symbols)
+    if itcm_free < ITCM_FREE_FLOOR_BYTES:
+        raise VerificationError(
+            f"ITCM free is {itcm_free} B, below its committed "
+            f"{ITCM_FREE_FLOOR_BYTES} B floor"
+        )
+    if ebss > DTCM_EBSS_CEILING:
+        raise VerificationError(
+            f"DTCM _ebss is {ebss:#x}, above its committed "
+            f"{DTCM_EBSS_CEILING:#x} ceiling"
+        )
+    if vectors != VECTORS_RAM_ADDRESS:
+        raise VerificationError(
+            f"_VectorsRam moved to {vectors:#x} from {VECTORS_RAM_ADDRESS:#x} "
+            f"(.data crossed a {VECTORS_RAM_STEP_BYTES} B step)"
+        )
+    return itcm_free, ebss, vectors
+
+
 def verify_snapshot(
     sections: dict[int, tuple[str, int, int]],
     symbols: list[Symbol],
@@ -216,12 +282,27 @@ def verify_snapshot(
             f"OCRAM free is {ocram_free} B on {environment}, below its "
             f"committed {floor} B floor"
         )
+    if environment == CANONICAL_ENV:
+        check_canonical_budgets(sections, symbols)
     return ocram_free, staging_bytes, floor
 
 
 def verify(elf: Path, readelf: str, environment: str) -> tuple[int, int, int]:
     return verify_snapshot(
         _sections(readelf, elf), _symbols(readelf, elf), environment
+    )
+
+
+def _budget_line(elf: Path, readelf: str, environment: str) -> str:
+    if environment != CANONICAL_ENV:
+        return ""
+    itcm_free, ebss, vectors = canonical_budgets(
+        _sections(readelf, elf), _symbols(readelf, elf)
+    )
+    return (
+        f"\ncanonical budgets: ITCM free={itcm_free} B "
+        f"(floor {ITCM_FREE_FLOOR_BYTES}), _ebss={ebss:#x} "
+        f"(ceiling {DTCM_EBSS_CEILING:#x}), _VectorsRam={vectors:#x}"
     )
 
 
@@ -243,7 +324,9 @@ def verify_target(source, target, env) -> None:
     readelf = env.WhereIs("arm-none-eabi-readelf")
     if not readelf:
         raise VerificationError("arm-none-eabi-readelf is unavailable")
-    print(_summary(*verify(elf, str(readelf), env.subst("$PIOENV"))))
+    pioenv = env.subst("$PIOENV")
+    print(_summary(*verify(elf, str(readelf), pioenv))
+          + _budget_line(elf, str(readelf), pioenv))
 
 
 def _main(argv: list[str]) -> int:
@@ -257,7 +340,9 @@ def _main(argv: list[str]) -> int:
     )
     args = parser.parse_args(argv)
     try:
-        print(_summary(*verify(args.elf.resolve(), args.readelf, args.env)))
+        elf = args.elf.resolve()
+        print(_summary(*verify(elf, args.readelf, args.env))
+              + _budget_line(elf, args.readelf, args.env))
     except (OSError, subprocess.CalledProcessError, VerificationError) as error:
         print(f"audio target memory: FAIL: {error}", file=sys.stderr)
         return 1

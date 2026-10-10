@@ -868,6 +868,18 @@
           "409": {
             "description": "replay_carrier_present (live input owns the path) or replay_start (already active / start refused).",
             "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "503": {
+            "description": "fill_busy: the web-cache fill walk is incomplete (GET /api/status www_cache.present true and www_cache.fill_complete false); no replay starts until it completes, since a replay during the walk loses the card at every file boundary (Phase 4g). Never on a fitment without the cache. Carries Retry-After; retry.",
+            "headers": { "Retry-After": { "$ref": "#/components/headers/RetryAfter" } },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "examples": {
+                  "fill_busy": { "value": { "ok": false, "error": "fill_busy" } }
+                }
+              }
+            }
           }
         }
       }
@@ -2078,6 +2090,67 @@
         "type": "object",
         "required": ["ready"],
         "properties": { "ready": { "type": "boolean" } }
+      },
+      "WwwCache": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "The PSRAM web cache (Phase 4g): every /sd/www file and the presets listing held in a pad-2 carve as CRC-checked 512 B chunks, filled one file per SD job after each mount. Absent (present false) on 8 MiB PSRAM fitments, where every request is served from the card.",
+        "required": [
+          "present",
+          "entries",
+          "capacity",
+          "published",
+          "fill_holds",
+          "fill_cancels",
+          "crc_faults",
+          "fill_refusals",
+          "fill_complete",
+          "presets_complete",
+          "held"
+        ],
+        "properties": {
+          "present": { "type": "boolean", "description": "The cache's carve exists (16 MiB fitment)." },
+          "entries": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Files currently cached (valid manifest entries)."
+          },
+          "capacity": { "type": "integer", "minimum": 0, "description": "Manifest entries, 64." },
+          "published": { "type": "integer", "minimum": 0, "description": "Files filled since boot." },
+          "fill_holds": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Fill cancels that latched the fill hold (an HTTP SD request finding a fill in flight; later the 4h flush and freeze)."
+          },
+          "fill_cancels": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Cancels that stopped a fill file in flight; the file is re-queued."
+          },
+          "crc_faults": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Chip CRC mismatches: fill read-back, pre-header verify, send copy and manifest entry. Each drops the entry and refills it."
+          },
+          "fill_refusals": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 65535,
+            "description": "Fill chunks the cache refused (capacity full, read-back mismatch; saturating). The file stays uncached and is served from the card. A cache event: it never counts in sd_diag.root_failures or replaces sd_diag.last_failure."
+          },
+          "fill_complete": {
+            "type": "boolean",
+            "description": "The post-mount fill has attempted every reachable file."
+          },
+          "presets_complete": {
+            "type": "boolean",
+            "description": "Every file of www/presets/ is cached, so the presets listing is served from the manifest."
+          },
+          "held": {
+            "type": "boolean",
+            "description": "The fill hold is set: no fill file starts (a latched cancel, or within 2 s of the last HTTP SD job)."
+          }
+        }
       },
       "SdDiag": {
         "type": "object",
@@ -4130,6 +4203,7 @@
           "net_diag": { "$ref": "#/components/schemas/NetDiag" },
           "tx_gate": { "$ref": "#/components/schemas/TxGate" },
           "sd_diag": { "$ref": "#/components/schemas/SdDiag" },
+          "www_cache": { "$ref": "#/components/schemas/WwwCache" },
           "replay_diag": { "$ref": "#/components/schemas/ReplayDiag" },
           "audio_diag": { "$ref": "#/components/schemas/AudioDiag" },
           "clock": { "$ref": "#/components/schemas/Clock" },

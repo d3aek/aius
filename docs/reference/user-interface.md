@@ -138,8 +138,9 @@ on the bench.
 
 Reads:
 
-- `GET /api/replays` every 5 seconds for the library listing (the slowest tick:
-  it walks the card).
+- `GET /api/replays` for the library listing, never on a timer: once at load,
+  after a start or delete, when the tab becomes visible and on Refresh. It walks
+  the card, so it cancels a web-cache fill in flight (Phase 4g).
 - `GET /api/replays/status` at 1 Hz for the playback grid.
 - `GET /api/meters` at 250 ms for the waveform and output levels.
 

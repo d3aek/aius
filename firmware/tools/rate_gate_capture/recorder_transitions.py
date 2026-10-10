@@ -713,6 +713,46 @@ def board_post(base: str, auth: str, path: str, body: str) -> int:
         return error.code
 
 
+FILL_BUSY_BUDGET_S = 120.0
+
+
+def board_post_full(base: str, auth: str, path: str,
+                    body: str) -> tuple[int, str, str | None]:
+    """Like board_post, but also return (body text, Retry-After header)."""
+    request = urllib.request.Request(base + path, method="POST",
+                                     data=body.encode("utf-8"))
+    request.add_header("X-Aius-SD-Auth", auth)
+    try:
+        with urllib.request.urlopen(request, timeout=8) as response:
+            return (response.status, response.read().decode("utf-8", "replace"),
+                    response.headers.get("Retry-After"))
+    except urllib.error.HTTPError as error:
+        return (error.code, error.read().decode("utf-8", "replace"),
+                error.headers.get("Retry-After") if error.headers else None)
+
+
+def replay_start(base: str, auth: str, body: str, *, post=board_post_full,
+                 sleep=time.sleep, clock=time.monotonic,
+                 budget_s: float = FILL_BUSY_BUDGET_S) -> int:
+    """POST /api/replays/start, retrying only `503 fill_busy` (the web-cache
+    fill walk is incomplete) per Retry-After (absent or bad = 1 s) within
+    `budget_s`; any other status is returned for the caller's own handling."""
+    started = clock()
+    while True:
+        status, text, retry_after = post(base, auth, "/api/replays/start", body)
+        if status != 503 or "fill_busy" not in text:
+            return status
+        try:
+            wait = max(float(retry_after), 0.0)
+        except (TypeError, ValueError):
+            wait = 1.0
+        if clock() - started + wait > budget_s:
+            raise RuntimeError(
+                f"replays/start still 503 fill_busy after {budget_s:.0f} s "
+                "(web-cache fill walk never completed)")
+        sleep(wait)
+
+
 class RecorderClient:
     """Minimal /api/recorder client: header read, freeze/thaw, PUT config,
     and slot data reads reassembled to logical (oldest-first) frame order."""
@@ -928,8 +968,8 @@ def main(argv: list[str] | None = None) -> int:
                 usb_authorize(args.usb_path, 0)      # drop the source carrier
                 time.sleep(2.5)                       # >=2 unlocked samples
                 for _ in range(6):
-                    status = board_post(
-                        args.base, auth, "/api/replays/start",
+                    status = replay_start(
+                        args.base, auth,
                         json.dumps({"id": args.replay_id, "loop": False}))
                     print(f"replays/start -> {status}", flush=True)
                     if status == 200:

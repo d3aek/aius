@@ -273,6 +273,9 @@ struct SdFake {
 	 * must refuse can be staged as well as the largest it must accept. */
 	uint8_t data[AIUS_RUNTIME_STORAGE_PUBLISH_CAPACITY + 1u];
 	size_t data_length;
+	/* Phase 4g: nonzero stands in a read-only file this long whose byte at
+	 * i is sd_pattern(i) (openapi.json's 262,071 B outgrows `data`). */
+	size_t synthetic_length;
 	size_t read_offset;
 	unsigned primitive_calls;
 	unsigned primitive_calls_epoch;
@@ -353,10 +356,22 @@ bool File::truncate(uint64_t size)
 	return true;
 }
 
+/* arm_root_storage()'s byte at `i`, also past `data` for a synthetic file. */
+static uint8_t sd_pattern(size_t i)
+{
+	return (uint8_t)((i * 7u + 3u) & 0xffu);
+}
+
+static size_t sd_file_length(void)
+{
+	return g_sd.synthetic_length != 0u ? g_sd.synthetic_length
+	                                   : g_sd.data_length;
+}
+
 bool File::seek(uint64_t position)
 {
 	sd_primitive();
-	if (position > g_sd.data_length)
+	if (position > sd_file_length())
 		return false;
 	g_sd.read_offset = (size_t)position;
 	return true;
@@ -370,10 +385,15 @@ size_t File::read(uint8_t *buffer, size_t length)
 	if (g_sd.read_calls < ARRAY_COUNT(g_sd.read_lengths))
 		g_sd.read_lengths[g_sd.read_calls] = length;
 	g_sd.read_calls++;
-	remaining = g_sd.data_length - g_sd.read_offset;
+	remaining = sd_file_length() - g_sd.read_offset;
 	if (length > remaining)
 		length = remaining;
-	memcpy(buffer, g_sd.data + g_sd.read_offset, length);
+	if (g_sd.synthetic_length != 0u) {
+		for (size_t i = 0; i < length; ++i)
+			buffer[i] = sd_pattern(g_sd.read_offset + i);
+	} else {
+		memcpy(buffer, g_sd.data + g_sd.read_offset, length);
+	}
 	g_sd.read_offset += length;
 	return length;
 }
@@ -392,7 +412,7 @@ size_t File::write(const uint8_t *buffer, size_t length)
 uint64_t File::size()
 {
 	sd_primitive();
-	return g_sd.data_length;
+	return sd_file_length();
 }
 
 void File::close()
@@ -932,6 +952,10 @@ struct AppFake {
 	bool stage_seen;
 	unsigned stage_commits;
 	unsigned stage_drops;
+	/* Phase 4g: a replay start refused while the fill walk is incomplete,
+	 * and the direct-card replay listing's calls. */
+	bool replay_fill_busy;
+	unsigned replay_list_calls;
 };
 
 static AppFake g_app;
@@ -1009,6 +1033,7 @@ static size_t app_write_replay_status(void *context, uint8_t *body,
 static size_t app_write_replay_list(void *context, uint8_t *body, size_t capacity)
 {
 	(void)context;
+	g_app.replay_list_calls++;
 	return write_text("{\"replays\":[]}", body, capacity);
 }
 
@@ -1042,7 +1067,8 @@ static AiusOpticalAppReplayResult app_replay_start(void *context, const char *id
 	(void)context;
 	(void)id;
 	(void)loop;
-	return AIUS_OPTICAL_APP_REPLAY_OK;
+	return g_app.replay_fill_busy ? AIUS_OPTICAL_APP_REPLAY_FILL_BUSY
+	                              : AIUS_OPTICAL_APP_REPLAY_OK;
 }
 
 static AiusOpticalAppReplayResult app_replay_delete(void *context,
@@ -2762,7 +2788,7 @@ static void arm_root_storage(AiusRuntimeStorage *storage, size_t length,
 	g_sd.card_detected = true;
 	CHECK(length <= sizeof(g_sd.data));
 	for (size_t i = 0; i < length; ++i)
-		g_sd.data[i] = (uint8_t)((i * 7u + 3u) & 0xffu);
+		g_sd.data[i] = sd_pattern(i);
 	g_sd.data_length = length;
 	if (!consume)
 		return;
@@ -3312,6 +3338,329 @@ static AiusHttpSdEventKind run_http_upload(AiusRuntimeStorage *storage,
  * the volume. Nothing on the wire tells them apart, and a 1-in-10 intermittent
  * cannot be diagnosed by re-running it. These cases assert that the latched
  * record does tell them apart, and name the reading that convicts each. */
+/* Phase 4g: the platform's two CACHE_FILL hooks, faked (strong definitions
+ * over aius_runtime_storage.cpp's weak defaults). */
+static struct {
+	bool accept;
+	bool defer;
+	bool in_order;
+	unsigned output_calls;
+	unsigned defer_calls;
+	uint64_t next_offset;
+	uint64_t size;
+	uint8_t copy[2048];
+} g_fill;
+
+extern "C" bool aius_runtime_storage_root_output(const AiusSdJob *job,
+                                                 const uint8_t *data,
+                                                 size_t length,
+                                                 uint64_t offset,
+                                                 uint64_t size)
+{
+	g_fill.output_calls++;
+	if (job->kind != AIUS_SD_JOB_CACHE_FILL || offset != g_fill.next_offset) {
+		g_fill.in_order = false;
+	} else if (offset + length <= sizeof(g_fill.copy)) {
+		memcpy(g_fill.copy + offset, data, length);
+	} else {
+		/* A synthetic file: each byte checked where it lands. */
+		for (size_t i = 0; i < length; ++i)
+			if (data[i] != sd_pattern((size_t)offset + i))
+				g_fill.in_order = false;
+	}
+	g_fill.next_offset = offset + length;
+	g_fill.size = size;
+	return g_fill.accept;
+}
+
+extern "C" bool aius_runtime_storage_fill_step_defer(const AiusSdJob *job)
+{
+	g_fill.defer_calls++;
+	CHECK(job->kind == AIUS_SD_JOB_CACHE_FILL);
+	return g_fill.defer;
+}
+
+static AiusSdJobRequest cache_fill_request(void)
+{
+	AiusSdJobRequest request;
+	memset(&request, 0, sizeof(request));
+	request.kind = AIUS_SD_JOB_CACHE_FILL;
+	request.target_path = "/aius/www/index.html";
+	return request;
+}
+
+static void test_root_cache_fill(void)
+{
+	static const char *const keys[] = {
+		"fill.sink", "fill.refused", "fill.step-defer", "fill.cancel",
+		"fill.resume"
+	};
+	const AiusRuntimeBudget *budget =
+		aius_runtime_budget(AIUS_BOOT_CHECKPOINT_SD);
+	AiusRuntimeStorage storage;
+	AiusSdJobRequest request;
+	AiusHttpEvent event;
+	uint32_t now_ms = 1u;
+	const size_t file = 1300u; /* two whole chunks and a 276 B tail */
+
+	validate_unique_keys("registry.fill", keys, ARRAY_COUNT(keys), 5u);
+
+	current_key = "fill.sink";
+	{
+		/* Every chunk reaches the sink in order with the file's size,
+		 * one card primitive per epoch, the next READ in the epoch that
+		 * delivered the previous chunk; the job completes. */
+		arm_root_storage(&storage, file, false);
+		memset(&g_fill, 0, sizeof(g_fill));
+		g_fill.accept = true;
+		g_fill.in_order = true;
+		request = cache_fill_request();
+		CHECK(aius_runtime_storage_start_root_job(&storage, &request,
+		                                          now_ms++));
+		drive_root_job(&storage, &now_ms, 64u);
+		CHECK(storage.root_state == AIUS_RUNTIME_STORAGE_ROOT_COMPLETE);
+		CHECK(g_fill.output_calls == 3u);
+		CHECK(g_fill.in_order && g_fill.next_offset == file);
+		CHECK(g_fill.size == file);
+		CHECK(memcmp(g_fill.copy, g_sd.data, file) == 0);
+		CHECK(g_sd.read_calls == 3u);
+		CHECK(!g_sd.file_open && g_sd.close_calls == 1u);
+		CHECK(storage.diag.root_failures == 0u);
+		/* The never-deferring fake was consulted, once per step. */
+		CHECK(g_fill.defer_calls != 0u);
+	}
+
+	current_key = "fill.refused";
+	{
+		/* A sink that refuses (capacity full, read-back mismatch) fails
+		 * the job, which closes its file: the file stays uncached. The
+		 * refusal is a cache event (the sink counts it): it is not a
+		 * root failure and does not replace the record of a real card
+		 * fault already latched. */
+		arm_root_storage(&storage, file, false);
+		memset(&g_fill, 0, sizeof(g_fill));
+		g_fill.in_order = true;
+		storage.diag.root_failures = 1u;
+		storage.diag.last_failure.sequence = 7u;
+		storage.diag.last_failure.job_kind = (uint8_t)AIUS_SD_JOB_PROBE;
+		storage.diag.last_failure.fault = (uint8_t)AIUS_SD_FAULT_MEDIA;
+		storage.diag.last_failure.at_ms = 3u;
+		request = cache_fill_request();
+		CHECK(aius_runtime_storage_start_root_job(&storage, &request,
+		                                          now_ms++));
+		drive_root_job(&storage, &now_ms, 64u);
+		CHECK(storage.root_state == AIUS_RUNTIME_STORAGE_ROOT_FAILED);
+		CHECK(aius_runtime_storage_root_result(&storage)->fault ==
+		      AIUS_SD_FAULT_IO);
+		CHECK(aius_runtime_storage_root_result(&storage)->driver_fault ==
+		      AIUS_RUNTIME_STORAGE_FILL_SINK_FAULT);
+		CHECK(g_fill.output_calls == 1u);
+		CHECK(!g_sd.file_open);
+		CHECK(storage.diag.root_failures == 1u);
+		CHECK(storage.diag.last_failure.sequence == 7u);
+		CHECK(storage.diag.last_failure.job_kind ==
+		      (uint8_t)AIUS_SD_JOB_PROBE);
+		CHECK(storage.diag.last_failure.fault ==
+		      (uint8_t)AIUS_SD_FAULT_MEDIA);
+		CHECK(storage.diag.last_failure.at_ms == 3u);
+		CHECK(storage.diag.cancellations == 0u);
+		/* Restartable: the next file fills. */
+		memset(&g_fill, 0, sizeof(g_fill));
+		g_fill.accept = true;
+		g_fill.in_order = true;
+		CHECK(aius_runtime_storage_start_root_job(&storage, &request,
+		                                          now_ms++));
+		drive_root_job(&storage, &now_ms, 64u);
+		CHECK(storage.root_state == AIUS_RUNTIME_STORAGE_ROOT_COMPLETE);
+	}
+
+	current_key = "fill.step-defer";
+	{
+		/* G8: while the gate holds, a running fill spends no primitive
+		 * and does not move; when it lifts, the fill resumes. */
+		arm_root_storage(&storage, file, false);
+		memset(&g_fill, 0, sizeof(g_fill));
+		g_fill.accept = true;
+		g_fill.in_order = true;
+		request = cache_fill_request();
+		CHECK(aius_runtime_storage_start_root_job(&storage, &request,
+		                                          now_ms++));
+		drive_root_job(&storage, &now_ms, 2u); /* BEGIN, OPEN */
+		const unsigned primitives = g_sd.primitive_calls;
+		const AiusSdPhase phase = storage.job.phase;
+		g_fill.defer = true;
+		for (unsigned i = 0; i < 8u; i++) {
+			CHECK(aius_runtime_storage_service(&storage, budget,
+			                                   now_ms++, nullptr,
+			                                   &event));
+			CHECK(event.kind == AIUS_HTTP_EVENT_NONE);
+		}
+		CHECK(g_sd.primitive_calls == primitives);
+		CHECK(storage.job.phase == phase);
+		CHECK(storage.root_state == AIUS_RUNTIME_STORAGE_ROOT_RUNNING);
+		g_fill.defer = false;
+		drive_root_job(&storage, &now_ms, 64u);
+		CHECK(storage.root_state == AIUS_RUNTIME_STORAGE_ROOT_COMPLETE);
+		CHECK(g_fill.next_offset == file);
+
+		/* Any other root job is never gated: a CONFIG_LOAD steps every
+		 * epoch with the gate held, and the hook is not consulted. */
+		arm_root_storage(&storage, 64u, true);
+		memset(&g_fill, 0, sizeof(g_fill));
+		g_fill.defer = true;
+		request = config_load_request(64u);
+		CHECK(aius_runtime_storage_start_root_job(&storage, &request,
+		                                          now_ms++));
+		drive_root_job(&storage, &now_ms, 32u);
+		CHECK(storage.root_state == AIUS_RUNTIME_STORAGE_ROOT_COMPLETE);
+		CHECK(g_fill.defer_calls == 0u);
+	}
+
+	current_key = "fill.cancel";
+	{
+		/* G9: a cancel at a primitive boundary, gate held or not, closes
+		 * the file, writes and removes nothing, ends FAILED CANCELLED,
+		 * counts a cancellation (not a root failure), and the service is
+		 * restartable at the next step. */
+		arm_root_storage(&storage, file, false);
+		memset(&g_fill, 0, sizeof(g_fill));
+		g_fill.accept = true;
+		g_fill.in_order = true;
+		request = cache_fill_request();
+		CHECK(!aius_runtime_storage_cancel_root(&storage));
+		CHECK(aius_runtime_storage_start_root_job(&storage, &request,
+		                                          now_ms++));
+		/* Run to the first chunk delivered, then cancel mid-file. */
+		for (unsigned i = 0; i < 16u && g_fill.output_calls == 0u; i++)
+			drive_root_job(&storage, &now_ms, 1u);
+		CHECK(g_fill.output_calls == 1u);
+		CHECK(storage.root_state == AIUS_RUNTIME_STORAGE_ROOT_RUNNING);
+		g_fill.defer = true; /* a cancelled fill still steps */
+		CHECK(aius_runtime_storage_cancel_root(&storage));
+		drive_root_job(&storage, &now_ms, 8u);
+		CHECK(storage.root_state == AIUS_RUNTIME_STORAGE_ROOT_FAILED);
+		CHECK(aius_runtime_storage_root_result(&storage)->fault ==
+		      AIUS_SD_FAULT_CANCELLED);
+		CHECK(!g_sd.file_open);
+		CHECK(g_sd.remove_calls == 0u);
+		CHECK(g_sd.data_length == file);
+		CHECK(storage.diag.cancellations == 1u);
+		CHECK(storage.diag.root_failures == 0u);
+		CHECK(storage.diag.last_failure.sequence == 0u);
+		CHECK(!aius_runtime_storage_cancel_root(&storage));
+		g_fill.defer = false;
+		memset(&g_fill, 0, sizeof(g_fill));
+		g_fill.accept = true;
+		g_fill.in_order = true;
+		CHECK(aius_runtime_storage_start_root_job(&storage, &request,
+		                                          now_ms++));
+		drive_root_job(&storage, &now_ms, 64u);
+		CHECK(storage.root_state == AIUS_RUNTIME_STORAGE_ROOT_COMPLETE);
+		CHECK(g_fill.next_offset == file);
+	}
+
+	current_key = "fill.resume";
+	{
+		/* Owner (clean-room finding 1): replays.html's 5 s poll cancels
+		 * the fill every cycle, and openapi.json (262,071 B, 512 chunks)
+		 * outlasts it. Cancelled every 7 epochs, each restart starting at
+		 * the next chunk (the platform's aius_web_cache_fill_resume_offset)
+		 * seeks there, hands the sink absolute offsets and the WHOLE
+		 * file's size, and the file completes: no chunk read twice, and a
+		 * cancel costs at most the one primitive in flight. A cancel that
+		 * lands after the tail chunk ends the walk of this file (the
+		 * platform publishes it: every chunk checked). */
+		const size_t big = 262071u;
+		const unsigned every = 7u;
+		unsigned cycles = 0u;
+		unsigned completions = 0u;
+
+		arm_root_storage(&storage, 0u, false);
+		g_sd.synthetic_length = big;
+		memset(&g_fill, 0, sizeof(g_fill));
+		g_fill.accept = true;
+		g_fill.in_order = true;
+		while (g_fill.next_offset < big && cycles < 1000u) {
+			const uint64_t resume = g_fill.next_offset;
+			const unsigned outputs = g_fill.output_calls;
+
+			CHECK(resume % AIUS_SD_CACHE_FILL_ALIGN == 0u);
+			request = cache_fill_request();
+			request.initial_offset = resume;
+			CHECK(aius_runtime_storage_start_root_job(&storage, &request,
+			                                          now_ms++));
+			drive_root_job(&storage, &now_ms, every);
+			cycles++;
+			if (storage.root_state == AIUS_RUNTIME_STORAGE_ROOT_COMPLETE) {
+				completions++;
+				break;
+			}
+			CHECK(aius_runtime_storage_cancel_root(&storage));
+			drive_root_job(&storage, &now_ms, 8u);
+			CHECK(storage.root_state == AIUS_RUNTIME_STORAGE_ROOT_FAILED);
+			CHECK(aius_runtime_storage_root_result(&storage)->fault ==
+			      AIUS_SD_FAULT_CANCELLED);
+			CHECK(!g_sd.file_open);
+			/* BEGIN, OPEN, SIZE and SEEK, then a READ per epoch with
+			 * its OUTPUT inline: two chunks a cycle, never re-read. */
+			CHECK(g_fill.output_calls == outputs + 2u ||
+			      g_fill.next_offset == big);
+			CHECK(g_fill.size == big);
+		}
+		CHECK(g_fill.in_order && g_fill.next_offset == big);
+		CHECK(g_fill.output_calls == 512u);
+		/* A cancel wastes at most the READ it caught in flight. */
+		CHECK(g_sd.read_calls <= 512u + storage.diag.cancellations);
+		CHECK(cycles == 256u);
+		CHECK(storage.diag.cancellations + completions == cycles);
+		CHECK(storage.diag.root_failures == 0u);
+		CHECK(g_sd.remove_calls == 0u);
+
+		/* The resumed file is the straight-through file: one job, no
+		 * cancel, same bytes in the same order (the sink checks each). */
+		arm_root_storage(&storage, 0u, false);
+		g_sd.synthetic_length = big;
+		memset(&g_fill, 0, sizeof(g_fill));
+		g_fill.accept = true;
+		g_fill.in_order = true;
+		request = cache_fill_request();
+		CHECK(aius_runtime_storage_start_root_job(&storage, &request,
+		                                          now_ms++));
+		drive_root_job(&storage, &now_ms, 2000u);
+		CHECK(storage.root_state == AIUS_RUNTIME_STORAGE_ROOT_COMPLETE);
+		CHECK(g_fill.in_order && g_fill.next_offset == big &&
+		      g_fill.output_calls == 512u);
+
+		/* A file that shrank below the resume point between the cancel
+		 * and the restart: a RANGE fault before any chunk, file closed
+		 * (the platform then drops the partial and restarts from 0). */
+		g_sd.synthetic_length = 1024u;
+		request.initial_offset = 2048u;
+		g_fill.output_calls = 0u;
+		CHECK(aius_runtime_storage_start_root_job(&storage, &request,
+		                                          now_ms++));
+		drive_root_job(&storage, &now_ms, 16u);
+		CHECK(storage.root_state == AIUS_RUNTIME_STORAGE_ROOT_FAILED);
+		CHECK(aius_runtime_storage_root_result(&storage)->fault ==
+		      AIUS_SD_FAULT_RANGE);
+		CHECK(g_fill.output_calls == 0u && !g_sd.file_open);
+		/* A file that grew: the sink sees the new size at the resume
+		 * offset, which is what the platform checks the partial with. */
+		g_sd.synthetic_length = big + 512u;
+		request.initial_offset = 1024u;
+		g_fill.next_offset = 1024u;
+		g_fill.in_order = true;
+		g_fill.accept = false; /* the platform's resume mismatch */
+		CHECK(aius_runtime_storage_start_root_job(&storage, &request,
+		                                          now_ms++));
+		drive_root_job(&storage, &now_ms, 16u);
+		CHECK(storage.root_state == AIUS_RUNTIME_STORAGE_ROOT_FAILED);
+		CHECK(g_fill.output_calls == 1u && g_fill.in_order);
+		CHECK(g_fill.size == big + 512u);
+		CHECK(!g_sd.file_open);
+	}
+}
+
 static void test_storage_diagnostics(void)
 {
 	static const char *const keys[] = {
@@ -4019,6 +4368,9 @@ static struct {
 	unsigned route_queries, sd_queries;
 	AiusHttpRoute last_route;
 	AiusSdJobKind last_job;
+	/* Phase 4g: DEFER this many ROUTE consults, then route_verdict. */
+	unsigned route_defer_left;
+	bool last_reads_card; /* the portable predicate on the ROUTE request */
 } g_admit;
 
 extern "C" void aius_runtime_http_note_shed(void)
@@ -4035,6 +4387,15 @@ extern "C" AiusHttpAdmitVerdict aius_runtime_http_admit(const AiusHttpAdmitQuery
 		g_admit.route_queries++;
 		g_admit.last_route = q->route;
 		CHECK(q->sd_job == nullptr);
+		/* The query carries the parsed request (the transaction's own),
+		 * fresh or held. */
+		CHECK(q->request == &g_runtime.network_http.http.parsed_request);
+		CHECK(q->request->route == q->route && q->request->method == q->method);
+		g_admit.last_reads_card = aius_optical_app_route_reads_card(q->request);
+		if (g_admit.route_defer_left != 0u) {
+			g_admit.route_defer_left--;
+			return AIUS_HTTP_VERDICT_DEFER;
+		}
 		return g_admit.route_verdict;
 	}
 	g_admit.sd_queries++;
@@ -4139,7 +4500,8 @@ static void test_http_admission(void)
 		"admit.sd-start-shed",    "admit.defer-then-admit",
 		"admit.defer-500ms-shed", "admit.root-start-gated",
 		"admit.http-steps-not-deferred", "admit.root-started-not-deferred",
-		"admit.teardown-drops-staging", "admit.deferred-upload-commits"
+		"admit.teardown-drops-staging", "admit.deferred-upload-commits",
+		"admit.rejected-start-staging"
 	};
 	static const char *const download_request =
 		"GET /sd/www/data.bin HTTP/1.1\r\nHost: aius\r\n\r\n";
@@ -4149,7 +4511,7 @@ static void test_http_admission(void)
 		"Content-Length: 2\r\n\r\n{}";
 	uint32_t now_ms;
 
-	validate_unique_keys("registry.admit", keys, ARRAY_COUNT(keys), 10u);
+	validate_unique_keys("registry.admit", keys, ARRAY_COUNT(keys), 11u);
 
 	current_key = "admit.route-shed";
 	admit_reset();
@@ -4171,7 +4533,7 @@ static void test_http_admission(void)
 	admit_reset();
 	now_ms = 1u;
 	bring_online(&now_ms);
-	g_admit.route_verdict = AIUS_HTTP_VERDICT_DEFER; /* ROUTE DEFER == ADMIT */
+	g_admit.route_verdict = AIUS_HTTP_VERDICT_ADMIT;
 	admit_send(kStatusRequest);
 	drive_epochs(&now_ms, 12u);
 	CHECK(g_app.status_calls == 1u);
@@ -4383,7 +4745,140 @@ static void test_http_admission(void)
 	CHECK(!g_app.staged);
 	CHECK(sink_contains("HTTP/1.0 200 OK"));
 	g_replay_hook = nullptr;
+
+	current_key = "admit.rejected-start-staging";
+	/* Phase 4g carried-in pin: an admitted upload whose aius_sd_job_start is
+	 * rejected (FAILED; forced via the job's sticky action_ids_exhausted)
+	 * leaves its staging armed until the orphan drop clears it. No card
+	 * primitive runs. */
+	admit_reset();
+	now_ms = 1u;
+	bring_online(&now_ms);
+	g_app.store_accept = true;
+	g_replay_hook = staging_service;
+	g_admit.sd_verdict = AIUS_HTTP_VERDICT_ADMIT;
+	g_runtime.storage.job.action_ids_exhausted = true;
+	admit_send(dsp_put_request);
+	{
+		unsigned epochs = 0u;
+		unsigned armed_at = 0u;
+		unsigned cleared_at = 0u;
+
+		while (epochs < 40u && cleared_at == 0u) {
+			CHECK(run_epoch(now_ms++));
+			epochs++;
+			if (g_app.staged && armed_at == 0u)
+				armed_at = epochs;
+			if (armed_at != 0u && !g_app.staged)
+				cleared_at = epochs;
+		}
+		CHECK(armed_at != 0u);
+		CHECK(g_admit.sd_queries == 1u);
+		CHECK(cleared_at > armed_at);
+		CHECK(cleared_at - armed_at <= 2u);
+		CHECK(g_app.stage_drops == 1u);
+		CHECK(g_app.stage_commits == 0u);
+		CHECK(g_sd.open_calls == 0u);
+		CHECK(g_sd.primitive_calls == 0u);
+		CHECK(g_runtime.storage.job.state == AIUS_SD_FAILED);
+	}
+	g_replay_hook = nullptr;
 	g_admit.armed = false; /* later cases see the admit-all default again */
+}
+
+/* Phase 4g, audit finding 3: a ROUTE DEFER holds the DISPATCH (before, the
+ * seam treated it as ADMIT and the direct-card listing ran on the first
+ * consult, beside a fill file). While held the application sees nothing,
+ * nothing is written and the transaction is not stepped; each HTTP epoch asks
+ * again with the transaction's own parsed request; the admitted dispatch
+ * answers once and counts once. Audit finding 2: a replay start the
+ * composition refuses for the fill walk answers 503 fill_busy, Retry-After. */
+static void test_held_dispatch(void)
+{
+	static const char *const keys[] = {
+		"held.route-defer-holds", "held.defer-then-shed", "held.replay-fill-busy"
+	};
+	static const char *const list_request =
+		"GET /api/replays HTTP/1.1\r\nHost: aius\r\n\r\n";
+	static const char *const start_request =
+		"POST /api/replays/start HTTP/1.1\r\nHost: aius\r\n"
+		"X-Aius-SD-Auth: token\r\nContent-Type: application/json\r\n"
+		"Content-Length: 13\r\n\r\n{\"id\":\"take\"}";
+	uint32_t now_ms;
+
+	validate_unique_keys("registry.held", keys, ARRAY_COUNT(keys), 3u);
+
+	current_key = "held.route-defer-holds";
+	admit_reset();
+	now_ms = 1u;
+	bring_online(&now_ms);
+	g_app.sd_ready = true;
+	g_admit.route_verdict = AIUS_HTTP_VERDICT_ADMIT;
+	g_admit.route_defer_left = 4u;
+	admit_send(list_request);
+	{
+		unsigned epochs = 0u;
+		while (g_admit.route_queries == 0u && epochs++ < 30u)
+			CHECK(run_epoch(now_ms++));
+	}
+	CHECK(g_admit.route_queries == 1u);
+	CHECK(g_admit.last_route == AIUS_HTTP_ROUTE_REPLAYS);
+	CHECK(g_admit.last_reads_card);
+	CHECK(g_runtime.network_http.deferred_dispatch_present);
+	CHECK(g_runtime.network_http.http.state == AIUS_HTTP_TX_DISPATCH);
+	for (unsigned i = 0; i < 3u; ++i) {
+		CHECK(run_epoch(now_ms++));
+		CHECK(g_runtime.network_http.deferred_dispatch_present);
+		CHECK(!g_runtime.network_http.http_stepped);
+		CHECK(g_runtime.network_http.http.state == AIUS_HTTP_TX_DISPATCH);
+	}
+	CHECK(g_admit.route_queries == 4u);
+	CHECK(g_app.replay_list_calls == 0u);
+	CHECK(!sink_contains("HTTP/1.0"));
+	drive_epochs(&now_ms, 12u);
+	CHECK(g_admit.route_queries == 5u);
+	CHECK(!g_runtime.network_http.deferred_dispatch_present);
+	CHECK(g_app.replay_list_calls == 1u);
+	CHECK(sink_contains("HTTP/1.0 200 OK"));
+	CHECK(sink_contains("{\"replays\":[]}"));
+	CHECK(g_runtime.network_http.http_requests == 1u);
+	CHECK(g_admit.shed_notes == 0u);
+
+	current_key = "held.defer-then-shed";
+	admit_reset();
+	now_ms = 1u;
+	bring_online(&now_ms);
+	g_app.sd_ready = true;
+	g_admit.route_verdict = AIUS_HTTP_VERDICT_SHED;
+	g_admit.route_defer_left = 2u;
+	admit_send(list_request);
+	drive_epochs(&now_ms, 14u);
+	CHECK(g_admit.route_queries == 3u);
+	CHECK(!g_runtime.network_http.deferred_dispatch_present);
+	CHECK(g_app.replay_list_calls == 0u);
+	CHECK(sink_contains("HTTP/1.0 503"));
+	CHECK(sink_contains("{\"ok\":false,\"error\":\"audio_busy\"}"));
+	CHECK(g_admit.shed_notes == 1u);
+	CHECK(g_runtime.network_http.http_requests == 1u);
+
+	current_key = "held.replay-fill-busy";
+	admit_reset();
+	now_ms = 1u;
+	bring_online(&now_ms);
+	g_app.sd_ready = true;
+	g_app.auth_ok = true;
+	g_app.replay_fill_busy = true;
+	g_admit.route_verdict = AIUS_HTTP_VERDICT_ADMIT;
+	admit_send(start_request);
+	drive_epochs(&now_ms, 20u);
+	CHECK(g_admit.route_queries == 1u);
+	CHECK(g_admit.last_route == AIUS_HTTP_ROUTE_REPLAYS_START);
+	CHECK(!g_admit.last_reads_card);
+	CHECK(sink_contains("HTTP/1.0 503"));
+	CHECK(sink_contains("Retry-After: 1\r\n"));
+	CHECK(sink_contains("{\"ok\":false,\"error\":\"fill_busy\"}"));
+	CHECK(g_admit.shed_notes == 0u);
+	g_admit.armed = false;
 }
 
 int main(void)
@@ -4398,10 +4893,12 @@ int main(void)
 	test_http_counters();
 	test_storage_bridge();
 	test_root_storage_job();
+	test_root_cache_fill();
 	test_storage_diagnostics();
 	test_teardown_ordering();
 	test_epoch_traces();
 	test_http_admission();
+	test_held_dispatch();
 	printf("ok runtime-target oracle\n");
 	return 0;
 }

@@ -1254,5 +1254,60 @@ class RecorderDrivenPhaseMetadataTests(unittest.TestCase):
                       {failure["code"] for failure in result["failures"]})
 
 
+class ReplayStartFillBusyTests(unittest.TestCase):
+    """recorder_transitions.replay_start retries only 503 fill_busy."""
+
+    FILL_BUSY = '{"ok":false,"error":"fill_busy"}'
+
+    def _run(self, replies, budget_s=120.0):
+        calls, sleeps = [], []
+        now = [0.0]
+        queue = list(replies)
+
+        def post(base, auth, path, body):
+            calls.append(path)
+            return queue.pop(0)
+
+        def sleep(seconds):
+            sleeps.append(seconds)
+            now[0] += seconds
+
+        try:
+            result = REC.replay_start("b", "a", "{}", post=post, sleep=sleep,
+                                      clock=lambda: now[0],
+                                      budget_s=budget_s)
+        except RuntimeError as error:
+            result = error
+        return result, calls, sleeps
+
+    def test_retries_then_succeeds(self):
+        result, calls, sleeps = self._run([
+            (503, self.FILL_BUSY, "3"), (503, self.FILL_BUSY, None),
+            (200, "{}", None)])
+        self.assertEqual(result, 200)
+        self.assertEqual(sleeps, [3.0, 1.0])
+        self.assertEqual(calls, ["/api/replays/start"] * 3)
+
+    def test_budget_exhausted_raises(self):
+        result, calls, sleeps = self._run(
+            [(503, self.FILL_BUSY, "30")] * 10, budget_s=120.0)
+        self.assertIsInstance(result, RuntimeError)
+        self.assertIn("fill_busy", str(result))
+        self.assertEqual(sum(sleeps), 120.0)
+
+    def test_other_503_not_retried(self):
+        result, calls, sleeps = self._run(
+            [(503, '{"ok":false,"error":"sd_busy"}', "2")])
+        self.assertEqual(result, 503)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(sleeps, [])
+
+    def test_409_passes_through(self):
+        result, calls, _ = self._run(
+            [(409, '{"error":"replay_carrier_present"}', None)])
+        self.assertEqual(result, 409)
+        self.assertEqual(len(calls), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

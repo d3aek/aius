@@ -149,6 +149,7 @@ static FLASHMEM void finish_success(AiusSdJob *job)
 	case AIUS_SD_JOB_UPLOAD:
 	case AIUS_SD_JOB_DOWNLOAD:
 	case AIUS_SD_JOB_REPLAY_REFILL:
+	case AIUS_SD_JOB_CACHE_FILL:
 		job->result.kind = AIUS_SD_RESULT_BYTES;
 		job->result.transferred_bytes =
 			job->kind == AIUS_SD_JOB_CONFIG_LOAD
@@ -262,7 +263,7 @@ static FLASHMEM AiusSdFault validate_request(const AiusSdJob *job,
 	if (request == NULL)
 		return AIUS_SD_FAULT_INVALID_REQUEST;
 	if (request->kind < AIUS_SD_JOB_PROBE ||
-	    request->kind > AIUS_SD_JOB_REPLAY_REFILL ||
+	    request->kind > AIUS_SD_JOB_CACHE_FILL ||
 	    request->install_mode < AIUS_SD_INSTALL_REPLACE ||
 	    request->install_mode > AIUS_SD_INSTALL_FINALIZE_PART)
 		return AIUS_SD_FAULT_INVALID_REQUEST;
@@ -327,6 +328,17 @@ static FLASHMEM AiusSdFault validate_request(const AiusSdJob *job,
 
 	case AIUS_SD_JOB_DELETE:
 		if (request->total != 0u || request->initial_offset != 0u ||
+		    request->publish || request->content_type != NULL ||
+		    request->temp_path != NULL || request->backup_path != NULL)
+			return AIUS_SD_FAULT_INVALID_REQUEST;
+		if (!copy_canonical_path(request->target_path, target))
+			return AIUS_SD_FAULT_PATH;
+		break;
+
+	case AIUS_SD_JOB_CACHE_FILL:
+		/* A resume starts at a chunk boundary (Phase 4g, owner). */
+		if (request->total != 0u ||
+		    request->initial_offset % AIUS_SD_CACHE_FILL_ALIGN != 0u ||
 		    request->publish || request->content_type != NULL ||
 		    request->temp_path != NULL || request->backup_path != NULL)
 			return AIUS_SD_FAULT_INVALID_REQUEST;
@@ -1090,6 +1102,7 @@ static FLASHMEM void select_after_begin(AiusSdJob *job)
 		break;
 	case AIUS_SD_JOB_DOWNLOAD:
 	case AIUS_SD_JOB_REPLAY_REFILL:
+	case AIUS_SD_JOB_CACHE_FILL:
 		set_phase(job, AIUS_SD_PHASE_DOWNLOAD_OPEN, AIUS_SD_OPEN);
 		break;
 	case AIUS_SD_JOB_DELETE:

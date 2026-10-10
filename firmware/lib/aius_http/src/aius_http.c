@@ -1,5 +1,6 @@
 #include "aius_http.h"
 
+#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -367,6 +368,134 @@ static FLASHMEM AiusHttpResult extract_sd_auth(const uint8_t *headers, size_t le
 	return AIUS_HTTP_OK;
 }
 
+static FLASHMEM const uint8_t *trim_ws(const uint8_t *start, const uint8_t *end,
+	                                const uint8_t **trimmed_end)
+{
+	while (start < end && (*start == ' ' || *start == '\t'))
+		start++;
+	while (end > start && (end[-1] == ' ' || end[-1] == '\t'))
+		end--;
+	*trimmed_end = end;
+	return start;
+}
+
+/* RFC 9110 12.4.2 qvalue: 0, 0., 0.0 .. 0.000 are zero; anything else is not. */
+static FLASHMEM int qvalue_is_zero(const uint8_t *value, const uint8_t *end)
+{
+	if (value >= end || *value != '0')
+		return 0;
+	value++;
+	if (value < end && *value == '.')
+		value++;
+	else if (value < end)
+		return 0;
+	while (value < end)
+		if (*value++ != '0')
+			return 0;
+	return 1;
+}
+
+/* One Accept-Encoding value. Only the gzip coding matters; last gzip entry wins. */
+static FLASHMEM void scan_accept_encoding(const uint8_t *cursor, const uint8_t *end,
+	                              AiusHttpRequest *request)
+{
+	while (cursor < end) {
+		const uint8_t *comma = (const uint8_t *)memchr(cursor, ',', (size_t)(end - cursor));
+		const uint8_t *item_end = comma == NULL ? end : comma;
+		const uint8_t *semi = (const uint8_t *)memchr(cursor, ';', (size_t)(item_end - cursor));
+		const uint8_t *coding_end;
+		const uint8_t *coding = trim_ws(cursor, semi == NULL ? item_end : semi, &coding_end);
+		if (header_name_equals(coding, (size_t)(coding_end - coding), "gzip")) {
+			int zero = 0;
+			if (semi != NULL) {
+				const uint8_t *param_end;
+				const uint8_t *param = trim_ws(semi + 1, item_end, &param_end);
+				if (param_end - param >= 2 && (param[0] == 'q' || param[0] == 'Q')) {
+					const uint8_t *eq_end;
+					const uint8_t *eq = trim_ws(param + 1, param_end, &eq_end);
+					if (eq < eq_end && *eq == '=') {
+						const uint8_t *q_end;
+						const uint8_t *q = trim_ws(eq + 1, eq_end, &q_end);
+						zero = qvalue_is_zero(q, q_end);
+					}
+				}
+			}
+			request->accepts_gzip = !zero;
+		}
+		if (comma == NULL)
+			break;
+		cursor = comma + 1;
+	}
+}
+
+static FLASHMEM void extract_cache_headers(const uint8_t *base,
+	                                  const uint8_t *headers, size_t length,
+	                                  AiusHttpRequest *request)
+{
+	const uint8_t *cursor = headers;
+	const uint8_t *end = headers + length;
+	while (cursor < end) {
+		const uint8_t *line_end = find_bytes(cursor, (size_t)(end - cursor), "\r\n", 2);
+		const uint8_t *colon;
+		if (line_end == NULL) line_end = end;
+		colon = (const uint8_t *)memchr(cursor, ':', (size_t)(line_end - cursor));
+		if (colon != NULL) {
+			size_t name_length = (size_t)(colon - cursor);
+			const uint8_t *value_end;
+			const uint8_t *value;
+			if (header_name_equals(cursor, name_length, "Accept-Encoding")) {
+				value = trim_ws(colon + 1, line_end, &value_end);
+				scan_accept_encoding(value, value_end, request);
+			} else if (header_name_equals(cursor, name_length, "If-None-Match") &&
+			           request->if_none_match_offset == 0u) {
+				value = trim_ws(colon + 1, line_end, &value_end);
+				if (value < value_end)
+					request->if_none_match_offset =
+						(uint16_t)(value - base);
+			}
+		}
+		if (line_end == end) break;
+		cursor = line_end + 2;
+	}
+}
+
+FLASHMEM bool aius_http_if_none_match(const AiusHttpRequest *request, const char *etag)
+{
+	const uint8_t *cursor, *end;
+	size_t etag_length;
+	if (request == NULL || etag == NULL || request->if_none_match_offset == 0u ||
+	    request->body == NULL)
+		return false;
+	etag_length = strlen(etag);
+	cursor = request->body - request->header_length + request->if_none_match_offset;
+	/* The value runs to the line end; the parsed request always holds the
+	 * terminating CRLF CRLF after the headers, so the scan is bounded. */
+	end = cursor;
+	while (*end != '\r' && *end != '\n')
+		end++;
+	while (cursor < end) {
+		const uint8_t *close;
+		while (cursor < end && (*cursor == ' ' || *cursor == '\t' || *cursor == ','))
+			cursor++;
+		if (cursor >= end)
+			break;
+		if (*cursor == '*')
+			return true;
+		if (end - cursor >= 2 && cursor[0] == 'W' && cursor[1] == '/')
+			cursor += 2;
+		if (cursor >= end || *cursor != '"')
+			return false; /* malformed: no match */
+		close = (const uint8_t *)memchr(cursor + 1, '"', (size_t)(end - (cursor + 1)));
+		if (close == NULL)
+			return false;
+		if ((size_t)(close + 1 - cursor) == etag_length &&
+		    memcmp(cursor, etag, etag_length) == 0)
+			return true;
+		cursor = close + 1;
+	}
+	return false;
+}
+
 static FLASHMEM int is_streamed_request(const AiusHttpRequest *request)
 {
 	return request->method == AIUS_HTTP_PUT &&
@@ -426,6 +555,7 @@ FLASHMEM AiusHttpResult aius_http_parse(const uint8_t *data, size_t length,
 	AiusHttpResult range_result = extract_content_range(header_start, header_length, request);
 	if (range_result != AIUS_HTTP_OK)
 		return range_result;
+	extract_cache_headers(data, header_start, header_length, request);
 	const uint8_t *body = header_end + 4;
 	size_t body_length = length - (size_t)(body - data);
 	request->body = body;
@@ -555,6 +685,7 @@ FLASHMEM const char *aius_http_reason(unsigned status)
 	case 200: return "OK";
 	case 201: return "Created";
 	case 204: return "No Content";
+	case 304: return "Not Modified";
 	case 400: return "Bad Request";
 	case 401: return "Unauthorized";
 	case 403: return "Forbidden";
@@ -585,43 +716,101 @@ static FLASHMEM int valid_content_type(const char *content_type)
 	return length != 0u && length < AIUS_HTTP_CONTENT_TYPE_STORAGE;
 }
 
+static FLASHMEM int append_fmt(uint8_t *output, size_t capacity, size_t *pos,
+	                      const char *format, ...)
+{
+	va_list args;
+	int n;
+	if (*pos > capacity)
+		return 0;
+	va_start(args, format);
+	n = vsnprintf((char *)output + *pos, capacity - *pos, format, args);
+	va_end(args);
+	if (n < 0 || (size_t)n > capacity - *pos)
+		return 0;
+	/* An exact fit (n == remaining) is legal -- the header block needs no NUL --
+	 * but vsnprintf spent the last byte on one. Every line ends in '\n'. */
+	if ((size_t)n == capacity - *pos)
+		output[*pos + (size_t)n - 1u] = '\n';
+	*pos += (size_t)n;
+	return 1;
+}
+
+static FLASHMEM int valid_etag(const char *etag)
+{
+	size_t length = 0;
+	while (length <= AIUS_HTTP_ETAG_MAX && etag[length] != '\0') {
+		unsigned char value = (unsigned char)etag[length];
+		if (value < 0x20u || value > 0x7eu)
+			return 0;
+		length++;
+	}
+	return length >= 2u && length <= AIUS_HTTP_ETAG_MAX;
+}
+
+FLASHMEM size_t aius_http_write_headers_ex(uint8_t *output, size_t capacity,
+	                           unsigned status, const char *content_type,
+	                           uint64_t content_length,
+	                           uint32_t cache_max_age_s,
+	                           const AiusHttpCacheOptions *options)
+{
+	/* Zero cache_max_age_s means BYTE-IDENTICAL headers to the pre-cache
+	 * firmware, not "max-age=0": absence already means uncacheable here. */
+	const char *reason = aius_http_reason(status);
+	const int not_modified = status == 304u;
+	size_t pos = 0;
+	if (output == NULL || reason == NULL)
+		return 0;
+	if (options != NULL && options->etag != NULL && !valid_etag(options->etag))
+		return 0;
+	if (not_modified) {
+		if (!append_fmt(output, capacity, &pos, "HTTP/1.0 %u %s\r\n", status, reason))
+			return 0;
+	} else {
+		if (!valid_content_type(content_type) ||
+		    !append_fmt(output, capacity, &pos,
+		        "HTTP/1.0 %u %s\r\nContent-Type: %s\r\nContent-Length: %llu\r\n",
+		        status, reason, content_type, (unsigned long long)content_length))
+			return 0;
+	}
+	if (options != NULL && options->cache_no_cache) {
+		if (!append_fmt(output, capacity, &pos, "Cache-Control: no-cache\r\n"))
+			return 0;
+	} else if (cache_max_age_s != 0u) {
+		if (!append_fmt(output, capacity, &pos, "Cache-Control: max-age=%lu\r\n",
+		                (unsigned long)cache_max_age_s))
+			return 0;
+	}
+	if (options != NULL) {
+		if (options->content_encoding_gzip && !not_modified &&
+		    !append_fmt(output, capacity, &pos, "Content-Encoding: gzip\r\n"))
+			return 0;
+		if (options->etag != NULL &&
+		    !append_fmt(output, capacity, &pos, "ETag: %s\r\n", options->etag))
+			return 0;
+		if (options->vary_accept_encoding &&
+		    !append_fmt(output, capacity, &pos, "Vary: Accept-Encoding\r\n"))
+			return 0;
+	}
+	/* Only a 503 gains Retry-After; every other status is byte-identical. */
+	if (status == 503u && !append_fmt(output, capacity, &pos, "Retry-After: 1\r\n"))
+		return 0;
+	if (!append_fmt(output, capacity, &pos, "Connection: close\r\n\r\n"))
+		return 0;
+	return pos;
+}
+
 FLASHMEM size_t aius_http_write_headers(uint8_t *output, size_t capacity,
 	                           unsigned status, const char *content_type,
 	                           uint64_t content_length,
 	                           uint32_t cache_max_age_s)
 {
-	/* 224: the 192 the pre-cache header set fit with margin, plus the 32-byte
-	 * worst case of "Cache-Control: max-age=4294967295\r\n". */
-	char header[256];
-	char cache[40];
-	/* Only a 503 gains a header; every other status is byte-identical. */
-	const char *retry = status == 503u ? "Retry-After: 1\r\n" : "";
-	const char *reason = aius_http_reason(status);
-	int header_length;
-	if (output == NULL || reason == NULL || !valid_content_type(content_type))
+	/* A 304 needs the _ex form's no-body framing; the legacy entry keeps its
+	 * contract of always framing a body. */
+	if (status == 304u)
 		return 0;
-	/* Zero means BYTE-IDENTICAL headers to the pre-cache firmware, not
-	 * "max-age=0": an explicit no-cache directive would change every API
-	 * response on the wire, and absence already means uncacheable here (no
-	 * validator, no freshness info anywhere else in the set). */
-	if (cache_max_age_s != 0u) {
-		int cache_length = snprintf(cache, sizeof(cache),
-			"Cache-Control: max-age=%lu\r\n",
-			(unsigned long)cache_max_age_s);
-		if (cache_length < 0 || (size_t)cache_length >= sizeof(cache))
-			return 0;
-	} else {
-		cache[0] = '\0';
-	}
-	header_length = snprintf(header, sizeof(header),
-		"HTTP/1.0 %u %s\r\nContent-Type: %s\r\nContent-Length: %llu\r\n%s%sConnection: close\r\n\r\n",
-		status, reason, content_type, (unsigned long long)content_length,
-		cache, retry);
-	if (header_length < 0 || (size_t)header_length >= sizeof(header) ||
-	    (size_t)header_length > capacity)
-		return 0;
-	memcpy(output, header, (size_t)header_length);
-	return (size_t)header_length;
+	return aius_http_write_headers_ex(output, capacity, status, content_type,
+	                                  content_length, cache_max_age_s, NULL);
 }
 
 FLASHMEM size_t aius_http_write_response(uint8_t *output, size_t capacity,
