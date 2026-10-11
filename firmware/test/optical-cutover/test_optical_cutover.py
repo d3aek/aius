@@ -6437,6 +6437,64 @@ def assert_fill_route_and_card_wiring(sources):
     )
 
 
+REPLAY_DELETE_IEC = re.compile(
+    r'snprintf\s*\(\s*path\s*,\s*sizeof\s*\(\s*path\s*\)\s*,\s*'
+    r'"/aius/replays/%s\.iec"\s*,\s*id\s*\)\s*;'
+)
+REPLAY_DELETE_PART_FALLBACK = re.compile(
+    r'if\s*\(\s*!\s*SD\s*\.\s*exists\s*\(\s*path\s*\)\s*\)\s*'
+    r'snprintf\s*\(\s*path\s*,\s*sizeof\s*\(\s*path\s*\)\s*,\s*'
+    r'"/aius/replays/%s\.part"\s*,\s*id\s*\)\s*;'
+)
+
+
+def assert_replay_delete_removes_iec_else_part(sources):
+    """Phase 4i step 1a: app_replay_delete removes <id>.iec when it exists and
+    otherwise <id>.part (an in-flight capture), never both: the .part path is
+    chosen only when the .iec test fails, so an existing .iec leaves a .part
+    untouched. One ProducerSdWindow, one SD.remove, one direct_card_settle
+    after it, and the replay-active refusal ahead of the window."""
+    raw = all_function_definitions(sources[OPTICAL_MAIN_SOURCE]).get(
+        REPLAY_DELETE_FUNCTION, ""
+    )
+    body = without_comments_and_literals(raw)
+    assert raw, f"{REPLAY_DELETE_FUNCTION} not found"
+    iec = REPLAY_DELETE_IEC.search(raw)
+    part = REPLAY_DELETE_PART_FALLBACK.search(raw)
+    assert iec and part and iec.start() < part.start(), (
+        f"{REPLAY_DELETE_FUNCTION} must build the .iec path first and fall back "
+        "to .part only when the .iec does not exist (4i step 1a)"
+    )
+    windows = WINDOW_DECLARATION.findall(body)
+    assert len(windows) == 1, (
+        f"{REPLAY_DELETE_FUNCTION} must hold exactly one ProducerSdWindow, "
+        f"found {len(windows)} (4i step 1a)"
+    )
+    removes = list(re.finditer(r"\bSD\s*\.\s*remove\s*\(", body))
+    settles = list(re.finditer(
+        r"\bdirect_card_settle\s*\(\s*SD\s*\.\s*sdErrorCode\s*\(\s*\)\s*\)", body
+    ))
+    assert len(removes) == 1 and len(settles) == 1, (
+        f"{REPLAY_DELETE_FUNCTION} must make one SD.remove and one "
+        "direct_card_settle (4i step 1a)"
+    )
+    window = WINDOW_DECLARATION.search(body)
+    fallback = body.find("SD.exists", body.find("SD.exists") + 1)
+    assert (window.start() < body.find("SD.exists") < fallback
+            < removes[0].start() < settles[0].start()), (
+        f"{REPLAY_DELETE_FUNCTION}: both removals' card ops must sit inside the "
+        "window, settled by direct_card_settle after the remove (4i step 1a)"
+    )
+    refusal = body.find("AIUS_OPTICAL_APP_REPLAY_ACTIVE")
+    assert (-1 < refusal < window.start()
+            and "AIUS_REPLAY_SOURCE_SWITCHING_TO_REPLAY" in body
+            and "AIUS_REPLAY_SOURCE_REPLAY" in body
+            and re.search(r"\bstrcmp\s*\(\s*id\s*,\s*g_replay_service\s*\.\s*id", body)), (
+        f"{REPLAY_DELETE_FUNCTION} must keep the replay-active refusal before "
+        "the window (4i step 1a)"
+    )
+
+
 FILL_RESUME_START = re.compile(
     r"\brequest\s*\.\s*initial_offset\s*=\s*aius_web_cache_fill_resume_offset\s*\(\s*"
     r"&\s*g_web_cache\s*,\s*rel\s*,\s*strlen\s*\(\s*rel\s*\)\s*\)\s*;"
@@ -6862,6 +6920,7 @@ def run_sd_overlay_self_test(sources):
 ADMISSION_CHECKS = (
     ("fill-resume-pause-and-presets", assert_fill_resume_pause_and_presets),
     ("fill-route-and-card-wiring", assert_fill_route_and_card_wiring),
+    ("replay-delete-iec-else-part", assert_replay_delete_removes_iec_else_part),
     ("root-sd-starts-consult-fifo-defer", assert_root_sd_starts_consult_fifo_defer),
     ("ota-staging-exempt-before-margin", assert_ota_staging_exempt_before_margin),
     ("single-ownership-predicate", assert_single_ownership_predicate),
@@ -6941,8 +7000,16 @@ def _admission_fixture():
         "\tFile directory = SD.open(\"/aius/replays\");\n"
         "\tdirectory.close();\n\tdirect_card_settle(SD.sdErrorCode());\n\treturn 0;\n}\n"
         "static FLASHMEM int app_replay_delete(void *, const char *id)\n{\n"
+        "\tchar path[96];\n"
+        "\tif (strcmp(id, g_replay_service.id) == 0 &&\n"
+        "\t    (g_replay_service.source == AIUS_REPLAY_SOURCE_REPLAY ||\n"
+        "\t     g_replay_service.source == AIUS_REPLAY_SOURCE_SWITCHING_TO_REPLAY))\n"
+        "\t\treturn AIUS_OPTICAL_APP_REPLAY_ACTIVE;\n"
+        "\tsnprintf(path, sizeof(path), \"/aius/replays/%s.iec\", id);\n"
         "\tconst ProducerSdWindow window;\n\tSD.clearError();\n"
-        "\tconst bool removed = SD.exists(id) && SD.remove(id);\n"
+        "\tif (!SD.exists(path))\n"
+        "\t\tsnprintf(path, sizeof(path), \"/aius/replays/%s.part\", id);\n"
+        "\tconst bool removed = SD.exists(path) && SD.remove(path);\n"
         "\tdirect_card_settle(SD.sdErrorCode());\n\treturn removed;\n}\n"
         "static FLASHMEM int app_read_directory(void *, const char *p)\n{\n"
         "\tconst ProducerSdWindow window;\n\tSD.clearError();\n"
@@ -7339,6 +7406,35 @@ def run_admission_self_test():
         good, OPTICAL_MAIN_SOURCE,
         "\tdirect_card_settle(SD.sdErrorCode());\n\treturn removed;", "\treturn removed;",
     ), "f6/delete-unsettled", "app_replay_delete")
+    # Phase 4i step 1a: the delete removes .iec, else .part, in one window.
+    part_delete = assert_replay_delete_removes_iec_else_part
+    _expect_fail(part_delete, _mutated(
+        good, OPTICAL_MAIN_SOURCE,
+        "\tif (!SD.exists(path))\n"
+        "\t\tsnprintf(path, sizeof(path), \"/aius/replays/%s.part\", id);\n", "",
+    ), "4i1a/no-part-fallback", "fall back")
+    _expect_fail(part_delete, _mutated(
+        good, OPTICAL_MAIN_SOURCE,
+        "\tif (!SD.exists(path))\n"
+        "\t\tsnprintf(path, sizeof(path), \"/aius/replays/%s.part\", id);\n",
+        "\tsnprintf(path, sizeof(path), \"/aius/replays/%s.part\", id);\n",
+    ), "4i1a/part-clobbers-iec", "fall back")
+    _expect_fail(part_delete, _mutated(
+        good, OPTICAL_MAIN_SOURCE,
+        "\tconst bool removed = SD.exists(path) && SD.remove(path);\n",
+        "\tconst bool removed = SD.exists(path) && SD.remove(path);\n"
+        "\tconst ProducerSdWindow again;\n",
+    ), "4i1a/second-window", "exactly one ProducerSdWindow")
+    _expect_fail(part_delete, _mutated(
+        good, OPTICAL_MAIN_SOURCE,
+        "\tdirect_card_settle(SD.sdErrorCode());\n\treturn removed;",
+        "\treturn removed;",
+    ), "4i1a/unsettled", "one direct_card_settle")
+    _expect_fail(part_delete, _mutated(
+        good, OPTICAL_MAIN_SOURCE,
+        "\t\treturn AIUS_OPTICAL_APP_REPLAY_ACTIVE;\n\tsnprintf(path, sizeof(path), \"/aius/replays/%s.iec\", id);\n",
+        "\tsnprintf(path, sizeof(path), \"/aius/replays/%s.iec\", id);\n",
+    ), "4i1a/refusal-dropped", "replay-active refusal")
     _expect_fail(wiring, _mutated(
         good, OPTICAL_MAIN_SOURCE,
         "\tconst ProducerSdWindow window;\n\tSD.clearError();\n\tFile directory = SD.open(p);",

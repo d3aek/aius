@@ -780,7 +780,7 @@
       },
       "delete": {
         "operationId": "deleteReplay",
-        "description": "Deletes one replay vector by id (both the complete .iec and a .part are candidates; the body parser is strict - duplicate or unknown keys refuse). Two card primitives, gated on the volume like the listing.",
+        "description": "Deletes one replay vector by id: <id>.iec when it exists, otherwise <id>.part, never both (a .part beside an .iec is left). The body parser is strict - duplicate or unknown keys refuse. At most three card primitives (two existence checks, one remove), gated on the volume like the listing.",
         "parameters": [{ "$ref": "#/components/parameters/SdAuth" }],
         "requestBody": {
           "required": true,

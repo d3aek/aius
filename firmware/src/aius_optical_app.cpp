@@ -1806,7 +1806,7 @@ static FLASHMEM const AiusHttpApplicationResponse *dispatch_replays(
 		if (!replay_body_id(dispatcher, request, &loop))
 			return http_error(dispatcher, 400, "replay_body");
 		/* Same gate, same reason: replay_delete stats and removes on the card
-		 * itself. Its cost is a constant two primitives, so the bound was never
+		 * itself. Its cost is at most three primitives, so the bound was never
 		 * the problem here -- the missing exclusion was. Ordered after the body
 		 * parse so a malformed request keeps answering 400 whatever the volume
 		 * is doing. */

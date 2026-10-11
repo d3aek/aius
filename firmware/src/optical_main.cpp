@@ -7440,7 +7440,7 @@ static FLASHMEM AiusOpticalAppReplayResult app_replay_start(void *,
  * reading it. Before 14c, start returned already playing, so the window did not
  * exist.
  *
- * Two card primitives, and both are already bounded by being constants -- there
+ * At most three card primitives (two exists, one remove), all constants -- there
  * is no walk here to cap. What the Phase 14d audit found missing was the
  * exclusion: this ran while an SD job could own the volume. The dispatcher now
  * calls it only when app_sd_busy() is false (aius_optical_app.cpp), the same
@@ -7457,6 +7457,10 @@ static FLASHMEM AiusOpticalAppReplayResult app_replay_delete(void *,
 	snprintf(path, sizeof(path), "/aius/replays/%s.iec", id);
 	const ProducerSdWindow window;
 	SD.clearError();
+	/* An in-flight capture is <id>.part until its rename; the .iec wins when
+	 * both exist, and the .part is then left alone. */
+	if (!SD.exists(path))
+		snprintf(path, sizeof(path), "/aius/replays/%s.part", id);
 	const AiusOpticalAppReplayResult result =
 		!SD.exists(path) ? AIUS_OPTICAL_APP_REPLAY_NOT_FOUND
 		: SD.remove(path) ? AIUS_OPTICAL_APP_REPLAY_OK
