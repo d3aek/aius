@@ -76,9 +76,10 @@ built); replace wholesale on the next handover.
   sync that uploads the bundles) and run 2 (AC-3 page loads), then 4h's
   AC-3 and accidental-disconnect runs. An E7 verdict of B2 re-plans 4f to 4h before
   their device runs (4f's body records this).
-- **Next action.** 4i step 1 (step 1a and `replay_retire.py`) builds
-  host-only ahead of 4b (owner, 2026-10-11); then 4b's device sessions
-  (owner), then the rest of 4i.
+- **Next action.** 4b's device sessions (owner), then the rest of 4i:
+  step 1a's OTA (owner gate 1) and the baseline run. 4i step 1a and
+  `replay_retire.py` are built and host-proven (2026-10-11, ahead of 4b
+  on the owner's word).
 - **What landed this run** (aius commits; each followed by a upstream repository
   pointer bump; foreign commits from the mixer session omitted):
 
@@ -111,16 +112,15 @@ built); replace wholesale on the next handover.
 | `9c9bd88` | Phase 4f BUILT: link-time admission (route and SD-start shedding, 503 audio_busy with Retry-After), live_owns_ring, time-aged bucketed cost windows, FIFO start-gate deferral with bring-up latch, render and storage-diag yields, /api/status/brief, shared web poller with 503 skip and GET timeout, capture.py 503 skips, dsp_model_pad.py, D-S7, delivery-audit fixes (F-B1, F-B2, F-S1 to F-S6) | 14 host suites (verifier run), all four images, OCRAM at every floor, delivery audit closure PASS |
 | this commit | handover: this state; 4g gains starting figures and three carried-in items | none needed |
 | `35c6585` | Phase 4h BUILT: write-behind settings flush over 4g's PSRAM store (sd-overlay), disconnect hold and remount retry, copy-before-write saves with mount restore, PSRAM upload sink, BUSY verdict and SD-writes freeze, OTA and reboot drain gate, `sd_flush` status, public `FsVolume::cacheClear`, delivery-audit and clean-room fixes (D-S4, D-N10 and CR-N2 recorded as residual risks; D-N8 deferred to 4k) | 21 host suites, vitest, ota client, shellcheck (verifier run); all four images with every post-link guard; delivery audit FAIL then four closures FAIL and a fifth PASS; clean-room HOLD then three closures HOLD and a fourth PASS |
-| this commit | Phase 4i step 1a: a replay delete removes `<id>.iec` when it exists, else `<id>.part` (one window, settled); openapi and two comments count at most three primitives | optical-cutover (new admission case, five self-test mutations), optical-app, stack-bound, producer-isolation, itcm-placement, memory, sd-editor; all four images, OCRAM unchanged; delivery audit: no firmware defect |
+| this commit | Phase 4i step 1: `firmware/tools/replay_retire.py` (archive, delete-captures, delete-www; `--auth-file`; committed-and-unchanged check before any delete) | measure-vectors 23 (20 new, fake device and temporary git repos); delivery audit FAIL (B1, S1, N1 to N4) then closure PASS (N5, N6 folded) |
+| `603bc08` | Phase 4i step 1a: a replay delete removes `<id>.iec` when it exists, else `<id>.part` (one window, settled); openapi and two comments count at most three primitives | optical-cutover (new admission case, five self-test mutations), optical-app, stack-bound, producer-isolation, itcm-placement, memory, sd-editor; all four images, OCRAM unchanged; delivery audit: no firmware defect |
 | `8c2221d` | OTA of `e619980d3d42` recorded; `aius-sd-sync.sh` sends subdirectory paths literally (the firmware refuses `%2F`, so `www/fonts/` never uploaded) | www-bundle tests 28 (one new), shellcheck |
 | `27bc275` | Phase 4m BUILT (mixer plan Phase 1e, owner-approved): "EQ and trim bypassed" note, EQ curve and handles at each member's trim offset on both SD pages | sd-editor vitest 6 files, 432 tests (verifier run); Chromium probe of the mixer preview |
 | `d1ab0f4` | Phase 4l BUILT: 16-preset cap at accept (409 preset_limit, sd_busy until the walk completes), one-pass count, editor message and leading-dot rule, openapi 409; 4h cap text rewritten | 8 host suites (verifier rerun), all four images with every post-link guard and OCRAM at each floor; delivery audit FAIL (B1, S1, S2) then closure PASS |
 | `baa8e2c` | Phase 4k BUILT: tri-state BEGIN gate (NONE, WAIT, NO_CARD), AIUS_HTTP_VERDICT_UNAVAILABLE as 503 sd_unavailable for a refused SD_START, verdict switches with no default, AIUS_HTTP_DRIVER_FAULT_SD_UNAVAILABLE, upgrade.js stop case | 8 host suites (verifier run), all four images with every post-link guard and OCRAM at each floor; delivery audit PASS |
 | `8c2c67a` | Phase 4j BUILT: idle DSP apply (predicate and shared decision in `aius_dsp_runtime_config`, block stamp, noinline `dsp_idle_apply_service` producer root, millis() at the call site), tool text and CONTRIBUTING; 4k and 4l prebuild reviews folded with owner answers (4k staging stops on sd_unavailable; 4l sd_busy until counted, 409 once 16 counted) | 7 host suites (verifier run), all four images with every post-link guard and OCRAM at each floor; delivery audit FAIL (S1) then closure PASS |
 
-- **Uncommitted tree.** `firmware/tools/replay_retire.py` and its
-  tests in `firmware/test/measure-vectors/` (4i step 1, audit fixes in
-  progress).
+- **Uncommitted tree.** Nothing of this session's.
 - **Hook item.** `stop-guard.action-reverify` is item 11 of
   `src/tools/hook/docs/plans/hook-daemon-feature-backlog.md` (owner:
   plan, do not dispatch).
@@ -6854,11 +6854,17 @@ gate 1.
   three card primitives (audit S2). The optical-cutover admission case
   `replay-delete-iec-else-part` pins it, with five self-test mutations.
 - **Delivery audit of step 1 (2026-10-11): FAIL on `replay_retire.py`
-  only.** B1 (`ls-files` proved tracked, not committed), S1 (card bytes
-  never compared with the manifest), N1 to N4 (git check untested,
-  network errors as tracebacks, archive overwrote the manifest, manifest
-  under the LFS artifact tree) are being fixed; the manifest moves to
-  `evidence/AIUS-REPLAY-CAPTURES.manifest.json`.
+  only, closure PASS.** Fixed: B1 (`ls-files` proved tracked, not
+  committed; now the path must be in HEAD with the working tree and
+  index equal to HEAD), S1 (an `.iec` whose listed bytes differ from the
+  manifest is skipped, which blocks the `.part` pass), N1 (temporary-repo
+  tests), N2 (network errors give an `error:` line), N3 (archive refuses
+  an existing manifest without `--force`), N4 (the manifest is
+  `evidence/AIUS-REPLAY-CAPTURES.manifest.json`, plain git; captures
+  stay in LFS under `docs/reference/datasheets.mdAIUS-REPLAY-CAPTURES/`), and the
+  closure's N5 (git missing is an `error:` line) and N6
+  (`GIT_OPTIONAL_LOCKS=0`). Not yet run against the board: its first use
+  is the owner's archive run after the baseline.
 
 **What must survive.**
 
