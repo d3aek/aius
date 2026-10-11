@@ -12,8 +12,9 @@ PUT /api/dsp/config takes the WHOLE config, the keys GET returns plus
 "base_generation" (the optimistic-concurrency token). The firmware answers
 409 (stale) when base_generation != its applied config_generation, so the
 tool carries the GET's config_generation as base_generation. A 200 means the
-SD commit landed; config_generation advances only at the audio block-boundary
-apply, so with no carrier GET keeps the old generation and config_pending true.
+SD commit landed; config_generation advances only when the save applies, at the
+next audio block or, with none reaching the DSP for 100 ms, within one service
+epoch, so until then GET keeps the old generation and config_pending true.
 
 Each --set is PATH=JSON (dotted path; a numeric segment indexes a list). A
 path that does not already exist in the config is refused, as are NaN and
@@ -22,12 +23,13 @@ is staged and would be overwritten) the tool refuses; --dry-run still prints
 the diff but warns. --dry-run makes no PUT.
 
 After a 200 the tool re-GETs and prints config_generation and config_pending.
-A save applies only when an audio block arrives (a carrier or a replay); until
-then GET shows config_pending true. --wait SECONDS polls (1 s interval): exit 0
+A save applies at the next audio block or, with none reaching the DSP for 100 ms,
+within one service epoch; until then GET shows config_pending true. --wait SECONDS polls (1 s interval): exit 0
 when config_pending is false and the applied config matches what we sent
 (generation is ignored, it restarts at boot); exit 1 when pending is false, the
 config differs and the generation is above the base (another client's save won);
-otherwise keep polling. Without a carrier --wait exits 3 with the save staged.
+otherwise keep polling. If the apply has not landed in time --wait exits 3 with
+the save staged.
 
 If the PUT fails at transport level the card write may have committed: the tool
 re-GETs once, treats a pending or matching config as saved, else exits 1 with
@@ -46,7 +48,7 @@ Exit codes:
   2  local refusal or bad input (usage, bad --wait, unknown path, NaN/Infinity,
      config_pending at the initial GET, missing, empty or multi-line auth file,
      non-JSON GET)
-  3  --wait timed out: saved to the card but not yet applied (no carrier?), or
+  3  --wait timed out: saved to the card but not yet applied (applies at the next block or within one service epoch), or
      the board never answered (rebooted? the save loads at boot)
 """
 import argparse
@@ -337,7 +339,8 @@ def run(base, token, assignments, dry_run, transport=urllib_transport,
                       f"{_describe(last_diffs)}", file=err)
             elif answered:
                 print(f"timed out after {wait} s: the save is committed to the card "
-                      f"but not yet applied (no carrier?)", file=err)
+                      f"but not yet applied (it applies at the next audio block "
+                      f"or within one service epoch)", file=err)
             else:
                 print(f"timed out after {wait} s: the board did not answer "
                       f"(rebooted?); the save is on the card and loads at boot",

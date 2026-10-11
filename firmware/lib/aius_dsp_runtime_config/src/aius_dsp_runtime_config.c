@@ -169,3 +169,31 @@ void aius_dsp_runtime_config_bind(
 		? &runtime->limiter
 		: NULL;
 }
+
+AIUS_DSP_RUNTIME_COLD
+bool aius_dsp_idle_apply_due(
+	bool apply_pending,
+	uint32_t last_block_ms,
+	uint32_t now_ms)
+{
+	return apply_pending &&
+	       (uint32_t)(now_ms - last_block_ms) >= AIUS_DSP_IDLE_APPLY_MS;
+}
+
+AIUS_DSP_RUNTIME_AUDIO
+AiusDspApplyDecision aius_dsp_apply_decide(
+	bool pending,
+	uint32_t applied_rate_hz,
+	uint32_t block_rate_hz)
+{
+	AiusDspApplyDecision d = { false, false, 0u, 0u };
+	const uint32_t rate = block_rate_hz != 0u ? block_rate_hz : applied_rate_hz;
+
+	if (pending || (block_rate_hz != 0u && block_rate_hz != applied_rate_hz)) {
+		d.copy = pending;
+		d.build = true;
+		d.build_rate_hz = rate;
+		d.generation_steps = 1u;
+	}
+	return d;
+}

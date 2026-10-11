@@ -408,8 +408,168 @@ static int test_two_consumers_render_identically_across_blocks(void)
 	return 0;
 }
 
+/* Phase 4j: a fake processor that executes the decision's fields exactly as
+ * enqueue (block arm) and dsp_idle_apply_service (idle arm) do. */
+typedef struct {
+	bool pending;
+	int staged;
+	int active;
+	uint32_t applied_rate;
+	uint32_t generation;
+	uint32_t last_block_ms;
+	int built_model;
+	uint32_t built_rate;
+	int builds;
+} FakeDsp;
+
+static void fake_exec(FakeDsp *f, AiusDspApplyDecision d)
+{
+	if (d.copy) {
+		f->active = f->staged;
+		f->pending = false;
+	}
+	if (d.build) {
+		f->built_model = f->active;
+		f->built_rate = d.build_rate_hz;
+		f->applied_rate = d.build_rate_hz;
+		f->builds++;
+	}
+	f->generation += d.generation_steps;
+}
+
+static void fake_block(FakeDsp *f, uint32_t now_ms, uint32_t rate)
+{
+	f->last_block_ms = now_ms;
+	fake_exec(f, aius_dsp_apply_decide(f->pending, f->applied_rate, rate));
+}
+
+static void fake_idle(FakeDsp *f, uint32_t now_ms)
+{
+	if (aius_dsp_idle_apply_due(f->pending, f->last_block_ms, now_ms))
+		fake_exec(f, aius_dsp_apply_decide(f->pending, f->applied_rate, 0u));
+}
+
+static FakeDsp fake_boot(void)
+{
+	FakeDsp f;
+
+	memset(&f, 0, sizeof(f));
+	f.active = 1;
+	f.built_model = 1;
+	f.built_rate = 48000u;
+	f.applied_rate = 48000u;
+	f.builds = 0;
+	return f;
+}
+
+static int test_idle_apply_predicate(void)
+{
+	CHECK(AIUS_DSP_IDLE_APPLY_MS == 100u);
+	CHECK(!aius_dsp_idle_apply_due(false, 0u, 0u));
+	CHECK(!aius_dsp_idle_apply_due(false, 0u, 100000u));
+	CHECK(!aius_dsp_idle_apply_due(true, 0u, 0u));
+	CHECK(!aius_dsp_idle_apply_due(true, 0u, 99u));
+	CHECK(aius_dsp_idle_apply_due(true, 0u, 100u));
+	CHECK(aius_dsp_idle_apply_due(true, 0u, 5000u));
+	/* millis() wrap: last block just before 2^32, now just after. */
+	CHECK(!aius_dsp_idle_apply_due(true, 0xFFFFFFF0u, 0x00000020u));
+	CHECK(!aius_dsp_idle_apply_due(true, 0xFFFFFFF0u, 0x00000053u));
+	CHECK(aius_dsp_idle_apply_due(true, 0xFFFFFFF0u, 0x00000054u));
+	CHECK(!aius_dsp_idle_apply_due(false, 0xFFFFFFF0u, 0x00000054u));
+	/* Contract: the caller passes a now no earlier than the last stamp (a
+	 * millis() read with no yield since). The predicate is an unsigned
+	 * elapsed-time test, so a now that predates the stamp wraps to a huge
+	 * elapsed time and reads as DUE; that is why the service checkpoint
+	 * passes a fresh millis(), never its epoch's now_ms (4j delivery audit
+	 * S1, pinned in optical-cutover). A signed guard is no fix: it would
+	 * refuse after 24.8 days of genuine idle. */
+	CHECK(aius_dsp_idle_apply_due(true, 1003u, 1000u));
+	CHECK(aius_dsp_idle_apply_due(true, 0x00000002u, 0xFFFFFFFEu));
+	/* 24.8+ days idle is still due. */
+	CHECK(aius_dsp_idle_apply_due(true, 0u, 0x80000000u));
+	return 0;
+}
+
+static int test_apply_decide_rules(void)
+{
+	AiusDspApplyDecision d;
+
+	d = aius_dsp_apply_decide(false, 48000u, 48000u);
+	CHECK(!d.copy && !d.build && d.generation_steps == 0u);
+	d = aius_dsp_apply_decide(false, 48000u, 0u);
+	CHECK(!d.copy && !d.build && d.generation_steps == 0u);
+	d = aius_dsp_apply_decide(true, 44100u, 0u);
+	CHECK(d.copy && d.build && d.build_rate_hz == 44100u &&
+	      d.generation_steps == 1u);
+	d = aius_dsp_apply_decide(false, 48000u, 96000u);
+	CHECK(!d.copy && d.build && d.build_rate_hz == 96000u &&
+	      d.generation_steps == 1u);
+	d = aius_dsp_apply_decide(true, 48000u, 96000u);
+	CHECK(d.copy && d.build && d.build_rate_hz == 96000u &&
+	      d.generation_steps == 1u);
+	d = aius_dsp_apply_decide(true, 48000u, 48000u);
+	CHECK(d.copy && d.build && d.build_rate_hz == 48000u &&
+	      d.generation_steps == 1u);
+	return 0;
+}
+
+static int test_idle_apply_b1_sequence(void)
+{
+	FakeDsp f = fake_boot();
+
+	f.staged = 2;
+	f.pending = true;
+	fake_idle(&f, 50u);
+	CHECK(f.builds == 0 && f.pending);
+	fake_idle(&f, 100u);
+	CHECK(!f.pending && f.active == 2);
+	CHECK(f.builds == 1 && f.built_model == 2 && f.built_rate == 48000u);
+	CHECK(f.generation == 1u);
+	fake_block(&f, 150u, 48000u);
+	CHECK(f.builds == 1 && f.built_model == 2 && f.generation == 1u);
+	return 0;
+}
+
+static int test_block_consumes_arm_before_idle(void)
+{
+	FakeDsp f = fake_boot();
+
+	f.staged = 2;
+	f.pending = true;
+	fake_block(&f, 50u, 48000u);
+	CHECK(f.builds == 1 && f.built_model == 2 && f.generation == 1u);
+	fake_idle(&f, 100u);
+	fake_idle(&f, 400u);
+	CHECK(f.builds == 1 && f.generation == 1u);
+	return 0;
+}
+
+static int test_block_rate_change_cases(void)
+{
+	FakeDsp f = fake_boot();
+
+	fake_block(&f, 10u, 96000u);
+	CHECK(f.builds == 1 && f.built_rate == 96000u && f.built_model == 1);
+	CHECK(f.generation == 1u);
+	fake_block(&f, 20u, 96000u);
+	CHECK(f.builds == 1 && f.generation == 1u);
+
+	f.staged = 3;
+	f.pending = true;
+	fake_block(&f, 30u, 44100u);
+	CHECK(f.builds == 2 && f.built_model == 3 && f.built_rate == 44100u);
+	CHECK(f.generation == 2u);
+	CHECK(!f.pending);
+	return 0;
+}
+
 int main(void)
 {
+	CHECK(test_idle_apply_predicate() == 0);
+	CHECK(test_apply_decide_rules() == 0);
+	CHECK(test_idle_apply_b1_sequence() == 0);
+	CHECK(test_block_consumes_arm_before_idle() == 0);
+	CHECK(test_block_rate_change_cases() == 0);
 	CHECK(test_invalid_inputs_fail_closed() == 0);
 	CHECK(test_every_model_field_resolves_and_state_resets() == 0);
 	CHECK(test_feature_bypasses_and_clipfree_resolution() == 0);

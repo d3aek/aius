@@ -38,7 +38,10 @@ built); replace wholesale on the next handover.
   closures passed; their device runs are the owner's and none has run.
   **4h BUILT** (2026-10-11): host proof and all four images green,
   delivery audit and closures recorded in its body; its device runs are
-  the owner's. 4i and 4j PLANNED and READY. 4b (acceptance umbrella)
+  the owner's. **4j BUILT** (2026-10-11): host proof and all four images
+  green, delivery audit closure PASS; its device run is the owner's, and
+  its N9 notes edit waits on the mixer session's hold. 4k and 4l READY
+  (prebuild folded 2026-10-11). 4i PLANNED and READY. 4b (acceptance umbrella)
   PLANNED: it closes after 4e to 4h's device runs. The owner holds two
   gates (below).
 - **Board.** Runs `df966f17b370` (Phase 4a) in slot 1, deployed by OTA
@@ -56,7 +59,11 @@ built); replace wholesale on the next handover.
   human-review gate as it arises and wait for the owner; give each call
   its own line, never a packed digest. Every device session (OTAs and
   source-off checks included) and anything destructive goes to the owner
-  (ruling 2026-10-07).
+  (ruling 2026-10-07). **Card edge cases are not owner questions**
+  (owner, 2026-10-11): pick the simplest sensible handling that keeps
+  normal saves, staging and playback working, record it in the phase,
+  and run no further review rounds on states the owner calls
+  never-happen.
 - **Owner gates (not questions).** (1) No OTA deploy, stage, rehearsal
   or activation until the owner's go-ahead; another bench round may come
   first. (2) Every device session is the owner's: 4e runs 1 and 2 (run 1
@@ -65,8 +72,9 @@ built); replace wholesale on the next handover.
   sync that uploads the bundles) and run 2 (AC-3 page loads), then 4h's
   AC-3 and accidental-disconnect runs. An E7 verdict of B2 re-plans 4f to 4h before
   their device runs (4f's body records this).
-- **Next action.** Phase 4j (parent-only, idle DSP apply), then 4k,
-  then 4l, then 4b's device sessions (owner), then 4i.
+- **Next action.** Phase 4k, then 4l (both touch `optical_main.cpp`,
+  so serial), then 4j N9 once the mixer doc is released, then 4b's
+  device sessions (owner), then 4i.
 - **What landed this run** (aius commits; each followed by a upstream repository
   pointer bump; foreign commits from the mixer session omitted):
 
@@ -99,6 +107,7 @@ built); replace wholesale on the next handover.
 | `9c9bd88` | Phase 4f BUILT: link-time admission (route and SD-start shedding, 503 audio_busy with Retry-After), live_owns_ring, time-aged bucketed cost windows, FIFO start-gate deferral with bring-up latch, render and storage-diag yields, /api/status/brief, shared web poller with 503 skip and GET timeout, capture.py 503 skips, dsp_model_pad.py, D-S7, delivery-audit fixes (F-B1, F-B2, F-S1 to F-S6) | 14 host suites (verifier run), all four images, OCRAM at every floor, delivery audit closure PASS |
 | this commit | handover: this state; 4g gains starting figures and three carried-in items | none needed |
 | `35c6585` | Phase 4h BUILT: write-behind settings flush over 4g's PSRAM store (sd-overlay), disconnect hold and remount retry, copy-before-write saves with mount restore, PSRAM upload sink, BUSY verdict and SD-writes freeze, OTA and reboot drain gate, `sd_flush` status, public `FsVolume::cacheClear`, delivery-audit and clean-room fixes (D-S4, D-N10 and CR-N2 recorded as residual risks; D-N8 deferred to 4k) | 21 host suites, vitest, ota client, shellcheck (verifier run); all four images with every post-link guard; delivery audit FAIL then four closures FAIL and a fifth PASS; clean-room HOLD then three closures HOLD and a fourth PASS |
+| this commit | Phase 4j BUILT: idle DSP apply (predicate and shared decision in `aius_dsp_runtime_config`, block stamp, noinline `dsp_idle_apply_service` producer root, millis() at the call site), tool text and CONTRIBUTING; 4k and 4l prebuild reviews folded with owner answers (4k staging stops on sd_unavailable; 4l sd_busy until counted, 409 once 16 counted) | 7 host suites (verifier run), all four images with every post-link guard and OCRAM at each floor; delivery audit FAIL (S1) then closure PASS |
 
 - **Uncommitted tree.** Nothing of this session's. Foreign and left
   alone: `docs/plans/aius-sd-mixer-dashboard.md` and
@@ -7025,7 +7034,7 @@ followed by its resolution.
 ```yaml
 phase: 4j
 title: A DSP save applies with no audio flowing
-status: planned
+status: built # 2026-10-11: host proof green (7 suites, verifier run), all four optical images with every post-link guard and OCRAM at each floor, delivery audit FAIL (S1 epoch clock) then closure PASS; the device run is the owner's (no OTA until the owner's go-ahead); one notes seam (N9) waits on another session's hold
 depends-on: phase-4h
 prebuild-review: ready # closure round 2 READY 2026-10-10, nits N1 to N3 folded. Closure NOT READY 2026-10-10 (S-new1, S-new2, N-new1, N-new2), folded. Before it: NOT READY 2026-10-10 (B1, S1 to S4, N1 to N3), folded with owner answer
 outcome: >-
@@ -7118,6 +7127,40 @@ and N1 to N3 resolved; the new findings:
 - **N3.** The producer root's mangled symbol is named, to be checked
   against the built ELF.
 
+**Built (2026-10-11).** `aius_dsp_idle_apply_due` and
+`aius_dsp_apply_decide` in `aius_dsp_runtime_config` (placed
+`AIUS_DSP_RUNTIME_COLD` and `AIUS_DSP_RUNTIME_AUDIO`: the ITCM guard
+rejects unplaced LDF `.text`); `enqueue` stamps `g_dsp_last_block_ms`
+after the `g_clock_live_ready` assignment and executes the decision;
+the noinline member `dsp_idle_apply_service` runs in `platform_replay`
+before `sample_rate_service`. Producer root
+`_ZN18AiusAudioProcessor22dsp_idle_apply_serviceEm` checked in all four
+ELFs. Optical-cutover carries 17 mutation cases for the two arms. No
+stack-bound row was needed; OCRAM is unchanged at every floor.
+
+**Delivery audit (2026-10-11): FAIL, then closure PASS.**
+
+- **S1.** The idle arm took the epoch's `now_ms`; a nested AUDIO pass
+  later in the epoch stamps a later `millis()`, so `now - last` wrapped
+  to due while blocks flowed. Resolved: the call site passes `millis()`
+  with no yield before the flag read (checked in the ELF). A signed
+  guard in the predicate was rejected: it would refuse after 24.8 days
+  of real idle.
+- **S2.** The dsp suite pins "now earlier than the last stamp reads
+  due" as the caller's contract.
+- **N1 to N4.** Cutover checks tightened (copy under the first copy
+  guard, stamp position, the due test's negation and return, the
+  generation step outside every guard), each with a failing mutation.
+- **N5 to N8.** Stale single-arm comments in `optical_main.cpp` and
+  `aius_dsp_set.py`'s docstring name both arms.
+- **N9 (open).** `docs/plans/aius-sd-mixer-dashboard.md` is held by the
+  mixer session (path-ownership hook), so its notes seam is not edited.
+  Once released, rewrite :461 ("with no carrier the GET shows
+  `config_pending: true`") and :523-528 ("applies only inside
+  `enqueue()`") to the wording at
+  `firmware/tools/dsp_config/aius_dsp_set.py:15-17`. Do it before 4i,
+  which rewrites the same apply story.
+
 ### Phase 4k A blocked SD start with no card answers sd_unavailable
 
 ```yaml
@@ -7125,27 +7168,78 @@ phase: 4k
 title: A blocked SD start with no card answers sd_unavailable
 status: planned
 depends-on: phase-4h
-prebuild-review: pending
+prebuild-review: ready # folded 2026-10-11; owner waives further closure rounds on card edge cases. NOT READY 2026-10-11 (B1, S1 to S4, N1 to N3), folded with owner answer S4
 outcome: >-
-  While DAT3 reads no card, an HTTP SD_START or card-reading DISPATCH
-  refused by aius_optical_sd_begin_blocked answers 503 sd_unavailable,
-  not sd_busy, so a client does not read a pulled card as a busy one
-  (4h delivery audit D-N8; optical_main.cpp's blocked SD_START path near
-  the admit callback, which answers sd_busy today via
-  AIUS_HTTP_VERDICT_BUSY).
+  During playback with no trusted mount, an HTTP SD_START, fresh or
+  held, that the BEGIN gate refuses because DAT3 reads no card answers
+  503 sd_unavailable, not sd_busy, so a client does not read a pulled
+  card as a busy one (4h delivery audit D-N8). A start the gate holds
+  for any other reason (a fault or hold remount not yet due) answers
+  503 sd_busy as today, and the
+  SD-writes freeze's sd_busy takes precedence over both (N1). Neither
+  refusal touches the card, starts a storage job or counts in
+  http_shed. Card-reading DISPATCH routes are unchanged: they never
+  consult the gate and already answer sd_unavailable through
+  app_sd_ready's dat3_remuxed test (optical_main.cpp, app_sd_ready)
+  (S1). An OTA staging run that meets the new answer stops with "no SD
+  card is mounted", as it does today with no card outside playback
+  (owner 2026-10-11, S4).
 unit: component-behind-interface
 seams:
-  - "firmware/src/aius_runtime_network_http.h and .cpp: a fifth admit verdict, AIUS_HTTP_VERDICT_UNAVAILABLE, mapped to 503 sd_unavailable for a held SD_START (a driver fault beside SD_BUSY) and for a held DISPATCH, not counted in http_shed"
-  - "firmware/src/optical_main.cpp: the admit callback returns it when the gate blocks with DAT3 reading no card"
+  - "firmware/src/aius_optical_app.h and .cpp (B1): aius_optical_sd_begin_blocked returns a tri-state AiusOpticalSdBeginGate (NONE, WAIT, NO_CARD) instead of bool. The remount-waiting branch (aius_optical_app.cpp:2412-2415) returns WAIT without reading DAT3, as today; the DAT3 branch reads it once through aius_optical_sd_replay_begin_blocked (:2428-2442, which stays bool) and returns NO_CARD on true, else NONE. So every blocking branch reads DAT3 at most once and no caller reads it again after the gate: aius_sd_teensy_card_detected counts every absent read in absent_mounts (aius_sd_teensy.cpp:241-242), so a second read would double-count. aius_optical_sd_step_begin_blocked (:2419-2426) and the in-file callers (:2610, :2632) test the gate against NONE"
+  - "firmware/src/optical_main.cpp, aius_runtime_http_admit (cite by symbol; 4h and 4j edit this file): the SD-writes freeze test stays first, so its BUSY wins (N1); the BEGIN gate branch then calls sd_begin_blocked once, now returning the gate, and maps NO_CARD to AIUS_HTTP_VERDICT_UNAVAILABLE and WAIT to AIUS_HTTP_VERDICT_BUSY. Both returns keep sd_disarm_shed_staging(query->sd_job) (N2). The wrapper sd_begin_blocked and its other callers move to the gate type. The ROUTE arm never returns UNAVAILABLE (S1)"
+  - "firmware/src/aius_runtime_network_http.h (N3): AIUS_HTTP_VERDICT_UNAVAILABLE appended to AiusHttpAdmitVerdict (:88-93), and the admission-hook doc block (:50-82) states it: for an SD_START a 503 sd_unavailable with no shed noted and the staging disarmed by the hook; no platform hook returns it for a ROUTE, which treats it as BUSY (S1)"
+  - "firmware/src/aius_runtime_network_http.cpp (S2): refuse_sd_start's driver-fault choice (:185-187), apply_sd_start (:199-203) and dispatch_route's refusal (:224-244) become switches on the verdict with no default, so no verdict falls through to admit. refuse_sd_start sets AIUS_HTTP_DRIVER_FAULT_SD_UNAVAILABLE for UNAVAILABLE; dispatch_route lists UNAVAILABLE beside BUSY (the sd_busy 503, no shed noted), so it needs no new body"
+  - "firmware/lib/aius_http/include/aius_http_transaction.h (S3): AIUS_HTTP_DRIVER_FAULT_SD_UNAVAILABLE, a distinct non-zero value beside AUDIO_BUSY (:42) and SD_BUSY (:49), documented as the admission refusal of a start with no card. No .c change: aius_http_transaction.c's driver-fault answer (:1083-1091) already writes sd_unavailable for every value other than those two"
+  - "firmware/test/runtime-target/test_runtime_target.cpp (N3): the busy key registry (keys :5493-5496, validate_unique_keys at :5509 with count 4u) gains unavailable.sd-start, count 5u"
+  - "firmware/sd/www/upgrade.js and openapi.json (S4): no change. upgrade.js retries only sd_busy (:853-857) and faultName maps sd_unavailable to 'no SD card is mounted' (:303); openapi.json already documents sd_unavailable on the OTA chunk route and the SD routes (:512, :1034, :1152). Staging writes /aius/ota-staged.img to the card (aius_optical_app.cpp:2145-2178), so with no card it cannot proceed"
 targeted-proof:
-  - "host: http and runtime-target cases for the new verdict on a fresh and a held SD_START and DISPATCH, with no shed noted"
-  - "host: an optical-app or optical-cutover case that the callback picks UNAVAILABLE only when DAT3 reads no card"
-fan-out: none # two files and their suites
+  - "host: optical-app (test_optical_app.c, on g_ff_ops; B1): the held card-pulled loop (:6780-6785) gives NO_CARD for every t; the FAULT_PRESENT loop with the card present (:6821-6824) gives WAIT; off playback and with a reused mount (:6800-6805) NONE"
+  - "host: runtime-target (S2): unavailable.sd-start, copied from busy.sd-start (:5530-5550) with the fake hook's g_admit.sd_verdict set to UNAVAILABLE, fresh and held: g_sd.primitive_calls, g_runtime.storage.diag.http_jobs and g_admit.shed_notes stay 0, and the body carries sd_unavailable, not sd_busy or audio_busy. The busy keys stay green, so BUSY still answers sd_busy"
+  - "host: optical-cutover: aius_runtime_http_admit tests the freeze before the gate, maps NO_CARD to UNAVAILABLE and WAIT to BUSY, and calls sd_disarm_shed_staging on both returns (N1, N2)"
+  - "host: sd-editor (test/sd-editor/upgrade.test.js; S4): a staging run whose chunk PUT answers 503 sd_unavailable stops after that one request with 'no SD card is mounted' and no retry; the sd_busy retry case stays green"
+fan-out: none # one gate, one verdict across the runtime seam, one header constant and their suites
 ```
 
 **Deferred from 4h because it is a nit.** Every 503 already carries
 `Retry-After: 1`, so a client retries either way, and reopening
 pw-http's seam in 4h would have cost another image and audit round.
+
+**Prebuild review (2026-10-11): NOT READY.** Each finding is followed
+by its resolution.
+
+- **B1.** `aius_optical_sd_begin_blocked` returns a bool and skips the
+  DAT3 read when a remount is scheduled
+  (`aius_optical_app.cpp:2412-2415`, the read at `:2437`), and a second
+  `card_detected` call double-counts `absent_mounts`
+  (`aius_sd_teensy.cpp:241-242`). Resolved: a tri-state gate (NONE,
+  WAIT, NO_CARD) that reads DAT3 at most once on every blocking branch;
+  the callback maps NO_CARD to UNAVAILABLE and WAIT to BUSY, proven on
+  `g_ff_ops` in the optical-app suite.
+- **S1.** No card-reading DISPATCH consults the gate; card routes
+  already answer sd_unavailable through `app_sd_ready`. Resolved:
+  DISPATCH is out of the outcome; the ROUTE arm keeps a total mapping
+  (trimmed below to BUSY).
+- **S2.** `refuse_sd_start`, `apply_sd_start` and `dispatch_route` are
+  if/else chains that admit an unknown verdict. Resolved: switches with
+  no default, and runtime-target cases copied from `busy.dispatch` and
+  `busy.sd-start` that fail on any card call, job, listing or shed.
+- **S3.** The transaction header's driver-fault set was missing.
+  Resolved: `AIUS_HTTP_DRIVER_FAULT_SD_UNAVAILABLE` in
+  `aius_http_transaction.h`, distinct and non-zero; no `.c` change.
+- **S4.** Owner, 2026-10-11: an OTA staging run stops on 503
+  sd_unavailable, as it does today with no card outside playback.
+  Resolved: an `upgrade.test.js` case pins the stop; `openapi.json`
+  already documents the token.
+- **N1 to N3.** The freeze's BUSY stays ahead of UNAVAILABLE; the
+  UNAVAILABLE return keeps `sd_disarm_shed_staging`; the verdict doc
+  block and the runtime-target busy key registry join the seams.
+- **Trimmed (owner 2026-10-11: card edge cases, simplest sensible).**
+  The ROUTE arm answers UNAVAILABLE as BUSY instead of gaining its own
+  sd_unavailable body and `unavailable.dispatch` key, since no hook
+  returns it there. The optical-app proof drops the returned card whose
+  BEGIN still fails and the `card_detected` call counter; the gate
+  reads DAT3 once by construction.
 
 ### Phase 4l At most 16 saved presets
 
@@ -7154,32 +7248,50 @@ phase: 4l
 title: At most 16 saved presets
 status: planned
 depends-on: phase-4h
-prebuild-review: pending
+prebuild-review: ready # folded 2026-10-11; owner waives further closure rounds on card edge cases. NOT READY 2026-10-11 (B1 to B3, S1 to S5, N1 to N3), folded with owner answers B1 and the overfull card
 outcome: >-
-  A preset save that would create a 17th preset under
-  /aius/www/presets/ (counting the card's presets after the post-mount
-  fill plus pending puts, minus pending tombstones, case-folded names)
-  answers 409 preset_limit with no store entry used, while saving over
-  an existing preset and deleting one always work; the editor shows
-  "Preset limit reached (16); delete one to save another". With at most
-  16 presets, the 27-file web app and the two settings files, the
-  64-entry store keeps headroom, so Apply, config and preset saves never
-  meet 503 sd_busy from presets (owner 2026-10-11, answering 4h CR4-N1).
-  A card already holding more than 16 presets keeps them readable and
-  deletable, and new saves are refused until the count falls to 15 or
-  fewer.
+  The cap covers settings-class preset paths only,
+  www/presets/<name>.json (aius_sd_overlay_classify,
+  aius_sd_overlay.h:202-206); any other file under www/presets/ is
+  outside it (S4). The count is the number of distinct case-folded
+  preset names whose newest store entry (highest commit_seq) is VALID,
+  FILLING, DIRTY or FLUSHING; a name whose newest entry is a TOMBSTONE
+  is not counted, and nothing is subtracted (B2). A PUT of a name in
+  the counted set (an overwrite) is accepted in every state (S1). A PUT
+  of any other name answers 409 preset_limit, with no store entry used,
+  once 16 or more names are counted, whether or not the presets walk
+  has finished (owner 2026-10-11); with fewer than 16 counted it
+  answers 503 sd_busy with Retry-After, retryable, while
+  presets_complete is false (the walk has not completed since the last
+  mount, which includes after a card loss, since web_cache_invalidate_all
+  restarts the walk), since the count may still grow (owner 2026-10-11,
+  B1); otherwise it is accepted. The editor shows "Preset limit reached
+  (16); delete one to save another". With at most 16 presets, the
+  27-file web app and the two settings files, the store's steady set is
+  45 of its 64 entries (AIUS_WEB_CACHE_ENTRIES, aius_web_cache.h:86),
+  leaving 19 for transients (a PUTTING entry, an overwrite's new version
+  beside its FLUSHING one, tombstones), so Apply, config and preset
+  saves never meet 503 sd_busy from a full store (owner 2026-10-11,
+  answering 4h CR4-N1; S3). A card with more than 16 presets or stale
+  www files left by older syncs is outside that guarantee (S2): it
+  keeps its presets readable, refuses new names, and a full store there
+  is recovered with a card reader as 4h states.
 unit: component-behind-interface
 seams:
-  - "firmware/lib/aius_sd_overlay: the preset count and the cap check at accept"
-  - "firmware/src/aius_optical_app.cpp: 409 preset_limit on the preset PUT route"
-  - "firmware/sd/www/openapi.json: 409 preset_limit"
-  - "firmware/sd/www/dsp-editor.js and test/sd-editor/dsp-editor.test.js: the message"
-  - "Phase 4h's outcome sentence on the 64-entry cap and its residual risk on a full store, updated when 4l ships"
+  - "firmware/lib/aius_sd_overlay (B1, B2, B3, S4): AIUS_SD_OVERLAY_PUT_LIMIT appended to AiusSdOverlayPutResult (aius_sd_overlay.h:71-77). aius_sd_overlay_put_begin (:239-242) gains a presets_complete argument and, before reserving an entry, answers a settings-class preset path whose name is not in the counted set (B2's rule over the store's entries) with LIMIT at a count of 16 or more, else BUSY while presets_complete is false; every other path and every overwrite proceed as today"
+  - "firmware/src/aius_optical_app.h and .cpp (B3, N3): AIUS_OPTICAL_APP_STORE_LIMIT appended to AiusOpticalAppStoreResult (aius_optical_app.h:115-121). dispatch_sd_upload's store branch (:1224-1252), which takes every www PUT and so every www/presets/<name>.json, gains a STORE_LIMIT case answering 409 preset_limit ahead of its default 503 sd_busy (:1237-1245). aius_optical_sd_flush_put_begin is unchanged (N2: a same-path fill in flight holds a FILLING entry, aius_web_cache.c:567, so its name is counted and the PUT is an overwrite that the limit never refuses)"
+  - "firmware/src/optical_main.cpp (cite by symbol; 4h and 4j edit this file; B1, B3): the platform's put_begin op passes g_web_fill_walk.presets_complete, which the overlay cannot see and web_cache_walk_reset clears (web_cache_invalidate_all runs it at card loss), to aius_sd_overlay_put_begin; sd_overlay_result maps AIUS_SD_OVERLAY_PUT_LIMIT to AIUS_OPTICAL_APP_STORE_LIMIT ahead of its default BUSY"
+  - "firmware/sd/www/openapi.json: 409 preset_limit on PUT /sd/{resource}, scoped to www/presets/<name>.json, with its 503 sd_busy text gaining the not-yet-counted case; the 'about 35 or more presets' notes (:179, :951, :1075) are reworded for the cap"
+  - "firmware/sd/www/dsp-editor.js (N1): describePresetWriteFailure (:1903-1904) gains a preset_limit branch returning the limit message, and SD_STORE_FULL (:1900-1901, also the delete failure text at :2020) is reworded from 'retrying will not help' to a busy store that a retry clears"
+  - "Phase 4h's outcome sentence on the 64-entry cap and its residual risk on a full store, updated when 4l ships: the residual is reworded, not dropped, to cover cards with more than 16 presets or stale www files, and keeps the card-reader recovery text (S2)"
 targeted-proof:
-  - "host: sd-overlay cases: a 17th new name refused, an overwrite of an existing name at 16 accepted, a delete at 16 then a new save accepted, case-variant names counted once, a pending tombstone frees a slot, a card with 20 presets keeps all 20 served and refuses new ones"
-  - "host: an optical-app route case for 409 preset_limit"
-  - "host: an sd-editor message case"
-  - "host: the openapi test"
+  - "host: sd-overlay, count rule (B2, S4): 16 distinct names, then a new name gives LIMIT; Foo.json and foo.json count once, so at 15 others plus that name one new name is OK and the next LIMIT; a tombstone for a name never on the card frees no slot, and a new name at 16 still gives LIMIT; a running (FLUSHING) tombstone with a newer DIRTY entry of the same name counts it once, so with 15 others one new name is OK and the next LIMIT; a newest TOMBSTONE over a counted name frees its slot, one new name OK and the next LIMIT; www/presets/sub/x.json and www/presets/notes.txt are neither counted nor refused, and a new preset name at 16 after them gives LIMIT"
+  - "host: sd-overlay, state (B1, S1): with presets_complete false and 15 names counted, an overwrite of a counted name is OK and a new name BUSY; complete, a new name at 15 is OK and the next LIMIT"
+  - "host: sd-overlay, overfull card (owner 2026-10-11): with presets_complete false and 16 names counted so far (a walk still under way on a card holding more), a new name gives LIMIT, not BUSY, and an overwrite of a counted name is OK; a card with 20 presets, walk complete, keeps all 20 served, an overwrite of one is OK and a new name gives LIMIT"
+  - "host: sd-overlay, headroom (S3): 16 presets, the 27-file set and the two settings files filled; a full sync of the 27 files replayed while an Apply (a dsp.json put) and a preset overwrite are accepted gives no BUSY; then a new preset name gives LIMIT"
+  - "host: optical-app (B3): through dispatch_sd_upload's store branch, STORE_LIMIT answers 409 preset_limit, not 503, and STORE_BUSY still answers 503 sd_busy"
+  - "host: sd-editor (test/sd-editor/dsp-editor.test.js, N1): a 409 preset_limit save shows the limit message, and a 503 sd_busy save shows the reworded busy text, not the limit message"
+  - "host: sd-editor (test/sd-editor/openapi.test.js, S5): PUT /sd/{resource} lists 409 with a preset_limit example in the shared error shape, and its 503 examples stay sd_unavailable and sd_busy"
 fan-out: none # one library, one route, one UI message and the spec
 review-intensity: active
 ```
@@ -7188,6 +7300,52 @@ review-intensity: active
 presets is far more than operation needs. With at most 16, the store
 never fills from presets, which removes the full-store paths 4h had to
 guard.
+
+**Prebuild review (2026-10-11): NOT READY.** Each finding is followed
+by its resolution.
+
+- **B1.** The overlay cannot see `presets_complete`, and card loss runs
+  `web_cache_invalidate_all` while a hold still accepts saves, so the
+  count could be short. Resolved with the owner's answer (2026-10-11):
+  with fewer than 16 names counted, a new name answers 503 sd_busy
+  while the walk is incomplete; `presets_complete` is passed to the
+  overlay's `put_begin`. Owner 2026-10-11 on the overfull card: 16 or
+  more counted gives 409 preset_limit even mid-walk, with its own proof
+  case.
+- **B2.** The count rule was undefined. Resolved: distinct case-folded
+  names whose newest entry is VALID, FILLING, DIRTY or FLUSHING; a
+  newest TOMBSTONE removes its name; nothing is subtracted.
+- **B3.** No result value carried the limit through the overlay, the
+  store-result mapping and the route. Resolved: `PUT_LIMIT`,
+  `STORE_LIMIT`, `sd_overlay_result` and the store branch's switch, with
+  a proof that a limit is never answered as 503.
+- **S1.** An overwrite counts as existing only when its name is in the
+  counted set. Resolved: so stated, and with B1 a new name is refused
+  while the count is unknown.
+- **S2.** "Deleting one always works" holds only while the store has a
+  free entry. Resolved: the guarantee is limited to cards with at most
+  16 presets and no stale www files, and 4h's residual is reworded,
+  keeping its card-reader recovery.
+- **S3.** The headroom was unstated. Resolved: 45 steady entries plus
+  transients, at most 64; stale card files called out; a host headroom
+  proof under a full sync, an Apply and a preset save.
+- **S4.** The cap applies only to settings-class preset paths. Resolved
+  in the outcome and a proof case.
+- **S5.** Proof cases could pass vacuously. Resolved: each ends on a
+  refusal leg; the openapi test is named; the B1 and B2 state cases are
+  added.
+- **N1 to N3.** `describePresetWriteFailure` gains a preset_limit
+  branch and `SD_STORE_FULL` is reworded; a same-path fill is already
+  counted, so the limit never refuses a PUT whose fill was cancelled
+  (trimmed below); the route seam is `dispatch_sd_upload`'s store
+  branch.
+- **Trimmed (owner 2026-10-11: card edge cases, simplest sensible).**
+  The held flag is no longer an input: card loss restarts the walk, so
+  `presets_complete` covers it. The limit check lives in
+  `aius_sd_overlay_put_begin` rather than a new flush-ops hook ahead of
+  the fill cancel, and its proof leg is dropped. The delete guarantee
+  arithmetic and the headroom proof's free-entry assertion are dropped;
+  overfull cards and stale www files fall to 4h's card-reader recovery.
 
 ### Phase 4c `test.sh` runs every `--suite` given ✓ SHIPPED 2026-10-06
 

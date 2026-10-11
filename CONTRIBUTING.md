@@ -156,9 +156,9 @@ each flag is set; read them before changing one:
   config back carrying `base_generation`; non-2xx (409 stale, 400 invalid) exits 1
   with the body. `--dry-run` prints the diff and makes no PUT. A GET already showing
   `config_pending: true` (another client's save is staged) is refused with exit 2
-  naming `staged_generation`. A save applies only when an audio block arrives (a
-  carrier or a replay), so `--wait SECONDS` without a carrier exits 3 with the save
-  staged. Exit codes: 0 done, 1 HTTP or transport failure (or another client's save
+  naming `staged_generation`. A save applies at the next audio block or, with none
+  reaching the DSP for 100 ms, within one service epoch, so `--wait SECONDS` exits 3
+  with the save staged only if the apply has not landed in time. Exit codes: 0 done, 1 HTTP or transport failure (or another client's save
   applied instead), 2 local refusal or bad input, 3 `--wait` timeout. Another
   client's save that commits between our GET and our PUT is overwritten (the
   firmware's stale-check design). `--help` lists the rest.

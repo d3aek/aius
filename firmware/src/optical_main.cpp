@@ -712,7 +712,9 @@ static bool g_sd_http_job_seen;
  * AIUS_OPTICAL_CONFIG (a compile-time-constant aggregate, safe to read at static
  * init). g_config_generation is a per-boot-session counter: 0 at boot for the
  * default, incremented every time ANY new model (initial SD load, hot-reinsert
- * reload, or a PUT) is applied at an audio block boundary -- it is NOT persisted
+ * reload, or a PUT) is applied: at the next audio block boundary or, with no
+ * block reaching the DSP for 100 ms (AIUS_DSP_IDLE_APPLY_MS), within one
+ * service epoch by AiusAudioProcessor::dsp_idle_apply_service -- it is NOT persisted
  * across reboots (the SD file's own "config_generation" field is client-supplied
  * and untrusted; only "base_generation" on a PUT is a trusted concurrency
  * token). */
@@ -742,21 +744,24 @@ static uint32_t g_config_generation;
 /* How many models this boot session has been STAGED for apply, incremented by
  * every stager (an accepted PUT, an SD load) at the moment it writes
  * g_pending_dsp_model. Separate from g_config_generation on purpose (defect
- * 22c): that one counts models APPLIED at a block boundary and is the token a
- * PUT's base_generation is checked against, so it must keep meaning "what is
- * running". On a carrier-less board nothing ever applies, so it stays 0 across
- * successive PUTs and a client cannot tell its second PUT from its first --
- * this counter is that missing signal, and it is reported beside the applied
- * one in both GET /api/dsp/config and GET /api/status rather than replacing
- * it. Written only from loop/HTTP context, never from the block boundary. */
+ * 22c): that one counts models APPLIED (at the next block boundary or, with
+ * no block reaching the DSP for 100 ms, within one service epoch) and is the
+ * token a PUT's base_generation is checked against, so it must keep meaning
+ * "what is running". Between a staging and its apply the two diverge, and
+ * this counter is what tells a client its second staging from its first; it
+ * is reported beside the applied one in both GET /api/dsp/config and GET
+ * /api/status rather than replacing it. Written only from loop/HTTP context,
+ * never from either apply arm. */
 static uint32_t g_staged_generation;
 
-/* Staged model awaiting a block-boundary-safe apply. Written from loop/HTTP
- * context (a validated PUT, or an SD (re)load); consumed once, at the top of
- * AiusAudioProcessor::enqueue() (AUDIO checkpoint context), the accepted
- * block boundary. g_dsp_apply_pending is the single volatile handoff flag: the
- * writer always fully populates g_pending_dsp_model BEFORE setting it, so AUDIO
- * never observes a partially-written model (see docs plan "Input trim/EQ +
+/* Staged model awaiting a safe apply. Written from loop/HTTP context (a
+ * validated PUT, or an SD (re)load); consumed once, by one of two apply arms:
+ * AiusAudioProcessor::enqueue() at the accepted block boundary (AUDIO
+ * checkpoint context), or, with no block reaching the DSP for 100 ms,
+ * AiusAudioProcessor::dsp_idle_apply_service() within one service epoch.
+ * g_dsp_apply_pending is the single volatile handoff flag: the
+ * writer always fully populates g_pending_dsp_model BEFORE setting it, so neither
+ * arm observes a partially-written model (see docs plan "Input trim/EQ +
  * limiter wiring done" note for the equivalent apply_config() out-of-line
  * rationale). g_dsp_upload_pending is the separate SD-job-lifecycle gate
  * (mirrors g_config_upload_pending): true only while a dsp_upload SD job is in
@@ -764,7 +769,7 @@ static uint32_t g_staged_generation;
  * arms g_dsp_apply_pending. As with the public config above, the arm on commit
  * went with the legacy job and slice S3 restores it. DMAMEM for the same reason
  * as g_active_model: written from epoch/HTTP context, read once (a plain struct
- * copy) at the block boundary, never touched per-block.
+ * copy) by whichever apply arm consumes it, never touched per-block.
  *
  * g_pending_dsp_origin rides the SAME handoff and under the same rule: every
  * stager writes it before the volatile flag is set, and the swap reads it only
@@ -774,6 +779,13 @@ DMAMEM static AiusOpticalConfig g_pending_dsp_model;
 static DspModelOrigin g_pending_dsp_origin = DSP_ORIGIN_DEFAULT;
 static bool g_dsp_upload_pending;
 static volatile bool g_dsp_apply_pending;
+/* Phase 4j: millis() of the last block to reach enqueue()'s consume point (the
+ * g_dsp_apply_pending read), stamped for every such block whether or not an
+ * apply is pending. AiusAudioProcessor::dsp_idle_apply_service applies a
+ * pending model itself once none has arrived for AIUS_DSP_IDLE_APPLY_MS, so a
+ * save applies with no audio flowing, carrier or not. Both the writer and the
+ * reader run in loop context. */
+static uint32_t g_dsp_last_block_ms;
 
 /* The coherent meter snapshot the audio path publishes and GET /api/meters
  * serves (Phase 14b). aius_dsp.h owns the whole protocol; this file only wires
@@ -2277,6 +2289,14 @@ public:
 	FLASHMEM void apply_config(const AiusOpticalConfig &cfg,
 	                           uint32_t stream_rate_hz);
 
+	/* Phase 4j idle arm: applies a staged model when no block has reached
+	 * the consume point for AIUS_DSP_IDLE_APPLY_MS. A member because it
+	 * builds at the private g_applied_stream_rate_hz; noinline because
+	 * producer-isolation roots on its linked symbol (a once-called helper
+	 * would inline into the yielding platform_replay). */
+	__attribute__((noinline)) FLASHMEM void
+	dsp_idle_apply_service(uint32_t now_ms);
+
 protected:
 	void update(void) override
 	{
@@ -2527,17 +2547,26 @@ private:
 			return AIUS_REFUSED;
 		}
 		g_clock_live_ready = !replay && g_clock_carrier_ready;
+		/* The consume point. Every block that reaches it stamps the idle
+		 * clock, applying or not, so the idle arm
+		 * (dsp_idle_apply_service) stays out while blocks flow and this
+		 * arm consumes the apply. */
+		g_dsp_last_block_ms = millis();
 		const bool model_pending = g_dsp_apply_pending;
-		if (model_pending)
+		/* One rule for both arms (aius_dsp_apply_decide): copy a pending
+		 * model, build on a pending model or a rate change, one
+		 * generation step either way. */
+		const AiusDspApplyDecision decision = aius_dsp_apply_decide(
+			model_pending, g_applied_stream_rate_hz,
+			block->sample_rate_hz);
+		if (decision.copy)
 			g_active_model = g_pending_dsp_model;
-		if (model_pending ||
-		    g_applied_stream_rate_hz != block->sample_rate_hz) {
-			apply_config(g_active_model, block->sample_rate_hz);
+		if (decision.build) {
+			apply_config(g_active_model, decision.build_rate_hz);
 			g_applied_stream_rate_hz = block->sample_rate_hz;
-			if (!model_pending)
-				g_config_generation++;
 		}
-		if (model_pending) {
+		g_config_generation += decision.generation_steps;
+		if (decision.copy) {
 			/* The staged origin was written before the flag this arm
 			 * observed, so it belongs to the model just copied.
 			 * Adopting it verbatim is what makes the reported origin
@@ -2545,7 +2574,6 @@ private:
 			 * bool this replaced read "sd" for every applied model,
 			 * PUT-staged ones included. */
 			g_dsp_model_origin = g_pending_dsp_origin;
-			g_config_generation++;
 			g_dsp_apply_pending = false;
 		}
 		int32_t processed_left[AUDIO_BLOCK_SAMPLES * 4];
@@ -3031,6 +3059,37 @@ FLASHMEM void AiusAudioProcessor::apply_config(const AiusOpticalConfig &cfg,
 {
 	(void)aius_dsp_runtime_config_apply(
 		&g_dsp_runtime, &cfg, stream_rate_hz, &g_meter);
+}
+
+/* Phase 4j: the idle apply. With no block reaching the consume point there is
+ * no DSP state to cross-fade, so the apply is the model swap plus the build at
+ * g_applied_stream_rate_hz (48 kHz from boot, else the last stream's rate):
+ * the built coefficients always match the reported model, and a later block
+ * at that rate finds the flag clear and needs no second step. Concurrency:
+ * nothing from the flag read to its clear, apply_config included, reaches a
+ * yield point (producer-isolation roots this symbol), so no nested AUDIO pass
+ * sees a half-applied arm. A block within AIUS_DSP_IDLE_APPLY_MS leaves the
+ * apply to enqueue(), so exactly one arm consumes each staging. now_ms must be
+ * a millis() read with no yield since, so it is never earlier than the last
+ * stamp (aius_dsp_idle_apply_due's contract); the caller passes millis(). */
+FLASHMEM void AiusAudioProcessor::dsp_idle_apply_service(uint32_t now_ms)
+{
+	const bool pending = g_dsp_apply_pending;
+	if (!aius_dsp_idle_apply_due(pending, g_dsp_last_block_ms, now_ms))
+		return;
+	const AiusDspApplyDecision decision =
+		aius_dsp_apply_decide(pending, g_applied_stream_rate_hz, 0u);
+	if (decision.copy)
+		g_active_model = g_pending_dsp_model;
+	if (decision.build)
+		apply_config(g_active_model, decision.build_rate_hz);
+	g_config_generation += decision.generation_steps;
+	if (decision.copy) {
+		/* Same handoff rule as enqueue()'s arm: the origin was staged
+		 * before the flag, so it describes the model just copied. */
+		g_dsp_model_origin = g_pending_dsp_origin;
+		g_dsp_apply_pending = false;
+	}
 }
 
 uint8_t AiusAudioProcessor::g_arena_memory[AiusAudioProcessor::ARENA_BYTES]
@@ -3623,10 +3682,12 @@ static FLASHMEM const char *dsp_origin_name(DspModelOrigin origin)
 }
 
 /* Serialize the DSP config the board WILL use: g_active_model once it has been
- * applied at a block boundary, or the staged g_pending_dsp_model while a commit
- * is pending. The staged branch is what a board with no carrier reports -- it
- * never reaches the block-boundary apply, so reporting only g_active_model would
- * answer "default"/generation 0 for a PUT it has already accepted (defect 22).
+ * applied, or the staged g_pending_dsp_model while an apply is pending. A
+ * staged model applies at the next block boundary or, with no block reaching
+ * the DSP for 100 ms (AIUS_DSP_IDLE_APPLY_MS), within one service epoch
+ * (AiusAudioProcessor::dsp_idle_apply_service); until then the staged branch
+ * is what answers, so a GET never reports "default"/the old generation for a
+ * PUT it has already accepted (defect 22).
  * Cold path, fixed buffer, capacity-checked; returns 0 (deterministic error) if
  * the model cannot fit the response budget. `source`, `config_generation`,
  * `staged_generation` and `config_pending` are runtime-reported, not part of
@@ -3636,20 +3697,25 @@ static FLASHMEM const char *dsp_origin_name(DspModelOrigin origin)
  * semantic rather than a data race: it is the optimistic-concurrency token a
  * PUT's base_generation is checked against, and that check means "the model
  * you edited is the model that is running". Bumping it at SD-commit time would
- * make it mean two things at once. (It is NOT unsafe to write from here: the
- * one other writer is AiusAudioProcessor::enqueue(), which runs at the runtime
- * AUDIO checkpoint, and checkpoints never overlap -- an earlier note in this
- * file claimed an audio-ISR race that does not exist, defect 22b.)
+ * make it mean two things at once. (There is no audio-ISR race here; an earlier
+ * note claimed one, defect 22b. Its writers, the two apply arms
+ * AiusAudioProcessor::enqueue() and dsp_idle_apply_service(), run in loop
+ * context. Checkpoints DO overlap since 4e: a producer yield runs a nested
+ * AUDIO pass at a checkpoint yield point and inside the SD wait hook. The rule
+ * that keeps this coherent is that neither arm reaches a yield point between
+ * reading g_dsp_apply_pending and clearing it, so a reader in any pass sees
+ * either the staged state or the applied one, never a half-applied arm.)
  *
  * `staged_generation` is the counter that DOES advance per staging, so a
- * carrier-less board -- where nothing ever applies and config_generation is
- * pinned at 0 -- can still tell one committed PUT from the next. It moves
- * when a staging becomes real: an SD load when it publishes, a PUT when its
- * SD write commits (sd_settle_http_write), which is also the instant its 200
- * is released and config_pending turns true; a PUT whose write faults moves
- * neither. `config_pending` says which of the two the rest of this document
- * describes: true means these are the staged bytes awaiting a block
- * boundary. */
+ * client can tell one staging from the next while config_generation still
+ * names the running model. It moves when a staging becomes real: an SD load
+ * when it publishes, a PUT at accept when the overlay's put lands (Phase 4h)
+ * or else when its SD write commits (sd_settle_http_write); either is the
+ * instant its 200 is released and config_pending turns true, and a PUT that
+ * is refused or whose write faults moves neither counter. `config_pending` says
+ * which of the two the rest of this document describes: true means these are
+ * the staged bytes awaiting the next block boundary or, with no block
+ * reaching the DSP for 100 ms, the idle apply within one service epoch. */
 static FLASHMEM size_t dsp_config_json(uint8_t *body, size_t capacity,
                                       bool file_form)
 {
@@ -6541,11 +6607,12 @@ static FLASHMEM void ota_compose(void)
  * observe.
  *
  * `source` / `model_origin` are STAGED-AWARE, exactly as http_dsp_config_json's
- * are (defect 22a): a board with no carrier never reaches the block-boundary
- * apply, so reporting only the applied origin made this route answer "default"
+ * are (defect 22a): between a staging and its apply (the next block boundary or,
+ * with no block reaching the DSP for 100 ms, the idle apply within one service
+ * epoch), reporting only the applied origin made this route answer "default"
  * for a PUT the other route was already reporting as "put" -- two documents
  * from one firmware disagreeing about one fact. `dsp_config_pending` says which
- * of the two a reader is looking at (true = staged, awaiting a block boundary)
+ * of the two a reader is looking at (true = staged, awaiting an apply arm)
  * so the staged-aware answer is never mistaken for an applied one, and
  * `dsp_staged_generation` carries the per-staging counter that
  * config_generation deliberately is not. The `dsp_` prefix is load-bearing on
@@ -7297,8 +7364,8 @@ static FLASHMEM AiusOpticalAppStoreResult app_store_dsp_config(
 	 * same instant the client's 200 is released and config_pending turns
 	 * true -- so a PUT whose write faults leaves the counter where it was
 	 * (its staging is discarded, and a counter that had moved would report a
-	 * staging that never existed). Still never at the block-boundary apply:
-	 * on a carrier-less board the apply never comes. */
+	 * staging that never existed). Never at either apply arm: staging and
+	 * applying are counted separately. */
 	g_dsp_upload_pending = true;
 	g_sd_commit_target = SD_COMMIT_DSP_MODEL;
 	g_sd_commit_writing = false;
@@ -8807,10 +8874,11 @@ static FLASHMEM bool settings_load(void *, AiusOpticalSettingsFile file,
 	/* Every stager advances it, this one included -- the count is "models
 	 * staged this boot", not "PUTs accepted". */
 	g_staged_generation++;
-	/* Staged, not applied: the block-boundary swap in
-	 * AiusAudioProcessor::enqueue() remains the only place the active model
-	 * changes, where config_generation increments and the active origin
-	 * adopts the staged one. */
+	/* Staged, not applied: the two apply arms, the block-boundary swap in
+	 * AiusAudioProcessor::enqueue() and, with no block reaching the DSP for
+	 * 100 ms, AiusAudioProcessor::dsp_idle_apply_service(), are the only
+	 * places the active model changes, where config_generation increments
+	 * and the active origin adopts the staged one. */
 	g_dsp_apply_pending = true;
 	return true;
 }
@@ -8939,8 +9007,10 @@ static FLASHMEM void sd_settle_http_write(void)
 	if (!g_sd_commit_writing)
 		return;
 	if (g_sd_commit_target == SD_COMMIT_DSP_MODEL) {
-		/* The SD write is durable; the audio-side apply happens at the
-		 * next block boundary (AiusAudioProcessor::enqueue), not here.
+		/* The SD write is durable; the apply happens at the next block
+		 * boundary (AiusAudioProcessor::enqueue) or, with no block
+		 * reaching the DSP for 100 ms, within one service epoch
+		 * (AiusAudioProcessor::dsp_idle_apply_service), not here.
 		 * The staging counter advances with the commit, before the
 		 * volatile apply flag, the same order the SD-load stager keeps
 		 * (platform_publish_config): a faulted write moves neither. */
@@ -11289,6 +11359,13 @@ static FLASHMEM bool platform_replay(void *, const AiusRuntimeBudget *budget,
 	replay_refill_service(now_ms);
 	/* Settle carrier displacement before selecting a target clock. */
 	replay_source_service();
+	/* Phase 4j: a staged DSP model with no block reaching the DSP for
+	 * AIUS_DSP_IDLE_APPLY_MS applies here, within one service epoch. It
+	 * takes a fresh millis(), never this epoch's now_ms: a nested AUDIO
+	 * pass earlier in the epoch stamps g_dsp_last_block_ms later than
+	 * now_ms, and now_ms - last would wrap to "due" with blocks flowing.
+	 * Nothing yields between this read and the member's flag read. */
+	g_audio_processor.dsp_idle_apply_service(millis());
 	/* Apply or verify the settled source's live plan or exact 48 kHz replay
 	 * plan before graph ownership can move. */
 	sample_rate_service(now_ms);

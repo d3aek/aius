@@ -190,8 +190,12 @@ RECURSION = [RecursionRow(anchor=("ff_tx_init_subtx", None), bound=2,
                           guard="no recursion: shared card-vtable target set; device floor stack_free_min_bytes")]
 
 TABLES = Tables(
+    # Phase 4j (S1, S-new1): the idle DSP apply, called from platform_replay
+    # (which yields), must reach no yield point between its flag read and
+    # clear, apply_config included; noinline so this row cannot inline away.
     producer_roots=[("aius_audio_service_run", "aius_audio_service.c.o"),
-                    ("_ZN18AiusAudioProcessor13consume_blockEPvPK12AiusPcmBlock", MAIN)],
+                    ("_ZN18AiusAudioProcessor13consume_blockEPvPK12AiusPcmBlock", MAIN),
+                    ("_ZN18AiusAudioProcessor22dsp_idle_apply_serviceEm", MAIN)],
     # Phase 4f: the status render's appends (status_append in optical_main.cpp,
     # diag_append in aius_runtime_storage.cpp's sd_diag section, both noinline)
     # are the render-append yield roots; every status section reaches the

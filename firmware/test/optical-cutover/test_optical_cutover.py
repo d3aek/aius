@@ -2898,6 +2898,190 @@ def assert_dsp_model_origin_is_staged_not_assumed(text):
     )
 
 
+DSP_IDLE_APPLY_MARKER = (
+    "FLASHMEM void AiusAudioProcessor::dsp_idle_apply_service(uint32_t now_ms)"
+)
+# S1 (4j delivery audit): a fresh millis(), never the epoch's now_ms, which a
+# nested AUDIO pass's later stamp would make wrap to "due".
+DSP_IDLE_APPLY_CALL = "g_audio_processor.dsp_idle_apply_service(millis());"
+DSP_BUILD_GUARD = "if (decision.build)"
+DSP_COPY_GUARD = "if (decision.copy)"
+DSP_BUILD_CALL = "apply_config(g_active_model, decision.build_rate_hz);"
+DSP_COPY_STATEMENT = "g_active_model = g_pending_dsp_model;"
+DSP_GENERATION_STEP = "g_config_generation += decision.generation_steps;"
+
+
+def guarded_statement(clean, marker):
+    """The statement one exact `if (...)` marker guards in `clean`, brace body
+    or single statement, as a (start, end) span."""
+    start = clean.find(marker)
+    assert start >= 0, f"missing conditional marker {marker!r}"
+    assert clean.find(marker, start + 1) == -1, (
+        f"conditional marker {marker!r} is not unique"
+    )
+    return guarded_span_at(clean, start, marker)
+
+
+def guarded_span_at(clean, start, marker):
+    """The statement the `if (...)` `marker` at offset `start` guards."""
+    cursor = start + len(marker)
+    while cursor < len(clean) and clean[cursor] in " \t\r\n":
+        cursor += 1
+    if cursor < len(clean) and clean[cursor] == "{":
+        return cursor, matching_delimiter(clean, cursor, "{", "}")
+    end = clean.find(";", cursor)
+    assert end >= 0, f"missing statement for conditional {marker!r}"
+    return cursor, end + 1
+
+
+def assert_arm_executes_the_decision(arm, label):
+    """One apply arm: it calls aius_dsp_apply_decide once, builds only under
+    the decision's build field at the decision's rate, and steps the
+    generation by the decision's count (closure N-new2)."""
+    assert arm.count("aius_dsp_apply_decide(") == 1, (
+        f"the {label} arm does not route its apply through aius_dsp_apply_decide "
+        "exactly once"
+    )
+    assert arm.count("apply_config(") == 1, (
+        f"the {label} arm must call apply_config exactly once, under the "
+        "decision's build field"
+    )
+    guard = guarded_statement(arm, DSP_BUILD_GUARD)
+    call = arm.find(DSP_BUILD_CALL)
+    assert call >= 0, (
+        f"the {label} arm does not build at the decision's rate "
+        "(apply_config(g_active_model, decision.build_rate_hz))"
+    )
+    assert guard[0] <= call < guard[1], (
+        f"the {label} arm calls apply_config outside the decision's build field"
+    )
+    assert arm.count(DSP_GENERATION_STEP) == 1, (
+        f"the {label} arm does not step the generation by the decision's count"
+    )
+    assert "g_config_generation++" not in arm, (
+        f"the {label} arm steps the generation outside the decision"
+    )
+    first_copy = arm.find(DSP_COPY_GUARD)
+    copy = arm.rfind(DSP_COPY_GUARD)
+    assert first_copy >= 0 and copy > first_copy, (
+        f"the {label} arm must test the decision's copy field twice: to copy "
+        "the model, then to adopt the origin and release the flag"
+    )
+    # N1: the model copy sits under the FIRST copy guard.
+    assert arm.count(DSP_COPY_STATEMENT) == 1, (
+        f"the {label} arm must copy the staged model exactly once"
+    )
+    copied = guarded_span_at(arm, first_copy, DSP_COPY_GUARD)
+    model_copy = arm.find(DSP_COPY_STATEMENT)
+    assert copied[0] <= model_copy < copied[1], (
+        f"the {label} arm copies the staged model outside the decision's "
+        "first copy guard"
+    )
+    released = guarded_span_at(arm, copy, DSP_COPY_GUARD)
+    released_body = arm[released[0]:released[1]]
+    for statement in ("g_dsp_model_origin = g_pending_dsp_origin;",
+                      "g_dsp_apply_pending = false;"):
+        assert statement in released_body, (
+            f"the {label} arm does not execute {statement!r} under the "
+            "decision's copy field"
+        )
+    # N4: the generation step is unconditional, outside every decision guard.
+    step = arm.find(DSP_GENERATION_STEP)
+    for span in (guard, copied, released):
+        assert not span[0] <= step < span[1], (
+            f"the {label} arm steps the generation inside a decision guard; "
+            "it must run outside both, by the decision's count"
+        )
+
+
+def assert_dsp_idle_apply_executes_the_decision(text):
+    """Phase 4j: a staged DSP model applies with no audio flowing.
+
+    The idle arm is a noinline AiusAudioProcessor member called in the service
+    checkpoint before sample_rate_service; enqueue() stamps the idle clock for
+    every block at the consume point, outside any branch (N2); and both arms
+    execute aius_dsp_apply_decide's fields, so a caller that drops the build
+    fails here even with the decision correct (closure N-new2)."""
+    clean = without_comments_and_literals(text)
+    assert re.search(
+        r"__attribute__\(\(noinline\)\)\s+FLASHMEM\s+void\s+"
+        r"dsp_idle_apply_service\(uint32_t now_ms\);",
+        clean,
+    ), (
+        "dsp_idle_apply_service is not declared noinline; producer-isolation "
+        "roots on its linked symbol"
+    )
+    replay = without_comments_and_literals(
+        function_body(text, "static FLASHMEM bool platform_replay(")
+    )
+    assert replay.count("dsp_idle_apply_service(") == 1, (
+        "the service checkpoint does not call dsp_idle_apply_service exactly once"
+    )
+    service = replay.find(DSP_IDLE_APPLY_CALL)
+    assert service >= 0, (
+        "the service checkpoint must pass dsp_idle_apply_service a fresh "
+        "millis(), not the epoch's now_ms: a nested AUDIO pass earlier in the "
+        "epoch stamps g_dsp_last_block_ms later, and now - last wraps to due"
+    )
+    assert service < replay.find("sample_rate_service(now_ms);"), (
+        "dsp_idle_apply_service must run before sample_rate_service"
+    )
+
+    enqueue = without_comments_and_literals(function_body(text, ENQUEUE_MARKER))
+    stamp = "g_dsp_last_block_ms = millis();"
+    assert enqueue.count(stamp) == 1, (
+        "enqueue() does not stamp g_dsp_last_block_ms exactly once"
+    )
+    at = enqueue.find(stamp)
+    assert at < enqueue.find("g_dsp_apply_pending"), (
+        "enqueue() stamps g_dsp_last_block_ms after the consume point's flag read"
+    )
+    assert enqueue[:at].count("{") == enqueue[:at].count("}"), (
+        "enqueue() stamps g_dsp_last_block_ms inside a branch; every block "
+        "reaching the consume point must stamp it, outside any branch"
+    )
+    # N2: the stamp is the statement right after the consume point's last
+    # refusal arm (the live-ready assignment), so no braceless branch guards
+    # it and no refused block stamps it.
+    previous = enqueue.rfind(";", 0, at)
+    before_previous = enqueue.rfind(";", 0, previous)
+    assert (
+        previous >= 0
+        and not enqueue[previous + 1:at].strip()
+        and enqueue[max(before_previous, enqueue.rfind("}", 0, previous)) + 1:
+                    previous + 1].strip()
+        == "g_clock_live_ready = !replay && g_clock_carrier_ready;"
+    ), (
+        "enqueue() stamps g_dsp_last_block_ms somewhere other than directly "
+        "after the g_clock_live_ready assignment at the consume point"
+    )
+    assert_arm_executes_the_decision(enqueue, "block")
+    assert re.search(
+        r"aius_dsp_apply_decide\(\s*model_pending,\s*g_applied_stream_rate_hz,"
+        r"\s*block->sample_rate_hz\)",
+        enqueue,
+    ), (
+        "the block arm does not decide on the flag, the applied rate and the "
+        "block's rate"
+    )
+
+    idle = without_comments_and_literals(function_body(text, DSP_IDLE_APPLY_MARKER))
+    assert_arm_executes_the_decision(idle, "idle")
+    assert re.search(
+        r"if\s*\(\s*!\s*aius_dsp_idle_apply_due\(\s*pending,\s*"
+        r"g_dsp_last_block_ms,\s*now_ms\s*\)\s*\)\s*return\s*;",
+        idle,
+    ), (
+        "the idle arm does not return unless aius_dsp_idle_apply_due holds"
+    )
+    assert "aius_dsp_apply_decide(pending, g_applied_stream_rate_hz, 0u)" in idle, (
+        "the idle arm does not decide with block rate 0 at the applied rate"
+    )
+    assert idle.count("g_dsp_apply_pending") == 2, (
+        "the idle arm must read g_dsp_apply_pending once and clear it once"
+    )
+
+
 RECORDER_JSON_MARKER = (
     "static FLASHMEM size_t app_write_recorder(void *, uint8_t *body,"
 )
@@ -3144,6 +3328,10 @@ POSITIVE_CHECKS = (
         assert_dsp_model_origin_is_staged_not_assumed,
     ),
     (
+        "a staged DSP model applies with no audio flowing, both arms executing one decision",
+        assert_dsp_idle_apply_executes_the_decision,
+    ),
+    (
         "the flight recorder reports the rate its frames carry",
         assert_recorder_reports_the_streams_rate,
     ),
@@ -3369,10 +3557,129 @@ def run_audio_cutover_self_test():
         assert_enqueue_refuses_rate_before_dsp,
         assert_clock_status_clear_and_episode_contract,
         assert_dsp_model_origin_is_staged_not_assumed,
+        assert_dsp_idle_apply_executes_the_decision,
         assert_recorder_reports_the_streams_rate,
     )
     for check in checks:
         _expect_pass(check, text, "audio-cutover/current")
+    # Phase 4j: each mutation keeps aius_dsp_apply_decide correct and breaks
+    # one caller, so the check is what catches it (closure N-new2, N2).
+    idle_apply_mutations = (
+        ("idle-drops-build",
+         "\tif (decision.build)\n\t\tapply_config(g_active_model, decision.build_rate_hz);\n",
+         "",
+         "exactly once"),
+        ("idle-builds-unguarded",
+         "\tif (decision.build)\n\t\tapply_config(g_active_model, decision.build_rate_hz);\n",
+         "\tapply_config(g_active_model, decision.build_rate_hz);\n",
+         "missing conditional marker"),
+        ("idle-builds-at-another-rate",
+         "\t\tapply_config(g_active_model, decision.build_rate_hz);\n\tg_config_generation",
+         "\t\tapply_config(g_active_model, AIUS_OPTICAL_SAMPLE_RATE_HZ);\n\tg_config_generation",
+         "decision's rate"),
+        ("block-builds-unguarded",
+         "\t\tif (decision.build) {\n\t\t\tapply_config(",
+         "\t\t{\n\t\t\tapply_config(",
+         "missing conditional marker"),
+        ("block-steps-generation-itself",
+         "\t\tg_config_generation += decision.generation_steps;\n",
+         "\t\tg_config_generation++;\n",
+         "decision's count"),
+        ("stamp-inside-branch",
+         "\t\tg_dsp_last_block_ms = millis();\n"
+         "\t\tconst bool model_pending = g_dsp_apply_pending;\n",
+         "\t\tconst bool model_pending = g_dsp_apply_pending;\n"
+         "\t\tif (model_pending) {\n\t\t\tg_dsp_last_block_ms = millis();\n\t\t}\n",
+         "stamps g_dsp_last_block_ms"),
+        ("service-missing",
+         "\t" + DSP_IDLE_APPLY_CALL + "\n",
+         "",
+         "exactly once"),
+        ("service-inlinable",
+         "__attribute__((noinline)) FLASHMEM void\n\tdsp_idle_apply_service(",
+         "FLASHMEM void\n\tdsp_idle_apply_service(",
+         "noinline"),
+        # 4j delivery audit S1: the epoch's now_ms predates a nested pass's
+        # stamp, so now - last wraps to "due" while blocks flow.
+        ("service-passes-epoch-now",
+         DSP_IDLE_APPLY_CALL,
+         "g_audio_processor.dsp_idle_apply_service(now_ms);",
+         "fresh millis()"),
+        # N1: the model copy escapes the first copy guard, in either arm.
+        ("block-copy-unguarded",
+         "\t\tif (decision.copy)\n\t\t\tg_active_model = g_pending_dsp_model;\n",
+         "\t\tg_active_model = g_pending_dsp_model;\n",
+         "copy field twice"),
+        ("idle-copy-unguarded",
+         "\tif (decision.copy)\n\t\tg_active_model = g_pending_dsp_model;\n"
+         "\tif (decision.build)",
+         "\tif (decision.copy) {}\n\tg_active_model = g_pending_dsp_model;\n"
+         "\tif (decision.build)",
+         "first copy guard"),
+        # N2: a braceless branch guarding the stamp, and the stamp hoisted
+        # above the refusal arms.
+        ("stamp-braceless-branch",
+         "\t\tg_dsp_last_block_ms = millis();\n",
+         "\t\tif (!replay)\n\t\t\tg_dsp_last_block_ms = millis();\n",
+         "directly after"),
+        ("stamp-at-top",
+         "\t\tg_dsp_last_block_ms = millis();\n"
+         "\t\tconst bool model_pending",
+         "\t\tconst bool model_pending",
+         None),
+        # N3: the due gate inverted, or its return dropped.
+        ("idle-due-not-negated",
+         "if (!aius_dsp_idle_apply_due(",
+         "if (aius_dsp_idle_apply_due(",
+         "unless aius_dsp_idle_apply_due holds"),
+        ("idle-due-no-return",
+         "g_dsp_last_block_ms, now_ms))\n\t\treturn;\n",
+         "g_dsp_last_block_ms, now_ms))\n\t\t;\n",
+         "unless aius_dsp_idle_apply_due holds"),
+        # N4: the generation step moved under the build guard.
+        ("idle-generation-under-build",
+         "\tif (decision.build)\n\t\tapply_config(g_active_model, decision.build_rate_hz);\n"
+         "\tg_config_generation += decision.generation_steps;\n",
+         "\tif (decision.build) {\n\t\tapply_config(g_active_model, decision.build_rate_hz);\n"
+         "\t\tg_config_generation += decision.generation_steps;\n\t}\n",
+         "inside a decision guard"),
+    )
+    for label, old, new, needle in idle_apply_mutations:
+        mutated = text.replace(old, new, 1)
+        if label == "stamp-at-top":
+            mutated = mutated.replace(
+                ENQUEUE_MARKER + "\n\t{\n",
+                ENQUEUE_MARKER + "\n\t{\n\t\tg_dsp_last_block_ms = millis();\n",
+                1,
+            )
+            assert mutated.count("g_dsp_last_block_ms = millis();") == 1, (
+                "dsp-idle-apply/stamp-at-top: mutation anchor moved"
+            )
+            needle = "directly after"
+        assert mutated != text, f"dsp-idle-apply/{label}: mutation anchor moved"
+        _expect_fail(
+            assert_dsp_idle_apply_executes_the_decision,
+            mutated,
+            f"dsp-idle-apply/{label}",
+            needle,
+        )
+    after_rate = text.replace(
+        "\t" + DSP_IDLE_APPLY_CALL + "\n", "", 1
+    ).replace(
+        "\tsample_rate_service(now_ms);\n\t/* Memory only",
+        "\tsample_rate_service(now_ms);\n"
+        "\t" + DSP_IDLE_APPLY_CALL + "\n\t/* Memory only",
+        1,
+    )
+    assert after_rate.count(DSP_IDLE_APPLY_CALL) == 1, (
+        "dsp-idle-apply/service-after-rate: mutation anchor moved"
+    )
+    _expect_fail(
+        assert_dsp_idle_apply_executes_the_decision,
+        after_rate,
+        "dsp-idle-apply/service-after-rate",
+        "before sample_rate_service",
+    )
     looped = text.replace(
         "\t\taudio_block_t *left = receiveReadOnly(0);",
         "\t\tfor (;;) {}\n\t\taudio_block_t *left = receiveReadOnly(0);",
@@ -3543,16 +3850,31 @@ def run_audio_cutover_self_test():
         "audio-cutover/acquisition-ingress-left-open",
         "discard live blocks",
     )
+    # Phase 4j put the idle DSP apply between the two; the swap keeps it.
+    idle_from = text.find("\treplay_source_service();\n") + len(
+        "\treplay_source_service();\n"
+    )
+    idle_apply_lines = text[
+        idle_from:text.find("\t/* Apply or verify the settled source's", idle_from)
+    ]
+    assert DSP_IDLE_APPLY_CALL in idle_apply_lines, (
+        "audio-cutover/source-after-rate: idle-apply anchor moved"
+    )
     source_after_rate = text.replace(
         "\treplay_source_service();\n"
+        + idle_apply_lines +
         "\t/* Apply or verify the settled source's live plan or exact 48 kHz replay\n"
         "\t * plan before graph ownership can move. */\n"
         "\tsample_rate_service(now_ms);",
         "\tsample_rate_service(now_ms);\n"
+        + idle_apply_lines +
         "\t/* Apply or verify the settled source's live plan or exact 48 kHz replay\n"
         "\t * plan before graph ownership can move. */\n"
         "\treplay_source_service();",
         1,
+    )
+    assert source_after_rate != text, (
+        "audio-cutover/source-after-rate: mutation anchor moved"
     )
     _expect_fail(
         assert_rate_service_orders_safe_gate,

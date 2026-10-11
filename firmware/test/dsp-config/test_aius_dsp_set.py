@@ -163,6 +163,18 @@ class DspSetTest(unittest.TestCase):
         self.assertIn("not yet applied", err)
         self.assertEqual(clock.sleeps, 3)
 
+    def test_exit_3_help_and_timeout_message_name_no_carrier(self):
+        code, _, _, err, _ = run(["features.limiter=true"], wait=3,
+                                 after=[with_state(1, True)])
+        self.assertEqual(code, 3)
+        self.assertNotIn("carrier", err.lower())
+        self.assertIn("service epoch", err)
+        out = io.StringIO()
+        with mock.patch.object(sys, "argv", ["aius_dsp_set.py", "--help"]), \
+                contextlib.redirect_stdout(out), self.assertRaises(SystemExit):
+            tool.main()
+        self.assertNotIn("carrier", out.getvalue().lower())
+
     def test_wait_applied_other_clients_save_exits_1(self):
         other = with_state(2, False)  # limiter still false: not what we sent
         code, _, _, err, _ = run(["features.limiter=true"], wait=30, after=[other])

@@ -1,6 +1,7 @@
 #ifndef AIUS_DSP_RUNTIME_CONFIG_H
 #define AIUS_DSP_RUNTIME_CONFIG_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -66,6 +67,40 @@ AiusStatus aius_dsp_runtime_config_apply(
 void aius_dsp_runtime_config_bind(
 	AiusDspRuntimeConfig *runtime,
 	AiusDspConfig *process);
+
+/* Idle apply (Phase 4j). A staged model applies at the next block, or, with
+ * no block reaching the DSP for this long, from the service checkpoint. */
+#define AIUS_DSP_IDLE_APPLY_MS 100u
+
+/* True when an apply is pending and no block has reached the consume point
+ * for AIUS_DSP_IDLE_APPLY_MS. Wrap-safe in uint32 milliseconds. Takes no gate
+ * input: a locked carrier that delivers no blocks counts as idle. */
+bool aius_dsp_idle_apply_due(
+	bool apply_pending,
+	uint32_t last_block_ms,
+	uint32_t now_ms);
+
+/* One apply decision shared by the block arm and the idle arm.
+ * copy: copy the pending model into the active model (and adopt its origin,
+ *   clear the pending flag). build: call apply_config at build_rate_hz (the
+ *   caller then records build_rate_hz as the applied rate).
+ *   generation_steps: how many times to advance the config generation (0 or
+ *   1; a model copy plus a rate change is still one step). */
+typedef struct {
+	bool copy;
+	bool build;
+	uint32_t build_rate_hz;
+	uint32_t generation_steps;
+} AiusDspApplyDecision;
+
+/* block_rate_hz 0 selects the idle arm: pending copies and builds at
+ * applied_rate_hz with one step; not pending does nothing. A non-zero block
+ * rate builds when a model is pending or it differs from applied_rate_hz,
+ * at block_rate_hz, with one step. */
+AiusDspApplyDecision aius_dsp_apply_decide(
+	bool pending,
+	uint32_t applied_rate_hz,
+	uint32_t block_rate_hz);
 
 #ifdef __cplusplus
 }
