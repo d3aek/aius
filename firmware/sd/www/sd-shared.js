@@ -25,7 +25,7 @@
   const WAVEFORM_FULL_SCALE = 1000; /* per-mille of full scale */
 
   /* Sets a status pill's text AND its data-state so the shared tone map in
-   * replays.css colours it. The state IS the text: one vocabulary --
+   * sd-chrome.css colours it. The state IS the text: one vocabulary --
    * loading/idle/live/no data/edited/sending/pending/applied/saving/playing/
    * stopped/stale/invalid/error/unreachable -- so a new word is a deliberate
    * vocabulary change, not a page-local invention. */

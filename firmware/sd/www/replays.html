@@ -4,19 +4,31 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Aius replay manager</title>
-  <!-- replays.css carries the shared chrome for every SD page; this page adds
-       its own rules in the page layer at the foot of that sheet. -->
+  <meta name="theme-color" content="#0a0c0b">
+  <!-- sd-chrome.css carries the shared chrome for every SD page; replays.css
+       adds only this page's own rules. -->
+  <link rel="stylesheet" href="sd-chrome.css">
   <link rel="stylesheet" href="replays.css">
 </head>
 <body>
-  <main>
+  <a class="skip" href="#main">Skip to the replays</a>
+
+  <header class="bench-nav bench-nav--wrap">
+    <a class="logo" href="index.html" aria-label="aius mixer">
+      <span class="logo__dots" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></span>
+      <span class="logo__word">aius</span>
+    </a>
+    <nav class="bench-nav__links" aria-label="Device pages">
+      <a href="index.html">DSP editor</a>
+      <a href="replays.html" aria-current="page">Replay manager</a>
+      <a href="status.html">Device status</a>
+      <a href="upgrade.html">Firmware upgrade</a>
+    </nav>
+    <a class="bench-nav__alt" href="classic.html">Classic editor</a>
+  </header>
+
+  <main id="main">
     <header>
-      <nav>
-        <a href="index.html">DSP editor</a>
-        <a href="replays.html" aria-current="page">Replay manager</a>
-        <a href="status.html">Device status</a>
-        <a href="upgrade.html">Firmware upgrade</a>
-      </nav>
       <div>
         <p class="eyebrow">AIUS / SD CARD</p>
         <h1>Replay manager</h1>

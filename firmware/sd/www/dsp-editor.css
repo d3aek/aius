@@ -1,5 +1,5 @@
 /* DSP editor additions. The shared chrome (page frame, cards, status grid,
-   controls, buttons, PILLS and the error-summary line) comes from replays.css,
+   controls, buttons, PILLS and the error-summary line) comes from sd-chrome.css,
    which classic.html links first -- keep every SD page looking like one product
    and only add what the editor's dense form and signal-flow strip need. */
 
@@ -7,7 +7,7 @@ code{color:var(--aius-accent-info)}
 /* Shared control rhythm (2026-07-27 feedback, items 6 + 11): every control in
    a .controls row -- buttons, text/number/password inputs, the preset file
    browser -- shares one height, so a row reads as one baseline and the
-   stacked-label token field bottom-aligns with its buttons (replays.css
+   stacked-label token field bottom-aligns with its buttons (sd-chrome.css
    already flex-ends the row). */
 .controls button,.controls input,.controls select{height:36px}
 .controls input[type="file"]{padding:6px 8px;font-size:.78rem}
@@ -82,7 +82,7 @@ code{color:var(--aius-accent-info)}
    space-between, so the group stays together on the right whether the title
    beside it is an h2 or an h3. */
 .stage-head{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-left:auto}
-/* replays.css's .section-title is a NON-wrapping flex row, and the head above
+/* sd-chrome.css's .section-title is a NON-wrapping flex row, and the head above
    is atomic (a checkbox, its word, a reset and Apply). At phone width that row
    was 32 px wider than the viewport -- invisible while each dashboard cell had
    its own scroller, a sideways-scrolling page once the bands stopped clipping.
@@ -111,7 +111,7 @@ code{color:var(--aius-accent-info)}
 /* A fact about the FORM, beside the button that would send it. */
 .form-fact{color:var(--aius-text-muted);font-size:.72rem;font-variant-numeric:tabular-nums;align-self:center}
 .hint--warn{color:var(--aius-text-warning)}
-/* The unapplied-edits pill. The shared vocabulary in replays.css has no word
+/* The unapplied-edits pill. The shared vocabulary in sd-chrome.css has no word
    for it, so its tone lives here -- amber, like `edited`, because it is the
    same fact restated in the Apply row. A clean form says nothing at all. */
 .pill[data-state="unsaved changes"]{border-color:var(--aius-accent-warning);color:var(--aius-text-warning)}

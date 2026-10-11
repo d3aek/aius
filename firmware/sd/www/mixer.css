@@ -1,135 +1,19 @@
-/* index.html: the bench dashboard. replays.css and dsp-editor.css still lay out
-   everything dsp-editor.js builds; this sheet re-points their tokens at the
-   bench palette (black, phosphor amber for the voice, signal teal for the
-   path) and lays every stage out as one full-viewport grid of panels.
+/* index.html: the bench dashboard. sd-chrome.css carries the shared chrome
+   (tokens, fonts, nav, card, pill, buttons, form controls); dsp-editor.css
+   still lays out everything dsp-editor.js builds; this sheet adds only the
+   dashboard: every stage laid out as one full-viewport grid of panels. */
 
-   No web fonts are fetched: Archivo and IBM Plex Mono ship on the card under
-   fonts/ (SIL OFL 1.1, Latin subset), so nothing on the page phones home. */
-
-@font-face {
-  font-family: "Archivo";
-  font-style: normal;
-  font-weight: 100 900;
-  font-stretch: 62% 125%;
-  font-display: swap;
-  src: url("fonts/archivo-latin-wdth.woff2") format("woff2");
-}
-@font-face {
-  font-family: "IBM Plex Mono";
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url("fonts/ibm-plex-mono-latin-400.woff2") format("woff2");
-}
-@font-face {
-  font-family: "IBM Plex Mono";
-  font-style: normal;
-  font-weight: 500;
-  font-display: swap;
-  src: url("fonts/ibm-plex-mono-latin-500.woff2") format("woff2");
-}
-@font-face {
-  font-family: "IBM Plex Mono";
-  font-style: normal;
-  font-weight: 600;
-  font-display: swap;
-  src: url("fonts/ibm-plex-mono-latin-600.woff2") format("woff2");
-}
-
-/* ---- tokens ---------------------------------------------------------------- */
-:root {
-  --aius-surface-page: #0a0c0b;
-  --aius-surface-raised: #131715;
-  --aius-surface-recessed: #181d1a;
-  --aius-surface-input: #0f1211;
-  --aius-surface-canvas: #0a0c0b;
-  --aius-surface-warning: color-mix(in srgb, #ffb627 12%, #131715);
-  --aius-surface-action: color-mix(in srgb, #3be0bd 16%, #131715);
-  --aius-surface-secondary-action: #181d1a;
-  --aius-surface-danger: color-mix(in srgb, #ff5d4f 14%, #131715);
-  --aius-border-strong: #232a26;
-  --aius-border-control: #2f3832;
-  --aius-border-subtle: #1a201d;
-  --aius-border-emphasis: #3a453e;
-  --aius-accent-primary: #3be0bd;
-  --aius-accent-info: #3be0bd;
-  --aius-accent-warning: #ffb627;
-  --aius-accent-danger: #ff5d4f;
-  --aius-text-primary: #ecefe9;
-  --aius-text-secondary: #b7beb8;
-  --aius-text-muted: #7d8780;
-  --aius-text-disabled: #4f5852;
-  --aius-text-warning: #ffd27a;
-  --aius-text-danger: #ff9d94;
-
-  --bench-amber-dim: #8a6418;
-  --bench-amber-ink: #120d00;
-  --bench-teal-dim: #1b6e5d;
-  --bench-core-a: #1b221e;
-  --bench-core-b: #0f1311;
-  --bench-thumb-a: #e9ece7;
-  --bench-thumb-b: #9aa29c;
-  --bench-grid-line: rgba(255, 255, 255, .025);
-  --bench-sheen: rgba(255, 255, 255, .04);
-  --bench-shadow: rgba(0, 0, 0, .8);
-  --bench-amber-fill: rgba(255, 182, 39, .1);
-  --bench-amber-wash: rgba(255, 182, 39, .06);
-  --bench-teal-fill: rgba(59, 224, 189, .08);
-  --bench-nav-glass: rgba(10, 12, 11, .86);
-
-  --bench-radius: 10px;
-  --bench-radius-lg: 16px;
-  /* Buttons, inputs and status pills share one square-ish corner and the
-     buttons one height; a pill is smaller and borderless, so shape and fill,
-     never height alone, tell the two apart. */
-  --bench-radius-ctl: 4px;
-  --bench-control-h: 44px;
-  --bench-pill-h: 24px;
-  --bench-dot: 6px;
-  --bench-gutter: clamp(10px, 1.2vw, 18px);
-  --bench-f-display: "Archivo", "Archivo Narrow", system-ui, sans-serif;
-  --bench-f-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-}
-
-/* ---- base ------------------------------------------------------------------ */
-body.bench {
-  background: var(--aius-surface-page);
-  color: var(--aius-text-primary);
-  font-family: var(--bench-f-display);
-  font-size: 14px;
-  line-height: 1.5;
-  -webkit-font-smoothing: antialiased;
-}
-
-/* The faint schematic grid behind the panels. */
-body.bench::before {
-  content: "";
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  background-image:
-    linear-gradient(to right, var(--bench-grid-line) 1px, transparent 1px),
-    linear-gradient(to bottom, var(--bench-grid-line) 1px, transparent 1px);
-  background-size: 32px 32px;
-}
-
-.bench code { font-family: var(--bench-f-mono); font-size: .9em; color: var(--aius-accent-primary); }
-.bench-main { position: relative; max-width: none; margin: 0; padding: 0; }
-
-.skip { position: absolute; left: -999px; top: 8px; z-index: 100; padding: 8px 12px; border-radius: var(--bench-radius-ctl); background: var(--aius-accent-warning); color: var(--bench-amber-ink); }
-.skip:focus { left: 8px; }
-
-/* The one label style on the page: mono, uppercase, amber. */
-.kicker { margin: 0; font: 500 12px/1.2 var(--bench-f-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--aius-accent-warning); }
-.kicker--sub { font-size: 11px; color: var(--aius-text-muted); }
+/* dsp-editor.css sizes these toolbar buttons compactly at the same
+   specificity as sd-chrome.css's .bench button, and loads after it; the
+   dashboard keeps the full-height bench button. */
+.stage-head button,
+.curve-controls button,
+.dashboard-toolbar button { padding: 0 14px; font-size: 12px; }
 
 /* ---- controls --------------------------------------------------------------
-   Two vocabularies. A BUTTON (every <button>, the chips, the disclosure
-   summaries) has a solid border, an uppercase label, a pressed state and the
-   control height. A status PILL (.pill, the lock chip, .flow-end) has no
-   border, a tinted fill, a leading dot, a smaller fixed height and no pointer
-   cursor. Both share the one corner radius. */
-.bench button,
+   sd-chrome.css defines the two vocabularies, BUTTON and status PILL. The
+   dashboard extends them: the chips and the disclosure summaries are buttons,
+   the lock chip and .flow-end are pills. */
 .bench .preset-menu > summary,
 .bench .mixer__exact > summary,
 .bench .chip {
@@ -149,34 +33,18 @@ body.bench::before {
   cursor: pointer;
   transition: border-color .2s, background .2s, box-shadow .2s;
 }
-.bench button:active:not(:disabled),
 .bench .preset-menu > summary:active,
 .bench .mixer__exact > summary:active { background: var(--bench-amber-fill); border-color: var(--aius-accent-warning); }
-.bench button:disabled { cursor: not-allowed; }
-.bench button.secondary,
 .bench .preset-menu > summary,
 .bench .chip { background: transparent; border-color: var(--aius-border-control); color: var(--aius-text-secondary); }
-.bench button.secondary:hover:not(:disabled) { border-color: var(--aius-text-secondary); color: var(--aius-text-primary); background: transparent; }
-.bench button.danger { background: var(--aius-surface-danger); border-color: var(--aius-accent-danger); color: var(--aius-text-danger); }
 .bench #apply { background: var(--aius-accent-warning); border-color: var(--aius-accent-warning); color: var(--bench-amber-ink); font-weight: 600; padding: 0 22px; }
 .bench #apply:hover:not(:disabled) { box-shadow: 0 0 0 5px var(--bench-amber-fill); background: var(--aius-accent-warning); }
-.bench input:not([type="range"]):not([type="checkbox"]),
-.bench select {
-  font-family: var(--bench-f-mono);
-  font-size: 12px;
-  background: var(--aius-surface-input);
-  border: 1px solid var(--aius-border-control);
-  border-radius: var(--bench-radius-ctl);
-}
-.bench select { height: var(--bench-control-h); }
-.bench input[type="checkbox"] { accent-color: var(--aius-accent-primary); }
 /* RESET: the quiet button. The label text is "reset" in dsp-editor.js; the case
    is this sheet's. The corner it sits in is set per container below. */
 .bench .field__reset { background: transparent; border-color: var(--aius-border-control); color: var(--aius-text-muted); }
 .bench .field__reset:hover:not(:disabled) { border-color: var(--aius-text-secondary); color: var(--aius-text-primary); }
 .bench .field__reset[data-dirty="true"] { border-color: var(--aius-accent-warning); color: var(--aius-text-warning); }
 .bench .field__reset:disabled { opacity: .35; }
-.bench .pill,
 .bench .token-lock,
 .bench .flow-end {
   display: inline-flex;
@@ -193,30 +61,8 @@ body.bench::before {
   white-space: var(--aius-white-space-atomic);
   cursor: default;
 }
-.bench .pill::before,
 .bench .token-lock::before,
 .bench .flow-end::before { content: ""; flex: none; width: var(--bench-dot); height: var(--bench-dot); border-radius: 50%; background: currentColor; }
-.bench .pill[hidden] { display: none; }
-.bench .hint { font: 400 11px/1.5 var(--bench-f-mono); }
-
-/* ---- nav --------------------------------------------------------------------- */
-.bench-nav { position: relative; z-index: 2; display: flex; align-items: center; gap: 22px; min-height: 44px; margin: 0; padding: 0 var(--bench-gutter); border-bottom: 1px solid var(--aius-border-strong); }
-.bench-nav__links { display: flex; gap: 20px; margin: 0; padding: 0; border: 0; flex-wrap: wrap; }
-.bench-nav__links a,
-.bench-nav__alt { padding: 0; border: 0; border-radius: 0; background: none; font: 500 11px var(--bench-f-mono); text-transform: uppercase; letter-spacing: .06em; color: var(--aius-text-secondary); text-decoration: none; }
-.bench-nav__links a:hover,
-.bench-nav__alt:hover { background: none; color: var(--aius-accent-warning); }
-.bench-nav__links a[aria-current="page"] { background: none; color: var(--aius-accent-warning); font-weight: 600; }
-.bench-nav__alt { margin-left: auto; }
-@media (max-width: 760px) { .bench-nav__links { display: none; } }
-
-.logo { display: inline-flex; align-items: center; gap: 9px; text-decoration: none; color: var(--aius-text-primary); }
-.logo__word { font-weight: 800; font-size: 20px; font-stretch: expanded; font-variation-settings: "wdth" 125; letter-spacing: -.03em; }
-.logo__dots { display: grid; grid-template-columns: repeat(3, 5px); gap: 3px; }
-.logo__dots i { width: 5px; height: 5px; border-radius: 50%; background: var(--aius-border-control); }
-.logo__dots i:nth-child(2) { background: var(--aius-accent-warning); box-shadow: 0 0 8px var(--aius-accent-warning); }
-.logo__dots i:nth-child(4),
-.logo__dots i:nth-child(6) { background: var(--bench-teal-dim); }
 
 /* ---- action bar ----------------------------------------------------------------
    Full-bleed glass strip, sticky: state, model facts, token, actions. */
@@ -306,17 +152,7 @@ body.bench::before {
   .board__cell--live { grid-column: span 12; }
 }
 
-.panel {
-  min-width: 0;
-  margin: 0;
-  padding: 14px 16px 16px;
-  border: 1px solid var(--aius-border-control);
-  border-radius: var(--bench-radius-lg);
-  background: var(--aius-surface-raised);
-  box-shadow: 0 30px 60px -40px var(--bench-shadow), inset 0 1px 0 var(--bench-sheen);
-}
 .panel.card--invalid { border-color: var(--aius-accent-danger); }
-.bench .panel__head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; margin: 0 0 14px; padding-bottom: 10px; border-bottom: 1px solid var(--aius-border-strong); }
 .bench .stage-enable { font: 500 10px var(--bench-f-mono); text-transform: uppercase; letter-spacing: .06em; }
 /* The off-note text is visually hidden (still in the accessibility tree); the BYPASSED pill shows
    the state and keeps its box, hidden by visibility, so a bypass changes no layout. */
@@ -647,11 +483,6 @@ body.bench::before {
 .bench .gr__track { height: 12px; border: 1px solid var(--aius-border-strong); background: var(--aius-surface-page); }
 .bench .gr__fill { background: repeating-linear-gradient(90deg, var(--aius-accent-warning) 0 6px, transparent 6px 8px); }
 
-.bench .spec-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
-@media (max-width: 520px) { .bench .spec-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-.bench .spec-grid > div { padding: 8px 10px; border: 1px solid var(--aius-border-strong); border-radius: 8px; background: var(--aius-surface-input); }
-.bench .spec-grid span { font: 500 10px var(--bench-f-mono); text-transform: uppercase; letter-spacing: .06em; }
-.bench .spec-grid strong { margin-top: 4px; font: 600 13px var(--bench-f-mono); font-variant-numeric: tabular-nums; }
 .bench .meter-cards { margin-top: 10px; gap: 8px; }
 .bench .meter-group { border: 1px solid var(--aius-border-strong); border-radius: 8px; background: var(--aius-surface-input); }
 .bench .meter-group__title { color: var(--aius-accent-warning); font-family: var(--bench-f-mono); }
@@ -675,7 +506,6 @@ body.bench::before {
   .led[data-state="carrier"],
   .flow[data-live="true"] .flow__wires path { animation: none; }
   .dial__fill { transition: none; }
-  .bench button { transition: none; }
 }
 
 @media (forced-colors: active) {

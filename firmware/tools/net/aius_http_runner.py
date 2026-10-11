@@ -190,7 +190,7 @@ def main():
     parser.add_argument("--interval", type=float, default=1.0)
     parser.add_argument("--timeout", type=float, default=10.0)
     parser.add_argument("--evidence", default="aius-http-soak.jsonl")
-    parser.add_argument("--resource", choices=("index.html", "app.js", "style.css", "config.json"))
+    parser.add_argument("--resource", choices=("index.html", "classic.html", "app.js", "style.css", "config.json"))
     parser.add_argument("--file")
     # The four control routes are gated on X-Aius-SD-Auth. Read the board's token
     # with `AIUS AUTH <id>` over the CDC port; without it `soak` records 401s for

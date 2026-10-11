@@ -3,109 +3,121 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#0a0c0b">
   <title>Aius device status</title>
-  <!-- replays.css carries the shared chrome for every SD page; this page adds
-       nothing of its own beyond the page layer at the foot of that sheet. -->
-  <link rel="stylesheet" href="replays.css">
+  <!-- sd-chrome.css carries the shared chrome for every SD page, including the
+       bench-page layer and the signal line this page uses; it needs no sheet
+       of its own. -->
+  <link rel="stylesheet" href="sd-chrome.css">
 </head>
-<body>
-  <main>
-    <header>
-      <nav>
-        <a href="index.html">DSP editor</a>
-        <a href="replays.html">Replay manager</a>
-        <a href="status.html" aria-current="page">Device status</a>
-        <a href="upgrade.html">Firmware upgrade</a>
-      </nav>
-      <div>
-        <p class="eyebrow">AIUS / SD CARD</p>
-        <h1>Device status</h1>
-        <p class="lede">One <code>GET /api/status</code> per second, whole. Read-only and public: nothing on this page writes to the device, so it needs no auth token.</p>
-      </div>
-    </header>
+<body class="bench">
+  <a class="skip" href="#main">Skip to the status</a>
 
-    <section class="card status-card">
-      <div class="section-title"><h2>Audio path</h2><span id="audio-pill" class="pill">loading</span></div>
-      <p class="hint">What is feeding the output right now, and what the transmit gate did with it.</p>
-      <p id="flow" class="flow"></p>
-      <div id="audio-grid" class="status-grid">
-        <div><span>Input source</span><strong id="input-source">--</strong></div>
-        <div><span>Audio state</span><strong id="audio-state">--</strong></div>
-        <div><span>Optical carrier</span><strong id="carrier">--</strong></div>
-        <div><span>Stream format</span><strong id="format">--</strong></div>
-        <div><span>Sample rate</span><strong id="sample-rate">--</strong></div>
-        <div><span>Blocks processed</span><strong id="blocks">--</strong></div>
-        <div><span>Overruns</span><strong id="overruns">--</strong></div>
-        <div><span>Gate open</span><strong id="gate-open">--</strong></div>
-        <div><span>Gate carrier lock</span><strong id="gate-carrier">--</strong></div>
-        <div><span>Gate replay term</span><strong id="gate-replay">--</strong></div>
-      </div>
-      <p id="poll-status" class="hint" role="status">Reading device status...</p>
-      <p id="poll-errors" class="error-summary" role="alert" hidden></p>
-    </section>
+  <header class="bench-nav bench-nav--wrap">
+    <a class="logo" href="index.html" aria-label="aius mixer">
+      <span class="logo__dots" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></span>
+      <span class="logo__word">aius</span>
+    </a>
+    <nav class="bench-nav__links" aria-label="Device pages">
+      <a href="index.html">DSP editor</a>
+      <a href="replays.html">Replay manager</a>
+      <a href="status.html" aria-current="page">Device status</a>
+      <a href="upgrade.html">Firmware upgrade</a>
+    </nav>
+    <a class="bench-nav__alt" href="classic.html">Classic editor</a>
+  </header>
 
-    <section class="card">
-      <div class="section-title"><h2>Configuration</h2><span id="config-pill" class="pill">loading</span></div>
-      <p class="hint">Two unrelated files. The <a href="index.html">DSP editor</a> writes the audio model to <code>/aius/dsp.json</code> — that is the first two rows. <code>/aius/config.json</code> is a separate optional boot file whose feature flags no firmware path reads today; its absence is the normal state, not a fault, and applying a DSP model never creates it.</p>
-      <div id="config-grid" class="status-grid">
-        <div><span>DSP model</span><strong id="dsp-source">--</strong></div>
-        <div><span>Applied by</span><strong id="dsp-origin">--</strong></div>
-        <div class="status-grid__wide"><span>Boot config file (/aius/config.json)</span><strong id="config-file">--</strong></div>
-        <div><span>Config load errors</span><strong id="config-errors">--</strong></div>
-      </div>
-    </section>
+  <main id="main" class="bench-page">
+    <div class="page-head">
+      <p class="kicker">Aius / SD card</p>
+      <h1 class="page-head__title">Device status</h1>
+      <p class="page-head__lede">One <code>GET /api/status</code> per second, whole. Read-only and public: nothing on this page writes to the device, so it needs no auth token.</p>
+    </div>
 
-    <section class="card">
-      <div class="section-title"><h2>Network</h2><span id="network-pill" class="pill">loading</span></div>
-      <p class="hint">The supervisor owns every DHCP, listener and socket resource of one generation.</p>
-      <div id="network-grid" class="status-grid">
-        <div><span>Mode</span><strong id="network-mode">--</strong></div>
-        <div><span>IP address</span><strong id="ip">--</strong></div>
-        <div><span>Link</span><strong id="link">--</strong></div>
-        <div><span>Supervisor state</span><strong id="network-state">--</strong></div>
-        <div><span>Last fault</span><strong id="network-fault">--</strong></div>
-        <div><span>Generation</span><strong id="network-generation">--</strong></div>
-        <div><span>Restarts</span><strong id="network-restarts">--</strong></div>
-      </div>
-    </section>
+    <div class="page-grid">
+      <section class="panel status-card" aria-labelledby="audio-title">
+        <div class="section-title panel__head"><h2 id="audio-title" class="kicker">01 / Audio path</h2><span id="audio-pill" class="pill">loading</span></div>
+        <p class="hint">What is feeding the output right now, and what the transmit gate did with it.</p>
+        <p id="flow" class="signal-line"></p>
+        <div id="audio-grid" class="status-grid spec-grid spec-grid--fill">
+          <div><span>Input source</span><strong id="input-source">--</strong></div>
+          <div><span>Audio state</span><strong id="audio-state">--</strong></div>
+          <div><span>Optical carrier</span><strong id="carrier">--</strong></div>
+          <div><span>Stream format</span><strong id="format">--</strong></div>
+          <div><span>Sample rate</span><strong id="sample-rate">--</strong></div>
+          <div><span>Blocks processed</span><strong id="blocks">--</strong></div>
+          <div><span>Overruns</span><strong id="overruns">--</strong></div>
+          <div><span>Gate open</span><strong id="gate-open">--</strong></div>
+          <div><span>Gate carrier lock</span><strong id="gate-carrier">--</strong></div>
+          <div><span>Gate replay term</span><strong id="gate-replay">--</strong></div>
+        </div>
+        <p id="poll-status" class="hint" role="status">Reading device status...</p>
+        <p id="poll-errors" class="error-summary" role="alert" hidden></p>
+      </section>
 
-    <section class="card">
-      <div class="section-title"><h2>Storage</h2><span id="storage-pill" class="pill">loading</span></div>
-      <p class="hint">The card this page is served from.</p>
-      <div id="storage-grid" class="status-grid">
-        <div><span>Card</span><strong id="sd-present">--</strong></div>
-        <div><span>Filesystem</span><strong id="sd-filesystem">--</strong></div>
-        <div><span>Free</span><strong id="sd-free">--</strong></div>
-        <div><span>Used of capacity</span><strong id="sd-used">--</strong></div>
-      </div>
-    </section>
+      <section class="panel page-grid__third" aria-labelledby="config-title">
+        <div class="section-title panel__head"><h2 id="config-title" class="kicker">02 / Configuration</h2><span id="config-pill" class="pill">loading</span></div>
+        <p class="hint">Two unrelated files. The <a href="index.html">DSP editor</a> writes the audio model to <code>/aius/dsp.json</code>: that is the first two rows. <code>/aius/config.json</code> is a separate optional boot file whose feature flags no firmware path reads today; its absence is the normal state, not a fault, and applying a DSP model never creates it.</p>
+        <div id="config-grid" class="status-grid spec-grid spec-grid--fill">
+          <div><span>DSP model</span><strong id="dsp-source">--</strong></div>
+          <div><span>Applied by</span><strong id="dsp-origin">--</strong></div>
+          <div class="status-grid__wide"><span>Boot config file (/aius/config.json)</span><strong id="config-file">--</strong></div>
+          <div><span>Config load errors</span><strong id="config-errors">--</strong></div>
+        </div>
+      </section>
 
-    <section class="card">
-      <div class="section-title"><h2>Board</h2><span id="board-pill" class="pill">loading</span></div>
-      <p class="hint">The retained boot ledger, the watchdog's account of the last resets, the running image and which firmware slot it came from, then the forensic records the device keeps for the failure it cannot report while it is happening.</p>
-      <div id="board-grid" class="status-grid">
-        <div><span>Boot generation</span><strong id="boot-generation">--</strong></div>
-        <div><span>Reset source</span><strong id="reset-source">--</strong></div>
-        <div><span>Early watchdog resets</span><strong id="watchdog-early">--</strong></div>
-        <div><span>Recovery-safe mode</span><strong id="recovery-safe">--</strong></div>
-        <div><span>Last checkpoint</span><strong id="last-checkpoint">--</strong></div>
-        <div><span>Loop epochs</span><strong id="loop-epoch">--</strong></div>
-        <div><span>CPU temperature</span><strong id="cpu-temp">--</strong></div>
-        <div><span>Peak CPU temperature</span><strong id="cpu-temp-max">--</strong></div>
-        <div><span>Built (UTC)</span><strong id="build-utc">--</strong></div>
-        <div><span>Firmware slot</span><strong id="fw-slot">--</strong></div>
-        <!-- Wide because a slot build's revision carries the environment suffix
-             (`<sha>+teensy41-optical-slot-b`) and a 150px column ellipsised it
-             mid-string, which reads as a complete revision that it is not. -->
-        <div class="status-grid__wide"><span>Build revision</span><strong id="build-revision">--</strong></div>
-        <div class="status-grid__wide"><span>Slot boot record</span><strong id="fw-record">--</strong></div>
-        <div class="status-grid__wide"><span>Chooser trial ledger</span><strong id="fw-ledger">--</strong></div>
-        <div class="status-grid__wide"><span>Previous boot</span><strong id="prev-boot">--</strong></div>
-        <div class="status-grid__wide"><span>Last CPU fault</span><strong id="fault-record">--</strong></div>
-        <div class="status-grid__wide"><span>OTA dark window</span><strong id="ota-dark">--</strong></div>
-        <div class="status-grid__wide"><span>Stall witness</span><strong id="stall-witness">--</strong></div>
-      </div>
-    </section>
+      <section class="panel page-grid__third" aria-labelledby="network-title">
+        <div class="section-title panel__head"><h2 id="network-title" class="kicker">03 / Network</h2><span id="network-pill" class="pill">loading</span></div>
+        <p class="hint">The supervisor owns every DHCP, listener and socket resource of one generation.</p>
+        <div id="network-grid" class="status-grid spec-grid spec-grid--fill">
+          <div><span>Mode</span><strong id="network-mode">--</strong></div>
+          <div><span>IP address</span><strong id="ip">--</strong></div>
+          <div><span>Link</span><strong id="link">--</strong></div>
+          <div><span>Supervisor state</span><strong id="network-state">--</strong></div>
+          <div><span>Last fault</span><strong id="network-fault">--</strong></div>
+          <div><span>Generation</span><strong id="network-generation">--</strong></div>
+          <div><span>Restarts</span><strong id="network-restarts">--</strong></div>
+        </div>
+      </section>
+
+      <section class="panel page-grid__third" aria-labelledby="storage-title">
+        <div class="section-title panel__head"><h2 id="storage-title" class="kicker">04 / Storage</h2><span id="storage-pill" class="pill">loading</span></div>
+        <p class="hint">The card this page is served from.</p>
+        <div id="storage-grid" class="status-grid spec-grid spec-grid--fill">
+          <div><span>Card</span><strong id="sd-present">--</strong></div>
+          <div><span>Filesystem</span><strong id="sd-filesystem">--</strong></div>
+          <div><span>Free</span><strong id="sd-free">--</strong></div>
+          <div><span>Used of capacity</span><strong id="sd-used">--</strong></div>
+        </div>
+      </section>
+
+      <section class="panel" aria-labelledby="board-title">
+        <div class="section-title panel__head"><h2 id="board-title" class="kicker">05 / Board</h2><span id="board-pill" class="pill">loading</span></div>
+        <p class="hint">The retained boot ledger, the watchdog's account of the last resets, the running image and which firmware slot it came from, then the forensic records the device keeps for the failure it cannot report while it is happening.</p>
+        <div id="board-grid" class="status-grid spec-grid spec-grid--fill">
+          <div><span>Boot generation</span><strong id="boot-generation">--</strong></div>
+          <div><span>Reset source</span><strong id="reset-source">--</strong></div>
+          <div><span>Early watchdog resets</span><strong id="watchdog-early">--</strong></div>
+          <div><span>Recovery-safe mode</span><strong id="recovery-safe">--</strong></div>
+          <div><span>Last checkpoint</span><strong id="last-checkpoint">--</strong></div>
+          <div><span>Loop epochs</span><strong id="loop-epoch">--</strong></div>
+          <div><span>CPU temperature</span><strong id="cpu-temp">--</strong></div>
+          <div><span>Peak CPU temperature</span><strong id="cpu-temp-max">--</strong></div>
+          <div><span>Built (UTC)</span><strong id="build-utc">--</strong></div>
+          <div><span>Firmware slot</span><strong id="fw-slot">--</strong></div>
+          <!-- Wide because a slot build's revision carries the environment suffix
+               (`<sha>+teensy41-optical-slot-b`) and a narrow column ellipsised it
+               mid-string, which reads as a complete revision that it is not. -->
+          <div class="status-grid__wide"><span>Build revision</span><strong id="build-revision">--</strong></div>
+          <div class="status-grid__wide"><span>Slot boot record</span><strong id="fw-record">--</strong></div>
+          <div class="status-grid__wide"><span>Chooser trial ledger</span><strong id="fw-ledger">--</strong></div>
+          <div class="status-grid__wide"><span>Previous boot</span><strong id="prev-boot">--</strong></div>
+          <div class="status-grid__wide"><span>Last CPU fault</span><strong id="fault-record">--</strong></div>
+          <div class="status-grid__wide"><span>OTA dark window</span><strong id="ota-dark">--</strong></div>
+          <div class="status-grid__wide"><span>Stall witness</span><strong id="stall-witness">--</strong></div>
+        </div>
+      </section>
+    </div>
   </main>
   <script src="sd-shared.js"></script>
   <script src="status.js"></script>

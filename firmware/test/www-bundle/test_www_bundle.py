@@ -162,6 +162,19 @@ class BundleTests(unittest.TestCase):
             self.assertNotRegex(text, r'<script[^>]*\bsrc=')
         self.assertEqual(len(list(self.out.glob("*.html.gz"))), 5)
 
+    def test_real_tree_every_page_inlines_the_shared_chrome(self):
+        # Every stylesheet link of every real page resolves (a missing one
+        # exits 1), and each page inlines sd-chrome.css first (mixer Phase 7).
+        pairs = {}
+        for page in www_bundle.PAGES:
+            assets = []
+            www_bundle.bundle_page(REAL_WWW, page, assets)
+            pairs[page] = [asset for asset in assets if asset.endswith(".css")]
+        for page, sheets in pairs.items():
+            self.assertEqual(sheets[:1], ["sd-chrome.css"], page)
+        users = sorted(page for page, sheets in pairs.items() if "replays.css" in sheets)
+        self.assertEqual(users, ["replays.html"])
+
 
 class SyncTests(unittest.TestCase):
     def setUp(self):

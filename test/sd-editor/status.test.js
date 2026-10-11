@@ -33,8 +33,11 @@ const www = resolve(here, '../../firmware/sd/www');
 const statusHtml = readFileSync(resolve(www, 'status.html'), 'utf8');
 const sharedSource = readFileSync(resolve(www, 'sd-shared.js'), 'utf8');
 const statusSource = readFileSync(resolve(www, 'status.js'), 'utf8');
+/* The body tag carries the bench class (mixer plan Phase 7); match any open tag
+   so the head and its stylesheet links never reach happy-dom. */
+const bodyOpen = statusHtml.match(/<body[^>]*>/);
 const bodyMarkup = statusHtml
-  .slice(statusHtml.indexOf('<body>') + '<body>'.length, statusHtml.indexOf('</body>'))
+  .slice(bodyOpen.index + bodyOpen[0].length, statusHtml.indexOf('</body>'))
   .replace(/<script[\s\S]*?<\/script>/g, '');
 
 const el = (id) => document.getElementById(id);

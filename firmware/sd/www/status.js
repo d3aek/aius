@@ -210,12 +210,14 @@
     stages.forEach((stage, index) => {
       if (index > 0) {
         const arrow = document.createElement('span');
+        arrow.className = 'signal-line__arrow';
         arrow.textContent = '→';
         /* Decoration: the stage order is already in the reading order. */
         arrow.setAttribute('aria-hidden', 'true');
         flow.append(arrow);
       }
       const cell = document.createElement('span');
+      cell.className = 'signal-line__stage';
       cell.dataset.tone = stage[2] ? 'ok' : 'off';
       const label = document.createElement('b');
       label.textContent = stage[0];

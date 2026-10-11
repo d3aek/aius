@@ -138,7 +138,8 @@ UNRESOLVED = "unresolved"
 
 GATE_NAMES = ("reboots", "stalls", "soak", "dsp")
 
-EDITOR_RESOURCES = ("www/index.html", "www/dsp-editor.js", "www/dsp-editor.css")
+EDITOR_RESOURCES = ("www/index.html", "www/classic.html", "www/dsp-editor.js",
+                    "www/dsp-editor.css", "www/sd-chrome.css")
 
 # The ten recovery fields, in the one spelling HTTP JSON, USB `ID` and the UDP
 # suffix all resolve to (§Status compatibility contract).

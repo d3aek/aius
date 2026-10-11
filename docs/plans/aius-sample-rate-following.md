@@ -6688,8 +6688,8 @@ outcome: >-
   (/aius/replays/*.iec) is archived to the repo as LFS before it is
   deleted from the card; in-flight .part files are deleted with their
   names and sizes in the archive manifest. The replays page's Live processing card moves
-  to status.html, and the shared SD stylesheet survives as
-  sd-chrome.css. The tx-gate header, the SD lifecycle service with 4g's
+  to status.html, and every page keeps the shared SD stylesheet,
+  sd-chrome.css (mixer plan Phase 7). The tx-gate header, the SD lifecycle service with 4g's
   fill walk, /api/measure's body parsing, OTA staging's append and
   Content-Range handling, and every other service platform_replay
   hosts survive under a renamed service checkpoint.
@@ -6706,7 +6706,7 @@ seams:
   - "firmware/lib/aius_http and firmware/src/aius_optical_app.cpp and .h: the /api/replays* routes, AIUS_HTTP_ROUTE_SD_REPLAY (aius_http.c:236-241) and replay ops go, so a /sd/replays/ path falls to the ordinary SD file route. What survives, renamed to vector or ID terms (S1): replay_id_chars_valid, AIUS_HTTP_MAX_REPLAY_ID, AIUS_OPTICAL_APP_REPLAY_ID_STORAGE and MeasureSession.vector_id, which /api/measure's body parsing uses. AIUS_REPLAY_MAX_ID_LENGTH (aius_replay.h:42, 48) dies with aius_replay.h; vector_id (optical_main.cpp:7805) is sized by the renamed AIUS_OPTICAL_APP_REPLAY_ID_STORAGE (aius_optical_app.h:36, AIUS_HTTP_MAX_REPLAY_ID + 1, also 48 + 1), so the ID bound keeps one home, aius_http.h:20 (closure N1). Also surviving: OTA staging's AIUS_SD_INSTALL_APPEND_PART and its Content-Range parsing; aius_json's body reader"
   - "replay parameters in surviving libraries (S10): aius_tx_fill_sensor_pre's replay_block (aius_tx_fill_sensor.h:155), AIUS_AUDIO_INGRESS_GAP_SHORT_REPLAY and ingress_drop_short_replay, aius_optical_web_fill_paused's replay argument (aius_optical_app.h:1035) and AiusReplaySource go with their callers"
   - "firmware/platformio.ini: the aius_replay source filter and include lines and AIUS_TX_GATE_OPEN_REPLAY_TARGET_FRAMES (:326-333) go"
-  - "firmware/sd/www (B1, owner Q1): replays.css is the shared chrome for every SD page (tokens, nav, .card, .pill), so it is renamed sd-chrome.css, not deleted; index.html:9, status.html:9, mixer.html:13 and upgrade.html:9 link it, and the comments citing it (dsp-editor.css, mixer.css, upgrade.css, sd-shared.js:28, the page heads) follow. replays.html and replays.js are deleted, after the Live processing card (replays.html:73-77, replays.js:513-541, drawWaveform at sd-shared.js:235) moves to status.html and status.js. Every page's nav, sd-shared.js and openapi.json (/api/replays*, replay status fields, clock.state replay, 503 fill_busy) drop replay; so do openapi.json's other replay mentions (closure N2): /api/measure's descriptions (:285, :352, :1749, :1774, :1834, the stimulus now a U24 render), the APPEND_PART and Content-Range wording that cites the replay upload (:466, :496, :1032), and the status brief's 'exactly ... tx_gate.replay_running' (:32, with its example and schema); www_bundle.py and aius-sd-sync.sh drop the replays page"
+  - "firmware/sd/www (B1, owner Q1; re-scoped 2026-10-11 by mixer plan Phase 7, which creates sd-chrome.css as every page's shared chrome in the mixer style and leaves replays.css linked by replays.html alone): replays.css is deleted with the page, and any comment still citing it follows. replays.html and replays.js are deleted, after the Live processing card (replays.html:73-77, replays.js:513-541, drawWaveform at sd-shared.js:235) moves to status.html and status.js. Every page's nav, sd-shared.js and openapi.json (/api/replays*, replay status fields, clock.state replay, 503 fill_busy) drop replay; so do openapi.json's other replay mentions (closure N2): /api/measure's descriptions (:285, :352, :1749, :1774, :1834, the stimulus now a U24 render), the APPEND_PART and Content-Range wording that cites the replay upload (:466, :496, :1032), and the status brief's 'exactly ... tx_gate.replay_running' (:32, with its example and schema); www_bundle.py and aius-sd-sync.sh drop the replays page"
   - "firmware/tools (B2): firmware/tools/ac3_vectors already has its own generate.sh and README.md, so replay_samples' generate.sh and validate.py move to a new firmware/tools/iec_fixtures/; test.sh:823-848, dsp_matrix_round.py:35-37, ac3_vectors/README.md:74, gen_iec_stream.py:63, dsp_characterize/README.md:87, docs/reference/user-interface.md:309 and firmware/.gitignore:13 (the generated pack, about 66 MB) follow. replay_samples' eac3_acceptance.py and upload.sh are deleted. recorder_transitions.py loses --with-replay, the loss to replay leg and its fill_busy retry; aius_rate_bench.py loses the replay phase label and the clock.state replay arm (:461)"
 targeted-proof:
   - "host: itcm-placement (verify_target.py): no optical env's symbol table names replay, and aius_replay is absent from EXPECTED_LDF_LIBS with a case that a link carrying it fails"
@@ -6888,7 +6888,8 @@ gate 1.
   `MeasureSession.vector_id`), renamed to vector or ID terms with its
   wire shape frozen; OTA staging's `AIUS_SD_INSTALL_APPEND_PART` and
   Content-Range parsing; `aius_json`'s body reader (S1).
-- The shared SD chrome as `sd-chrome.css` (B1); the Live processing
+- The shared SD chrome, `sd-chrome.css` (B1, created by mixer plan
+  Phase 7); the Live processing
   card and `drawWaveform` on `status.html` (Q1); `clock.master` as a
   constant `input` (Q3).
 - The AC-3 IEC fixture generator and its parser oracle in

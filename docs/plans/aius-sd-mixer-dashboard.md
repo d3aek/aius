@@ -48,8 +48,11 @@ with bonded tabs. `index.html` stays as the classic editor.
   - `src/apps/preview/content/aius-logos/`: eight raster explorations, the
     gallery `index.html` and `_tools/generate_logos.py`; the round 1 and 2
     SVGs in `svg/`, and the review pages `round-1.html` and `round-2.html`.
-- **Next action**: Phase 6, then Phase 7, then the owner's preview check
-  and one card sync.
+- **Next action**: the owner's preview check of all five pages
+  (`https://apps.example.net/apps/preview/aius-mixer/index.html`,
+  `status.html`, `upgrade.html`, `classic.html`, `replays.html`), then one
+  card sync and the delete of the stale `mixer.html` and `mixer.html.gz`;
+  that closes Phases 6 and 7.
 
 ## Constraints
 
@@ -629,6 +632,24 @@ unit: implementer
   mixer, and replays leaves the card in sample-rate-following Phase 4i. The
   firmware root page (`http_home_page.cpp`) keeps its built-in style: it must
   render with no card, and restyling it would need an OTA.
+- **Built (2026-10-11), not on the card.** `sd-chrome.css` carries the
+  shared chrome (mixer chrome plus the old `replays.css` generics); status
+  and upgrade are fully restyled with every id kept; classic and replays
+  take the chrome; only `replays.html` links `replays.css`. The index page
+  is unchanged: computed styles of all 1010 elements compared at 1440 and
+  390 px, three invisible differences. On phones the index still hides
+  its nav links; the other four pages wrap them (`bench-nav--wrap`) so
+  they keep phone navigation. `aius_recovery_smoke.py` also checks
+  `www/sd-chrome.css`. Proof: vitest 7 files, 444 tests (new
+  `pages.test.js`: stylesheet links resolve, `sd-chrome.css` first, the
+  same five nav links on every page); www-bundle 29, optical-app,
+  recovery-runner 71, net; Chromium probes of all five preview pages at
+  1440 and 390 px: fonts loaded, 0 off-origin requests, 0 overflow, all
+  nav links 200.
+- **Found, not fixed (pre-existing).** `aius_http_runner.py --resource`
+  maps a name to `/sd/<name>`, not the served `/sd/www/<name>`, for
+  `index.html` and now `classic.html`; it affects only that bench tool's
+  resource probe and is left for its owner.
 - **Coordination with sample-rate-following Phase 4i.** 4i renames
   `replays.css` to `sd-chrome.css` as the shared chrome. This phase creates
   `sd-chrome.css` first, so 4i's web-ui-removal unit deletes `replays.css`

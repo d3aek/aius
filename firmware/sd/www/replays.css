@@ -1,172 +1,41 @@
-:root {
-  color-scheme: dark;
-  font-family: ui-monospace, SFMono-Regular, "Cascadia Code", Consolas, monospace;
+/* ---- page layer for replays.html --------------------------------------------
+   sd-chrome.css carries the shared chrome (tokens, fonts, nav, main, header,
+   .card, .pill, .status-grid, .controls, buttons, .error-summary); this sheet
+   adds only what the replay manager has that no other SD page has: the file
+   list, the upload row and its progress bar, the buffer meter and the
+   waveform canvas. Only replays.html links it. */
 
-  /* High-contrast dark palette (2026-09-04 modernization). Concrete values, not
-     the old color-mix(Canvas/CanvasText) system-colour mixes -- those low
-     percentages were the source of the muddy, low-contrast look this replaces.
-     Tokens are the ONLY place a literal colour lives; every SD sheet consumes
-     these names, so a value change here reskins all four pages at once.
-     Accent cyan matches the signal-flow canvas palette in dsp-editor.js. */
-  --aius-surface-page: #0a0d12;
-  --aius-surface-raised: #141a22;
-  --aius-surface-recessed: #1b232e;
-  --aius-surface-input: #0f141b;
-  --aius-surface-canvas: #0b0f15;
-  --aius-surface-warning: color-mix(in srgb, #f5b445 16%, #141a22);
-  --aius-surface-action: color-mix(in srgb, #4cc2ff 22%, #141a22);
-  --aius-surface-secondary-action: #232d39;
-  --aius-surface-danger: color-mix(in srgb, #ff6b6b 16%, #141a22);
-  --aius-border-strong: #2c3a49;
-  --aius-border-control: #3c4b5d;
-  --aius-border-subtle: #212a35;
-  --aius-border-emphasis: #4a5d73;
-  --aius-accent-primary: #4cc2ff;
-  --aius-accent-info: #8ab4ff;
-  --aius-accent-warning: #f5b445;
-  --aius-accent-danger: #ff6b6b;
-  --aius-text-primary: #f3f7fc;
-  --aius-text-secondary: #c7d3e0;
-  --aius-text-muted: #93a4b7;
-  --aius-text-disabled: #667588;
-  --aius-text-warning: #ffce85;
-  --aius-text-danger: #ff9d9d;
-  --aius-white-space-atomic: nowrap;
-  background: var(--aius-surface-page);
-  color: var(--aius-text-primary);
-}
-
-* { box-sizing: border-box; }
-body { margin: 0; }
-main { max-width: 1100px; margin: 0 auto; padding: 28px 18px 60px; }
-.section-title, .controls, .upload, .meter-row { display: flex; gap: 14px; align-items: center; justify-content: space-between; }
-/* Header stacks: the tab menu is a full-width strip on top, then the title block
-   takes the whole column so the lede is no longer squeezed beside a nav. */
-header { margin-bottom: 26px; }
-a { color: var(--aius-accent-info); }
-h1, h2, p { margin: 0; }
-h1 { font-size: clamp(1.7rem, 4vw, 2.8rem); letter-spacing: -0.01em; }
-h2 { font-size: 1rem; }
-.eyebrow { color: var(--aius-accent-primary); font-size: .75rem; letter-spacing: .16em; margin-bottom: 8px; }
-/* Full column width (2026-09-04): the lede no longer shares a flex row with the
-   nav, so it reads across the whole page instead of a 720 px measure. */
-.lede { color: var(--aius-text-secondary); max-width: none; line-height: 1.6; margin-top: 10px; }
-
-/* ---- the firmware page menu ------------------------------------------------
-   An obvious tab strip at the top of every SD page: the same four tabs in the
-   same order on all four, so it reads as one menu, with the current page marked
-   by aria-current (2026-09-04). */
-nav { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 22px; padding-bottom: 18px; border-bottom: 1px solid var(--aius-border-subtle); }
-nav a { display: inline-flex; align-items: center; padding: 9px 15px; border: 1px solid var(--aius-border-control); border-radius: 8px; background: var(--aius-surface-recessed); color: var(--aius-text-secondary); text-decoration: none; font-size: .82rem; transition: background 120ms ease, border-color 120ms ease, color 120ms ease; }
-nav a:hover { background: var(--aius-surface-secondary-action); border-color: var(--aius-border-emphasis); color: var(--aius-text-primary); }
-nav a[aria-current="page"] { background: var(--aius-surface-action); border-color: var(--aius-accent-primary); color: var(--aius-accent-primary); font-weight: 600; }
-nav a:focus-visible { outline: 2px solid var(--aius-accent-info); outline-offset: 2px; }
-
-.card { background: var(--aius-surface-raised); border: 1px solid var(--aius-border-strong); border-radius: 10px; padding: 18px; margin: 14px 0; box-shadow: 0 1px 3px rgba(0, 0, 0, .35); }
-.section-title { margin-bottom: 16px; }
-.pill { border: 1px solid var(--aius-border-emphasis); border-radius: 999px; padding: 4px 9px; font-size: .75rem; }
-.status-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
-.status-grid div { background: var(--aius-surface-recessed); border-radius: 6px; padding: 11px; }
-.status-grid span, .status-grid strong { display: block; }
-.status-grid span, .hint, .muted { color: var(--aius-text-muted); font-size: .78rem; }
-.status-grid strong { margin-top: 7px; overflow: hidden; text-overflow: ellipsis; }
+.upload, .meter-row { display: flex; gap: 14px; align-items: center; justify-content: space-between; }
 .meter-row { margin: 16px 0; color: var(--aius-text-secondary); font-size: .78rem; }
 .meter-row label { display: flex; align-items: center; gap: 10px; flex: 1; }
 .meter-row progress { width: min(60%, 500px); accent-color: var(--aius-accent-primary); }
-.controls, .upload { flex-wrap: wrap; justify-content: flex-start; margin-top: 12px; }
-.controls label, .upload label { display: grid; gap: 6px; color: var(--aius-text-secondary); font-size: .78rem; }
-.check { display: flex !important; align-items: center; margin-top: 20px; }
-select, input, button { font: inherit; color: inherit; background: var(--aius-surface-input); border: 1px solid var(--aius-border-control); border-radius: 6px; padding: 8px; }
-button { cursor: pointer; background: var(--aius-surface-action); border-color: var(--aius-accent-primary); border-radius: 7px; transition: background 120ms ease, border-color 120ms ease; }
-button:hover:not(:disabled) { border-color: var(--aius-accent-info); background: color-mix(in srgb, var(--aius-accent-primary) 32%, var(--aius-surface-raised)); }
-button:disabled { opacity: .5; cursor: not-allowed; }
-button.secondary { background: var(--aius-surface-secondary-action); border-color: var(--aius-border-control); }
-button.secondary:hover:not(:disabled) { border-color: var(--aius-border-emphasis); background: color-mix(in srgb, var(--aius-text-primary) 8%, var(--aius-surface-secondary-action)); }
-/* One focus ring for the chrome's own controls; page sheets keep their richer
-   3px canvas/toolbar rings, which win on specificity. */
-a:focus-visible, button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--aius-accent-info); outline-offset: 2px; }
-input:focus-visible, select:focus-visible { border-color: var(--aius-accent-info); }
+.upload { flex-wrap: wrap; justify-content: flex-start; align-items: flex-end; border-top: 1px solid var(--aius-border-strong); padding-top: 16px; margin-top: 16px; }
+.upload label { display: grid; gap: 6px; color: var(--aius-text-secondary); font-size: .78rem; }
 .file-list { display: grid; gap: 8px; }
 .file { display: grid; grid-template-columns: minmax(130px, 1fr) auto auto auto; gap: 12px; align-items: center; padding: 10px; background: var(--aius-surface-recessed); border-radius: 5px; }
 .file small { color: var(--aius-text-muted); }
 .file button { padding: 5px 8px; font-size: .75rem; }
-.upload { border-top: 1px solid var(--aius-border-strong); padding-top: 16px; margin-top: 16px; }
 .meters canvas { width: 100%; height: auto; background: var(--aius-surface-canvas); border-radius: 5px; }
 .meters .section-title a { font-size: .75rem; }
 
+/* The narrow-width .file rule keeps each row button in its own cell: stacking
+   both into one cell let Delete paint over Play (UX finding P1). */
 @media (max-width: 650px) {
-  main { padding: 20px 14px 48px; }
   .file { grid-template-columns: 1fr auto auto; }
   .file strong { grid-column: 1 / 4; }
   .file small { grid-column: 1; }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  nav a, button { transition: none; }
-}
-
-@media (forced-colors: active) {
-  nav a[aria-current="page"] { border-color: Highlight; color: Highlight; }
-  nav a:focus-visible, a:focus-visible, button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid Highlight; }
-}
-
-/* ---- shared layer, grown 2026-07-27 (UX consolidation, task #7 slice 5) ----
-   This sheet is the SHARED chrome for every SD page; page-specific rules stay
-   in each page's own sheet. The narrow-width .file rule above replaced the one
-   that stacked BOTH row buttons into one grid cell -- Delete painted over Play
-   and the only tappable row button destroyed a capture (UX finding P1). */
-
-/* Pill tone map. The state IS the pill text, stamped into data-state by
-   aiusSdShared.setPill(); states not listed here stay neutral grey on
-   purpose (idle, no data, waiting, loading's brief flash before data). */
-.pill[data-state="applied"],.pill[data-state="live"],.pill[data-state="playing"],.pill[data-state="loaded"]{border-color:var(--aius-accent-primary);color:var(--aius-accent-primary)}
-.pill[data-state="loading"],.pill[data-state="sending"],.pill[data-state="pending"],.pill[data-state="saving"]{border-color:var(--aius-accent-info);color:var(--aius-accent-info)}
-.pill[data-state="edited"],.pill[data-state="stopped"],.pill[data-state="truncated"]{border-color:var(--aius-accent-warning);color:var(--aius-text-warning)}
-.pill[data-state="stale"],.pill[data-state="invalid"],.pill[data-state="error"],.pill[data-state="unreachable"]{border-color:var(--aius-accent-danger);color:var(--aius-text-danger)}
-
-/* Destructive actions get their own tier (both pages' Delete buttons); a
-   harmless-looking secondary next to Play was UX finding P3. */
-button.danger{background:var(--aius-surface-danger);border-color:var(--aius-accent-danger);color:var(--aius-text-danger)}
-
-/* Bottom-align stacked label+input columns with their sibling buttons: the
-   Effective-configuration row's button/field misalignment (and its preset-row
-   sibling) came from centring boxes of different heights. */
-.controls,.upload{align-items:flex-end}
-
-/* Per-card error line, promoted from dsp-editor.css: every acting card owns a
-   status + error pair and errors land in the card whose control was pressed. */
-.error-summary{color:var(--aius-text-danger);font-size:.78rem;margin-top:10px}
-.error-summary[hidden]{display:none}
-
-/* ---- page layer, 2026-07-27 (task #7 slice 5, unit B) ----------------------
-   Appended BELOW the shared layer; nothing above is edited. These rules belong
-   to replays.html and status.html -- status.html links this sheet only, so the
-   handful of rules its cards need live here rather than in a third sheet. */
-
 /* A poll that failed leaves the last good values on screen; dim them so a
-   frozen grid cannot read as live data beside an `unreachable` pill (P4). */
-.status-grid[data-stale="true"],.file-list[data-stale="true"],.flow[data-stale="true"]{opacity:.45}
+   frozen list cannot read as live data beside an `unreachable` pill (P4). */
+.file-list[data-stale="true"] { opacity: .45; }
 
-/* Non-zero underruns and an incomplete upload read as ordinary text otherwise
-   (R-N8, P6); the playing row had no marker at all (R-N6). */
-.status-grid strong[data-tone="warn"],.file small[data-tone="warn"]{color:var(--aius-accent-warning)}
-.file__playing{color:var(--aius-accent-primary);font-size:.72rem;letter-spacing:.08em}
+/* An incomplete upload reads as ordinary text otherwise (P6); the playing row
+   had no marker at all (R-N6). */
+.file small[data-tone="warn"] { color: var(--aius-accent-warning); }
+.file__playing { color: var(--aius-accent-primary); font-size: .72rem; letter-spacing: .08em; }
 
-/* Upload progress: a bar and a percentage beside the byte counts, replacing an
-   hour-long operation's raw-byte-only text (P5). */
-.upload-progress{display:flex;align-items:center;gap:10px;margin-top:12px}
-.upload-progress progress{flex:1;accent-color:var(--aius-accent-primary)}
-.upload-progress span{color:var(--aius-text-muted);font-size:.78rem;font-variant-numeric:tabular-nums;min-width:5ch}
-
-/* Forensic rows on the status page (A/B slot record, previous-boot ledger,
-   crash record, dark-window stamp, stall witness) carry a composite sentence
-   rather than one number, so they take the whole grid width instead of
-   wrapping to five lines inside a 150px auto-fit column. */
-.status-grid .status-grid__wide{grid-column:1/-1}
-.status-grid .status-grid__wide strong{font-variant-numeric:tabular-nums}
-
-/* The transmit gate as a signal-flow line on the status page:
-   input -> DSP -> gate -> output. */
-.flow{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-bottom:14px;font-size:.8rem;color:var(--aius-text-muted)}
-.flow b{color:var(--aius-text-primary);font-weight:600}
-.flow span[data-tone="ok"]{color:var(--aius-accent-primary)}
+/* Upload progress: a bar and a percentage beside the byte counts (P5). */
+.upload-progress { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
+.upload-progress progress { flex: 1; accent-color: var(--aius-accent-primary); }
+.upload-progress span { color: var(--aius-text-muted); font-size: .78rem; font-variant-numeric: tabular-nums; min-width: 5ch; }
