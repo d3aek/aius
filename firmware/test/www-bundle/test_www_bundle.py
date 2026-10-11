@@ -214,6 +214,14 @@ class SyncTests(unittest.TestCase):
         self.assertEqual([u.rsplit("/", 1)[1] for u in self.uploads()],
                          ["mixer.html", "mixer.html.gz"])
 
+    def test_subdirectory_path_sent_literally(self):
+        font = self.www / "fonts" / "x.woff2"
+        font.parent.mkdir()
+        font.write_bytes(b"font")
+        result = self.run_sync(["200"], "--file", "fonts/x.woff2")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.uploads(), ["http://stub/sd/www/fonts/x.woff2"])
+
     def test_503_retry_after_honoured_then_success(self):
         result = self.run_sync(["503 3", "503 2", "200"], "--file", "other.txt")
         self.assertEqual(result.returncode, 0, result.stderr)

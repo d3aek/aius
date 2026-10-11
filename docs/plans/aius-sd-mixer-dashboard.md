@@ -553,13 +553,11 @@ default-page question is decided at that time.
     page one click away.
   - The answer sets the extra seams below; delete this step once it is
     recorded.
-- **First, confirm the card takes a subdirectory.** `aius-sd-sync.sh`
-  PUTs `fonts/x.woff2` as `/sd/www/fonts%2Fx.woff2`. Unverified: whether the
-  firmware's SD PUT route decodes `%2F` and creates `fonts/`, and whether the
-  GET route serves `/sd/www/fonts/x.woff2`. Read the route in
-  `firmware/src/aius_optical_app.cpp` before the deploy; if either fails,
-  flatten the fonts into `www/` (rename, update `mixer.css` and
-  `build_preview.py`) rather than change the firmware.
+- **The card takes a subdirectory** (2026-10-11). The firmware never
+  decoded `%2F` (`resource_path_valid` refuses `%`, 507 `sd_upload`), so
+  `aius-sd-sync.sh` now sends the literal path; the upload job creates
+  missing parent directories (`prepare_next_directory` in
+  `firmware/lib/aius_sd/src/aius_sd.c`).
 - outcome: the mixer files (plus the fonts, the favicon, and any menu edits
   from the answer) served from the card.
 - seams: the card's `/sd/www/` tree, additive only. The answer may add the

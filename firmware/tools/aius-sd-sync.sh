@@ -94,8 +94,8 @@ trap 'rm -rf "$work_dir"' EXIT
 upload_file() {
     local file=$1
     local relative=$2
-    local resource
-    resource=$(printf '%s' "$relative" | sed 's|/|%2F|g')
+    # The relative path is sent literally: the firmware rejects '%' in a
+    # resource and creates missing parent directories on the card.
     [[ "${relative##*/}" != 'config.json' ]] || {
         printf '%s\n' 'refusing to upload config.json as a web asset' >&2
         exit 2
@@ -124,7 +124,7 @@ upload_file() {
             --upload-file "$file" \
             --dump-header "$headers" --output "$body" \
             --write-out '%{http_code}' \
-            "$device_url/sd/www/$resource") || code=000
+            "$device_url/sd/www/$relative") || code=000
         if [[ "$code" == 2?? ]]; then
             cat "$body"
             printf '\n'

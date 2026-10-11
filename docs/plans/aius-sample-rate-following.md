@@ -45,9 +45,12 @@ built); replace wholesale on the next handover.
   the mixer plan's Phase 1e). 4i PLANNED and READY. 4b (acceptance umbrella)
   PLANNED: it closes after 4e to 4h's device runs. The owner holds two
   gates (below).
-- **Board.** Runs `df966f17b370` (Phase 4a) in slot 1, deployed by OTA
-  2026-10-06, healthy-boot self-commit. It is the owner's **fail-safe
-  rollback candidate** (2026-10-07): tag `fw-rollback-df966f17b370`,
+- **Board.** Runs `e619980d3d42` (4e to 4m) in slot 2, deployed by OTA
+  2026-10-11 on the owner's word ("run the sync yourself, OTA"), board
+  idle (no carrier, no replay); healthy-boot self-commit (`trial_budget`
+  0, `rollback_observed` false). No rehearsal ran. `df966f17b370` (Phase 4a,
+  now the other slot) stays the owner's **fail-safe rollback candidate**
+  (2026-10-07): tag `fw-rollback-df966f17b370`,
   signed container and USB `recovery.hex` in LFS with steps in
   `firmware/releases/df966f17b370/README.md`.
 - **Implementation started** (owner "start", 2026-10-07), 4e first.
@@ -107,7 +110,8 @@ built); replace wholesale on the next handover.
 | `9c9bd88` | Phase 4f BUILT: link-time admission (route and SD-start shedding, 503 audio_busy with Retry-After), live_owns_ring, time-aged bucketed cost windows, FIFO start-gate deferral with bring-up latch, render and storage-diag yields, /api/status/brief, shared web poller with 503 skip and GET timeout, capture.py 503 skips, dsp_model_pad.py, D-S7, delivery-audit fixes (F-B1, F-B2, F-S1 to F-S6) | 14 host suites (verifier run), all four images, OCRAM at every floor, delivery audit closure PASS |
 | this commit | handover: this state; 4g gains starting figures and three carried-in items | none needed |
 | `35c6585` | Phase 4h BUILT: write-behind settings flush over 4g's PSRAM store (sd-overlay), disconnect hold and remount retry, copy-before-write saves with mount restore, PSRAM upload sink, BUSY verdict and SD-writes freeze, OTA and reboot drain gate, `sd_flush` status, public `FsVolume::cacheClear`, delivery-audit and clean-room fixes (D-S4, D-N10 and CR-N2 recorded as residual risks; D-N8 deferred to 4k) | 21 host suites, vitest, ota client, shellcheck (verifier run); all four images with every post-link guard; delivery audit FAIL then four closures FAIL and a fifth PASS; clean-room HOLD then three closures HOLD and a fourth PASS |
-| this commit | Phase 4m BUILT (mixer plan Phase 1e, owner-approved): "EQ and trim bypassed" note, EQ curve and handles at each member's trim offset on both SD pages | sd-editor vitest 6 files, 432 tests (verifier run); Chromium probe of the mixer preview |
+| this commit | OTA of `e619980d3d42` recorded; `aius-sd-sync.sh` sends subdirectory paths literally (the firmware refuses `%2F`, so `www/fonts/` never uploaded) | www-bundle tests 28 (one new), shellcheck |
+| `27bc275` | Phase 4m BUILT (mixer plan Phase 1e, owner-approved): "EQ and trim bypassed" note, EQ curve and handles at each member's trim offset on both SD pages | sd-editor vitest 6 files, 432 tests (verifier run); Chromium probe of the mixer preview |
 | `d1ab0f4` | Phase 4l BUILT: 16-preset cap at accept (409 preset_limit, sd_busy until the walk completes), one-pass count, editor message and leading-dot rule, openapi 409; 4h cap text rewritten | 8 host suites (verifier rerun), all four images with every post-link guard and OCRAM at each floor; delivery audit FAIL (B1, S1, S2) then closure PASS |
 | `baa8e2c` | Phase 4k BUILT: tri-state BEGIN gate (NONE, WAIT, NO_CARD), AIUS_HTTP_VERDICT_UNAVAILABLE as 503 sd_unavailable for a refused SD_START, verdict switches with no default, AIUS_HTTP_DRIVER_FAULT_SD_UNAVAILABLE, upgrade.js stop case | 8 host suites (verifier run), all four images with every post-link guard and OCRAM at each floor; delivery audit PASS |
 | `8c2c67a` | Phase 4j BUILT: idle DSP apply (predicate and shared decision in `aius_dsp_runtime_config`, block stamp, noinline `dsp_idle_apply_service` producer root, millis() at the call site), tool text and CONTRIBUTING; 4k and 4l prebuild reviews folded with owner answers (4k staging stops on sd_unavailable; 4l sd_busy until counted, 409 once 16 counted) | 7 host suites (verifier run), all four images with every post-link guard and OCRAM at each floor; delivery audit FAIL (S1) then closure PASS |
