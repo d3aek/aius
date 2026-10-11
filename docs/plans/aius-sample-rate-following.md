@@ -45,14 +45,17 @@ built); replace wholesale on the next handover.
   the mixer plan's Phase 1e). 4i PLANNED and READY. 4b (acceptance umbrella)
   PLANNED: it closes after 4e to 4h's device runs. The owner holds two
   gates (below).
-- **Board.** Runs `e619980d3d42` (4e to 4m) in slot 2, deployed by OTA
-  2026-10-11 on the owner's word ("run the sync yourself, OTA"), board
-  idle (no carrier, no replay); healthy-boot self-commit (`trial_budget`
-  0, `rollback_observed` false). No rehearsal ran. `df966f17b370` (Phase 4a,
-  now the other slot) stays the owner's **fail-safe rollback candidate**
-  (2026-10-07): tag `fw-rollback-df966f17b370`,
-  signed container and USB `recovery.hex` in LFS with steps in
-  `firmware/releases/df966f17b370/README.md`.
+- **Board.** Runs `f58232711d06` (4e to 4m plus 4i step 1a) in slot 1,
+  deployed by OTA 2026-10-11 on the owner's word ("go ahead", before a
+  listening session), board idle at the time (no carrier, no replay,
+  `sd_flush.drained`); 153 chunks staged with no retries, healthy-boot
+  self-commit (`trial_budget` 0, `rollback_observed` false). No
+  rehearsal ran. The other slot (2) holds `e619980d3d42`. The card's
+  `openapi.json` predates step 1a's description fix until the next sync.
+  `df966f17b370` (Phase 4a) is in neither slot now but stays the owner's
+  **fail-safe rollback candidate** (2026-10-07): tag
+  `fw-rollback-df966f17b370`, signed container and USB `recovery.hex` in
+  LFS with steps in `firmware/releases/df966f17b370/README.md`.
 - **Implementation started** (owner "start", 2026-10-07), 4e first.
   **No OTA deploy until the owner's go-ahead** (owner, 2026-10-07):
   another bench round may be needed first, not on 2026-10-07. Builds,
@@ -76,10 +79,10 @@ built); replace wholesale on the next handover.
   sync that uploads the bundles) and run 2 (AC-3 page loads), then 4h's
   AC-3 and accidental-disconnect runs. An E7 verdict of B2 re-plans 4f to 4h before
   their device runs (4f's body records this).
-- **Next action.** 4b's device sessions (owner), then the rest of 4i:
-  step 1a's OTA (owner gate 1) and the baseline run. 4i step 1a and
-  `replay_retire.py` are built and host-proven (2026-10-11, ahead of 4b
-  on the owner's word).
+- **Next action.** 4b's device sessions (owner) and 4i's baseline run
+  (owner, U24 bench, on `f58232711d06`), then `replay_retire.py
+  archive`. 4i step 1a is deployed and `replay_retire.py` is built and
+  host-proven (2026-10-11, ahead of 4b on the owner's word).
 - **What landed this run** (aius commits; each followed by a upstream repository
   pointer bump; foreign commits from the mixer session omitted):
 
@@ -112,7 +115,8 @@ built); replace wholesale on the next handover.
 | `9c9bd88` | Phase 4f BUILT: link-time admission (route and SD-start shedding, 503 audio_busy with Retry-After), live_owns_ring, time-aged bucketed cost windows, FIFO start-gate deferral with bring-up latch, render and storage-diag yields, /api/status/brief, shared web poller with 503 skip and GET timeout, capture.py 503 skips, dsp_model_pad.py, D-S7, delivery-audit fixes (F-B1, F-B2, F-S1 to F-S6) | 14 host suites (verifier run), all four images, OCRAM at every floor, delivery audit closure PASS |
 | this commit | handover: this state; 4g gains starting figures and three carried-in items | none needed |
 | `35c6585` | Phase 4h BUILT: write-behind settings flush over 4g's PSRAM store (sd-overlay), disconnect hold and remount retry, copy-before-write saves with mount restore, PSRAM upload sink, BUSY verdict and SD-writes freeze, OTA and reboot drain gate, `sd_flush` status, public `FsVolume::cacheClear`, delivery-audit and clean-room fixes (D-S4, D-N10 and CR-N2 recorded as residual risks; D-N8 deferred to 4k) | 21 host suites, vitest, ota client, shellcheck (verifier run); all four images with every post-link guard; delivery audit FAIL then four closures FAIL and a fifth PASS; clean-room HOLD then three closures HOLD and a fourth PASS |
-| this commit | Phase 4i step 1: `firmware/tools/replay_retire.py` (archive, delete-captures, delete-www; `--auth-file`; committed-and-unchanged check before any delete) | measure-vectors 23 (20 new, fake device and temporary git repos); delivery audit FAIL (B1, S1, N1 to N4) then closure PASS (N5, N6 folded) |
+| this commit | OTA of `f58232711d06` (4i step 1a) recorded | `/api/status`: build `f58232711d06`, slot 1, `trial_budget` 0, `rollback_observed` false |
+| `f582327` | Phase 4i step 1: `firmware/tools/replay_retire.py` (archive, delete-captures, delete-www; `--auth-file`; committed-and-unchanged check before any delete) | measure-vectors 23 (20 new, fake device and temporary git repos); delivery audit FAIL (B1, S1, N1 to N4) then closure PASS (N5, N6 folded) |
 | `603bc08` | Phase 4i step 1a: a replay delete removes `<id>.iec` when it exists, else `<id>.part` (one window, settled); openapi and two comments count at most three primitives | optical-cutover (new admission case, five self-test mutations), optical-app, stack-bound, producer-isolation, itcm-placement, memory, sd-editor; all four images, OCRAM unchanged; delivery audit: no firmware defect |
 | `8c2221d` | OTA of `e619980d3d42` recorded; `aius-sd-sync.sh` sends subdirectory paths literally (the firmware refuses `%2F`, so `www/fonts/` never uploaded) | www-bundle tests 28 (one new), shellcheck |
 | `27bc275` | Phase 4m BUILT (mixer plan Phase 1e, owner-approved): "EQ and trim bypassed" note, EQ curve and handles at each member's trim offset on both SD pages | sd-editor vitest 6 files, 432 tests (verifier run); Chromium probe of the mixer preview |
@@ -6845,7 +6849,9 @@ today's `measure_run.py` and not this tool. The measure_run.py port
 still waits for the owner's baseline, and step 1a's OTA for owner
 gate 1.
 
-- **Step 1a built (2026-10-11), not deployed.** `app_replay_delete`
+- **Step 1a built (2026-10-11); deployed the same day** as
+  `f58232711d06` by OTA on the owner's go-ahead. The baseline run on
+  that image (owner, U24 bench) is next. `app_replay_delete`
   builds the `.iec` path and, inside its one `ProducerSdWindow`, falls
   back to `<id>.part` only when no `.iec` exists, then runs the existing
   exists, remove and `direct_card_settle` once. A card error on the
