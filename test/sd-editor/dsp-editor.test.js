@@ -1,9 +1,9 @@
 // @vitest-environment happy-dom
 
-/* Regression for the SD-hosted DSP control surface (firmware/sd/www/index.html
+/* Regression for the SD-hosted DSP control surface (firmware/sd/www/classic.html
  * + dsp-editor.js, on top of the shared sd-shared.js). The page is a classic
  * script served off the Teensy's SD card, so the harness loads the real
- * index.html body, evaluates the real sd-shared.js and then the real
+ * classic.html body, evaluates the real sd-shared.js and then the real
  * dsp-editor.js against it, and stubs `fetch` with the device contract -- no
  * build step and no served URL, which is the cheapest harness that still
  * exercises the shipped files byte-for-byte.
@@ -44,7 +44,7 @@ const untrimmed = (config) => {
   for (const channel of Object.values(config.input_channels)) channel.gain_db = 0;
   return config;
 };
-const indexHtml = readFileSync(resolve(www, 'index.html'), 'utf8');
+const indexHtml = readFileSync(resolve(www, 'classic.html'), 'utf8');
 const sharedSource = readFileSync(resolve(www, 'sd-shared.js'), 'utf8');
 const editorSource = readFileSync(resolve(www, 'dsp-editor.js'), 'utf8');
 const bodyMarkup = indexHtml
@@ -236,7 +236,7 @@ const downloadBody = async (index = 0) =>
 const windowListeners = [];
 const addWindowListener = window.addEventListener.bind(window);
 
-/* sd-shared.js FIRST, exactly as index.html orders the two script tags: the
+/* sd-shared.js FIRST, exactly as classic.html orders the two script tags: the
  * editor consumes window.aiusSdShared as it boots. */
 function evaluatePage() {
   for (const [type, handler] of windowListeners.splice(0)) window.removeEventListener(type, handler);

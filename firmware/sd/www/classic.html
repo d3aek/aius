@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Aius DSP editor</title>
+  <!-- replays.css carries the shared chrome for every SD page; dsp-editor.css
+       adds only what the editor's dense form and signal-flow strip need. -->
+  <link rel="stylesheet" href="replays.css">
+  <link rel="stylesheet" href="dsp-editor.css">
+</head>
+<body>
+  <main>
+    <header>
+      <nav>
+        <a href="index.html">DSP editor</a>
+        <a href="replays.html">Replay manager</a>
+        <a href="status.html">Device status</a>
+        <a href="upgrade.html">Firmware upgrade</a>
+        <a href="classic.html" aria-current="page">Classic editor</a>
+      </nav>
+      <div>
+        <p class="eyebrow">AIUS / SD CARD</p>
+        <h1>DSP editor</h1>
+        <p class="lede">Edit the single effective DSP configuration: input trim and EQ, downmix matrix, output EQ, true-peak limiter, and the per-stage bypass flags. Writes go to <code>/aius/dsp.json</code> and apply at the next audio block boundary.</p>
+      </div>
+    </header>
+
+    <!-- The one action bar, sticky so "edits are staged until Apply" is never
+         off-screen on a 4000 px page. It is the ONLY writer: dragging a curve or
+         typing a field changes the local form and its preview, not the device,
+         until Apply sends the whole form as one generation bump. Mutating
+         controls are gated on the SD auth token; the lock chip says so, and
+         read-only viewing needs none. -->
+    <div id="action-bar" class="action-bar">
+      <div class="action-bar__group action-bar__state">
+        <span id="apply-state" class="pill">loading</span>
+        <span id="dirty-state" class="pill" hidden>no unapplied changes</span>
+        <span id="model-bytes" class="form-fact">--</span>
+      </div>
+      <div class="action-bar__group action-bar__token">
+        <span id="token-lock" class="token-lock" data-state="locked" title="Mutating operations need the SD auth token">locked</span>
+        <label class="action-bar__token-field">SD auth token
+          <input id="token" type="password" autocomplete="off" placeholder="from AIUS AUTH">
+        </label>
+        <!-- ONE toggle over silent per-keystroke storage: unlocked it writes
+             the token to this browser's localStorage and locks the field,
+             locked it unlocks the field again. The label says which. -->
+        <button id="token-toggle" type="button" class="secondary">Save token</button>
+      </div>
+      <div class="action-bar__group action-bar__actions">
+        <!-- Revert re-reads the device and discards the page's edits (the old
+             "Reload from device"); Apply is the sole writer. -->
+        <button id="reload" type="button" class="secondary">Revert</button>
+        <button id="apply">Apply</button>
+      </div>
+    </div>
+
+    <section class="card status-card">
+      <div class="section-title"><h2>Effective configuration</h2></div>
+      <div class="status-grid">
+        <!-- Where the effective DSP MODEL came from, not what the device is
+             hearing: the signal-flow strip below owns the audio input. -->
+        <div><span>Config</span><strong id="source">unknown</strong></div>
+        <div><span>Generation</span><strong id="generation">--</strong></div>
+        <div><span>Sample rate</span><strong id="sample-rate">--</strong></div>
+      </div>
+      <!-- Read from the device on load. The stage bypass flags live in the head
+           of each panel below, beside that panel's dirty marker. -->
+      <p class="hint">Read from the device on load. Each stage's <em>enabled</em> box in its own panel bypasses that stage for latency and diagnostic comparisons; its values are still stored and validated. IEC 61937 bitstream framing and decoding cannot be bypassed. <a href="/api/dsp/config">machine config</a></p>
+      <div id="stale" class="notice" hidden>
+        <span>The device moved to a newer generation than this page (HTTP 409). Nothing was written to SD and the active DSP is untouched. Reloading discards the edits on this page.</span>
+        <button id="stale-reload">Reload device config</button>
+      </div>
+      <p id="status" class="hint" role="status">Loading configuration...</p>
+      <p id="errors" class="error-summary" role="alert" hidden></p>
+    </section>
+
+    <!-- Presets collapse to ONE compact row (UX consolidation 2026-09-04): the
+         whole saved list is a picker, Load/Save sit beside it, and the file
+         operations that are rare and destructive live behind the More menu. -->
+    <section class="card presets-card">
+      <div class="section-title"><h2>Presets</h2><span id="preset-state" class="pill">idle</span></div>
+      <p class="hint">Named snapshots of the editable groups, stored on the card at <code>/sd/www/presets/</code>. Load fills the form only; <em>Apply</em> sends it. Save, import and delete need the SD auth token; a download is a browser save and needs none.</p>
+      <div class="controls presets-row">
+        <label class="preset-select-field">Preset
+          <select id="preset-select" aria-label="Saved presets"><option value="">no presets</option></select>
+        </label>
+        <button id="preset-load" type="button" class="secondary">Load</button>
+        <label class="preset-name-field">Save as <input id="preset-name" type="text" maxlength="27" autocomplete="off" spellcheck="false" placeholder="e.g. movie-night"></label>
+        <button id="preset-save" type="button">Save</button>
+        <details id="preset-menu" class="preset-menu">
+          <summary>More</summary>
+          <div class="preset-menu__body">
+            <input id="preset-file" type="file" accept=".json,application/json">
+            <button id="preset-upload" type="button" class="secondary">Import file as preset</button>
+            <button id="preset-download-selected" type="button" class="secondary">Download selected</button>
+            <button id="preset-download" type="button" class="secondary">Download current form</button>
+            <button id="preset-delete" type="button" class="danger">Delete selected</button>
+            <button id="preset-refresh" type="button" class="secondary">Refresh list</button>
+          </div>
+        </details>
+      </div>
+      <p id="preset-name-hint" class="hint">0 / 27 characters. Letters, digits, dot, underscore and hyphen. An import uses this name when it is filled, and the file's own name when it is empty.</p>
+      <!-- Two lines' worth of fact on one line: the status sentence moves with
+           the last action, the origin with every keystroke. -->
+      <p class="hint preset-line">
+        <span id="preset-status" role="status">Reading presets...</span>
+        <span id="preset-origin" class="preset-origin"></span>
+      </p>
+      <p id="preset-errors" class="error-summary" role="alert" hidden></p>
+    </section>
+
+    <section class="card visual">
+      <div class="section-title">
+        <h2>Signal flow</h2>
+        <div class="dashboard-toolbar" role="group" aria-label="Signal flow view">
+          <button id="view-editor" type="button" class="secondary" aria-pressed="false">Editor</button>
+          <button id="view-dashboard" type="button" class="secondary" aria-pressed="true">Dashboard</button>
+        </div>
+      </div>
+      <p class="hint">The live path in order, from the input the device is actually hearing to the transmit gate. Each stage's own text entry sits under its picture.</p>
+      <!-- The intuition gap this fixes: dragging a handle changes the drawing and
+           the form, and nothing else, until Apply. Say so where the dragging
+           happens. -->
+      <p id="preview-note" class="hint hint--warn">Editing here is a preview: a drag or a keystroke stages a change on this page. Nothing reaches the device until you click <strong>Apply</strong> in the bar above.</p>
+
+      <div id="dashboard-surface" class="dashboard-surface" data-view="dashboard">
+      <div id="dashboard-input" class="visual-block dashboard-cell" data-dashboard-cell="input">
+        <div class="visual-block__head">
+          <h3 class="visual-block__title">Input levels</h3>
+          <span id="input-source" class="flow-end" data-state="unknown">input: unknown</span>
+          <span id="strip-input-state" class="pill">waiting</span>
+        </div>
+        <div id="bars-input" class="bars"></div>
+      </div>
+
+      <div id="dashboard-eq" class="visual-block dashboard-cell" data-dashboard-cell="eq">
+        <div class="visual-block__head">
+          <h3 class="visual-block__title">EQ cascades</h3>
+          <span class="visual-block__note">preview only: the device designs the real biquads when a config is applied</span>
+        </div>
+        <div id="curve-legend" class="legend" role="group" aria-label="EQ curve selection"></div>
+        <div class="curve-wrap">
+          <canvas id="curve" class="curve" width="960" height="240" tabindex="0" role="application"
+            aria-label="Stacked EQ magnitude plot. Drag a handle for frequency and gain, or hold Shift when starting a vertical drag to set Q. Arrow keys nudge frequency and gain, page up and page down select a section, delete removes it, and the wheel or Section Q box below also sets Q."></canvas>
+          <span id="curve-readout" class="curve-readout" hidden></span>
+        </div>
+        <div class="curve-controls">
+          <button id="curve-add" type="button" class="secondary">Add section</button>
+          <button id="curve-remove" type="button" class="secondary">Remove section</button>
+          <label class="curve-q">Section Q <input id="curve-q" type="number" min="0.1" max="20" step="0.05" aria-label="Selected section Q"></label>
+          <span id="curve-caption" class="visual-block__note"></span>
+        </div>
+        <p id="curve-status" class="hint" role="status">Pick a curve to edit it: drag a handle for frequency and gain, Shift-drag vertically for Q, double-click to add a section, or use the wheel or Section Q box for Q.</p>
+        <section id="card-input-channels" class="embedded-form">
+          <div class="section-title"><h3>Input channels</h3></div>
+          <p class="hint">Per-channel trim runs before the downmix. Up to two EQ sections per channel; <em>none</em> removes the section from the config, <em>bypass</em> keeps a present but inactive one. A row's reset returns that section to the factory default.</p>
+          <div id="input-channels" class="form-mount"></div>
+        </section>
+        <section id="card-output-eq" class="embedded-form">
+          <div class="section-title"><h3>Output EQ</h3></div>
+          <p class="hint">Stereo post-mix sections, run on both channels.</p>
+          <div id="output-eq" class="form-mount"></div>
+        </section>
+      </div>
+
+      <div id="dashboard-matrix" class="visual-block dashboard-cell" data-dashboard-cell="matrix">
+        <div class="visual-block__head">
+          <h3 class="visual-block__title">Downmix matrix</h3>
+          <button id="matrix-clipfree" type="button" class="chip chip--clipfree" aria-pressed="false"><span class="chip__key"></span><span>clip-free headroom</span></button>
+          <span class="visual-block__note">FL and FR cross at a fixed 1.0: the matrix has no field for them</span>
+        </div>
+        <div class="curve-wrap">
+          <canvas id="matrix-diagram" class="matrix-diagram" width="960" height="300" tabindex="0" role="application"
+            aria-label="Downmix routing diagram. The arrow keys move the selected gain, page up and page down select the centre, surround, LFE and headroom handles, the wheel makes a fine adjustment, double-click resets a handle to the factory default, and enter opens the LFE crossover field below."></canvas>
+          <span id="matrix-readout" class="curve-readout" hidden></span>
+        </div>
+        <p id="matrix-caption" class="visual-block__note"></p>
+        <p id="matrix-status" class="hint" role="status">Drag a handle with mouse or touch to set its gain; focus the diagram and use the wheel or arrow keys for fine adjustment. Double-click resets a handle, and the crossover label opens its field below.</p>
+        <section id="card-matrix" class="embedded-form">
+          <div class="section-title"><h3>Matrix values</h3></div>
+          <p class="hint">Centre and surround gains are shared by both stereo sides by design, and are linear multipliers rather than decibels. With the clip-free policy selected the device resolves headroom itself. Headroom and the clip-free policy describe the <em>summing</em> case: with layout-aware headroom on, the pad applies only to layouts that sum (any of centre, LFE or the surrounds), so mono and stereo pass-through run at source level; turn it off to pad every layout as before.</p>
+          <div id="matrix" class="form-mount"></div>
+        </section>
+      </div>
+
+      <div id="dashboard-limiter" class="visual-block dashboard-cell" data-dashboard-cell="limiter">
+        <div class="visual-block__head">
+          <h3 class="visual-block__title">Limiter gain reduction</h3>
+          <span id="strip-limiter-state" class="pill">waiting</span>
+        </div>
+        <div class="gr">
+          <span class="gr__scale">-24</span>
+          <div class="gr__track"><div id="gr-fill" class="gr__fill"></div></div>
+          <span class="gr__scale">0 dB</span>
+          <strong id="gr-value" class="gr__value">--</strong>
+        </div>
+        <canvas id="gr-history" class="gr__history" width="960" height="64"></canvas>
+        <p class="visual-block__note">The last 128 polled values, oldest left. Each is the instantaneous reduction at that snapshot's publish, not a windowed average.</p>
+        <section id="card-limiter" class="embedded-form">
+          <div class="section-title"><h3>Limiter controls</h3></div>
+          <p class="hint">True-peak safety limiter on the output tail.</p>
+          <div id="limiter" class="form-mount"></div>
+        </section>
+      </div>
+
+      <div id="dashboard-output" class="visual-block dashboard-cell" data-dashboard-cell="output">
+        <div class="visual-block__head">
+          <h3 class="visual-block__title">Output levels</h3>
+          <span id="tx-gate" class="flow-end" data-state="unknown">output: unknown</span>
+          <span id="strip-output-state" class="pill">waiting</span>
+        </div>
+        <div id="bars-output" class="bars"></div>
+      </div>
+
+      <!-- The live cell IS the meters stage's panel: its enable, dirty marker
+           and Apply mount in the head below. -->
+      <section id="card-meters" class="visual-block dashboard-cell meters" data-dashboard-cell="live">
+      <div class="section-title"><h3>Live processing</h3><span id="meter-state" class="pill">waiting</span></div>
+      <p class="hint">The 10 Hz <a href="/api/meters">meter snapshot</a> the surface reads, and the per-block DSP cost.</p>
+      <div class="status-grid">
+        <div><span>Snapshot</span><strong id="meter-sequence">--</strong></div>
+        <div><span>Queue</span><strong id="meter-queue">--</strong></div>
+        <div><span>Estimated latency</span><strong id="meter-latency">--</strong></div>
+        <div><span>DSP cycles last / max</span><strong id="meter-cycles">--</strong></div>
+        <div><span>DSP load</span><strong id="meter-load">--</strong></div>
+        <div><span>Peak DSP load</span><strong id="meter-load-peak">--</strong></div>
+      </div>
+      <div id="meter-groups" class="meter-cards"></div>
+      <p id="meter-summary" class="hint">Meter data unavailable.</p>
+      </section>
+      </div>
+    </section>
+  </main>
+  <!-- sd-shared.js FIRST: the page consumes window.aiusSdShared as it boots. -->
+  <script src="sd-shared.js"></script>
+  <script src="dsp-editor.js"></script>
+</body>
+</html>

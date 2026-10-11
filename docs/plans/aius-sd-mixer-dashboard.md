@@ -21,11 +21,12 @@ with bonded tabs. `index.html` stays as the classic editor.
 
 - **Posture**: checkpoint (owner, 2026-10-07): surface each decision and
   human-review gate as it arises.
-- **Status**: Phases 1, 1a to 1f, 2 and 4 shipped; the owner's phone
-  check of the preview is open. Phase 3 (logo) is
+- **Status**: Phases 1, 1a to 1f, 2 and 4 shipped. Phase 3 (logo) is
   deferred by the owner. Phase 5 is the owner's own manual step. Phase 6
-  (deploy) is BLOCKED on the owner's word. Nothing from this plan is on the
-  board.
+  (swap the files, owner 2026-10-11) and Phase 7 (other pages follow the
+  mixer style) are in progress; the card sync follows the owner's preview
+  check. The mixer files are on the card as `mixer.html` since the
+  2026-10-11 full sync, unlinked.
 - **What landed** (all pushed):
 
   | Commit | Contents | Proof |
@@ -47,7 +48,8 @@ with bonded tabs. `index.html` stays as the classic editor.
   - `src/apps/preview/content/aius-logos/`: eight raster explorations, the
     gallery `index.html` and `_tools/generate_logos.py`; the round 1 and 2
     SVGs in `svg/`, and the review pages `round-1.html` and `round-2.html`.
-- **Next action**: Phase 6 on the owner's word.
+- **Next action**: Phase 6, then Phase 7, then the owner's preview check
+  and one card sync.
 
 ## Constraints
 
@@ -540,33 +542,49 @@ by 5.3 dB. `limiter.enabled` was already true at -1 dBFS, 0.5 ms attack,
 Settled by the owner, 2026-10-07: deploy only "when I tell you to". The
 default-page question is decided at that time.
 
-- **Interrogate the user: default page.** Ask this when the owner says to
-  deploy, before uploading:
-  - Question: "Should the mixer dashboard become the default DSP editor?"
-  - **Yes, menus only**: `index.html`, `replays.html`, `status.html` and
-    `upgrade.html` link "DSP editor" to `mixer.html`. The classic editor stays
-    reachable from the mixer's nav.
-  - **Yes, swap the files**: `mixer.html` becomes `index.html` and the classic
-    page is renamed, so the device's root lands on the dashboard.
-  - **No**: the mixer stays an opt-in page linked only from its own nav.
-  - Recommendation: yes, menus only. It needs no rename and keeps the classic
-    page one click away.
-  - The answer sets the extra seams below; delete this step once it is
-    recorded.
+- **The mixer files reached the card with the 2026-10-11 full sync**, but
+  no page linked them: every nav and the firmware root page sent "DSP
+  editor" to the classic `index.html` (owner noticed, 2026-10-11).
+- **Default page: swap the files** (owner, 2026-10-11: "swap the files.
+  update the other pages to follow the new style"). The mixer becomes
+  `index.html`; the classic editor becomes `classic.html`, reachable from
+  the mixer's nav. Every nav keeps linking `index.html`, and the firmware
+  root page (`firmware/src/http_home_page.cpp`) already does, so no OTA is
+  needed. The restyle of the other pages is Phase 7.
 - **The card takes a subdirectory** (2026-10-11). The firmware never
   decoded `%2F` (`resource_path_valid` refuses `%`, 507 `sd_upload`), so
   `aius-sd-sync.sh` now sends the literal path; the upload job creates
   missing parent directories (`prepare_next_directory` in
   `firmware/lib/aius_sd/src/aius_sd.c`).
-- outcome: the mixer files (plus the fonts, the favicon, and any menu edits
-  from the answer) served from the card.
-- seams: the card's `/sd/www/` tree, additive only. The answer may add the
-  four SD pages' `<nav>` blocks, plus `test/sd-editor/*.test.js` and
-  `firmware/test/optical-app/test_bitstream_ui.py` where they read
-  `index.html`.
-- targeted-proof: the sync prints `PUT /sd/www/<file>` per file with no retry
-  failure, and a GET of `http://192.0.2.66/sd/www/mixer.html` returns the
-  committed bytes. If menus changed, the vitest suite is green first.
+```yaml
+outcome: >-
+  The board's index.html is the mixer dashboard and classic.html the classic
+  editor; a stale /sd/www/mixer.html and mixer.html.gz are deleted from the
+  card, so no old copy of either page is served.
+seams:
+  - "firmware/sd/www: git mv index.html classic.html, git mv mixer.html index.html; the pages' nav, mixer.js and sd-shared.js links follow; the mixer's nav gains a Classic editor link; classic.html marks itself current"
+  - "firmware/tools/www_bundle.py PAGES and firmware/tools/aius-sd-sync.sh page lists: classic.html in, mixer.html out"
+  - "tests reading either page: test/sd-editor/*.test.js, firmware/test/www-bundle, firmware/test/optical-app/test_bitstream_ui.py"
+  - "docs: docs/reference/user-interface.md, CONTRIBUTING.md, this plan"
+  - "src/apps/preview/content/aius-mixer/_tools/build_preview.py (gitignored preview tooling)"
+targeted-proof: >-
+  sd-editor vitest, www-bundle and optical-app green; after the sync, GET
+  /sd/www/index.html.gz and classic.html.gz equal fresh www_bundle.py output
+  and GET /sd/www/mixer.html answers 404.
+unit: implementer
+```
+
+- **Built (2026-10-11), not on the card.** The renames, the navs (the
+  mixer and the classic page each link the other; the classic page lists
+  itself as "Classic editor"), the bundle and sync page lists, the tests and
+  `docs/reference/user-interface.md` are done; vitest 6 files, 432 tests,
+  www-bundle 28, optical-app and shellcheck green. The preview serves
+  `index.html` (mixer) and `classic.html`. Found: `aius_recovery_smoke.py`
+  `EDITOR_RESOURCES` (:141) and `aius_http_runner.py` (:193) know only
+  `index.html`; Phase 7 adds `classic.html` to both.
+- **Deploy rides Phase 7.** The card sync waits until Phase 7's restyle is
+  committed and the owner has seen the preview; then one sync carries both,
+  and the stale `mixer.html` and `mixer.html.gz` are deleted.
 - Card traffic during playback costs a short dropout (a 12-file sync once
   measured about 59 ms of `tx_underrun_frames`). State that cost when the
   owner gives the word.
@@ -576,6 +594,46 @@ firmware/tools/aius-sd-sync.sh --device http://192.0.2.66 \
   --www firmware/sd/www --token-file .secrets/aius-sd-auth \
   --file mixer.html --file mixer.css --file mixer.js
 ```
+
+### Phase 7: The other SD pages follow the mixer style
+
+```yaml
+outcome: >-
+  status.html and upgrade.html are restyled in the mixer's bench style
+  (palette, vendored fonts, nav, cards, pills, buttons), each keeping every
+  id, field and behaviour its script and tests rely on. classic.html and
+  replays.html take the same chrome (palette, fonts, nav) with their bodies
+  unchanged. The shared chrome lives in one stylesheet, sd-chrome.css, that
+  every page links; mixer.css keeps only the dashboard's own rules.
+seams:
+  - "firmware/sd/www/sd-chrome.css (new): tokens, @font-face, page frame, nav, card, pill and button rules lifted from mixer.css"
+  - "firmware/sd/www: index.html (the mixer, after Phase 6), mixer.css, status.html, status.js (markup classes only), upgrade.html, upgrade.css, upgrade.js (markup classes only), classic.html, dsp-editor.css, replays.html, replays.css"
+  - "firmware/tools/www_bundle.py and aius-sd-sync.sh only if a new file needs listing"
+  - "test/sd-editor/*.test.js, firmware/test/www-bundle: every page's stylesheet links resolve to a file in firmware/sd/www"
+  - "src/apps/preview/content/aius-mixer/_tools/build_preview.py: the preview serves every page (gitignored)"
+  - "firmware/tools/net/aius_recovery_smoke.py EDITOR_RESOURCES (:141) and aius_http_runner.py --resource choices (:193): classic.html beside index.html (found in Phase 6)"
+targeted-proof: >-
+  sd-editor vitest and www-bundle green, with a case that every page's
+  stylesheet links resolve; Chromium probes (the repo tooling tool
+  playwright-inspect) of the preview at 1440 and 390 px for index, status,
+  upgrade, classic and replays: fonts load, no off-origin request, no
+  horizontal overflow at 390 px, every nav link resolves. Owner sees the
+  preview before the sync.
+depends-on: phase-6
+unit: implementer
+```
+
+- **Scope (local call, 2026-10-11).** Full restyle for `status.html` and
+  `upgrade.html`. `classic.html` and `replays.html` take the chrome only:
+  the classic editor is the fallback and shares `dsp-editor.js` with the
+  mixer, and replays leaves the card in sample-rate-following Phase 4i. The
+  firmware root page (`http_home_page.cpp`) keeps its built-in style: it must
+  render with no card, and restyling it would need an OTA.
+- **Coordination with sample-rate-following Phase 4i.** 4i renames
+  `replays.css` to `sd-chrome.css` as the shared chrome. This phase creates
+  `sd-chrome.css` first, so 4i's web-ui-removal unit deletes `replays.css`
+  with the page instead of renaming it; 4i's seam is updated in the same
+  commit as this phase.
 
 ## Traps
 

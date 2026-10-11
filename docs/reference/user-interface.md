@@ -26,7 +26,7 @@ the deployed board at `http://192.0.2.66`, driven by a real 5.1 source; see
   [`firmware/src/aius_network_teensy.cpp`](../../firmware/src/aius_network_teensy.cpp)).
   The device is a bench instrument on a trusted LAN.
 - The real URLs are `http://<device>/sd/www/index.html`,
-  `.../mixer.html`, `.../replays.html`, `.../status.html` and `.../upgrade.html`. The site root
+  `.../classic.html`, `.../replays.html`, `.../status.html` and `.../upgrade.html`. The site root
   `/` is a small built-in fallback page compiled into flash
   ([`firmware/src/http_home_page.cpp`](../../firmware/src/http_home_page.cpp))
   that links into the SD tree and reports when no card is mounted.
@@ -57,7 +57,8 @@ list, then the signal-flow stages as one column of full-width bands — input
 levels, the stacked EQ plot, the downmix routing diagram, limiter gain
 reduction, output levels and the live processing meters.](images/dsp-editor.png)
 
-`index.html` + `dsp-editor.js` + `dsp-editor.css`. The main page: it edits the
+`classic.html` + `dsp-editor.js` + `dsp-editor.css`. The classic editor (the mixer
+dashboard is now `index.html`, the DSP editor tab): it edits the
 single effective DSP configuration — per-channel input trim and EQ, the downmix
 matrix, output EQ, the true-peak limiter, and the per-stage bypass flags — while
 showing the live signal path around it.

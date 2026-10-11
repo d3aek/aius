@@ -1,4 +1,4 @@
-/* mixer.html: the bench dashboard. replays.css and dsp-editor.css still lay out
+/* index.html: the bench dashboard. replays.css and dsp-editor.css still lay out
    everything dsp-editor.js builds; this sheet re-points their tokens at the
    bench palette (black, phosphor amber for the voice, signal teal for the
    path) and lays every stage out as one full-viewport grid of panels.
@@ -323,7 +323,7 @@ body.bench::before {
 .bench .stage-head__note { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .bench .stage-head__bypass { border-color: var(--aius-accent-warning); color: var(--aius-text-warning); }
 .bench .stage-head__bypass[data-on="false"] { visibility: hidden; }
-/* A bypassed stage is dimmed, not disabled: same contract as index.html. */
+/* A bypassed stage is dimmed, not disabled: same contract as classic.html. */
 .panel[data-stage="off"] .mixer__body,
 .panel[data-stage="off"] .gr,
 .panel[data-stage="off"] .scope,

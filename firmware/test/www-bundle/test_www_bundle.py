@@ -58,7 +58,7 @@ class BundleTests(unittest.TestCase):
         self.assertEqual(
             names,
             sorted(p + ".gz" for p in
-                   ("index.html", "status.html", "replays.html", "upgrade.html", "mixer.html")),
+                   ("index.html", "status.html", "replays.html", "upgrade.html", "classic.html")),
         )
 
     def test_deterministic_output(self):
@@ -122,9 +122,9 @@ class BundleTests(unittest.TestCase):
     def test_inlined_lists_each_page_assets(self):
         make_tree(self.www)
         pairs = www_bundle.inlined(self.www)
-        self.assertIn(("mixer.html", "a.js"), pairs)
-        self.assertIn(("mixer.html", "mixer.css"), pairs)
-        self.assertNotIn(("mixer.html", "index.js"), pairs)
+        self.assertIn(("classic.html", "a.js"), pairs)
+        self.assertIn(("classic.html", "classic.css"), pairs)
+        self.assertNotIn(("classic.html", "index.js"), pairs)
 
     def test_missing_asset_fails(self):
         make_tree(self.www)
@@ -133,9 +133,9 @@ class BundleTests(unittest.TestCase):
             www_bundle.build(self.www, self.out)
         self.assertEqual(www_bundle.main(["--www", str(self.www), "--out", str(self.out)]), 1)
 
-    def test_missing_mixer_page_fails(self):
+    def test_missing_classic_page_fails(self):
         make_tree(self.www)
-        (self.www / "mixer.html").unlink()
+        (self.www / "classic.html").unlink()
         with self.assertRaises(www_bundle.BundleError):
             www_bundle.build(self.www, self.out)
 
@@ -156,9 +156,10 @@ class BundleTests(unittest.TestCase):
 
     def test_real_tree_bundles(self):
         www_bundle.build(REAL_WWW, self.out)
-        text = self.read_gz("mixer.html")
-        self.assertNotIn('rel="stylesheet"', text)
-        self.assertNotRegex(text, r'<script[^>]*\bsrc=')
+        for page in ("index.html", "classic.html"):
+            text = self.read_gz(page)
+            self.assertNotIn('rel="stylesheet"', text)
+            self.assertNotRegex(text, r'<script[^>]*\bsrc=')
         self.assertEqual(len(list(self.out.glob("*.html.gz"))), 5)
 
 
@@ -209,10 +210,10 @@ class SyncTests(unittest.TestCase):
         self.assertEqual(self.sleep_values(), [])
 
     def test_file_mode_uploads_page_and_its_bundle(self):
-        result = self.run_sync(["200"], "--file", "mixer.html")
+        result = self.run_sync(["200"], "--file", "classic.html")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual([u.rsplit("/", 1)[1] for u in self.uploads()],
-                         ["mixer.html", "mixer.html.gz"])
+                         ["classic.html", "classic.html.gz"])
 
     def test_subdirectory_path_sent_literally(self):
         font = self.www / "fonts" / "x.woff2"
@@ -253,22 +254,22 @@ class SyncTests(unittest.TestCase):
                          ["a.js"] + [p + ".gz" for p in www_bundle.PAGES])
 
     def test_file_mode_page_specific_asset_uploads_only_its_bundle(self):
-        result = self.run_sync(["200"], "--file", "mixer.js")
+        result = self.run_sync(["200"], "--file", "classic.js")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual([u.rsplit("/", 1)[1] for u in self.uploads()],
-                         ["mixer.js", "mixer.html.gz"])
+                         ["classic.js", "classic.html.gz"])
 
     def test_file_mode_page_and_asset_upload_bundle_once(self):
-        result = self.run_sync(["200"], "--file", "mixer.html", "--file", "mixer.js")
+        result = self.run_sync(["200"], "--file", "classic.html", "--file", "classic.js")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual([u.rsplit("/", 1)[1] for u in self.uploads()].count("mixer.html.gz"), 1)
+        self.assertEqual([u.rsplit("/", 1)[1] for u in self.uploads()].count("classic.html.gz"), 1)
 
     def test_file_mode_non_inlined_file_uploads_no_bundle(self):
         result = self.run_sync(["200"], "--file", "other.txt")
         self.assertEqual([u.rsplit("/", 1)[1] for u in self.uploads()], ["other.txt"])
 
     def test_file_mode_non_inlined_file_ignores_a_missing_page(self):
-        (self.www / "mixer.html").unlink()
+        (self.www / "classic.html").unlink()
         result = self.run_sync(["200"], "--file", "other.txt")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn("bundle", result.stderr)
@@ -276,7 +277,7 @@ class SyncTests(unittest.TestCase):
 
     def test_file_mode_page_with_missing_asset_fails_before_upload(self):
         (self.www / "upgrade.js").unlink()
-        result = self.run_sync(["200"], "--file", "mixer.html")
+        result = self.run_sync(["200"], "--file", "classic.html")
         self.assertEqual(result.returncode, 1)
         self.assertFalse(self.log.exists())
 

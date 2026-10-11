@@ -26,7 +26,7 @@ import re
 import sys
 from pathlib import Path
 
-PAGES = ("index.html", "status.html", "replays.html", "upgrade.html", "mixer.html")
+PAGES = ("index.html", "status.html", "replays.html", "upgrade.html", "classic.html")
 
 _TAG = re.compile(
     r"<link\b[^>]*>|<script\b[^>]*\bsrc\s*=[^>]*>\s*</script\s*>",

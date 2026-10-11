@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-/* Regression for the bench skin (firmware/sd/www/mixer.html + mixer.js). The
+/* Regression for the bench skin (firmware/sd/www/index.html + mixer.js). The
  * skin runs the UNCHANGED dsp-editor.js against its own markup and adds views
  * over the editor's form, so the harness is dsp-editor.test.js's: the real
  * page body, the real sd-shared.js, dsp-editor.js and mixer.js evaluated in
@@ -23,8 +23,8 @@ const bodyOf = (html) =>
   html.slice(html.indexOf('<body') , html.indexOf('</body>')).replace(/^<body[^>]*>/, '').replace(/<script[\s\S]*?<\/script>/g, '');
 const idsOf = (html) => new Set(Array.from(bodyOf(html).matchAll(/\sid="([^"]+)"/g), (match) => match[1]));
 
-const indexHtml = read('index.html');
-const mixerHtml = read('mixer.html');
+const classicHtml = read('classic.html');
+const mixerHtml = read('index.html');
 const sources = [read('sd-shared.js'), read('dsp-editor.js'), read('mixer.js')];
 
 const el = (id) => document.getElementById(id);
@@ -135,9 +135,9 @@ async function type(path, raw) {
   await settle();
 }
 
-describe('mixer.html markup', () => {
-  it('carries every id index.html carries, so dsp-editor.js binds unchanged', () => {
-    const missing = [...idsOf(indexHtml)].filter((id) => !idsOf(mixerHtml).has(id));
+describe('index.html (mixer) markup', () => {
+  it('carries every id classic.html carries, so dsp-editor.js binds unchanged', () => {
+    const missing = [...idsOf(classicHtml)].filter((id) => !idsOf(mixerHtml).has(id));
     expect(missing).toEqual([]);
   });
 });

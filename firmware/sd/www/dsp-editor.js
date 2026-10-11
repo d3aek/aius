@@ -1,7 +1,7 @@
 /* Aius SD-hosted DSP control surface.
  *
- * OWNS: the whole /sd/www/index.html page (and the same editor under
- * /sd/www/mixer.html, whose mixer.js adapter drives it through the editor's
+ * OWNS: the whole /sd/www/classic.html page (and the same editor under
+ * /sd/www/index.html, whose mixer.js adapter drives it through the editor's
  * own fields) -- building the config form from the
  * field table below, rendering GET /api/dsp/config into it, validating edits
  * against the firmware parser's bounds, PUTting the model back with an
@@ -39,7 +39,7 @@
 
   const $ = (id) => document.getElementById(id);
 
-  /* index.html loads sd-shared.js first; this is the whole of the page's
+  /* Both editor pages load sd-shared.js first; this is the whole of the page's
    * dependency on it. */
   const shared = window.aiusSdShared;
 

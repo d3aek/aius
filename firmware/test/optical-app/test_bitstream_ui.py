@@ -23,7 +23,7 @@ def main() -> None:
     status_path = "sd/www/status.js"
     editor_path = "sd/www/dsp-editor.js"
     replays_path = "sd/www/replays.html"
-    index_path = "sd/www/index.html"
+    index_path = "sd/www/classic.html"
     firmware_path = "src/optical_main.cpp"
     status = read(status_path)
     editor = read(editor_path)

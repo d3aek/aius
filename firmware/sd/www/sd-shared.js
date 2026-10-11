@@ -1,4 +1,4 @@
-/* Shared behaviours for the SD-served pages (index.html, replays.html,
+/* Shared behaviours for the SD-served pages (index.html, classic.html, replays.html,
  * status.html).
  *
  * OWNS: the pill setter (text + data-state stamp, one vocabulary), the
