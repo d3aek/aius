@@ -1401,8 +1401,9 @@ www-bundle)
 	;;
 measure-vectors)
 	# The measurement-vector runner (tools/measure_vectors/measure_run.py,
-	# Phase 4g). Python only.
-	# Discovers "$fw_root/test/measure-vectors/test_measure_run.py".
+	# Phase 4g) and tools/replay_retire.py (Phase 4i). Python only.
+	# Discovers "$fw_root/test/measure-vectors/test_measure_run.py" and
+	# "$fw_root/test/measure-vectors/test_replay_retire.py".
 	python3 -B -m unittest discover -s "$fw_root/test/measure-vectors" -p 'test_*.py'
 	;;
 web-cache)
