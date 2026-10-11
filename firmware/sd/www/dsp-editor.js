@@ -1744,6 +1744,9 @@
     if (!/^[A-Za-z0-9._-]+$/.test(name)) {
       return 'Preset name may use letters, digits, dot, underscore and hyphen only.';
     }
+    if (name.startsWith('.')) {
+      return 'Preset name may not start with a dot: the device hides such files.';
+    }
     if (/config$/i.test(name)) {
       return 'Preset name may not end in "config": the device protects *config.json paths from writes.';
     }
@@ -1898,9 +1901,11 @@
   /* The 507 sd_upload token covers BOTH an invalid path and a busy volume --
    * never present it as "card full", which is sd_capacity's meaning. */
   const SD_STORE_FULL =
-    'the SD write store is full; deleting presets with a card reader frees space (retrying will not help)';
+    'the SD write store is busy; retry in a few seconds';
+  const PRESET_LIMIT_MESSAGE = 'Preset limit reached (16); delete one to save another';
 
   function describePresetWriteFailure(result) {
+    if (result.token === 'preset_limit') return PRESET_LIMIT_MESSAGE;
     if (result.token === 'sd_busy') return SD_STORE_FULL;
     if (result.token === 'sd_upload') {
       return 'the SD volume is busy (replay or upload in flight) or refused the path; retry when the card is idle';

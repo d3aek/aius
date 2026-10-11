@@ -5278,6 +5278,12 @@ static void test_sd_overlay_writes(void)
 	expect_immediate(dispatch_request(&fixture, "PUT /sd/www/index.html",
 	                                  "X-Aius-SD-Auth: token\r\n", NULL, 16),
 	                 507, "{\"ok\":false,\"error\":\"sd_upload\"}");
+	/* Phase 4l (B3): the preset cap is 409 preset_limit, never 503; BUSY
+	 * above still answers 503 sd_busy. */
+	overlay.put_result = AIUS_OPTICAL_APP_STORE_LIMIT;
+	expect_immediate(dispatch_request(&fixture, "PUT /sd/www/presets/z.json",
+	                                  "X-Aius-SD-Auth: token\r\n", NULL, 16),
+	                 409, "{\"ok\":false,\"error\":\"preset_limit\"}");
 	/* Refusal order before the store: config, then auth. */
 	expect_immediate(dispatch_request(&fixture, "PUT /sd/www/index.html",
 	                                  "X-Aius-SD-Auth: wrong\r\n", NULL, 16),
@@ -5285,7 +5291,7 @@ static void test_sd_overlay_writes(void)
 	expect_immediate(dispatch_request(&fixture, "PUT /sd/www/config.json",
 	                                  "X-Aius-SD-Auth: token\r\n", NULL, 16),
 	                 403, "{\"ok\":false,\"error\":\"config_public_only\"}");
-	assert(overlay.put_begins == 3u);
+	assert(overlay.put_begins == 4u);
 	/* A replay upload keeps the card gate. */
 	expect_immediate(dispatch_request(&fixture, "PUT /sd/replays/take1",
 	                                  "X-Aius-SD-Auth: token\r\n"

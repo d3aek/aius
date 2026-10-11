@@ -598,10 +598,10 @@ static void test_store_full_shadows_refresh(void)
 	aius_sd_overlay_status(&g_ov, 1500u, &s);
 	CHECK(s.flushed == 64u && s.drained && s.sync_drain_ms == 1500u);
 	/* PUTTING is not shadowed (D2). */
-	CHECK(aius_sd_overlay_put_begin(&g_ov, "www/new.js", 10u, 10u) ==
+	CHECK(aius_sd_overlay_put_begin(&g_ov, "www/new.js", 10u, 10u, true) ==
 	      AIUS_SD_OVERLAY_PUT_BUSY);
 	aius_web_cache_invalidate(&g_cache, NULL, 0u);
-	CHECK(aius_sd_overlay_put_begin(&g_ov, "www/new.js", 10u, 10u) ==
+	CHECK(aius_sd_overlay_put_begin(&g_ov, "www/new.js", 10u, 10u, true) ==
 	      AIUS_SD_OVERLAY_PUT_OK);
 	CHECK(!aius_sd_overlay_shadows(&g_ov, "www/new.js", 10u));
 	CHECK(aius_sd_overlay_put_chunk(&g_ov, (const uint8_t *)"0123456789",
@@ -618,6 +618,178 @@ static void test_store_full_shadows_refresh(void)
 	aius_sd_overlay_clear_stats(&g_ov);
 	aius_sd_overlay_status(&g_ov, 4000u, &s);
 	CHECK(s.max_settings_latency_ms == 0u && s.sync_drain_ms == 0u);
+}
+
+/* ---- Phase 4l: at most 16 saved presets ---- */
+
+static void preset_path(char *out, size_t cap, const char *name)
+{
+	snprintf(out, cap, "www/presets/%s.json", name);
+}
+
+/* put_begin on a preset name; an accepted reservation is aborted at once so
+ * the probe leaves nothing behind. */
+static AiusSdOverlayPutResult probe_preset(const char *name, bool complete)
+{
+	char p[48];
+	AiusSdOverlayPutResult r;
+
+	preset_path(p, sizeof(p), name);
+	r = aius_sd_overlay_put_begin(&g_ov, p, strlen(p), 10u, complete);
+	if (r == AIUS_SD_OVERLAY_PUT_OK)
+		aius_sd_overlay_put_abort(&g_ov);
+	return r;
+}
+
+static AiusSdOverlayPutResult save_preset(const char *name)
+{
+	char p[48];
+
+	preset_path(p, sizeof(p), name);
+	return put(p, 10u, 3u, 0u);
+}
+
+static void save_presets(unsigned first, unsigned count)
+{
+	for (unsigned i = first; i < first + count; i++) {
+		char n[16];
+
+		snprintf(n, sizeof(n), "p%u", i);
+		CHECK(save_preset(n) == AIUS_SD_OVERLAY_PUT_OK);
+	}
+}
+
+static void delete_preset(const char *name)
+{
+	char p[48];
+
+	preset_path(p, sizeof(p), name);
+	CHECK(del(p, 0u) == AIUS_SD_OVERLAY_PUT_OK);
+}
+
+static void test_preset_limit_count_rule(void)
+{
+	fresh(false);
+	save_presets(0u, 16u);
+	CHECK(probe_preset("new", true) == AIUS_SD_OVERLAY_PUT_LIMIT);
+	CHECK(probe_preset("P3", true) == AIUS_SD_OVERLAY_PUT_OK); /* overwrite, folded */
+
+	/* Foo.json and foo.json count once. */
+	fresh(false);
+	save_presets(0u, 14u);
+	CHECK(save_preset("Foo") == AIUS_SD_OVERLAY_PUT_OK);
+	CHECK(save_preset("foo") == AIUS_SD_OVERLAY_PUT_OK);
+	CHECK(probe_preset("a", true) == AIUS_SD_OVERLAY_PUT_OK);
+	CHECK(save_preset("a") == AIUS_SD_OVERLAY_PUT_OK);
+	CHECK(probe_preset("b", true) == AIUS_SD_OVERLAY_PUT_LIMIT);
+
+	/* A tombstone for a name never on the card frees no slot. */
+	fresh(false);
+	save_presets(0u, 16u);
+	delete_preset("ghost");
+	CHECK(probe_preset("new", true) == AIUS_SD_OVERLAY_PUT_LIMIT);
+
+	/* A running (FLUSHING) tombstone under a newer DIRTY entry of one name
+	 * counts it once. */
+	{
+		AiusSdOverlayJob j;
+
+		fresh(false);
+		save_presets(0u, 14u);
+		CHECK(save_preset("x") == AIUS_SD_OVERLAY_PUT_OK);
+		delete_preset("x");
+		CHECK(aius_sd_overlay_next_job(&g_ov, 10000u, &j));
+		CHECK(save_preset("x") == AIUS_SD_OVERLAY_PUT_OK);
+		CHECK(probe_preset("a", true) == AIUS_SD_OVERLAY_PUT_OK);
+		CHECK(save_preset("a") == AIUS_SD_OVERLAY_PUT_OK);
+		CHECK(probe_preset("b", true) == AIUS_SD_OVERLAY_PUT_LIMIT);
+	}
+
+	/* A newest TOMBSTONE over a counted name frees its slot. */
+	fresh(false);
+	save_presets(0u, 16u);
+	delete_preset("p5");
+	CHECK(probe_preset("a", true) == AIUS_SD_OVERLAY_PUT_OK);
+	CHECK(save_preset("a") == AIUS_SD_OVERLAY_PUT_OK);
+	CHECK(probe_preset("b", true) == AIUS_SD_OVERLAY_PUT_LIMIT);
+
+	/* Paths outside the settings class are neither counted nor refused. */
+	fresh(false);
+	save_presets(0u, 15u);
+	CHECK(put("www/presets/sub/x.json", 10u, 1u, 0u) == AIUS_SD_OVERLAY_PUT_OK);
+	CHECK(put("www/presets/notes.txt", 10u, 1u, 0u) == AIUS_SD_OVERLAY_PUT_OK);
+	CHECK(aius_sd_overlay_put_begin(&g_ov, "www/presets/sub/x.json", 22u, 10u,
+	                                true) == AIUS_SD_OVERLAY_PUT_OK);
+	aius_sd_overlay_put_abort(&g_ov);
+	CHECK(aius_sd_overlay_put_begin(&g_ov, "www/presets/notes.txt", 21u, 10u,
+	                                true) == AIUS_SD_OVERLAY_PUT_OK);
+	aius_sd_overlay_put_abort(&g_ov);
+	CHECK(probe_preset("a", true) == AIUS_SD_OVERLAY_PUT_OK);
+	CHECK(save_preset("a") == AIUS_SD_OVERLAY_PUT_OK);
+	CHECK(probe_preset("b", true) == AIUS_SD_OVERLAY_PUT_LIMIT);
+}
+
+static void test_preset_limit_state(void)
+{
+	AiusWebCacheHit h;
+
+	/* B1, S1: the walk is incomplete. */
+	fresh(false);
+	save_presets(0u, 15u);
+	CHECK(probe_preset("p2", false) == AIUS_SD_OVERLAY_PUT_OK);
+	CHECK(probe_preset("new", false) == AIUS_SD_OVERLAY_PUT_BUSY);
+	CHECK(probe_preset("new", true) == AIUS_SD_OVERLAY_PUT_OK);
+	CHECK(save_preset("new") == AIUS_SD_OVERLAY_PUT_OK);
+	CHECK(probe_preset("next", true) == AIUS_SD_OVERLAY_PUT_LIMIT);
+
+	/* Overfull: 16 counted mid-walk is LIMIT, not BUSY. */
+	fresh(false);
+	save_presets(0u, 16u);
+	CHECK(probe_preset("new", false) == AIUS_SD_OVERLAY_PUT_LIMIT);
+	CHECK(probe_preset("p9", false) == AIUS_SD_OVERLAY_PUT_OK);
+
+	/* A card with 20 presets keeps all 20 served. */
+	fresh(false);
+	save_presets(0u, 20u);
+	for (unsigned i = 0; i < 20u; i++) {
+		char p[48];
+
+		snprintf(p, sizeof(p), "www/presets/p%u.json", i);
+		CHECK(hit(p, &h));
+	}
+	CHECK(probe_preset("p19", true) == AIUS_SD_OVERLAY_PUT_OK);
+	CHECK(probe_preset("new", true) == AIUS_SD_OVERLAY_PUT_LIMIT);
+}
+
+static void test_preset_limit_headroom(void)
+{
+	AiusSdOverlayJob j;
+
+	fresh(false);
+	save_presets(0u, 16u);
+	CHECK(put("dsp.json", 10u, 1u, 0u) == AIUS_SD_OVERLAY_PUT_OK);
+	CHECK(put("config.json", 10u, 1u, 0u) == AIUS_SD_OVERLAY_PUT_OK);
+	for (unsigned i = 0; i < 27u; i++) {
+		char p[32];
+
+		snprintf(p, sizeof(p), "www/f%u", i);
+		CHECK(put(p, 10u, i, 0u) == AIUS_SD_OVERLAY_PUT_OK);
+	}
+	/* A job in flight, then a full sync replay, an Apply and an overwrite. */
+	CHECK(aius_sd_overlay_next_job(&g_ov, 10000u, &j));
+	for (unsigned i = 0; i < 27u; i++) {
+		char p[32];
+
+		snprintf(p, sizeof(p), "www/f%u", i);
+		CHECK(put(p, 10u, i + 100u, 1u) != AIUS_SD_OVERLAY_PUT_BUSY);
+	}
+	CHECK(put("dsp.json", 10u, 2u, 1u) == AIUS_SD_OVERLAY_PUT_OK);
+	CHECK(probe_preset("p4", true) == AIUS_SD_OVERLAY_PUT_OK);
+	CHECK(save_preset("p4") == AIUS_SD_OVERLAY_PUT_OK);
+	CHECK(probe_preset("new", true) == AIUS_SD_OVERLAY_PUT_LIMIT);
+	/* S1: one preset put_begin reads each manifest slot at most once. */
+	CHECK(aius_sd_overlay_preset_scan_reads > 0u &&
+	      aius_sd_overlay_preset_scan_reads <= AIUS_WEB_CACHE_ENTRIES);
 }
 
 static uint8_t tombstone_slot(void)
@@ -2033,6 +2205,9 @@ int main(void)
 	test_safe_copy_order();
 	test_store_full_shadows_refresh();
 	test_n5_preset_classes();
+	test_preset_limit_count_rule();
+	test_preset_limit_state();
+	test_preset_limit_headroom();
 	test_b1_faulted_tombstone_path_flip();
 	test_n1_backup_delete_after_slot_reuse();
 	test_s2_job_ready();

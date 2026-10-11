@@ -1241,6 +1241,8 @@ static FLASHMEM const AiusHttpApplicationResponse *dispatch_sd_upload(
 			break;
 		case AIUS_OPTICAL_APP_STORE_INVALID:
 			return http_error(dispatcher, 507, "sd_upload");
+		case AIUS_OPTICAL_APP_STORE_LIMIT:
+			return http_error(dispatcher, 409, "preset_limit");
 		default:
 			return http_error(dispatcher, 503, "sd_busy");
 		}

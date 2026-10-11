@@ -408,15 +408,99 @@ FLASHMEM AiusSdOverlayPutResult aius_sd_overlay_put_restore(
 	                 AIUS_WEB_CACHE_FLAG_RESTORE_CREATED, now_ms);
 }
 
+static FLASHMEM bool name_equal(const char *a, const char *b)
+{
+	const size_t n = strlen(a);
+
+	return strlen(b) == n && fold_equal(a, b, n);
+}
+
+#if !defined(__arm__)
+unsigned aius_sd_overlay_preset_scan_reads;
+#define SCAN_READ_RESET() (aius_sd_overlay_preset_scan_reads = 0u)
+#define SCAN_READ_COUNT() (aius_sd_overlay_preset_scan_reads++)
+#else
+#define SCAN_READ_RESET() ((void)0)
+#define SCAN_READ_COUNT() ((void)0)
+#endif
+
+/* One row per preset-path entry the cap scan found. */
+typedef struct {
+	uint32_t seq;
+	uint8_t state;
+	char path[AIUS_WEB_CACHE_PATH_STORAGE];
+} PresetRow;
+
+/* The saved-preset cap (Phase 4l): the count of distinct case-folded preset
+ * names whose newest store entry is VALID, FILLING, DIRTY or FLUSHING (a
+ * newest TOMBSTONE frees its name). `*exists` reports whether `path` is in
+ * that set. One entry_info read per slot into a local table (at most
+ * AIUS_WEB_CACHE_ENTRIES reads, host-counted), then the
+ * newest row per name is resolved from the table alone. */
+static FLASHMEM uint32_t count_presets(AiusSdOverlay *overlay, const char *path,
+                                       size_t path_length, bool *exists)
+{
+	AiusWebCache *const cache = store(overlay);
+	AiusWebCacheEntryInfo info;
+	PresetRow rows[AIUS_WEB_CACHE_ENTRIES];
+	uint8_t n = 0u;
+	uint32_t count = 0u;
+
+	*exists = false;
+	SCAN_READ_RESET();
+	for (uint8_t i = 0; i < AIUS_WEB_CACHE_ENTRIES; i++) {
+		SCAN_READ_COUNT();
+		if (!aius_web_cache_entry_info(cache, i, &info) ||
+		    !(info.state == AIUS_WEB_CACHE_STATE_VALID ||
+		      info.state == AIUS_WEB_CACHE_STATE_FILLING ||
+		      info.state == AIUS_WEB_CACHE_STATE_DIRTY ||
+		      info.state == AIUS_WEB_CACHE_STATE_FLUSHING ||
+		      info.state == AIUS_WEB_CACHE_STATE_TOMBSTONE) ||
+		    !is_preset(info.path, strlen(info.path)))
+			continue;
+		rows[n].seq = info.commit_seq;
+		rows[n].state = info.state;
+		memcpy(rows[n].path, info.path, sizeof(rows[n].path));
+		n++;
+	}
+	for (uint8_t i = 0; i < n; i++) {
+		bool newest = rows[i].state != AIUS_WEB_CACHE_STATE_TOMBSTONE;
+
+		for (uint8_t j = 0; newest && j < n; j++)
+			if (j != i && (int32_t)(rows[j].seq - rows[i].seq) > 0 &&
+			    name_equal(rows[i].path, rows[j].path))
+				newest = false;
+		if (!newest)
+			continue;
+		count++;
+		if (strlen(rows[i].path) == path_length &&
+		    fold_equal(rows[i].path, path, path_length))
+			*exists = true;
+	}
+	return count;
+}
+
 FLASHMEM AiusSdOverlayPutResult aius_sd_overlay_put_begin(
 	AiusSdOverlay *overlay, const char *path, size_t path_length,
-	uint32_t length)
+	uint32_t length, bool presets_complete)
 {
 	uint8_t flags = 0u;
 	AiusSdOverlayPutResult r = admit(overlay, path, path_length, &flags);
 
 	if (r != AIUS_SD_OVERLAY_PUT_OK)
 		return r;
+	if (is_preset(path, path_length)) {
+		bool exists;
+		const uint32_t count =
+			count_presets(overlay, path, path_length, &exists);
+
+		if (!exists) {
+			if (count >= AIUS_SD_OVERLAY_PRESET_LIMIT)
+				return AIUS_SD_OVERLAY_PUT_LIMIT;
+			if (!presets_complete)
+				return AIUS_SD_OVERLAY_PUT_BUSY;
+		}
+	}
 	return map(aius_web_cache_put_begin(store(overlay), path, path_length,
 	                                    length, flags));
 }

@@ -73,8 +73,18 @@ typedef enum {
 	AIUS_SD_OVERLAY_PUT_BUSY,    /* store full: 503 sd_busy + Retry-After, nothing evicted (Q4) */
 	AIUS_SD_OVERLAY_PUT_INVALID, /* key not storable, or a preset whose backup path cannot fit: refused at accept */
 	AIUS_SD_OVERLAY_PUT_ABSENT,  /* no carve (8 MiB fitment): keep today's synchronous card write (Q4) */
-	AIUS_SD_OVERLAY_PUT_FAULT    /* a chunk's chip read-back failed; nothing committed */
+	AIUS_SD_OVERLAY_PUT_FAULT,   /* a chunk's chip read-back failed; nothing committed */
+	AIUS_SD_OVERLAY_PUT_LIMIT    /* a new preset name at the 16-preset cap: 409 preset_limit */
 } AiusSdOverlayPutResult;
+
+#if !defined(__arm__)
+/* Host proof only (no target DTCM cost): entry reads of the last preset-cap
+ * scan, at most AIUS_WEB_CACHE_ENTRIES. */
+extern unsigned aius_sd_overlay_preset_scan_reads;
+#endif
+
+/* The saved-preset cap (Phase 4l). */
+#define AIUS_SD_OVERLAY_PRESET_LIMIT 16u
 
 /* The card job the overlay hands the platform (one at a time). */
 typedef enum {
@@ -235,11 +245,17 @@ AiusSdOverlayPutResult aius_sd_overlay_put_restore(AiusSdOverlay *overlay,
  * reserves a PUTTING entry for `length` bytes (BUSY when full, Q4), _chunk
  * takes each 512 B (or tail) chunk, _commit makes it DIRTY at `now_ms`,
  * _abort frees it (client drop, chunk CRC fault, orphan sweep, NS5). The
- * platform stops an in-flight fill of the path before _begin (B1, NS2). */
+ * platform stops an in-flight fill of the path before _begin (B1, NS2).
+ * A www/presets/<name>.json whose case-folded name is not among the counted
+ * presets (newest entry VALID, FILLING, DIRTY or FLUSHING) answers LIMIT at 16
+ * or more counted, else BUSY while `presets_complete` is false (the presets
+ * walk has not finished, so the count may still grow); an overwrite of a
+ * counted name proceeds. */
 AiusSdOverlayPutResult aius_sd_overlay_put_begin(AiusSdOverlay *overlay,
                                                  const char *path,
                                                  size_t path_length,
-                                                 uint32_t length);
+                                                 uint32_t length,
+                                                 bool presets_complete);
 AiusSdOverlayPutResult aius_sd_overlay_put_chunk(AiusSdOverlay *overlay,
                                                  const uint8_t *bytes,
                                                  uint32_t length);

@@ -5790,7 +5790,7 @@ static AiusOpticalAppStoreResult store_overlay_put_begin(void *,
                                                          uint32_t length)
 {
 	return store_result(aius_sd_overlay_put_begin(&g_store_overlay, rel,
-	                                              rel_length, length));
+	                                              rel_length, length, true));
 }
 
 static void store_overlay_put_abort(void *)

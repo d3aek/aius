@@ -176,7 +176,7 @@
             }
           },
           "503": {
-            "description": "sd_busy: the write-behind store is full and dsp.json has no entry of its own, so nothing is accepted or applied; carries Retry-After; retry once sd_flush.dirty falls. A full store still accepts this write when dsp.json already has an unleased entry, which is overwritten in place. With about 35 or more presets on the card the post-mount fill leaves the store full. sd_unavailable only on a board without the PSRAM store (8 MiB fitment); with the store a write is accepted with no card. audio_busy: shed while live input owns the transmit ring and the body parse's or the store job's start cost exceeds the ring margin (Phase 4f admission); carries Retry-After: 1; retry. The active DSP snapshot is not touched.",
+            "description": "sd_busy: the write-behind store is full and dsp.json has no entry of its own, so nothing is accepted or applied; carries Retry-After; retry once sd_flush.dirty falls. A full store still accepts this write when dsp.json already has an unleased entry, which is overwritten in place. With at most 16 presets the store does not fill; a card with more presets or stale www files can leave it full. sd_unavailable only on a board without the PSRAM store (8 MiB fitment); with the store a write is accepted with no card. audio_busy: shed while live input owns the transmit ring and the body parse's or the store job's start cost exceeds the ring margin (Phase 4f admission); carries Retry-After: 1; retry. The active DSP snapshot is not touched.",
             "headers": { "Retry-After": { "$ref": "#/components/headers/RetryAfter" } },
             "content": {
               "application/json": {
@@ -948,7 +948,7 @@
           "200": { "$ref": "#/components/responses/Ack" },
           "400": { "$ref": "#/components/responses/Error" },
           "503": {
-            "description": "sd_busy: the write-behind store is full and config.json has no entry of its own, so nothing is accepted or applied; carries Retry-After; retry. A full store still accepts this write when config.json already has an unleased entry, which is overwritten in place (with about 35 or more presets on the card the post-mount fill leaves the store full). sd_unavailable only on a board without the PSRAM store (8 MiB fitment); with the store a write is accepted with no card and flushes at the next mount. audio_busy: shed while live input owns the transmit ring and the body parse's or the store job's start cost exceeds the ring margin (Phase 4f admission); carries Retry-After: 1; retry.",
+            "description": "sd_busy: the write-behind store is full and config.json has no entry of its own, so nothing is accepted or applied; carries Retry-After; retry. A full store still accepts this write when config.json already has an unleased entry, which is overwritten in place (with at most 16 presets the store does not fill; a card with more presets or stale www files can leave it full). sd_unavailable only on a board without the PSRAM store (8 MiB fitment); with the store a write is accepted with no card and flushes at the next mount. audio_busy: shed while live input owns the transmit ring and the body parse's or the store job's start cost exceeds the ring margin (Phase 4f admission); carries Retry-After: 1; retry.",
             "headers": { "Retry-After": { "$ref": "#/components/headers/RetryAfter" } },
             "content": {
               "application/json": {
@@ -1071,8 +1071,17 @@
               }
             }
           },
+          "409": {
+            "description": "preset_limit: only for www/presets/<name>.json. 16 saved presets (distinct case-folded names) are already counted and this is a new name; delete one to save another. An overwrite of a counted preset is never refused by the limit. Not retryable until a preset is deleted.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "examples": { "preset_limit": { "value": { "ok": false, "error": "preset_limit" } } }
+              }
+            }
+          },
           "503": {
-            "description": "sd_busy: the write-behind store is full (no free entry or run); carries Retry-After; retry once sd_flush.dirty falls. With about 35 or more presets on the card that is every write after the post-mount fill. sd_unavailable only on a board without the PSRAM store (8 MiB fitment); with the store a write is accepted with no card. audio_busy: shed while live input owns the transmit ring and the SD job's start cost exceeds the ring margin (Phase 4f admission); carries Retry-After: 1; retry.",
+            "description": "sd_busy: the write-behind store is full (no free entry or run), or a new preset name arrives before the presets walk has finished since the last mount and fewer than 16 presets are counted so far; carries Retry-After; retry once sd_flush.dirty falls or the walk completes. With at most 16 presets and the stock www files the store does not fill. A card with more presets or stale www files left by older syncs can fill it, and is recovered with a card reader. sd_unavailable only on a board without the PSRAM store (8 MiB fitment); with the store a write is accepted with no card. audio_busy: shed while live input owns the transmit ring and the SD job's start cost exceeds the ring margin (Phase 4f admission); carries Retry-After: 1; retry.",
             "headers": { "Retry-After": { "$ref": "#/components/headers/RetryAfter" } },
             "content": {
               "application/json": {

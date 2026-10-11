@@ -41,7 +41,7 @@ built); replace wholesale on the next handover.
   the owner's. **4j BUILT** (2026-10-11): host proof and all four images
   green, delivery audit closure PASS; its device run is the owner's, and
   its N9 notes edit waits on the mixer session's hold. **4k BUILT**
-  (2026-10-11). 4l READY (prebuild folded 2026-10-11). 4i PLANNED and READY. 4b (acceptance umbrella)
+  (2026-10-11). **4l BUILT** (2026-10-11). 4i PLANNED and READY. 4b (acceptance umbrella)
   PLANNED: it closes after 4e to 4h's device runs. The owner holds two
   gates (below).
 - **Board.** Runs `df966f17b370` (Phase 4a) in slot 1, deployed by OTA
@@ -72,7 +72,7 @@ built); replace wholesale on the next handover.
   sync that uploads the bundles) and run 2 (AC-3 page loads), then 4h's
   AC-3 and accidental-disconnect runs. An E7 verdict of B2 re-plans 4f to 4h before
   their device runs (4f's body records this).
-- **Next action.** Phase 4l, then 4j N9 once the mixer doc is released, then 4b's
+- **Next action.** 4j N9 once the mixer doc is released, then 4b's
   device sessions (owner), then 4i.
 - **What landed this run** (aius commits; each followed by a upstream repository
   pointer bump; foreign commits from the mixer session omitted):
@@ -106,7 +106,8 @@ built); replace wholesale on the next handover.
 | `9c9bd88` | Phase 4f BUILT: link-time admission (route and SD-start shedding, 503 audio_busy with Retry-After), live_owns_ring, time-aged bucketed cost windows, FIFO start-gate deferral with bring-up latch, render and storage-diag yields, /api/status/brief, shared web poller with 503 skip and GET timeout, capture.py 503 skips, dsp_model_pad.py, D-S7, delivery-audit fixes (F-B1, F-B2, F-S1 to F-S6) | 14 host suites (verifier run), all four images, OCRAM at every floor, delivery audit closure PASS |
 | this commit | handover: this state; 4g gains starting figures and three carried-in items | none needed |
 | `35c6585` | Phase 4h BUILT: write-behind settings flush over 4g's PSRAM store (sd-overlay), disconnect hold and remount retry, copy-before-write saves with mount restore, PSRAM upload sink, BUSY verdict and SD-writes freeze, OTA and reboot drain gate, `sd_flush` status, public `FsVolume::cacheClear`, delivery-audit and clean-room fixes (D-S4, D-N10 and CR-N2 recorded as residual risks; D-N8 deferred to 4k) | 21 host suites, vitest, ota client, shellcheck (verifier run); all four images with every post-link guard; delivery audit FAIL then four closures FAIL and a fifth PASS; clean-room HOLD then three closures HOLD and a fourth PASS |
-| this commit | Phase 4k BUILT: tri-state BEGIN gate (NONE, WAIT, NO_CARD), AIUS_HTTP_VERDICT_UNAVAILABLE as 503 sd_unavailable for a refused SD_START, verdict switches with no default, AIUS_HTTP_DRIVER_FAULT_SD_UNAVAILABLE, upgrade.js stop case | 8 host suites (verifier run), all four images with every post-link guard and OCRAM at each floor; delivery audit PASS |
+| this commit | Phase 4l BUILT: 16-preset cap at accept (409 preset_limit, sd_busy until the walk completes), one-pass count, editor message and leading-dot rule, openapi 409; 4h cap text rewritten | 8 host suites (verifier rerun), all four images with every post-link guard and OCRAM at each floor; delivery audit FAIL (B1, S1, S2) then closure PASS |
+| `baa8e2c` | Phase 4k BUILT: tri-state BEGIN gate (NONE, WAIT, NO_CARD), AIUS_HTTP_VERDICT_UNAVAILABLE as 503 sd_unavailable for a refused SD_START, verdict switches with no default, AIUS_HTTP_DRIVER_FAULT_SD_UNAVAILABLE, upgrade.js stop case | 8 host suites (verifier run), all four images with every post-link guard and OCRAM at each floor; delivery audit PASS |
 | `8c2c67a` | Phase 4j BUILT: idle DSP apply (predicate and shared decision in `aius_dsp_runtime_config`, block stamp, noinline `dsp_idle_apply_service` producer root, millis() at the call site), tool text and CONTRIBUTING; 4k and 4l prebuild reviews folded with owner answers (4k staging stops on sd_unavailable; 4l sd_busy until counted, 409 once 16 counted) | 7 host suites (verifier run), all four images with every post-link guard and OCRAM at each floor; delivery audit FAIL (S1) then closure PASS |
 
 - **Uncommitted tree.** Nothing of this session's. Foreign and left
@@ -5040,16 +5041,21 @@ outcome: >-
   mounts (owner Q1). A full store refuses the write with 503 sd_busy and
   evicts nothing, and an 8 MiB fitment (no carve) keeps today's
   synchronous card writes (owner Q4, H19). The manifest's 64 entries are
-  a documented cap (owner Q-A): with about 35 or more presets on the
-  card the post-mount fill fills it, and then a DSP Apply or public
-  config write still lands when its file already holds an unleased store
-  entry (overwritten in place) and answers 503 sd_busy only when it has
-  none, while a preset save and a DELETE of an uncached preset answer
-  503 sd_busy until entries free (CR4-N1). A DELETE of a cached preset still
-  lands, since its tombstone reuses that entry, and frees it once
-  flushed, until the next mount's fill takes it again; beyond that the
-  UI cannot free space, and removing presets with a card reader
-  recovers it (H19). OTA activation, rehearsal and reboot answer 409 until the queue is
+  a documented cap (owner Q-A). Phase 4l caps saved presets at 16, so
+  with the 27-file web app and the two settings files the steady set is
+  45 entries and 19 remain for transients; Apply, config and preset
+  saves do not meet 503 sd_busy from a full store, and a new preset name
+  past 16 answers 409 preset_limit. A card holding more than 16 presets,
+  or stale www files left by older syncs, is outside that guarantee: the
+  post-mount fill can still fill the manifest, a DSP Apply or public
+  config write still lands when its file already holds an unleased
+  store entry (overwritten in place) and answers 503 sd_busy only when
+  it has none, and a preset save and a DELETE of an uncached preset
+  answer 503 sd_busy until entries free (CR4-N1). A DELETE of a cached
+  preset still lands, since its tombstone reuses that entry, and frees
+  it once flushed, until the next mount's fill takes it again; beyond
+  that the UI cannot free space, and removing presets or stale files
+  with a card reader recovers it (H19, 4l S2). OTA activation, rehearsal and reboot answer 409 until the queue is
   drained, re-checked before the SD-writes freeze and again immediately
   before the one-way step, so a write accepted at any point before it is
   never lost across the reset (with no discard, a write that can never
@@ -5075,7 +5081,7 @@ seams:
   - "firmware/lib/aius_http: Accept-Encoding * with q > 0 selects gzip unless the header refuses gzip by name (gzip;q=0), and *;q=0 does not (N2); RFC 9110 lets * match any coding, and today * gets the plain representation (aius_http.c:398-399; 4g audit nit 13, harmless while browsers name gzip)"
   - "firmware/tools/aius-sd-sync.sh: --file runs www_bundle.py --inlined only when a selected file is a page or an inlined asset, so a --file upload of another file no longer exits 1 after uploading when a page or asset is missing from --www; when one is selected, the bundle step runs before any upload (4g closure nit B). firmware/tools/www_bundle.py: a script containing <!-- fails the build with its page and asset named, since the <\\!-- escape is a SyntaxError inside a u-flag regex literal and the bundler cannot tell a regex from a string (www_bundle.py:83; 4g closure nit C; no current asset contains <!--)"
   - "firmware/test/itcm-placement/verify_target.py: aius_ab and the new aius_sd_overlay join EXPECTED_LDF_LIBS (both LDF-resolved in both optical envs, N4) with a case that a link missing either fails"
-  - "firmware/lib/aius_http (AIUS_HTTP_DRIVER_FAULT_SD_BUSY mapped to 503 sd_busy, S8), firmware/sd/www/openapi.json (409 sd_flush_pending; settings and www writes answer 200 at accept with or without a card; 503 sd_busy with Retry-After when the store is full, which with about 35 or more presets on the card is every write after the post-mount fill (owner Q-A, H19); a www DELETE answers 200 at accept even for a path the card does not hold, S2, and 503 sd_busy when its tombstone finds no entry, N3), firmware/sd/www/dsp-editor.js (pending versus saved from sd_flush), firmware/tools/ota/aius_ota_flash.py (waits out 409 sd_flush_pending up to 60 s, polling sd_flush and stopping once drained: a full sync drains in about 40 s at the source-off rate, so 30 s cut it short, and a longer wait under playback reports the 409 with sd_flush.dirty and exits nonzero, N6; after activate, reports activation_fault ota_flush_pending or ota_sd_busy as an abandoned activation, not a success)"
+  - "firmware/lib/aius_http (AIUS_HTTP_DRIVER_FAULT_SD_BUSY mapped to 503 sd_busy, S8), firmware/sd/www/openapi.json (409 sd_flush_pending; settings and www writes answer 200 at accept with or without a card; 503 sd_busy with Retry-After when the store is full, which on a card outside 4l's 16-preset guarantee can be every write after the post-mount fill (owner Q-A, H19); a www DELETE answers 200 at accept even for a path the card does not hold, S2, and 503 sd_busy when its tombstone finds no entry, N3), firmware/sd/www/dsp-editor.js (pending versus saved from sd_flush), firmware/tools/ota/aius_ota_flash.py (waits out 409 sd_flush_pending up to 60 s, polling sd_flush and stopping once drained: a full sync drains in about 40 s at the source-off rate, so 30 s cut it short, and a longer wait under playback reports the 409 with sd_flush.dirty and exits nonzero, N6; after activate, reports activation_fault ota_flush_pending or ota_sd_busy as an abandoned activation, not a success)"
 targeted-proof:
   - "host: sd-overlay (new): latest wins per path; a tombstone hides a file from GET and listings until flushed; a flush of version N with N+1 accepted flushes N+1 next; a settings entry flushes before an older sync entry; a read-back CRC mismatch retries, then counts a failure and keeps the entry dirty; a card-gone fault mid-flush keeps the entry dirty with its safe copy and sets held, no flush starts while held, and the next mount clears held and the entry flushes; a mode change sets held; a failing flush backs off 1, 2, 4 s and on to 60 s, a success resets it, and a failure while held counts no try (S5); a chip CRC fault on a dirty dsp.json and on a dirty config.json re-puts each from the platform callback's bytes in the overlay's service step, and one on a dirty preset drops it and counts sd_flush.crc_drops and an event (Q2); a fault in a dsp.json flush's target pass after its backup pass's CLOSE fails the job, and the re-put keeps the safe copy (backup), so the next flush writes the target first (NS6, FR2-S1); a preset dropped by a fault in its target pass leaves its torn target to return at the next refill, the backup holding the complete save (N6); a settings tombstone of a preset with no backup file flushes as a DELETE with require_existing false and drains, as does a tombstone of a path the card never held (S2); a store with no free entry or run refuses the put and evicts nothing (Q4); a PUT to a case variant of a pending path (/www/presets/A.json after /www/presets/a.json) replaces that entry, one entry and one flush; shadows(path) is true for dirty, flushing and tombstoned entries only; the drain query is true only when nothing is dirty, flushing or tombstoned (an unflushed preset delete, and a dirty entry while held, keep it false, FR-S8); one USAGE_REFRESH per burst; POST /api/clear resets max_settings_latency_ms and sync_drain_ms; a preset PUT to /www/presets/<name>.json is settings class, and so is one to /WWW/Presets/<name>.json (N1); a card loss, a remount or a volume change with a dirty dsp.json and a dirty preset drops and refills only clean entries, and a refill reading an older card file never replaces a dirty, flushing or tombstoned entry; a settings entry flushes as one copy-before-write job naming its fixed backup path (/aius/.bak-dsp.json, /aius/.bak-config.json, /aius/.bak-preset-<name>.json), a sync entry as today's REPLACE, and a settings tombstone as a DELETE of the backup and then of the target, or the target's alone when the backup path cannot be formed (FR-S9); a preset name whose backup path would not fit is refused at accept; safe-copy order (FR-B1): an accepted entry's job is backup first, a restore-created entry's is target-only, a job failing after its first pass's CLOSE or at a failed read-back makes the retry write the other order, a card pull mid target pass and the same card's return make the flush target first; a put before the flush on a restore-created entry, and on an entry left dirty by a card pull in its target pass, keeps the safe copy, so that flush writes the target first (FR2-S1); version pin (FR-S4): a put landing mid-pass and one landing between the two passes leave both passes and the CRC on version N and the entry dirty with N+1; a put after a backed-off tombstone (G1): DELETE x gives tombstone T, T's first DELETE job fails and backs off, a re-PUT of x commits N+2 and retires T, N+2 flushes, and after T's backoff would have expired no DELETE job runs: the card ends with x holding N+2, and at most one DELETE job ever ran, before the put; if T's backup DELETE had completed first, the safe copy moved from T to N+2 reads target, so N+2's flush writes the backup first and then the target; a re-PUT while T's DELETE job is running leaves T pinned, and _flush_end retires it on success and on failure alike, after which N+2 flushes; per-path safe copy (E1): dsp.json N flushing backup first (safe target), Apply N+1 put mid backup pass, the backup pass CLOSEs (the safe-copy bit, now on N+1, reads backup), a card-gone fault in the target pass: _flush_end retires N, N+1 is the path's only DIRTY entry with safe copy backup, and its flush writes the target first; the power-cut model adds that sequence, a cut before and after every primitive of N+1's flush starting from (target torn with sector 0 zeroed, backup valid holding N), and after every cut the target or the backup passes its validator; job-request cases (mode, order, skip-backup fields) are written after copy-before-write reports (FR-S7); aius_sd_overlay_restore_decision (H10, FR-S5, FR-S10): target valid gives KEEP (no backup read); target not valid with a backup that parses gives RESTORE; target not valid with a backup whose bytes reached the parser and were refused gives FAULT; target not valid with a backup load that failed before its bytes reached the parser (missing, empty, oversized, read fault) gives NOTHING; power-cut model (FR-S6; lib/aius_sd driving sd-overlay's own stateful fake card, firmware/test/sd-overlay/fake_card.c, with the dsp.json and config.json parsers; the card keeps files as sectors plus a size, lands a full-sector WRITE at once, and lands a partial last sector, the size and any allocation at the next sync, data before the directory entry, FatFile.cpp:1406-1458): starting from (target valid, backup valid), (target missing, backup missing), and (target torn, backup valid), a cut before and after every primitive of a save in each order, of a restore's target-only flush and of a retry after a failure in each pass, then the mount load and restore: after every cut the target or the backup passes its validator (from a missing pair: the target is missing or new), every file that passes holds a complete saved version, never a mix of two (the zero sector 0 makes a partly overwritten file fail, FR-S1), a restore installs the newest complete save on the card, and no case renames or removes a file"
   - "host: sd: the copy-before-write mode issues, in order, BEGIN, the directory EXISTS walk (two EXISTS /aius for a full save, one for a target-only save, FR-S2), the first file's pass (OPEN_WRITE_BEGIN, the zero sector 0 WRITE, the WRITEs of sectors 1 to N - 1, TRUNCATE carrying the length, SEEK 0, the sector 0 WRITE, CLOSE), the second file's pass, then exactly one CACHE_DROP and the target's read-back (OPEN_READ, FILE_SIZE, READs, CLOSE), and never a RENAME, a REMOVE or a temp path; backup first and target first issue the same primitives with the passes swapped; a full save of an N-sector file (N > 1) whose paths share one directory takes exactly 3N + 17 primitives, 89 for a 12,288 B dsp.json, the CACHE_DROP included, a one-sector file 16, and a target-only save 2N + 11, 59 for dsp.json (H4); the zero sector 0 WRITE asks for no input; a fault at any primitive fails the job with no RENAME or REMOVE issued; a read-back CRC mismatch fails the job; AIUS_SD_INSTALL_REPLACE's primitive sequence is unchanged; aius_sd_job_start rejects an AIUS_SD_INSTALL_STORE request and issues no primitive (NS8)"
@@ -7257,7 +7263,7 @@ fixed.
 ```yaml
 phase: 4l
 title: At most 16 saved presets
-status: planned
+status: built # 2026-10-11: host proof green (8 suites, verifier rerun after audit fixes), all four optical images with every post-link guard and OCRAM at each floor, delivery audit (normal-operation scope) FAIL (B1 first preset on a card with no presets dir, S1 quadratic count, S2 hidden names) then closure PASS; device check is part of 4b's runs
 depends-on: phase-4h
 prebuild-review: ready # folded 2026-10-11; owner waives further closure rounds on card edge cases. NOT READY 2026-10-11 (B1 to B3, S1 to S5, N1 to N3), folded with owner answers B1 and the overfull card
 outcome: >-
@@ -7357,6 +7363,35 @@ by its resolution.
   the fill cancel, and its proof leg is dropped. The delete guarantee
   arithmetic and the headroom proof's free-entry assertion are dropped;
   overfull cards and stale www files fall to 4h's card-reader recovery.
+
+**Built (2026-10-11).** `aius_sd_overlay_put_begin` takes a count-known
+flag and answers `AIUS_SD_OVERLAY_PUT_LIMIT`, mapped to
+`AIUS_OPTICAL_APP_STORE_LIMIT` and 409 preset_limit; the editor shows
+the limit message, and `SD_STORE_FULL` now reads as a transient busy
+store. 4h's outcome sentence on the 64-entry cap is rewritten for the
+cap.
+
+**Delivery audit (2026-10-11): FAIL, then closure PASS.**
+
+- **B1.** `presets_complete` is set only on entering a presets
+  directory, so a card without one could never save its first preset.
+  Resolved: `sd_flush_put_begin` passes `g_web_fill_walk.walk_complete`
+  instead (reset with the walk at every mount and card loss); the
+  contract's `presets_complete` reads as this flag. Optical-cutover pins
+  the wiring.
+- **S1.** The count was about 45 + P² entry CRC checks per preset PUT on
+  the main loop. Resolved: one pass into a local 64-row table (stack-bound
+  worst `put_begin` path 10812 of 27264 B), at most 64 `entry_info`
+  reads.
+- **S2.** A dot-prefixed name (allowed by the editor, not servable) left
+  the presets directory unclean and blocked new names. Resolved by B1's
+  flag, and `presetNameProblem` rejects a leading dot.
+- **N5.** The 409 text says "a counted preset".
+- **Accepted residue.** The host scan-bound counter ticks once per slot
+  pass, so it would not catch a per-row read creeping back (closure N1;
+  the code is correct today). A failed root directory read ends the walk
+  with nothing counted (closure N2), a card fault outside the owner's
+  scope.
 
 ### Phase 4c `test.sh` runs every `--suite` given ✓ SHIPPED 2026-10-06
 

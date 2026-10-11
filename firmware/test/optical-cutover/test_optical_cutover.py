@@ -6583,6 +6583,18 @@ def assert_sd_overlay_wiring(sources):
             f"platform_publish_config writes {write} itself, around the "
             "overlay's shadow check (B6)"
         )
+    # Phase 4l: a first preset save on a card with no presets/ directory, or
+    # one holding a non-servable file, is accepted once the whole walk is done:
+    # the overlay's count is "known" at walk_complete, never presets_complete.
+    put_begin = defs["sd_flush_put_begin"]
+    assert "g_web_fill_walk.walk_complete" in put_begin, (
+        "sd_flush_put_begin must pass g_web_fill_walk.walk_complete to "
+        "aius_sd_overlay_put_begin (4l)"
+    )
+    assert "presets_complete" not in put_begin, (
+        "sd_flush_put_begin must not gate the preset cap on presets_complete: "
+        "a card with no presets/ directory would answer sd_busy forever (4l)"
+    )
     complete = defs["sd_step_complete"]
     assert complete.count("aius_optical_settings_load_end(") == 3, (
         "sd_step_complete must end LOAD_CONFIG, LOAD_DSP and the restore "

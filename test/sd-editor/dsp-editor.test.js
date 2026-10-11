@@ -2227,6 +2227,7 @@ describe('Aius SD DSP editor — presets', () => {
     ['', 'Preset name is required.'],
     ['a'.repeat(28), 'at most 27 characters'],
     ['bad name', 'letters, digits, dot, underscore and hyphen'],
+    ['.hidden', 'may not start with a dot'],
     ['myconfig', 'may not end in "config"'],
     ['MyConfig', 'may not end in "config"'],
   ];
@@ -2414,8 +2415,23 @@ describe('Aius SD DSP editor — presets', () => {
     await click('preset-save');
     await vi.advanceTimersByTimeAsync(10000);
     expect(device.calls.filter((call) => call.method === 'PUT' && call.url.includes('presets'))).toHaveLength(1);
-    expect(el('preset-errors').textContent).toContain('write store is full');
-    expect(el('preset-errors').textContent).toContain('card reader');
+    expect(el('preset-errors').textContent).toContain('write store is busy');
+    expect(el('preset-errors').textContent).not.toContain('Preset limit reached');
+    expect(el('preset-status').textContent).not.toContain('Saved');
+  });
+
+  it('renders a preset save 409 preset_limit as the limit message, once', async () => {
+    await boot({
+      presetsIndex: PRESET_INDEX_DEFAULT,
+      presetPut: () => jsonResponse(409, { ok: false, error: 'preset_limit' }),
+    });
+    setToken('0123456789abcdef');
+    el('preset-name').value = 'evening';
+    await click('preset-save');
+    await vi.advanceTimersByTimeAsync(10000);
+    expect(device.calls.filter((call) => call.method === 'PUT' && call.url.includes('presets'))).toHaveLength(1);
+    expect(el('preset-errors').textContent).toContain('Preset limit reached (16); delete one to save another');
+    expect(el('preset-errors').textContent).not.toContain('write store is busy');
     expect(el('preset-status').textContent).not.toContain('Saved');
   });
 
@@ -2434,7 +2450,7 @@ describe('Aius SD DSP editor — presets', () => {
     await vi.advanceTimersByTimeAsync(10000);
     expect(globalThis.fetch.mock.calls.filter(([, init]) => init && init.method === 'DELETE')).toHaveLength(1);
     expect(el('preset-errors').textContent).toContain('movie.json not deleted');
-    expect(el('preset-errors').textContent).toContain('write store is full');
+    expect(el('preset-errors').textContent).toContain('write store is busy');
     expect(el('preset-status').textContent).not.toContain('Deleted');
   });
 

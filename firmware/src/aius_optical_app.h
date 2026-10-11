@@ -117,7 +117,8 @@ typedef enum {
 	AIUS_OPTICAL_APP_STORE_ACCEPTED,
 	AIUS_OPTICAL_APP_STORE_INVALID,
 	AIUS_OPTICAL_APP_STORE_STALE,
-	AIUS_OPTICAL_APP_STORE_BUSY
+	AIUS_OPTICAL_APP_STORE_BUSY,
+	AIUS_OPTICAL_APP_STORE_LIMIT /* a new preset name at the 16-preset cap: 409 preset_limit */
 } AiusOpticalAppStoreResult;
 
 /* CARRIER_PRESENT is a start-only refusal and deliberately its own value: a live

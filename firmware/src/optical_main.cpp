@@ -9420,6 +9420,7 @@ static FLASHMEM AiusOpticalAppStoreResult sd_overlay_result(
 	switch (result) {
 	case AIUS_SD_OVERLAY_PUT_OK: return AIUS_OPTICAL_APP_STORE_OK;
 	case AIUS_SD_OVERLAY_PUT_INVALID: return AIUS_OPTICAL_APP_STORE_INVALID;
+	case AIUS_SD_OVERLAY_PUT_LIMIT: return AIUS_OPTICAL_APP_STORE_LIMIT;
 	default: return AIUS_OPTICAL_APP_STORE_BUSY;
 	}
 }
@@ -9575,8 +9576,9 @@ static FLASHMEM bool sd_flush_cancel_root(void *)
 static FLASHMEM AiusOpticalAppStoreResult sd_flush_put_begin(
 	void *, const char *rel, size_t rel_length, uint32_t length)
 {
-	return sd_overlay_result(
-		aius_sd_overlay_put_begin(&g_sd_overlay, rel, rel_length, length));
+	return sd_overlay_result(aius_sd_overlay_put_begin(
+		&g_sd_overlay, rel, rel_length, length,
+		g_web_fill_walk.walk_complete));
 }
 
 static FLASHMEM void sd_flush_put_abort(void *)

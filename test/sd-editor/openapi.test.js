@@ -1345,7 +1345,19 @@ describe("Aius OpenAPI contract", () => {
     // two meanings of 507 sd_upload, stated so a client never renders it as
     // "card full" (sd_capacity's meaning).
     const filePath = document.paths["/sd/{resource}"];
-    expect(Object.keys(filePath.put.responses).sort()).toEqual(["200", "401", "403", "500", "503", "507"]);
+    expect(Object.keys(filePath.put.responses).sort()).toEqual(["200", "401", "403", "409", "500", "503", "507"]);
+    // Phase 4l (S5): the preset cap is its own 409, and the 503 arms stay unchanged.
+    expect(filePath.put.responses["409"].content["application/json"].schema).toEqual({
+      $ref: "#/components/schemas/Error",
+    });
+    expect(filePath.put.responses["409"].content["application/json"].examples).toEqual({
+      preset_limit: { value: { ok: false, error: "preset_limit" } },
+    });
+    expect(Object.keys(filePath.put.responses["503"].content["application/json"].examples)).toEqual([
+      "sd_unavailable",
+      "sd_busy",
+      "audio_busy",
+    ]);
     expect(Object.keys(filePath.put.responses["507"].content["application/json"].examples)).toEqual([
       "sd_upload",
       "sd_capacity",
