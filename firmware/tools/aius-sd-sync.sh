@@ -166,33 +166,48 @@ bundle_pages() {
 }
 
 if ((${#selected_files[@]} > 0)); then
-    # The relative name is checked by upload_file's path rules once joined, so a
-    # --file cannot reach outside --www.
     for relative in "${selected_files[@]}"; do
         [[ -f "$www_dir/$relative" ]] || {
             printf 'file not found under %s: %s\n' "$www_dir" "$relative" >&2
             exit 1
         }
-        upload_file "$www_dir/$relative" "$relative"
     done
-    # A selected file inlined by a page stales that page's bundle: upload every
-    # bundle that is a selected page or inlines a selected file.
+    # The bundle step runs only when a selected file is a page or an inlined
+    # asset, and then before any upload, so a broken tree uploads nothing.
     command -v python3 >/dev/null || { printf '%s\n' 'python3 is required' >&2; exit 127; }
-    pairs=$(python3 "$tool_dir/www_bundle.py" --www "$www_dir" --inlined) || {
-        printf '%s\n' 'www bundle step failed' >&2
-        exit 1
-    }
-    needed=$'\n'
+    references=$'\n'$(python3 "$tool_dir/www_bundle.py" --www "$www_dir" --referenced)$'\n'
+    needs_bundle=0
     for relative in "${selected_files[@]}"; do
         relative=${relative#./}
-        needed+="$relative"$'\n'
-        while read -r page asset; do
-            [[ "$asset" != "$relative" ]] || needed+="$page"$'\n'
-        done <<< "$pairs"
+        case "$relative" in
+            (index.html|status.html|replays.html|upgrade.html|mixer.html) needs_bundle=1 ;;
+            (*) [[ "$references" != *$'\n'"$relative"$'\n'* ]] || needs_bundle=1 ;;
+        esac
+    done
+    needed=$'\n'
+    if ((needs_bundle)); then
+        pairs=$(python3 "$tool_dir/www_bundle.py" --www "$www_dir" --inlined) || {
+            printf '%s\n' 'www bundle step failed' >&2
+            exit 1
+        }
+        bundle_pages
+        # A selected file inlined by a page stales that page's bundle: upload
+        # every bundle that is a selected page or inlines a selected file.
+        for relative in "${selected_files[@]}"; do
+            relative=${relative#./}
+            needed+="$relative"$'\n'
+            while read -r page asset; do
+                [[ "$asset" != "$relative" ]] || needed+="$page"$'\n'
+            done <<< "$pairs"
+        done
+    fi
+    # The relative name is checked by upload_file's path rules once joined, so a
+    # --file cannot reach outside --www.
+    for relative in "${selected_files[@]}"; do
+        upload_file "$www_dir/$relative" "$relative"
     done
     for page in index.html status.html replays.html upgrade.html mixer.html; do
         if [[ "$needed" == *$'\n'"$page"$'\n'* ]]; then
-            [[ -d "$work_dir/bundles" ]] || bundle_pages
             upload_file "$work_dir/bundles/$page.gz" "$page.gz"
         fi
     done

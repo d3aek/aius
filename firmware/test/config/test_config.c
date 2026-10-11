@@ -258,8 +258,40 @@ static void test_schema_errors(void)
 
 }
 
+/* Phase 4h NS6: write_public_config() (optical_main.cpp) is
+ * aius_config_write over g_config.features; every feature combination
+ * round-trips through aius_config_parse, and a short buffer writes nothing. */
+static void test_write_round_trip(void)
+{
+	uint8_t body[AIUS_CONFIG_MAX_JSON_BYTES];
+	AiusConfig parsed;
+	size_t length;
+	for (unsigned bits = 0u; bits < 8u; bits++) {
+		AiusConfigFeatures features;
+		features.sd_web = (uint8_t)(bits & 1u);
+		features.remote_control = (uint8_t)((bits >> 1) & 1u);
+		features.telemetry = (uint8_t)((bits >> 2) & 1u);
+		length = aius_config_write(&features, body, sizeof(body));
+		check(length > 0u && body[length - 1u] == '\n',
+		      "write %u: no document", bits);
+		check(aius_config_parse(body, length, &parsed) == AIUS_CONFIG_OK,
+		      "write %u: output does not parse", bits);
+		check(parsed.valid && parsed.features.sd_web == features.sd_web &&
+		      parsed.features.remote_control == features.remote_control &&
+		      parsed.features.telemetry == features.telemetry,
+		      "write %u: parse does not give the features back", bits);
+		check(aius_config_write(&features, body, length) == 0u,
+		      "write %u: no room for the NUL must write nothing", bits);
+		check(aius_config_write(&features, body, length + 1u) == length,
+		      "write %u: exact fit refused", bits);
+	}
+	check(aius_config_write(NULL, body, sizeof(body)) == 0u, "write NULL");
+	check(aius_config_write(&parsed.features, NULL, 8u) == 0u, "write NULL body");
+}
+
 int main(void)
 {
+	test_write_round_trip();
 	test_defaults_and_valid_documents();
 	test_argument_and_size_errors();
 	test_malformed_documents();

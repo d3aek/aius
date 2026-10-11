@@ -720,9 +720,16 @@ def check_sd_and_yield_roots(img: Image, t: Tables) -> list[str]:
         out.append(f"W5 (3): hook-reaching SD caller {img.name(a)} is in no SD-root row")
     ypt = set(img.resolve(YIELD_POINT))
     yrows = set(w.roots(t.yield_roots))
+    callers = set()
     for a, f in img.funcs.items():
         if a in img.veneer:
             continue
-        if {img.collapse(b) for b in img.edges[a]} & ypt and a not in yrows:
-            out.append(f"W5 (3): {img.name(a)} calls {YIELD_POINT} and is no yield-root row")
+        if {img.collapse(b) for b in img.edges[a]} & ypt:
+            callers.add(a)
+            if a not in yrows:
+                out.append(f"W5 (3): {img.name(a)} calls {YIELD_POINT} and is no yield-root row")
+    # The converse (Phase 4h): a yield-root row whose symbol has no direct
+    # edge to the yield point names no yield point, so it proves nothing.
+    for a in sorted(yrows - callers):
+        out.append(f"W5 (3): yield-root row {img.name(a)} does not call {YIELD_POINT}")
     return out + w.failures

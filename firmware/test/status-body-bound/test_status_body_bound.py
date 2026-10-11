@@ -375,6 +375,12 @@ def string_bound(sources, expr, ctx, depth=0):
         local = re.search(rf"\bconst\s+char\s*\*\s*(?:const\s+)?{text}\s*=\s*([^;]+);", ctx.body)
         if local:
             return string_bound(sources, local.group(1), ctx, depth + 1)
+        # Phase 4h: a same-function PROGMEM string (kept out of DTCM .data).
+        progmem = re.search(
+            rf"\bconst\s+char\s+{text}\s*\[\s*\]\s*PROGMEM\s*=\s*((?:\"(?:\\.|[^\"\\])*\"\s*)+);",
+            ctx.body)
+        if progmem:
+            return string_bound(sources, progmem.group(1), ctx, depth + 1)
         array = re.search(rf"\bchar\s+{text}\s*\[\s*([^\]]+)\]", ctx.body)
         if array:
             return evaluate(sources, array.group(1), ctx.body) - 1
@@ -663,6 +669,25 @@ def fits(worst, limit):
 # bounds: a key moved to an emitter the walk never reaches (or renamed away)
 # fails here instead of silently leaving the bound.
 PINNED_KEYS = {
+    # Phase 4h H10: sd_diag's two restore counters.
+    "aius_runtime_storage_diag_json": ("settings_restores", "settings_restore_faults"),
+    # Phase 4h: the sd_flush object (openapi.json's exact key set), rendered
+    # by the root emitter itself, crc_drops included.
+    ROOT_EMITTER: (
+        "sd_flush",
+        "dirty",
+        "flushing",
+        "tombstones",
+        "oldest_dirty_age_ms",
+        "flushed",
+        "failures",
+        "crc_drops",
+        "max_settings_latency_ms",
+        "sync_drain_ms",
+        "last_fault",
+        "held",
+        "drained",
+    ),
     # aius-sample-rate-following Phase 4: the fill-referenced trim and the
     # fill sensor's window sequence and last exclusion bits.
     "http_clock_json": (
@@ -693,7 +718,9 @@ PINNED_KEYS = {
 BRIEF_EMITTER = "http_status_brief_json"
 BRIEF_LIMIT = 512
 BRIEF_KEYS = ("carrier", "state", "sample_rate", "pipeline_diag", "codec_pc",
-              "tx_gate", "open", "replay_running")
+              "tx_gate", "open", "replay_running",
+              # Phase 4h: sd_flush in the brief carries exactly these four.
+              "sd_flush", "dirty", "held", "failures", "last_fault", "drained")
 
 
 def check_brief(sources):

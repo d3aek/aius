@@ -40,9 +40,24 @@ class FakeDevice:
         # fault_plan: {chunk_index: (status, landed)}
         self.fault_plan = dict(fault_plan or {})
         self.puts = 0
+        # Phase 4h: sd_flush drain model. `dirty_polls` /api/status reads
+        # report dirty 1 before the queue drains to 0 (None = never drains);
+        # activate answers 409 sd_flush_pending while dirty.
+        self.dirty_polls = 0
+        self.flush_status_reads = 0
+        self.activate_posts = 0
+        self.activation_fault = "none"
+
+    @property
+    def dirty(self):
+        return self.dirty_polls is None or self.flush_status_reads < self.dirty_polls
 
     def transport(self, method, url, headers, body, timeout):
         path = url.split("://", 1)[-1].split("/", 1)[1]
+        if method == "GET" and path == "api/status":
+            self.flush_status_reads += 1
+            return 200, {"sd_flush": {"dirty": 1 if self.dirty else 0},
+                         "ota_diag": {"activation_fault": self.activation_fault}}
         if method == "GET" and path == "api/ota":
             return 200, {
                 "state": self.state,
@@ -96,6 +111,9 @@ class FakeDevice:
             self.activation_enabled = True
             return 200, {"ok": True}
         if verb == "activate":
+            self.activate_posts += 1
+            if self.dirty_polls != 0 and self.dirty:
+                return 409, {"error": "sd_flush_pending"}
             if not self.activation_enabled:
                 return 409, {"error": "ota_activation_disabled"}
             if self.state != "armed":
@@ -186,6 +204,53 @@ class StageTests(unittest.TestCase):
         self.assertEqual(fake.state, "activation-requested")
         self.assertEqual(fake.verbs,
                          ["verify", "arm", "enable-activation", "activate"])
+
+class FlushGateTests(unittest.TestCase):
+    IMAGE = bytes(range(256)) * 20
+
+    def run_activate(self, fake):
+        slept = []
+        code = aius_ota_flash.run(client_over(fake), self.IMAGE, activate=True,
+                                  log=quiet, sleep=slept.append)
+        return code, sum(slept)
+
+    def test_409_waits_then_stops_as_soon_as_drained(self):
+        fake = FakeDevice(len(self.IMAGE))
+        fake.dirty_polls = 4
+        code, waited = self.run_activate(fake)
+        self.assertEqual(code, 0)
+        self.assertEqual(fake.state, "activation-requested")
+        self.assertEqual(fake.activate_posts, 2)
+        # Stopped at the drain, not at 60 s (the post-activate watch adds
+        # its own fixed 15 s of quiet polling).
+        self.assertLess(waited - aius_ota_flash.ACTIVATION_WATCH_S, 10)
+
+    def test_409_still_pending_at_60s_exits_nonzero(self):
+        fake = FakeDevice(len(self.IMAGE))
+        fake.dirty_polls = None
+        logs = []
+        slept = []
+        code = aius_ota_flash.run(client_over(fake), self.IMAGE, activate=True,
+                                  log=logs.append, sleep=slept.append)
+        self.assertNotEqual(code, 0)
+        self.assertGreaterEqual(sum(slept), 60)
+        self.assertLess(sum(slept), 70)
+        self.assertEqual(fake.state, "armed")
+        self.assertTrue(any("sd_flush_pending" in m and "dirty=1" in m
+                            for m in logs))
+
+    def test_abandoned_activation_faults_are_not_success(self):
+        for fault in ("ota_flush_pending", "ota_sd_busy"):
+            with self.subTest(fault=fault):
+                fake = FakeDevice(len(self.IMAGE))
+                fake.activation_fault = fault
+                logs = []
+                code = aius_ota_flash.run(client_over(fake), self.IMAGE,
+                                          activate=True, log=logs.append,
+                                          sleep=quiet)
+                self.assertEqual(code, 1)
+                self.assertTrue(any("ABANDONED" in m and fault in m
+                                    for m in logs))
 
 
 if __name__ == "__main__":

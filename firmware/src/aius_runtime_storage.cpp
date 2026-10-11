@@ -248,9 +248,48 @@ FLASHMEM void root_terminal(AiusRuntimeStorage *service, bool failed,
 	    service->job.last_fault == AIUS_SD_FAULT_IO &&
 	    service->job.last_driver_fault == AIUS_RUNTIME_STORAGE_FILL_SINK_FAULT)
 		return;
+	/* Phase 4h FR-S3, S3: a chunk the input source refused (a PSRAM chunk
+	 * CRC fault) is the store's fault, not the card's: the caller takes
+	 * Q2's path and no root failure is counted. A CLOSE that then faults
+	 * replaced the code (CLEANUP) and falls through. */
+	if ((service->flags_4h & AIUS_RUNTIME_STORAGE_FLAG_ROOT_INPUT_FAULT) &&
+	    (service->job.last_fault == AIUS_SD_FAULT_PROTOCOL ||
+	     service->job.last_fault == AIUS_SD_FAULT_SHORT_IO))
+		return;
 	if (service->diag.root_failures != UINT32_MAX)
 		service->diag.root_failures++;
 	latch_failure(service, AIUS_RUNTIME_STORAGE_OWNER_ROOT, false, now_ms);
+}
+
+/* Phase 4h FR-S3: answers a root job's NEED_INPUT from the registered source
+ * into the publication buffer, which no input-taking job publishes through
+ * (copy-before-write forbids publish; a publishing upload is refused here).
+ * Memory only. Any refusal reaches the engine as a failed supply, which
+ * faults the job and routes it to its CLOSE. */
+FLASHMEM void supply_root_input(AiusRuntimeStorage *service,
+                                const AiusSdAction *action)
+{
+	uint8_t *scratch =
+		service->sd_publish + AIUS_RUNTIME_STORAGE_INPUT_SCRATCH_OFFSET;
+	size_t bytes = 0u;
+
+	if (service->job.publish || action->length == 0u ||
+	    action->length > AIUS_RUNTIME_STORAGE_TRANSFER) {
+		(void)aius_sd_job_supply(&service->job, nullptr, 0u);
+		return;
+	}
+	if (!aius_runtime_storage_root_input(&service->job, action->offset,
+	                                     scratch, action->length,
+	                                     &bytes)) {
+		service->flags_4h |= AIUS_RUNTIME_STORAGE_FLAG_ROOT_INPUT_FAULT;
+		(void)aius_sd_job_supply(&service->job, nullptr, 0u);
+		return;
+	}
+	if (bytes != action->length) {
+		(void)aius_sd_job_supply(&service->job, nullptr, 0u);
+		return;
+	}
+	(void)aius_sd_job_supply(&service->job, scratch, bytes);
 }
 
 /* True when the action produced a correlated HTTP result (or resolved the
@@ -264,8 +303,17 @@ FLASHMEM bool route_action(AiusRuntimeStorage *service, const AiusSdAction *acti
 		return false;
 
 	case AIUS_SD_ACTION_NEED_INPUT:
-		if (!authoritative)
+		if (!authoritative) {
+			/* Phase 4h FR-S3: a root job's input comes from the
+			 * registered source, supplied now; advance() steps the
+			 * job once more this epoch for the WRITE. Any other
+			 * ownerless job (a drain) has no source and waits as
+			 * before. */
+			if (service->root_state ==
+			    AIUS_RUNTIME_STORAGE_ROOT_RUNNING)
+				supply_root_input(service, action);
 			return true;
+		}
 		publish_http(service, AIUS_HTTP_SD_NEED_UPLOAD);
 		service->pending_http_event.sd_length = action->length;
 		return true;
@@ -373,6 +421,12 @@ FLASHMEM bool route_action(AiusRuntimeStorage *service, const AiusSdAction *acti
 			publish_failed(service, now_ms);
 		return true;
 
+	case AIUS_SD_ACTION_CACHE_DROP:
+		/* Phase 4h H1, CR4-B2: the copy-before-write read-back's cache
+		 * drop is an adapter primitive like any other, run inside the
+		 * SD window below; never SD. or the card directly. */
+		break;
+
 	default:
 		break;
 	}
@@ -413,30 +467,276 @@ FLASHMEM bool advance(AiusRuntimeStorage *service, uint32_t now_ms,
 	/* One route_action call site, so it stays inlined here: `advance` is the
 	 * storage execute's W2 windowed row (producer-isolation), and a second
 	 * call site outlines it (Phase 4g link). */
-	for (bool fill_output_done = false;;) {
+	for (bool memory_hop_done = false;;) {
 		/* Phase 4g: a fill chunk's OUTPUT is memory only (the sink copies
 		 * and checks it), so its OK is delivered now and the job's next
 		 * action, the next READ or the CLOSE, is this epoch's one
-		 * primitive: one 512 B card read per epoch. */
-		const bool fill_output =
-			!fill_output_done && !authoritative &&
-			action.kind == AIUS_SD_ACTION_OUTPUT &&
-			service->job.kind == AIUS_SD_JOB_CACHE_FILL &&
+		 * primitive: one 512 B card read per epoch. Phase 4h FR-S3: a
+		 * root job's NEED_INPUT is memory only too (the source supplies
+		 * it), so the job's WRITE, or the CLOSE of a refused supply, is
+		 * this epoch's one primitive. At most one hop per advance. */
+		const bool root_running =
+			!memory_hop_done && !authoritative &&
 			service->root_state == AIUS_RUNTIME_STORAGE_ROOT_RUNNING;
+		const bool fill_output =
+			root_running && action.kind == AIUS_SD_ACTION_OUTPUT &&
+			service->job.kind == AIUS_SD_JOB_CACHE_FILL;
+		const bool root_input =
+			root_running && action.kind == AIUS_SD_ACTION_NEED_INPUT;
 		const bool routed =
 			route_action(service, &action, authoritative, now_ms);
-		if (!fill_output)
+		if (!fill_output && !root_input)
 			return routed;
-		fill_output_done = true;
-		if (!service->event_present ||
-		    service->pending_event.kind != AIUS_SD_EVENT_OK)
-			return true;
-		event = service->pending_event;
-		service->event_present = false;
-		memset(&service->pending_event, 0,
-		       sizeof(service->pending_event));
+		memory_hop_done = true;
+		if (fill_output) {
+			if (!service->event_present ||
+			    service->pending_event.kind != AIUS_SD_EVENT_OK)
+				return true;
+			event = service->pending_event;
+			service->event_present = false;
+			memset(&service->pending_event, 0,
+			       sizeof(service->pending_event));
+		} else {
+			event = sd_event(AIUS_SD_EVENT_NONE, 0u, 0u);
+		}
 		memset(&action, 0, sizeof(action));
 		aius_sd_job_step(&service->job, now_ms, event, &action);
+	}
+}
+
+/* Advances the ownerless job, a drain or a root-initiated job, by at most one
+ * primitive. Phase 4f F2/F9: never deferred here. sd_fifo_defer() holds a
+ * root job only at its start gate (optical_main.cpp); a started job steps
+ * every epoch to its end, as a started HTTP job does, so it never parks as
+ * ROOT_RUNNING with every SD route on sd_busy. Phase 4g G8 (owner,
+ * 2026-10-10) is the one exception: an uncancelled CACHE_FILL root job's step
+ * waits while the platform's fill gate holds; an HTTP SD request cancels a
+ * paused fill, and a cancelled fill always steps. */
+FLASHMEM void advance_ownerless(AiusRuntimeStorage *service, uint32_t now_ms)
+{
+	if ((!service->draining &&
+	     service->root_state != AIUS_RUNTIME_STORAGE_ROOT_RUNNING) ||
+	    service->terminal_seen)
+		return;
+	const bool fill_paused =
+		!service->draining &&
+		service->root_state == AIUS_RUNTIME_STORAGE_ROOT_RUNNING &&
+		service->job.kind == AIUS_SD_JOB_CACHE_FILL &&
+		!service->root_cancelling &&
+		aius_runtime_storage_fill_step_defer(&service->job);
+	if (!fill_paused)
+		(void)advance(service, now_ms, false);
+}
+
+/* ---- Phase 4h S8: the STORE upload sink ---- */
+
+FLASHMEM bool flag_4h(const AiusRuntimeStorage *service, uint8_t bit)
+{
+	return (service->flags_4h & bit) != 0u;
+}
+
+FLASHMEM void set_flag_4h(AiusRuntimeStorage *service, uint8_t bit, bool on)
+{
+	if (on)
+		service->flags_4h = (uint8_t)(service->flags_4h | bit);
+	else
+		service->flags_4h = (uint8_t)(service->flags_4h & ~bit);
+}
+
+FLASHMEM uint32_t store_total(const AiusRuntimeStorage *service)
+{
+	return (uint32_t)(service->store_progress >> 32);
+}
+
+FLASHMEM uint32_t store_supplied(const AiusRuntimeStorage *service)
+{
+	return (uint32_t)service->store_progress;
+}
+
+/* Bytes of the current chunk held in the accumulator: whole chunks are
+ * pushed as they complete, so it is the supplied count's 512 B remainder. */
+FLASHMEM uint32_t store_fill(const AiusRuntimeStorage *service)
+{
+	return store_supplied(service) % AIUS_RUNTIME_STORAGE_TRANSFER;
+}
+
+FLASHMEM uint8_t *store_chunk(AiusRuntimeStorage *service)
+{
+	return service->sd_publish + AIUS_RUNTIME_STORAGE_STORE_CHUNK_OFFSET;
+}
+
+/* A publishing job owns sd_publish until its terminal; the STORE accumulator
+ * shares it, so a STORE waits rather than writing under it. */
+FLASHMEM bool publish_buffer_busy(const AiusRuntimeStorage *service)
+{
+	return service->job.publish && !service->terminal_seen &&
+	       (service->draining ||
+	        service->root_state == AIUS_RUNTIME_STORAGE_ROOT_RUNNING);
+}
+
+FLASHMEM void store_abort(AiusRuntimeStorage *service)
+{
+	if (flag_4h(service, AIUS_RUNTIME_STORAGE_FLAG_STORE_ACTIVE))
+		aius_runtime_storage_store_abort();
+	set_flag_4h(service,
+	            AIUS_RUNTIME_STORAGE_FLAG_STORE_ACTIVE |
+	                    AIUS_RUNTIME_STORAGE_FLAG_STORE_FAILED,
+	            false);
+	service->store_progress = 0u;
+}
+
+FLASHMEM void store_publish_failed(AiusRuntimeStorage *service,
+                                   AiusSdFault fault, uint32_t driver_fault,
+                                   uint32_t now_ms)
+{
+	store_abort(service);
+	publish_http(service, AIUS_HTTP_SD_FAILED);
+	service->pending_http_event.sd_fault = fault;
+	service->pending_http_event.sd_driver_fault = driver_fault;
+	if (service->diag.http_failures != UINT32_MAX)
+		service->diag.http_failures++;
+	(void)now_ms;
+}
+
+/* Hands the accumulated chunk (a whole 512 B one, or the tail) to the sink. */
+FLASHMEM bool store_push_chunk(AiusRuntimeStorage *service, uint32_t length)
+{
+	if (length == 0u)
+		return true;
+	return aius_runtime_storage_store_chunk(store_chunk(service), length);
+}
+
+/* One correlated HTTP action of a STORE upload. Memory only: no engine call,
+ * no card call, no http_owned, no root_state. Always publishes a result. */
+FLASHMEM void store_action(AiusRuntimeStorage *service,
+                           const AiusHttpAction *http_action, uint32_t now_ms)
+{
+	switch (http_action->kind) {
+	case AIUS_HTTP_ACTION_SD_START: {
+		const AiusSdJobRequest *request = http_action->sd_request;
+
+		/* A stale upload (a STORE START with one still in flight) is
+		 * the transaction's defect; the old put is abandoned. */
+		store_abort(service);
+		set_flag_4h(service, AIUS_RUNTIME_STORAGE_FLAG_STORE_HTTP, true);
+		service->output_outstanding = false;
+		if (service->diag.http_jobs != UINT32_MAX)
+			service->diag.http_jobs++;
+		/* Nothing reaches the engine either way; a malformed request
+		 * frees the app's reserved entry, a refused open has none. */
+		set_flag_4h(service, AIUS_RUNTIME_STORAGE_FLAG_STORE_ACTIVE,
+		            true);
+		if (request->kind != AIUS_SD_JOB_UPLOAD || request->total == 0u ||
+		    request->total > UINT32_MAX || request->publish) {
+			store_publish_failed(service,
+			                     AIUS_SD_FAULT_INVALID_REQUEST, 0u,
+			                     now_ms);
+			return;
+		}
+		if (!aius_runtime_storage_store_open(request)) {
+			set_flag_4h(service, AIUS_RUNTIME_STORAGE_FLAG_STORE_ACTIVE,
+			            false);
+			store_publish_failed(service,
+			                     AIUS_SD_FAULT_INVALID_REQUEST, 0u,
+			                     now_ms);
+			return;
+		}
+		service->store_progress = request->total << 32;
+		publish_http(service, AIUS_HTTP_SD_STARTED);
+		service->pending_http_event.sd_capacity =
+			AIUS_RUNTIME_STORAGE_TRANSFER;
+		return;
+	}
+
+	case AIUS_HTTP_ACTION_SD_CANCEL:
+		store_abort(service);
+		publish_http(service, AIUS_HTTP_SD_CANCELLED);
+		service->pending_http_event.sd_fault = AIUS_SD_FAULT_NONE;
+		service->pending_http_event.sd_driver_fault = 0u;
+		if (service->diag.cancellations != UINT32_MAX)
+			service->diag.cancellations++;
+		return;
+
+	case AIUS_HTTP_ACTION_SD_STEP:
+	default:
+		break;
+	}
+
+	if (!flag_4h(service, AIUS_RUNTIME_STORAGE_FLAG_STORE_ACTIVE)) {
+		store_publish_failed(service, AIUS_SD_FAULT_PROTOCOL, 0u, now_ms);
+		return;
+	}
+	switch (http_action->sd_operation) {
+	case AIUS_HTTP_SD_OP_ADVANCE: {
+		const uint32_t taken = store_supplied(service);
+		const uint32_t total = store_total(service);
+		if (flag_4h(service, AIUS_RUNTIME_STORAGE_FLAG_STORE_FAILED)) {
+			store_publish_failed(
+				service, AIUS_SD_FAULT_IO,
+				AIUS_RUNTIME_STORAGE_STORE_SINK_FAULT, now_ms);
+			return;
+		}
+		if (taken < total) {
+			uint32_t want =
+				AIUS_RUNTIME_STORAGE_TRANSFER - store_fill(service);
+			/* A publishing job that started before this upload
+			 * owns sd_publish; no byte is held (no publishing
+			 * job starts while a STORE is active), so wait. */
+			if (publish_buffer_busy(service)) {
+				publish_http(service, AIUS_HTTP_SD_PROGRESS);
+				return;
+			}
+			if (want > total - taken)
+				want = total - taken;
+			publish_http(service, AIUS_HTTP_SD_NEED_UPLOAD);
+			service->pending_http_event.sd_length = want;
+			return;
+		}
+		if (!store_push_chunk(service, store_fill(service)) ||
+		    !aius_runtime_storage_store_commit(now_ms)) {
+			store_publish_failed(
+				service, AIUS_SD_FAULT_IO,
+				AIUS_RUNTIME_STORAGE_STORE_SINK_FAULT, now_ms);
+			return;
+		}
+		set_flag_4h(service, AIUS_RUNTIME_STORAGE_FLAG_STORE_ACTIVE,
+		            false);
+		service->store_progress = 0u;
+		publish_http(service, AIUS_HTTP_SD_COMPLETE);
+		return;
+	}
+
+	case AIUS_HTTP_SD_OP_SUPPLY_UPLOAD: {
+		const uint32_t taken = store_supplied(service);
+		const uint32_t fill = store_fill(service);
+		const size_t length = http_action->length;
+		if (flag_4h(service, AIUS_RUNTIME_STORAGE_FLAG_STORE_FAILED) ||
+		    http_action->data == nullptr || length == 0u ||
+		    length > AIUS_RUNTIME_STORAGE_TRANSFER - fill ||
+		    length > store_total(service) - taken ||
+		    publish_buffer_busy(service)) {
+			set_flag_4h(service, AIUS_RUNTIME_STORAGE_FLAG_STORE_FAILED,
+			            true);
+		} else {
+			memcpy(store_chunk(service) + fill, http_action->data,
+			       length);
+			service->store_progress += length;
+			if (fill + length == AIUS_RUNTIME_STORAGE_TRANSFER &&
+			    !store_push_chunk(service,
+			                      AIUS_RUNTIME_STORAGE_TRANSFER))
+				set_flag_4h(service,
+				            AIUS_RUNTIME_STORAGE_FLAG_STORE_FAILED,
+				            true);
+		}
+		/* The supply phase admits PROGRESS only; a refused chunk
+		 * answers FAILED at the next ADVANCE. */
+		publish_http(service, AIUS_HTTP_SD_PROGRESS);
+		return;
+	}
+
+	default:
+		store_publish_failed(service, AIUS_SD_FAULT_PROTOCOL, 0u, now_ms);
+		return;
 	}
 }
 
@@ -471,6 +771,7 @@ FLASHMEM void aius_runtime_storage_construct(AiusRuntimeStorage *service)
 	service->job_mounts_at_start = 0u;
 	service->job_owner = (uint8_t)AIUS_RUNTIME_STORAGE_OWNER_NONE;
 	service->root_cancelling = false;
+	service->flags_4h = 0u;
 	aius_sd_teensy_init(&service->target);
 	aius_sd_job_init(&service->job, service->sd_transfer,
 	                 sizeof(service->sd_transfer));
@@ -495,6 +796,62 @@ FLASHMEM void aius_runtime_storage_set_publish(
 	service->publish = *ops;
 }
 
+/* Phase 4h weak defaults: no input source (true with 0 bytes, which fails the
+ * job as a counted protocol fault) and no STORE sink (the open refuses). */
+__attribute__((weak)) FLASHMEM bool aius_runtime_storage_root_input(
+	const AiusSdJob *job, uint64_t offset, uint8_t *dst, size_t capacity,
+	size_t *bytes)
+{
+	(void)job;
+	(void)offset;
+	(void)dst;
+	(void)capacity;
+	*bytes = 0u;
+	return true;
+}
+
+__attribute__((weak)) FLASHMEM bool aius_runtime_storage_store_open(
+	const AiusSdJobRequest *request)
+{
+	(void)request;
+	return false;
+}
+
+__attribute__((weak)) FLASHMEM bool aius_runtime_storage_store_chunk(
+	const uint8_t *data, size_t length)
+{
+	(void)data;
+	(void)length;
+	return false;
+}
+
+__attribute__((weak)) FLASHMEM bool aius_runtime_storage_store_commit(
+	uint32_t now_ms)
+{
+	(void)now_ms;
+	return false;
+}
+
+__attribute__((weak)) FLASHMEM void aius_runtime_storage_store_abort(void)
+{
+}
+
+/* No restore runs in a build without optical_main.cpp's H10 steps. */
+__attribute__((weak)) FLASHMEM void aius_runtime_storage_settings_restores(
+	uint32_t *restores, uint32_t *faults)
+{
+	*restores = 0u;
+	*faults = 0u;
+}
+
+FLASHMEM bool aius_runtime_storage_root_input_faulted(
+	const AiusRuntimeStorage *service)
+{
+	return service != nullptr &&
+	       service->root_state == AIUS_RUNTIME_STORAGE_ROOT_FAILED &&
+	       flag_4h(service, AIUS_RUNTIME_STORAGE_FLAG_ROOT_INPUT_FAULT);
+}
+
 FLASHMEM bool aius_runtime_storage_start_root_job(
 	AiusRuntimeStorage *service,
 	const AiusSdJobRequest *request,
@@ -504,16 +861,25 @@ FLASHMEM bool aius_runtime_storage_start_root_job(
 		return false;
 	/* Reject rather than queue or preempt: one job, one buffer, and an HTTP
 	 * owner whose correlated authority must never be abandoned. */
-	if (service->http_owned || service->http_authority ||
-	    service->http_event_present || service->draining ||
+	if (service->http_owned ||
+	    /* Phase 4h S8: a STORE upload's correlation owns no volume. */
+	    (!flag_4h(service, AIUS_RUNTIME_STORAGE_FLAG_STORE_HTTP) &&
+	     (service->http_authority || service->http_event_present)) ||
+	    /* A publishing job's buffer holds the STORE's chunk. */
+	    (request->publish &&
+	     flag_4h(service, AIUS_RUNTIME_STORAGE_FLAG_STORE_ACTIVE)) ||
+	    service->draining ||
 	    service->root_state == AIUS_RUNTIME_STORAGE_ROOT_RUNNING)
 		return false;
 
 	service->cancelling = false;
 	service->root_cancelling = false;
+	set_flag_4h(service, AIUS_RUNTIME_STORAGE_FLAG_ROOT_INPUT_FAULT, false);
 	service->terminal_seen = false;
 	service->output_outstanding = false;
-	service->output_action_id = 0u;
+	/* The slot is a STORE's progress while one runs beside this job. */
+	if (!flag_4h(service, AIUS_RUNTIME_STORAGE_FLAG_STORE_ACTIVE))
+		service->output_action_id = 0u;
 	service->event_present = false;
 	memset(&service->pending_event, 0, sizeof(service->pending_event));
 	service->root_state = AIUS_RUNTIME_STORAGE_ROOT_RUNNING;
@@ -605,6 +971,28 @@ FLASHMEM bool aius_runtime_storage_service(
 		service->http_action = http_action->kind;
 		service->http_action_id = http_action->action_id;
 		clear_http_result(service);
+
+		/* Phase 4h S8: a STORE upload is diverted to the PSRAM sink
+		 * before the engine and the contention rule: it reads and
+		 * writes no card, so it runs beside a root job or a drain,
+		 * which still takes this epoch's one primitive. */
+		if ((http_action->kind == AIUS_HTTP_ACTION_SD_START &&
+		     http_action->sd_request->install_mode ==
+			     AIUS_SD_INSTALL_STORE) ||
+		    (http_action->kind != AIUS_HTTP_ACTION_SD_START &&
+		     flag_4h(service, AIUS_RUNTIME_STORAGE_FLAG_STORE_HTTP))) {
+			store_action(service, http_action, now_ms);
+			advance_ownerless(service, now_ms);
+			*http_event = service->pending_http_event;
+			return true;
+		}
+		if (http_action->kind == AIUS_HTTP_ACTION_SD_START) {
+			/* A card request ends any STORE correlation (and
+			 * abandons a stale put, a transaction defect). */
+			store_abort(service);
+			set_flag_4h(service, AIUS_RUNTIME_STORAGE_FLAG_STORE_HTTP,
+			            false);
+		}
 
 		if (service->root_state ==
 		    AIUS_RUNTIME_STORAGE_ROOT_RUNNING) {
@@ -700,28 +1088,10 @@ FLASHMEM bool aius_runtime_storage_service(
 			}
 			break;
 		}
-	} else if ((service->draining ||
-	            service->root_state ==
-	                    AIUS_RUNTIME_STORAGE_ROOT_RUNNING) &&
-	           !service->terminal_seen) {
+	} else {
 		/* No HTTP action this epoch: advance the ownerless job -- a
-		 * drain or a root-initiated job -- by one primitive. Phase 4f
-		 * F2/F9: never deferred here. sd_fifo_defer() holds a root job
-		 * only at its start gate (optical_main.cpp); a started job steps
-		 * every epoch to its end, as a started HTTP job does, so it
-		 * never parks as ROOT_RUNNING with every SD route on sd_busy.
-		 * Phase 4g G8 (owner, 2026-10-10) is the one exception: an
-		 * uncancelled CACHE_FILL root job's step waits while the
-		 * platform's fill gate holds; an HTTP SD request cancels a
-		 * paused fill, and a cancelled fill always steps. */
-		const bool fill_paused =
-			!service->draining &&
-			service->root_state == AIUS_RUNTIME_STORAGE_ROOT_RUNNING &&
-			service->job.kind == AIUS_SD_JOB_CACHE_FILL &&
-			!service->root_cancelling &&
-			aius_runtime_storage_fill_step_defer(&service->job);
-		if (!fill_paused)
-			(void)advance(service, now_ms, false);
+		 * drain or a root-initiated job -- by one primitive. */
+		advance_ownerless(service, now_ms);
 	}
 
 	if (service->http_event_present)
@@ -740,12 +1110,43 @@ FLASHMEM bool aius_runtime_storage_diag_json(
 
 	if (service == nullptr || output == nullptr || length == nullptr)
 		return false;
+	/* Every format below is a named PROGMEM array, never an inline literal:
+	 * the Teensy link script copies .rodata (string literals included) into
+	 * DTCM .data, and the canonical slot-a image must keep _VectorsRam at
+	 * 0x20007c00 (Phase 4h memory clause). A named array, unlike PSTR(),
+	 * keeps diag_append's format(printf) check. */
+	static const char format_head[] PROGMEM =
+		",\"sd_diag\":{\"http_jobs\":%lu,\"root_jobs\":%lu,"
+		"\"http_faults\":%lu,\"root_faults\":%lu,"
+		"\"busy_refusals\":%lu,\"cancels\":%lu,\"drains\":%lu,"
+		"\"publish_dropped\":%lu,";
+	static const char format_restores[] PROGMEM =
+		"\"settings_restores\":%lu,"
+		"\"settings_restore_faults\":%lu,";
+	static const char format_adapter[] PROGMEM =
+		"\"mounts\":%lu,\"driver_faults\":%lu,"
+		"\"protocol_faults\":%lu,\"last_protocol_action\":%u,"
+		"\"last_primitive_us\":%lu,"
+		"\"longest_primitive_us\":%lu,";
+	static const char format_ownership[] PROGMEM =
+		"\"root_state\":%u,\"http_owned\":%s,"
+		"\"draining\":%s,\"file_open\":%s,\"job_kind\":%u,"
+		"\"job_state\":%u,";
+	static const char format_progress[] PROGMEM =
+		"\"upload_supplied\":%llu,\"job_transferred\":%llu,"
+		"\"job_total\":%llu,\"last_failure\":";
+	static const char format_failure_head[] PROGMEM =
+		"{\"seq\":%lu,\"at_ms\":%lu,\"owner\":%u,"
+		"\"refused\":%s,\"job_kind\":%u,\"job_state\":%u,"
+		"\"fault\":%u,\"fault_phase\":%u,";
+	static const char format_failure_tail[] PROGMEM =
+		"\"driver_fault\":%lu,\"adapter_fault\":%lu,"
+		"\"root_state\":%u,\"draining\":%s,"
+		"\"mounts_in_job\":%lu,\"longest_primitive_us\":%lu,"
+		"\"bytes\":%llu}}";
+
 	failure = &service->diag.last_failure;
-	if (!diag_append(output, capacity, length,
-	                 ",\"sd_diag\":{\"http_jobs\":%lu,\"root_jobs\":%lu,"
-	                 "\"http_faults\":%lu,\"root_faults\":%lu,"
-	                 "\"busy_refusals\":%lu,\"cancels\":%lu,\"drains\":%lu,"
-	                 "\"publish_dropped\":%lu,",
+	if (!diag_append(output, capacity, length, format_head,
 	                 (unsigned long)service->diag.http_jobs,
 	                 (unsigned long)service->diag.root_jobs,
 	                 (unsigned long)service->diag.http_failures,
@@ -755,14 +1156,23 @@ FLASHMEM bool aius_runtime_storage_diag_json(
 	                 (unsigned long)service->diag.drains,
 	                 (unsigned long)service->publish_dropped))
 		return false;
+	/* Phase 4h H10: the mount restore's counters, owned by optical_main.cpp
+	 * (its RESTORE steps), read through a link-time hook so this object
+	 * grows by nothing. */
+	{
+		uint32_t restores = 0u;
+		uint32_t restore_faults = 0u;
+		aius_runtime_storage_settings_restores(&restores,
+		                                       &restore_faults);
+		if (!diag_append(output, capacity, length, format_restores,
+		                 (unsigned long)restores,
+		                 (unsigned long)restore_faults))
+			return false;
+	}
 	/* The adapter's own totals, beside the service's: `mounts` is every
 	 * SD.begin() the firmware has performed, so a probe cadence is visible
 	 * as a rate rather than inferred from the clock. */
-	if (!diag_append(output, capacity, length,
-	                 "\"mounts\":%lu,\"driver_faults\":%lu,"
-	                 "\"protocol_faults\":%lu,\"last_protocol_action\":%u,"
-	                 "\"last_primitive_us\":%lu,"
-	                 "\"longest_primitive_us\":%lu,",
+	if (!diag_append(output, capacity, length, format_adapter,
 	                 (unsigned long)service->target.mounts,
 	                 (unsigned long)service->target.driver_faults,
 	                 (unsigned long)service->target.protocol_faults,
@@ -807,10 +1217,7 @@ FLASHMEM bool aius_runtime_storage_diag_json(
 	}
 	/* Live ownership, so a status read taken during a stuck job says who
 	 * holds the volume rather than only what failed last. */
-	if (!diag_append(output, capacity, length,
-	                 "\"root_state\":%u,\"http_owned\":%s,"
-	                 "\"draining\":%s,\"file_open\":%s,\"job_kind\":%u,"
-	                 "\"job_state\":%u,",
+	if (!diag_append(output, capacity, length, format_ownership,
 	                 (unsigned)service->root_state,
 	                 service->http_owned ? "true" : "false",
 	                 service->draining ? "true" : "false",
@@ -848,9 +1255,7 @@ FLASHMEM bool aius_runtime_storage_diag_json(
 	 * exactly the state the pre-existing counters could not distinguish from
 	 * an idle board. All three are uint64 on the wire because both fields are
 	 * uint64 in their owners and a multi-megabyte image is the point. */
-	if (!diag_append(output, capacity, length,
-	                 "\"upload_supplied\":%llu,\"job_transferred\":%llu,"
-	                 "\"job_total\":%llu,\"last_failure\":",
+	if (!diag_append(output, capacity, length, format_progress,
 	                 (unsigned long long)(http != nullptr
 	                                              ? http->upload_supplied
 	                                              : 0u),
@@ -859,10 +1264,7 @@ FLASHMEM bool aius_runtime_storage_diag_json(
 		return false;
 	if (failure->sequence == 0u)
 		return diag_append(output, capacity, length, "null}");
-	if (!diag_append(output, capacity, length,
-	                 "{\"seq\":%lu,\"at_ms\":%lu,\"owner\":%u,"
-	                 "\"refused\":%s,\"job_kind\":%u,\"job_state\":%u,"
-	                 "\"fault\":%u,\"fault_phase\":%u,",
+	if (!diag_append(output, capacity, length, format_failure_head,
 	                 (unsigned long)failure->sequence,
 	                 (unsigned long)failure->at_ms,
 	                 (unsigned)failure->owner,
@@ -872,11 +1274,7 @@ FLASHMEM bool aius_runtime_storage_diag_json(
 	                 (unsigned)failure->fault,
 	                 (unsigned)failure->fault_phase))
 		return false;
-	if (!diag_append(output, capacity, length,
-	                 "\"driver_fault\":%lu,\"adapter_fault\":%lu,"
-	                 "\"root_state\":%u,\"draining\":%s,"
-	                 "\"mounts_in_job\":%lu,\"longest_primitive_us\":%lu,"
-	                 "\"bytes\":%llu}}",
+	if (!diag_append(output, capacity, length, format_failure_tail,
 	                 (unsigned long)failure->driver_fault,
 	                 (unsigned long)failure->adapter_fault,
 	                 (unsigned)failure->root_state,
@@ -896,6 +1294,11 @@ FLASHMEM void aius_runtime_storage_release_http(AiusRuntimeStorage *service)
 	service->http_authority = false;
 	service->http_action = AIUS_HTTP_ACTION_NONE;
 	service->http_action_id = 0u;
+	/* Phase 4h S8, D4: a client dropped mid-body aborts its STORE put. */
+	if (flag_4h(service, AIUS_RUNTIME_STORAGE_FLAG_STORE_HTTP)) {
+		store_abort(service);
+		set_flag_4h(service, AIUS_RUNTIME_STORAGE_FLAG_STORE_HTTP, false);
+	}
 	/* Only an HTTP-owned job loses its owner here. A root-initiated job has
 	 * none to lose, so a network teardown must not cancel it. */
 	if (!service->http_owned)

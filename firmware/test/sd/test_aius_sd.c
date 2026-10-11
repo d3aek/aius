@@ -15,6 +15,9 @@
 #define ARRAY_COUNT(values) (sizeof(values) / sizeof((values)[0]))
 
 static const char *scenario;
+/* Only a copy-before-write pass truncates to a length; every other TRUNCATE
+ * (REPLACE's) must carry offset 0, which validate_action keeps pinning. */
+static bool truncate_offset_allowed;
 
 static void fail_at(int line, const char *message)
 {
@@ -109,6 +112,7 @@ static void validate_action(const AiusSdAction *action)
 	case AIUS_SD_ACTION_TOTAL_SIZE:
 	case AIUS_SD_ACTION_USED_SIZE:
 	case AIUS_SD_ACTION_COMPLETE:
+	case AIUS_SD_ACTION_CACHE_DROP:
 		CHECK(action->path == NULL, "unexpected path");
 		CHECK(action->path_to == NULL, "unexpected destination path");
 		CHECK(action->buffer == NULL, "unexpected buffer");
@@ -134,7 +138,8 @@ static void validate_action(const AiusSdAction *action)
 		      "truncate carried path");
 		CHECK(action->buffer == NULL && action->length == 0u,
 		      "truncate carried buffer");
-		CHECK(action->offset == 0u && action->fault == 0u,
+		CHECK((truncate_offset_allowed || action->offset == 0u) &&
+		      action->fault == 0u,
 		      "truncate carried payload");
 		break;
 	case AIUS_SD_ACTION_SEEK:
@@ -5310,8 +5315,485 @@ static void test_fault_phase_attribution(void)
 	      "config open fault phase mismatch");
 }
 
+/* ---- Copy-before-write (Phase 4h H4, FR-S1, FR-S2, NS8) ----
+ *
+ * A stateful two-file card (target and backup) that executes every primitive
+ * the job emits, records the trace, and refuses RENAME, REMOVE, MKDIR or any
+ * path but the pair and their directory, so "never a RENAME, a REMOVE or a
+ * temp path" fails loudly rather than by inspection. */
+#define CBW_FILE_MAX 16384u
+#define CBW_TRACE_MAX 256u
+#define CBW_TARGET "/aius/dsp.json"
+#define CBW_BACKUP "/aius/.bak-dsp.json"
+
+typedef struct {
+	const char *path;
+	uint8_t data[CBW_FILE_MAX];
+	uint64_t size;
+} CbwFile;
+
+typedef struct {
+	CbwFile files[2]; /* 0 target, 1 backup */
+	int open;
+	const uint8_t *source;
+	size_t source_length;
+	AiusSdActionKind kinds[CBW_TRACE_MAX];
+	int file_of[CBW_TRACE_MAX];
+	uint64_t offsets[CBW_TRACE_MAX];
+	size_t lengths[CBW_TRACE_MAX];
+	bool zero_write[CBW_TRACE_MAX];
+	unsigned count;
+	unsigned need_inputs;
+	unsigned fault_at; /* 1-based primitive to fault; 0 none */
+	bool corrupt_at_drop;
+	uint64_t size_skew;
+} CbwCard;
+
+static CbwCard cbw_card;
+
+static uint32_t cbw_crc32(const uint8_t *data, size_t length)
+{
+	uint32_t crc = 0xffffffffu;
+	for (size_t index = 0u; index < length; index++) {
+		crc ^= data[index];
+		for (unsigned bit = 0u; bit < 8u; bit++)
+			crc = (crc & 1u) ? (crc >> 1) ^ 0xedb88320u : crc >> 1;
+	}
+	return ~crc;
+}
+
+static int cbw_file_index(const CbwCard *card, const char *path)
+{
+	for (int index = 0; index < 2; index++)
+		if (strcmp(card->files[index].path, path) == 0)
+			return index;
+	return -1;
+}
+
+static AiusSdEvent cbw_execute(CbwCard *card, const AiusSdAction *action)
+{
+	unsigned index = card->count++;
+	CHECK(index < CBW_TRACE_MAX, "cbw trace overflow");
+	card->kinds[index] = action->kind;
+	card->offsets[index] = action->offset;
+	card->lengths[index] = action->length;
+	card->zero_write[index] = false;
+	card->file_of[index] = card->open;
+	if (card->fault_at == index + 1u) {
+		if (action->kind == AIUS_SD_ACTION_CLOSE)
+			card->open = -1;
+		return fault_event(action->action_id, 0x5344u);
+	}
+
+	CbwFile *file = card->open >= 0 ? &card->files[card->open] : NULL;
+	switch (action->kind) {
+	case AIUS_SD_ACTION_BEGIN:
+		return ok_event(action->action_id);
+	case AIUS_SD_ACTION_EXISTS:
+		CHECK(strcmp(action->path, "/aius") == 0,
+		      "cbw walk named a directory other than /aius");
+		return bool_event(action->action_id, true);
+	case AIUS_SD_ACTION_OPEN_WRITE_BEGIN:
+	case AIUS_SD_ACTION_OPEN_READ: {
+		int target = cbw_file_index(card, action->path);
+		CHECK(target >= 0, "cbw opened a path other than the pair");
+		CHECK(card->open < 0, "cbw opened with a file open");
+		card->open = target;
+		card->file_of[index] = target;
+		return ok_event(action->action_id);
+	}
+	case AIUS_SD_ACTION_WRITE:
+		CHECK(file != NULL, "cbw write with no file open");
+		CHECK(action->offset + action->length <= CBW_FILE_MAX,
+		      "cbw write past the model");
+		card->zero_write[index] = all_zero(action->buffer, action->length);
+		memcpy(file->data + action->offset, action->buffer,
+		       action->length);
+		if (action->offset + action->length > file->size)
+			file->size = action->offset + action->length;
+		return bytes_event(action->action_id, action->length);
+	case AIUS_SD_ACTION_TRUNCATE:
+		CHECK(file != NULL, "cbw truncate with no file open");
+		file->size = action->offset;
+		return ok_event(action->action_id);
+	case AIUS_SD_ACTION_SEEK:
+		CHECK(file != NULL, "cbw seek with no file open");
+		return ok_event(action->action_id);
+	case AIUS_SD_ACTION_CLOSE:
+		CHECK(file != NULL, "cbw close with no file open");
+		card->open = -1;
+		return ok_event(action->action_id);
+	case AIUS_SD_ACTION_CACHE_DROP:
+		CHECK(file == NULL, "cbw cache drop with a file open");
+		if (card->corrupt_at_drop)
+			card->files[0].data[100] ^= 0x01u;
+		return ok_event(action->action_id);
+	case AIUS_SD_ACTION_FILE_SIZE:
+		CHECK(file != NULL, "cbw size with no file open");
+		return size_event(action->action_id, file->size + card->size_skew);
+	case AIUS_SD_ACTION_READ:
+		CHECK(file != NULL, "cbw read with no file open");
+		CHECK(action->offset + action->length <= file->size,
+		      "cbw read past the file");
+		memcpy(action->buffer, file->data + action->offset,
+		       action->length);
+		return bytes_event(action->action_id, action->length);
+	default:
+		fail_at(__LINE__, "cbw issued a primitive outside the mode");
+	}
+	return none_event();
+}
+
+static AiusSdAction cbw_run(CbwCard *card, AiusSdJob *job)
+{
+	AiusSdEvent event = none_event();
+	for (unsigned guard = 0u; guard < 4096u; guard++) {
+		AiusSdAction action;
+		memset(&action, 0xa5, sizeof(action));
+		aius_sd_job_step(job, 0u, event, &action);
+		validate_action(&action);
+		event = none_event();
+		switch (action.kind) {
+		case AIUS_SD_ACTION_NONE:
+			fail_at(__LINE__, "cbw job stalled");
+			break;
+		case AIUS_SD_ACTION_NEED_INPUT:
+			CHECK(action.offset + action.length <= card->source_length,
+			      "cbw input outside the source");
+			card->need_inputs++;
+			CHECK(aius_sd_job_supply(job, card->source + action.offset,
+			                         action.length),
+			      "cbw supply refused");
+			break;
+		case AIUS_SD_ACTION_COMPLETE:
+		case AIUS_SD_ACTION_FAIL:
+			return action;
+		default:
+			event = cbw_execute(card, &action);
+			break;
+		}
+	}
+	fail_at(__LINE__, "cbw job never ended");
+	AiusSdAction never = {0};
+	return never;
+}
+
+static void cbw_start(CbwCard *card, AiusSdJob *job, uint8_t *buffer,
+	              const uint8_t *source, size_t length,
+	              bool target_first, bool skip_backup)
+{
+	memset(card, 0, sizeof(*card));
+	card->files[0].path = CBW_TARGET;
+	card->files[1].path = CBW_BACKUP;
+	/* Both files start longer than the save and hold other bytes, so the
+	 * TRUNCATE to the new length and the in-place overwrite both show. */
+	for (int index = 0; index < 2; index++) {
+		memset(card->files[index].data, 0x77 + index, CBW_FILE_MAX);
+		card->files[index].size = CBW_FILE_MAX;
+	}
+	card->open = -1;
+	card->source = source;
+	card->source_length = length;
+
+	AiusSdJobRequest request = {0};
+	request.kind = AIUS_SD_JOB_UPLOAD;
+	request.install_mode = AIUS_SD_INSTALL_COPY_BEFORE_WRITE;
+	request.target_path = CBW_TARGET;
+	request.backup_path = CBW_BACKUP;
+	request.total = length;
+	request.target_first = target_first;
+	request.skip_backup = skip_backup;
+	request.expected_crc32 = cbw_crc32(source, length);
+	aius_sd_job_init(job, buffer, 512u);
+	aius_sd_job_start(job, &request, 0u, 0u);
+}
+
+/* One pass at trace[base]: N + 5 primitives for N > 1, 4 for one chunk. */
+static unsigned cbw_check_pass(const CbwCard *card, unsigned base, int file,
+	                       size_t length)
+{
+	unsigned chunks = (unsigned)((length + 511u) / 512u);
+	unsigned at = base;
+	CHECK(card->kinds[at] == AIUS_SD_ACTION_OPEN_WRITE_BEGIN &&
+	      card->file_of[at] == file, "pass does not open its file");
+	at++;
+	if (chunks == 1u) {
+		CHECK(card->kinds[at] == AIUS_SD_ACTION_WRITE &&
+		      card->offsets[at] == 0u && card->lengths[at] == length &&
+		      !card->zero_write[at], "one-chunk pass WRITE");
+		at++;
+		CHECK(card->kinds[at] == AIUS_SD_ACTION_TRUNCATE &&
+		      card->offsets[at] == length, "one-chunk TRUNCATE length");
+		at++;
+		CHECK(card->kinds[at] == AIUS_SD_ACTION_CLOSE, "one-chunk CLOSE");
+		at++;
+		CHECK(at - base == 4u, "one-chunk pass is 4 primitives");
+		return at;
+	}
+	CHECK(card->kinds[at] == AIUS_SD_ACTION_WRITE &&
+	      card->offsets[at] == 0u && card->lengths[at] == 512u &&
+	      card->zero_write[at], "pass starts with a zero chunk 0");
+	at++;
+	for (unsigned chunk = 1u; chunk < chunks; chunk++, at++)
+		CHECK(card->kinds[at] == AIUS_SD_ACTION_WRITE &&
+		      card->offsets[at] == (uint64_t)chunk * 512u &&
+		      !card->zero_write[at], "pass chunk WRITE order");
+	CHECK(card->kinds[at] == AIUS_SD_ACTION_TRUNCATE &&
+	      card->offsets[at] == length, "pass TRUNCATE carries the length");
+	at++;
+	CHECK(card->kinds[at] == AIUS_SD_ACTION_SEEK &&
+	      card->offsets[at] == 0u, "pass SEEK 0");
+	at++;
+	CHECK(card->kinds[at] == AIUS_SD_ACTION_WRITE &&
+	      card->offsets[at] == 0u && !card->zero_write[at],
+	      "pass writes the real chunk 0 last");
+	at++;
+	CHECK(card->kinds[at] == AIUS_SD_ACTION_CLOSE, "pass CLOSE");
+	at++;
+	CHECK(at - base == chunks + 5u, "pass is N + 5 primitives");
+	return at;
+}
+
+static unsigned cbw_check_readback(const CbwCard *card, unsigned at,
+	                           size_t length)
+{
+	unsigned chunks = (unsigned)((length + 511u) / 512u);
+	CHECK(card->kinds[at++] == AIUS_SD_ACTION_CACHE_DROP,
+	      "exactly one CACHE_DROP before the read-back");
+	CHECK(card->kinds[at] == AIUS_SD_ACTION_OPEN_READ &&
+	      card->file_of[at] == 0, "read-back opens the target");
+	at++;
+	CHECK(card->kinds[at++] == AIUS_SD_ACTION_FILE_SIZE, "read-back size");
+	for (unsigned chunk = 0u; chunk < chunks; chunk++, at++)
+		CHECK(card->kinds[at] == AIUS_SD_ACTION_READ &&
+		      card->offsets[at] == (uint64_t)chunk * 512u,
+		      "read-back READ order");
+	CHECK(card->kinds[at++] == AIUS_SD_ACTION_CLOSE, "read-back CLOSE");
+	return at;
+}
+
+static void cbw_expect_saved(const CbwCard *card, int file,
+	                     const uint8_t *source, size_t length)
+{
+	CHECK(card->files[file].size == length, "saved file has the new length");
+	CHECK(memcmp(card->files[file].data, source, length) == 0,
+	      "saved file holds the source bytes");
+}
+
+static void test_copy_before_write(void)
+{
+	static uint8_t source[12288];
+	uint8_t buffer[512];
+	AiusSdJob job;
+	AiusSdAction terminal;
+	CbwCard *card = &cbw_card;
+
+	for (size_t index = 0u; index < sizeof(source); index++)
+		source[index] = (uint8_t)(0x21u + (index * 7u) % 90u);
+	truncate_offset_allowed = true;
+
+	/* Full save, backup first: 3N + 17 = 89 for a 12,288 B dsp.json. */
+	scenario = "cbw full save backup first";
+	cbw_start(card, &job, buffer, source, sizeof(source), false, false);
+	terminal = cbw_run(card, &job);
+	CHECK(terminal.kind == AIUS_SD_ACTION_COMPLETE, "full save completes");
+	CHECK(card->count == 89u, "full save is 89 primitives");
+	CHECK(card->kinds[0] == AIUS_SD_ACTION_BEGIN, "BEGIN first");
+	CHECK(card->kinds[1] == AIUS_SD_ACTION_EXISTS &&
+	      card->kinds[2] == AIUS_SD_ACTION_EXISTS,
+	      "two EXISTS /aius for a full save");
+	unsigned at = cbw_check_pass(card, 3u, 1, sizeof(source));
+	at = cbw_check_pass(card, at, 0, sizeof(source));
+	at = cbw_check_readback(card, at, sizeof(source));
+	CHECK(at == card->count, "nothing after the read-back");
+	CHECK(card->need_inputs == 48u,
+	      "N inputs per pass: the zero chunk 0 asks for none");
+	cbw_expect_saved(card, 0, source, sizeof(source));
+	cbw_expect_saved(card, 1, source, sizeof(source));
+	expect_result(&job, AIUS_SD_RESULT_BYTES, AIUS_SD_FAULT_NONE, 0u);
+	CHECK(job.result.passes_closed == 2u && !job.result.readback_mismatch,
+	      "full save closes both passes");
+	CHECK(job.result.transferred_bytes == sizeof(source),
+	      "full save reports the file length");
+
+	/* Target first: the same primitives with the passes swapped. */
+	scenario = "cbw full save target first";
+	cbw_start(card, &job, buffer, source, sizeof(source), true, false);
+	terminal = cbw_run(card, &job);
+	CHECK(terminal.kind == AIUS_SD_ACTION_COMPLETE, "target first completes");
+	CHECK(card->count == 89u, "target first is 89 primitives");
+	at = cbw_check_pass(card, 3u, 0, sizeof(source));
+	at = cbw_check_pass(card, at, 1, sizeof(source));
+	at = cbw_check_readback(card, at, sizeof(source));
+	CHECK(at == card->count, "target first: nothing after the read-back");
+
+	/* Target only: 2N + 11 = 59, one EXISTS, the backup untouched. */
+	scenario = "cbw target only";
+	cbw_start(card, &job, buffer, source, sizeof(source), true, true);
+	terminal = cbw_run(card, &job);
+	CHECK(terminal.kind == AIUS_SD_ACTION_COMPLETE, "target only completes");
+	CHECK(card->count == 59u, "target only is 59 primitives");
+	CHECK(card->kinds[1] == AIUS_SD_ACTION_EXISTS &&
+	      card->kinds[2] == AIUS_SD_ACTION_OPEN_WRITE_BEGIN,
+	      "one EXISTS for a target-only save");
+	at = cbw_check_pass(card, 2u, 0, sizeof(source));
+	at = cbw_check_readback(card, at, sizeof(source));
+	CHECK(at == card->count, "target only: nothing after the read-back");
+	CHECK(card->files[1].size == CBW_FILE_MAX && card->files[1].data[0] == 0x78u,
+	      "target only leaves the backup untouched");
+	CHECK(job.result.passes_closed == 1u, "target only closes one pass");
+
+	/* One chunk (every config.json): 16 primitives. */
+	scenario = "cbw one chunk";
+	cbw_start(card, &job, buffer, source, 200u, false, false);
+	terminal = cbw_run(card, &job);
+	CHECK(terminal.kind == AIUS_SD_ACTION_COMPLETE, "one chunk completes");
+	CHECK(card->count == 16u, "one-chunk full save is 16 primitives");
+	at = cbw_check_pass(card, 3u, 1, 200u);
+	at = cbw_check_pass(card, at, 0, 200u);
+	at = cbw_check_readback(card, at, 200u);
+	CHECK(at == card->count, "one chunk: nothing after the read-back");
+	cbw_expect_saved(card, 0, source, 200u);
+	cbw_expect_saved(card, 1, source, 200u);
+
+	/* A partial last chunk: N = 3 for 1,100 B, 3 * 3 + 17 = 26. */
+	scenario = "cbw partial last chunk";
+	cbw_start(card, &job, buffer, source, 1100u, false, false);
+	terminal = cbw_run(card, &job);
+	CHECK(terminal.kind == AIUS_SD_ACTION_COMPLETE, "partial completes");
+	CHECK(card->count == 26u, "1,100 B full save is 26 primitives");
+	cbw_expect_saved(card, 0, source, 1100u);
+
+	/* A fault at every primitive fails the job, issues no RENAME or
+	 * REMOVE (cbw_execute refuses both), closes an open file, and
+	 * reports how many passes closed before it. */
+	for (unsigned fault_at = 1u; fault_at <= 89u; fault_at++) {
+		scenario = "cbw fault at every primitive";
+		cbw_start(card, &job, buffer, source, sizeof(source), false,
+		          false);
+		card->fault_at = fault_at;
+		terminal = cbw_run(card, &job);
+		CHECK(terminal.kind == AIUS_SD_ACTION_FAIL, "fault fails the job");
+		CHECK(job.result.kind == AIUS_SD_RESULT_FAULT &&
+		      job.result.fault != AIUS_SD_FAULT_NONE,
+		      "fault result recorded");
+		CHECK(card->open < 0, "no file left open after a fault");
+		unsigned closed = (fault_at > 32u ? 1u : 0u) +
+		                  (fault_at > 61u ? 1u : 0u);
+		CHECK(job.result.passes_closed == closed,
+		      "passes_closed counts CLOSEs before the fault");
+		CHECK(!job.result.readback_mismatch, "a fault is no mismatch");
+		CHECK(card->count <= fault_at + 1u,
+		      "at most one cleanup CLOSE follows a fault");
+	}
+
+	/* A read-back CRC mismatch fails the job after both passes. */
+	scenario = "cbw read-back CRC mismatch";
+	cbw_start(card, &job, buffer, source, sizeof(source), false, false);
+	card->corrupt_at_drop = true;
+	terminal = cbw_run(card, &job);
+	CHECK(terminal.kind == AIUS_SD_ACTION_FAIL &&
+	      terminal.fault == (uint32_t)AIUS_SD_FAULT_VERIFY,
+	      "CRC mismatch fails with VERIFY");
+	CHECK(card->count == 89u, "mismatch still reads the whole file");
+	CHECK(job.result.passes_closed == 2u && job.result.readback_mismatch,
+	      "mismatch reports both passes closed");
+
+	/* The accept-time CRC is the reference, not a re-read of the source. */
+	scenario = "cbw expected CRC differs";
+	cbw_start(card, &job, buffer, source, sizeof(source), false, false);
+	job.expected_crc32 ^= 1u;
+	terminal = cbw_run(card, &job);
+	CHECK(terminal.fault == (uint32_t)AIUS_SD_FAULT_VERIFY,
+	      "a wrong expected CRC fails with VERIFY");
+
+	/* A read-back size mismatch fails at FILE_SIZE and closes the file. */
+	scenario = "cbw read-back size mismatch";
+	cbw_start(card, &job, buffer, source, sizeof(source), false, false);
+	card->size_skew = 1u;
+	terminal = cbw_run(card, &job);
+	CHECK(terminal.fault == (uint32_t)AIUS_SD_FAULT_VERIFY &&
+	      job.result.readback_mismatch, "size mismatch fails with VERIFY");
+	CHECK(card->kinds[card->count - 2u] == AIUS_SD_ACTION_FILE_SIZE &&
+	      card->kinds[card->count - 1u] == AIUS_SD_ACTION_CLOSE,
+	      "size mismatch closes the read-back file");
+
+	/* A short supply is a caller defect. */
+	scenario = "cbw short supply";
+	cbw_start(card, &job, buffer, source, sizeof(source), false, false);
+	{
+		AiusSdEvent event = none_event();
+		AiusSdAction action;
+		for (;;) {
+			aius_sd_job_step(&job, 0u, event, &action);
+			if (action.kind == AIUS_SD_ACTION_NEED_INPUT)
+				break;
+			event = cbw_execute(card, &action);
+		}
+		CHECK(!aius_sd_job_supply(&job, source, action.length - 1u),
+		      "short supply refused");
+		CHECK(job.last_fault == AIUS_SD_FAULT_PROTOCOL,
+		      "short supply is a protocol fault");
+	}
+	truncate_offset_allowed = false;
+
+	/* Request boundaries. */
+	static const struct {
+		const char *name;
+		AiusSdInstallMode mode;
+		AiusSdJobKind kind;
+		const char *temp;
+		const char *backup;
+		uint64_t total;
+		AiusSdFault fault;
+	} rejects[] = {
+		{"store upload", AIUS_SD_INSTALL_STORE, AIUS_SD_JOB_UPLOAD,
+		 NULL, NULL, 10u, AIUS_SD_FAULT_INVALID_REQUEST},
+		{"store with temp and backup", AIUS_SD_INSTALL_STORE,
+		 AIUS_SD_JOB_UPLOAD, "/aius/t.tmp", CBW_BACKUP, 10u,
+		 AIUS_SD_FAULT_INVALID_REQUEST},
+		{"store on a download", AIUS_SD_INSTALL_STORE,
+		 AIUS_SD_JOB_DOWNLOAD, NULL, NULL, 0u,
+		 AIUS_SD_FAULT_INVALID_REQUEST},
+		{"cbw on a download", AIUS_SD_INSTALL_COPY_BEFORE_WRITE,
+		 AIUS_SD_JOB_DOWNLOAD, NULL, CBW_BACKUP, 0u,
+		 AIUS_SD_FAULT_INVALID_REQUEST},
+		{"cbw with a temp path", AIUS_SD_INSTALL_COPY_BEFORE_WRITE,
+		 AIUS_SD_JOB_UPLOAD, "/aius/t.tmp", CBW_BACKUP, 10u,
+		 AIUS_SD_FAULT_INVALID_REQUEST},
+		{"cbw empty", AIUS_SD_INSTALL_COPY_BEFORE_WRITE,
+		 AIUS_SD_JOB_UPLOAD, NULL, CBW_BACKUP, 0u,
+		 AIUS_SD_FAULT_INVALID_REQUEST},
+		{"cbw no backup", AIUS_SD_INSTALL_COPY_BEFORE_WRITE,
+		 AIUS_SD_JOB_UPLOAD, NULL, NULL, 10u, AIUS_SD_FAULT_PATH},
+		{"cbw backup is target", AIUS_SD_INSTALL_COPY_BEFORE_WRITE,
+		 AIUS_SD_JOB_UPLOAD, NULL, CBW_TARGET, 10u, AIUS_SD_FAULT_PATH},
+		{"mode past the enum", (AiusSdInstallMode)(AIUS_SD_INSTALL_STORE + 1),
+		 AIUS_SD_JOB_UPLOAD, NULL, CBW_BACKUP, 10u,
+		 AIUS_SD_FAULT_INVALID_REQUEST},
+	};
+	for (size_t index = 0u; index < ARRAY_COUNT(rejects); index++) {
+		scenario = rejects[index].name;
+		AiusSdJobRequest request = {0};
+		request.kind = rejects[index].kind;
+		request.install_mode = rejects[index].mode;
+		request.target_path = CBW_TARGET;
+		request.temp_path = rejects[index].temp;
+		request.backup_path = rejects[index].backup;
+		request.total = rejects[index].total;
+		if (request.kind == AIUS_SD_JOB_DOWNLOAD)
+			request.content_type = "application/json";
+		start_valid(&job, buffer, sizeof(buffer), &request);
+		/* NS8: rejected at start, so the first step is the terminal FAIL
+		 * and no primitive (no BEGIN) is ever issued. */
+		expect_terminal(&job, AIUS_SD_ACTION_FAIL, AIUS_SD_RESULT_FAULT,
+		                rejects[index].fault, 0u);
+	}
+}
+
 int main(void)
 {
+	test_copy_before_write();
 	test_pointer_and_start_contract();
 	test_probe_usage_delete();
 	test_config_load();

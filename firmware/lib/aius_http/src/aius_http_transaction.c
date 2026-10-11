@@ -73,6 +73,8 @@ static const uint8_t sd_unavailable_body[] =
 	"{\"ok\":false,\"error\":\"sd_unavailable\"}";
 static const uint8_t sd_audio_busy_body[] =
 	"{\"ok\":false,\"error\":\"audio_busy\"}";
+static const uint8_t sd_busy_body[] =
+	"{\"ok\":false,\"error\":\"sd_busy\"}";
 static const uint8_t sd_capacity_body[] =
 	"{\"ok\":false,\"error\":\"sd_capacity\"}";
 static const uint8_t sd_failure_body[] =
@@ -188,7 +190,7 @@ static FLASHMEM bool sd_request_fields_valid(const AiusSdJobRequest *request)
 	bool backup = request->backup_path != NULL;
 	if ((unsigned)request->kind > (unsigned)AIUS_SD_JOB_REPLAY_REFILL ||
 	    (unsigned)request->install_mode >
-		    (unsigned)AIUS_SD_INSTALL_FINALIZE_PART)
+		    (unsigned)AIUS_SD_INSTALL_STORE)
 		return false;
 	if (request->kind != AIUS_SD_JOB_DELETE &&
 	    request->require_existing)
@@ -258,7 +260,17 @@ static FLASHMEM bool sd_request_fields_valid(const AiusSdJobRequest *request)
 				         request->publish_capacity)) &&
 			       (request->publish ||
 			        request->content_type == NULL);
+		case AIUS_SD_INSTALL_STORE:
+			/* Phase 4h S8: a www PUT into the PSRAM store. It names
+			 * only the target (the store key); no temp or backup
+			 * file, no offset and no publish, since the store
+			 * itself serves the bytes once committed. */
+			return target && !temp && !backup &&
+			       request->initial_offset == 0u &&
+			       !request->publish;
 		default:
+			/* COPY_BEFORE_WRITE is the overlay's flush job, never
+			 * an HTTP request. */
 			return false;
 		}
 	default:
@@ -1071,6 +1083,9 @@ static FLASHMEM void select_sd_error(AiusHttpTransaction *transaction,
 		if (driver_fault == AIUS_HTTP_DRIVER_FAULT_AUDIO_BUSY) {
 			body = sd_audio_busy_body;
 			size = sizeof(sd_audio_busy_body);
+		} else if (driver_fault == AIUS_HTTP_DRIVER_FAULT_SD_BUSY) {
+			body = sd_busy_body;
+			size = sizeof(sd_busy_body);
 		} else {
 			body = sd_unavailable_body;
 			size = sizeof(sd_unavailable_body);

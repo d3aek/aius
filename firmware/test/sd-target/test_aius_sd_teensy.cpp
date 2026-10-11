@@ -24,7 +24,15 @@ enum Primitive {
 	PRIMITIVE_CLOSE,
 	PRIMITIVE_TOTAL_SIZE,
 	PRIMITIVE_USED_SIZE,
+	PRIMITIVE_CACHE_CLEAR,
 	PRIMITIVE_COUNT
+};
+
+/* Which partition the fake volume mounted, for the parked CACHE_DROP cases. */
+enum MountedPartition {
+	PARTITION_NONE,
+	PARTITION_FAT,
+	PARTITION_EXFAT
 };
 
 struct Fake {
@@ -64,6 +72,22 @@ struct Fake {
 	uint32_t busy_timeouts;
 	unsigned clear_error_calls;
 	bool begin_dma;
+	/* DAT3 re-mux and read (NS3). Not card primitives, so not recorded in
+	 * calls[]; each stamps a shared sequence so order is checkable. */
+	unsigned sequence;
+	unsigned pin_mode_calls;
+	uint8_t pin;
+	uint8_t pin_mode;
+	unsigned pin_mode_at;
+	unsigned delay_calls;
+	uint32_t delay_us;
+	unsigned delay_at;
+	unsigned card_detected_reads;
+	unsigned card_detected_at;
+	/* Parked CACHE_DROP cases (owner decision pending). */
+	MountedPartition mounted_partition;
+	unsigned fat_cache_clears;
+	unsigned exfat_cache_clears;
 };
 
 Fake g_fake;
@@ -171,6 +195,7 @@ AiusSdAction make_action(AiusSdActionKind kind)
 	case AIUS_SD_ACTION_PUBLISH_CONFIG:
 	case AIUS_SD_ACTION_COMPLETE:
 	case AIUS_SD_ACTION_FAIL:
+	case AIUS_SD_ACTION_CACHE_DROP:
 		break;
 	}
 	return action;
@@ -352,6 +377,7 @@ void assert_primitive_payload(AiusSdActionKind kind)
 	case AIUS_SD_ACTION_CLOSE:
 	case AIUS_SD_ACTION_TOTAL_SIZE:
 	case AIUS_SD_ACTION_USED_SIZE:
+	case AIUS_SD_ACTION_CACHE_DROP:
 		break;
 	case AIUS_SD_ACTION_NONE:
 	case AIUS_SD_ACTION_NEED_INPUT:
@@ -697,8 +723,9 @@ void test_exact_payload_validation()
 		malformed.offset = (uint64_t)INT64_MAX + UINT64_C(1);
 		expect_protocol_rejection(malformed, true);
 	}
+	/* TRUNCATE now carries a length (FR-S1), bounded as SEEK's is. */
 	AiusSdAction truncate = make_action(AIUS_SD_ACTION_TRUNCATE);
-	truncate.offset = 1;
+	truncate.offset = (uint64_t)INT64_MAX + UINT64_C(1);
 	expect_protocol_rejection(truncate, true);
 	AiusSdAction seek = make_action(AIUS_SD_ACTION_SEEK);
 	seek.offset = (uint64_t)INT64_MAX + UINT64_C(1);
@@ -768,7 +795,8 @@ void test_inert_null_unknown_and_duplicate()
 	assert(g_fake.clock_calls == 0);
 
 	AiusSdAction unknown = {};
-	unknown.kind = (AiusSdActionKind)23;
+	/* 23 is CACHE_DROP since Phase 4h; the first unassigned kind is 24. */
+	unknown.kind = (AiusSdActionKind)24;
 	unknown.action_id = 71;
 	expect_protocol_rejection(unknown, false);
 
@@ -1242,7 +1270,281 @@ void test_mode_and_remount()
 	aius_sd_teensy_set_mode(nullptr, true);
 }
 
+/* TRUNCATE truncates to the action's offset: a copy-before-write pass's new
+ * length, and REPLACE's 0 unchanged (FR-S1). One primitive each. */
+void test_truncate_carries_offset()
+{
+	static const uint64_t lengths[] = { 0u, 200u, 12288u };
+	for (size_t i = 0; i < sizeof(lengths) / sizeof(lengths[0]); ++i) {
+		reset_fake();
+		AiusSdTeensy adapter;
+		reset_adapter(&adapter);
+		grant_file_authority(&adapter);
+		g_fake.offset = UINT64_C(0xa5a5);
+		AiusSdAction action = make_action(AIUS_SD_ACTION_TRUNCATE);
+		action.offset = lengths[i];
+		AiusSdEvent event = aius_sd_teensy_execute(&adapter, &action);
+		assert_event(event, AIUS_SD_EVENT_OK, 47, 0, 0, false, 0);
+		assert(g_fake.call_count == 1);
+		assert(g_fake.calls[0] == PRIMITIVE_TRUNCATE);
+		assert(g_fake.offset == lengths[i]);
+		assert(adapter.file_open);
+	}
+}
+
+/* D-S1: a hard driver fault (a write or read error) drops the mount but is
+ * no card-gone signal by itself: the platform re-muxes DAT3
+ * (aius_sd_teensy_invalidate_mount) and reads it, and only an absent card is
+ * card-gone (aius_optical_sd_card_gone, optical-app). Both ways. */
+void test_driver_fault_then_card_presence()
+{
+	for (int pulled = 0; pulled < 2; ++pulled) {
+		AiusSdTeensy adapter;
+		reset_fake();
+		reset_adapter(&adapter);
+		assert(begin_touched_the_card(&adapter));
+		assert(adapter.mounted && !adapter.dat3_remuxed);
+
+		reset_fake();
+		g_fake.succeeds[PRIMITIVE_MKDIR] = false; /* fail_code 5: nonzero */
+		g_fake.card_detected = pulled == 0;
+		AiusSdAction mkdir = make_action(AIUS_SD_ACTION_MKDIR);
+		AiusSdEvent event = aius_sd_teensy_execute(&adapter, &mkdir);
+		assert(event.kind == AIUS_SD_EVENT_FAULT);
+		assert(event.fault == AIUS_SD_TEENSY_DRIVER_FAULT);
+		assert(adapter.driver_faults == 1);
+		/* The stale-descriptor rule stands: the mount is dropped, DAT3 is
+		 * still the bus's, and the fault alone reads present. */
+		assert(!adapter.mounted && !adapter.dat3_remuxed);
+		assert(aius_sd_teensy_card_detected(&adapter));
+		assert(g_fake.card_detected_reads == 0);
+		/* The platform's presence read after the lost mount. */
+		aius_sd_teensy_invalidate_mount(&adapter);
+		assert(adapter.dat3_remuxed);
+		assert(aius_sd_teensy_card_detected(&adapter) == (pulled == 0));
+		assert(g_fake.card_detected_reads == 1);
+		/* A present card remounts at the next BEGIN (the S5 retry). */
+		if (pulled == 0) {
+			reset_fake();
+			assert(begin_touched_the_card(&adapter));
+			assert(adapter.mounted && !adapter.dat3_remuxed);
+		}
+	}
+}
+
+/* aius_sd_teensy_card_detected() and the DAT3 re-mux (S1, N7, NS3, D3, E3). */
+void test_card_detected_and_dat3()
+{
+	AiusSdTeensy adapter;
+
+	/* A fresh boot: no mount and DAT3 never re-muxed, so the accessor
+	 * reports present without reading DAT3, and the first probe's BEGIN
+	 * runs as today (D3). */
+	reset_fake();
+	reset_adapter(&adapter);
+	assert(!adapter.dat3_remuxed);
+	g_fake.card_detected = false;
+	assert(aius_sd_teensy_card_detected(&adapter));
+	assert(g_fake.card_detected_reads == 0);
+	assert(adapter.absent_mounts == 0);
+	assert(g_fake.call_count == 0);
+	assert(begin_touched_the_card(&adapter));
+	assert(adapter.mounted && !adapter.dat3_remuxed);
+
+	/* Mounted: present with no read, and BEGIN takes the reused mount. */
+	reset_fake();
+	g_fake.card_detected = false;
+	assert(aius_sd_teensy_card_detected(&adapter));
+	assert(g_fake.card_detected_reads == 0);
+	assert(!begin_touched_the_card(&adapter));
+	assert(adapter.mount_reuses == 1);
+
+	/* A card-gone invalidation with no file open re-muxes pin 46 to
+	 * INPUT_PULLDOWN and waits 5 us before the accessor's first read, with
+	 * no card primitive; a pulled card then reads absent and counts. */
+	reset_fake();
+	aius_sd_teensy_invalidate_mount(&adapter);
+	assert(!adapter.mounted && adapter.dat3_remuxed);
+	assert(g_fake.pin_mode_calls == 1);
+	assert(g_fake.pin == 46u && g_fake.pin_mode == INPUT_PULLDOWN);
+	assert(g_fake.delay_calls == 1 && g_fake.delay_us == 5u);
+	assert(g_fake.pin_mode_at < g_fake.delay_at);
+	assert(g_fake.call_count == 0 && g_fake.clock_calls == 0);
+	g_fake.card_detected = false;
+	assert(!aius_sd_teensy_card_detected(&adapter));
+	assert(g_fake.card_detected_reads == 1);
+	assert(g_fake.delay_at < g_fake.card_detected_at);
+	assert(adapter.absent_mounts == 1);
+	assert(g_fake.call_count == 0);
+	g_fake.card_detected = true;
+	assert(aius_sd_teensy_card_detected(&adapter));
+	assert(adapter.absent_mounts == 1);
+
+	/* Already re-muxed: a second invalidation re-muxes nothing. */
+	aius_sd_teensy_invalidate_mount(&adapter);
+	assert(g_fake.pin_mode_calls == 1 && g_fake.delay_calls == 1);
+
+	/* A successful begin clears dat3_remuxed; a failed one sets it. */
+	assert(begin_touched_the_card(&adapter));
+	assert(adapter.mounted && !adapter.dat3_remuxed);
+	reset_fake();
+	aius_sd_teensy_invalidate_mount(&adapter);
+	assert(adapter.dat3_remuxed);
+	adapter.dat3_remuxed = false;
+	reset_fake();
+	g_fake.succeeds[PRIMITIVE_BEGIN] = false;
+	AiusSdAction begin = make_action(AIUS_SD_ACTION_BEGIN);
+	aius_sd_teensy_execute(&adapter, &begin);
+	assert(!adapter.mounted && adapter.dat3_remuxed);
+	assert(g_fake.pin_mode_calls == 0);
+
+	/* With a file open, no re-mux: the handle still owns the bus. */
+	reset_fake();
+	reset_adapter(&adapter);
+	assert(begin_touched_the_card(&adapter));
+	reset_fake();
+	grant_file_authority(&adapter);
+	aius_sd_teensy_invalidate_mount(&adapter);
+	assert(!adapter.mounted);
+	assert(!adapter.dat3_remuxed);
+	assert(g_fake.pin_mode_calls == 0 && g_fake.delay_calls == 0);
+	g_fake.card_detected = false;
+	assert(aius_sd_teensy_card_detected(&adapter));
+	assert(g_fake.card_detected_reads == 0);
+	adapter.file_open = false;
+
+	/* A mode change drops the mount, re-muxes nothing and leaves
+	 * dat3_remuxed clear, so the accessor reads nothing and the next BEGIN
+	 * remounts (E3). */
+	reset_fake();
+	reset_adapter(&adapter);
+	assert(begin_touched_the_card(&adapter));
+	reset_fake();
+	aius_sd_teensy_set_mode(&adapter, true);
+	assert(!adapter.mounted && !adapter.dat3_remuxed);
+	assert(g_fake.pin_mode_calls == 0 && g_fake.delay_calls == 0);
+	g_fake.card_detected = false;
+	assert(aius_sd_teensy_card_detected(&adapter));
+	assert(g_fake.card_detected_reads == 0);
+	assert(begin_touched_the_card(&adapter));
+	assert(adapter.mounted && g_fake.begin_dma);
+
+	/* The counter saturates; null is safe. */
+	reset_fake();
+	reset_adapter(&adapter);
+	adapter.dat3_remuxed = true;
+	adapter.absent_mounts = UINT32_MAX;
+	g_fake.card_detected = false;
+	assert(!aius_sd_teensy_card_detected(&adapter));
+	assert(adapter.absent_mounts == UINT32_MAX);
+	assert(!aius_sd_teensy_card_detected(nullptr));
+}
+
+/* CACHE_DROP (H1, CR4-B2): one cacheClear of the mounted partition through the
+ * FsVolume vendor forwarder, on FAT and exFAT, and nothing else. */
+void test_cache_drop()
+{
+	AiusSdTeensy adapter;
+	AiusSdAction drop = make_action(AIUS_SD_ACTION_CACHE_DROP);
+
+	/* No payload, a nonzero id, and no file open (the engine issues it
+	 * between the last pass's CLOSE and the read-back's OPEN_READ). */
+	AiusSdAction malformed = drop;
+	malformed.action_id = 0;
+	expect_protocol_rejection(malformed, false);
+	malformed = drop;
+	malformed.path = kPath;
+	expect_protocol_rejection(malformed, false);
+	malformed = drop;
+	malformed.offset = 1;
+	expect_protocol_rejection(malformed, false);
+	malformed = drop;
+	malformed.buffer = g_buffer;
+	malformed.length = 1;
+	expect_protocol_rejection(malformed, false);
+	expect_protocol_rejection(drop, true);
+
+	/* No volume mounted: the forwarder answers nullptr with no card
+	 * transaction, a FAULT event with clearError() first and the duration
+	 * recorded, and no driver fault counted. */
+	reset_fake();
+	reset_adapter(&adapter);
+	g_fake.mounted_partition = PARTITION_NONE;
+	AiusSdEvent event = aius_sd_teensy_execute(&adapter, &drop);
+	assert_driver_event(event, 47);
+	assert(g_fake.call_count == 0);
+	assert(g_fake.clear_error_calls == 1);
+	assert(g_fake.clock_calls == 2);
+	assert(adapter.driver_faults == 0);
+
+	static const MountedPartition partitions[] = {
+		PARTITION_FAT, PARTITION_EXFAT
+	};
+	for (size_t i = 0; i < sizeof(partitions) / sizeof(partitions[0]); ++i) {
+		/* One cacheClear of the mounted partition and nothing else. */
+		reset_fake();
+		reset_adapter(&adapter);
+		g_fake.mounted_partition = partitions[i];
+		event = aius_sd_teensy_execute(&adapter, &drop);
+		assert_event(event, AIUS_SD_EVENT_OK, 47, 0, 0, false, 0);
+		assert(g_fake.call_count == 1);
+		assert(g_fake.calls[0] == PRIMITIVE_CACHE_CLEAR);
+		assert(g_fake.fat_cache_clears ==
+		       (partitions[i] == PARTITION_FAT ? 1u : 0u));
+		assert(g_fake.exfat_cache_clears ==
+		       (partitions[i] == PARTITION_EXFAT ? 1u : 0u));
+		assert(adapter.driver_faults == 0);
+
+		/* A failed sync counts a driver fault only on a nonzero code. */
+		reset_fake();
+		reset_adapter(&adapter);
+		g_fake.mounted_partition = partitions[i];
+		g_fake.succeeds[PRIMITIVE_CACHE_CLEAR] = false;
+		g_fake.fail_code = 0;
+		event = aius_sd_teensy_execute(&adapter, &drop);
+		assert_driver_event(event, 47);
+		assert(adapter.driver_faults == 0);
+		reset_fake();
+		g_fake.mounted_partition = partitions[i];
+		g_fake.succeeds[PRIMITIVE_CACHE_CLEAR] = false;
+		event = aius_sd_teensy_execute(&adapter, &drop);
+		assert_driver_event(event, 47);
+		assert(adapter.driver_faults == 1);
+	}
+}
+
 } // namespace
+
+void pinMode(uint8_t pin, uint8_t mode)
+{
+	g_fake.pin_mode_calls++;
+	g_fake.pin = pin;
+	g_fake.pin_mode = mode;
+	g_fake.pin_mode_at = ++g_fake.sequence;
+}
+
+void delayMicroseconds(uint32_t usec)
+{
+	g_fake.delay_calls++;
+	g_fake.delay_us = usec;
+	g_fake.delay_at = ++g_fake.sequence;
+}
+
+uint8_t *FatPartition::cacheClear()
+{
+	record(PRIMITIVE_CACHE_CLEAR);
+	g_fake.fat_cache_clears++;
+	return outcome(g_fake.succeeds[PRIMITIVE_CACHE_CLEAR]) ? g_buffer
+	                                                     : nullptr;
+}
+
+uint8_t *ExFatPartition::cacheClear()
+{
+	record(PRIMITIVE_CACHE_CLEAR);
+	g_fake.exfat_cache_clears++;
+	return outcome(g_fake.succeeds[PRIMITIVE_CACHE_CLEAR]) ? g_buffer
+	                                                     : nullptr;
+}
 
 SDClass SD;
 
@@ -1318,6 +1620,8 @@ uint8_t SDClass::sdErrorCode()
 
 bool SDClass::cardDetected()
 {
+	g_fake.card_detected_reads++;
+	g_fake.card_detected_at = ++g_fake.sequence;
 	return g_fake.card_detected;
 }
 
@@ -1391,6 +1695,23 @@ uint8_t FsVolume::fatType() const
 	return g_fake.fat_type;
 }
 
+/* As the vendor forwarder: the mounted partition's cacheClear(), else
+ * nullptr with no card transaction. */
+uint8_t *FsVolume::cacheClear()
+{
+	static FatPartition fat;
+	static ExFatPartition exfat;
+	switch (g_fake.mounted_partition) {
+	case PARTITION_FAT:
+		return fat.cacheClear();
+	case PARTITION_EXFAT:
+		return exfat.cacheClear();
+	case PARTITION_NONE:
+		break;
+	}
+	return nullptr;
+}
+
 FsVolume *SdFs::vol()
 {
 	return &volume_;
@@ -1418,5 +1739,9 @@ int main()
 	test_fault_split_and_absence();
 	test_busy_timeouts_surface();
 	test_mode_and_remount();
+	test_truncate_carries_offset();
+	test_card_detected_and_dat3();
+	test_driver_fault_then_card_presence();
+	test_cache_drop();
 	return 0;
 }

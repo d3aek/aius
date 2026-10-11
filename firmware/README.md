@@ -474,6 +474,7 @@ Suites (all build with `-Wall -Wextra -Werror` + ASan/UBSan):
 | `www-bundle` | The inlined gzip page bundles (`tools/www_bundle.py`) and the 503 Retry-After retry in `tools/aius-sd-sync.sh` (Phase 4g); Python only. |
 | `measure-vectors` | The measurement-vector runner (`tools/measure_vectors/measure_run.py`, Phase 4g); Python only. |
 | `web-cache` | The PSRAM web cache (`lib/aius_web_cache`): pad-2 placement and disjointness, per-chunk fill read-back, a publish that reads no chunk, verify order and yields, flipped bits, leases across invalidate, capacity fallback, the listing. |
+| `sd-overlay` | The PSRAM write-behind overlay (`lib/aius_sd_overlay`, Phase 4h) over the real store: latest wins, tombstones, the flush scheduler and its backoff, the card-loss hold, the safe-copy order, the restore decision, and the power-cut model (`lib/aius_sd` against the stateful fake card in `test/sd-overlay/fake_card.c`). |
 | `registry` | The guard on this table: fails when it, the `# Suites:` header in `scripts/test.sh` and that script's `case` arms disagree with the directories under `test/`. |
 | `sd-editor` | The SD-card web pages (status, DSP editor, replay manager, upgrade) as vitest suites at the repo root's `test/sd-editor/`, run with this repo as the vitest root; needs `pnpm` (resolved through the superproject when this repo is a submodule). |
 

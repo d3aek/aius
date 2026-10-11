@@ -48,6 +48,13 @@ void aius_config_set_defaults(AiusConfig *config);
 AiusConfigErrorCode aius_config_parse(const uint8_t *json, size_t len,
 	                                      AiusConfig *out);
 
+/* Phase 4h NS6: serialise `features` as /aius/config.json in the one form
+ * aius_config_parse accepts (parsing the output gives `features` back), with
+ * a trailing newline and a NUL after it. Returns the length written (without
+ * the NUL), or 0 for a NULL argument or when it does not fit `capacity`. */
+size_t aius_config_write(const AiusConfigFeatures *features, uint8_t *body,
+                         size_t capacity);
+
 /* Return the stable, bounded message associated with an error code. */
 const char *aius_config_error_message(AiusConfigErrorCode code);
 

@@ -301,6 +301,8 @@
      * lands -- never onto the form, because a per-section apply deliberately
      * sends less than the form holds. */
     pendingApplied: null,
+    statusBase: '',
+    flushWatch: null,
     /* One request at a time from the page's own buttons (UX finding E4). */
     busy: false,
     /* Names as stored on the card (with case), .json stripped. */
@@ -1634,9 +1636,13 @@
         headers: { 'Content-Type': 'application/json', 'X-Aius-SD-Auth': token },
         body: payload,
       });
-      const busy = result.status === 503 && result.body && result.body.error === 'audio_busy';
+      /* 503 sd_busy: the settings store is full, nothing was written either. */
+      const busy =
+        result.status === 503 && result.body && (result.body.error === 'audio_busy' || result.body.error === 'sd_busy');
       if (!busy || attempt === APPLY_BUSY_ATTEMPTS) break;
-      setStatus(`Device busy with audio; retrying (${attempt}/${APPLY_BUSY_ATTEMPTS - 1})...`);
+      setStatus(
+        `${result.body.error === 'sd_busy' ? 'SD write queue full' : 'Device busy with audio'}; retrying (${attempt}/${APPLY_BUSY_ATTEMPTS - 1})...`,
+      );
       await new Promise((resolve) => setTimeout(resolve, shared.retryAfterMs(result.retryAfter)));
     }
     if (result.status === 409) {
@@ -1655,7 +1661,8 @@
      * baseline rebases onto this, not onto the form. */
     state.pendingApplied = presetGroupsOf(model);
     setApplyState('pending');
-    setStatus('Written to SD. Waiting for the apply at the next audio block boundary...');
+    state.flushWatch = { skip: 1, baseFailures: null, verdict: 'pending', fault: '' };
+    setStatus('Accepted. Waiting for the apply at the next audio block boundary...', true);
     startPendingPoll();
   }
 
@@ -1707,11 +1714,12 @@
         setApplyState('edited');
         setStatus(
           `Applied at generation ${state.baseGeneration} (source ${result.body.source}). The form still holds edits this write did not carry -- apply them, or re-read to discard them.`,
+          true,
         );
         return;
       }
       setApplyState('applied');
-      setStatus(`Applied at generation ${state.baseGeneration} (source ${result.body.source}).`);
+      setStatus(`Applied at generation ${state.baseGeneration} (source ${result.body.source}).`, true);
       return;
     }
     if (state.pendingAttempts >= PENDING_POLL_MAX) {
@@ -1889,7 +1897,11 @@
 
   /* The 507 sd_upload token covers BOTH an invalid path and a busy volume --
    * never present it as "card full", which is sd_capacity's meaning. */
+  const SD_STORE_FULL =
+    'the SD write store is full; deleting presets with a card reader frees space (retrying will not help)';
+
   function describePresetWriteFailure(result) {
+    if (result.token === 'sd_busy') return SD_STORE_FULL;
     if (result.token === 'sd_upload') {
       return 'the SD volume is busy (replay or upload in flight) or refused the path; retry when the card is idle';
     }
@@ -2003,7 +2015,11 @@
     }
     if (!result.ok) {
       setPresetState('error');
-      showPresetError(`Could not delete ${name}.json -- ${describe(result)}.`);
+      showPresetError(
+        result.token === 'sd_busy'
+          ? `${name}.json not deleted: ${SD_STORE_FULL}.`
+          : `Could not delete ${name}.json -- ${describe(result)}.`,
+      );
       return;
     }
     await refreshPresets();
@@ -3927,9 +3943,48 @@
     shared.setPill($('apply-state'), next);
   }
 
-  const setStatus = (text) => {
-    $('status').textContent = text;
+  /* The status line also carries the card-flush verdict of the last DSP save
+   * (sd_flush from the brief poll): settings writes answer 200 at accept, before
+   * the card has the bytes, so "Written" is only true once sd_flush shows the
+   * queue drained. keepFlush marks the writes of that save's own flow; any other
+   * status text ends the watch so a stale verdict never trails unrelated text. */
+  const setStatus = (text, keepFlush = false) => {
+    state.statusBase = text;
+    if (!keepFlush) state.flushWatch = null;
+    const note = state.flushWatch ? flushNote(state.flushWatch) : '';
+    $('status').textContent = note ? `${text} ${note}` : text;
   };
+
+  /* sd_flush fields read: dirty (entries awaiting the card), held (no card; the
+   * writes wait in memory), failures (cumulative flush failures) and last_fault. */
+  function flushNote(watch) {
+    if (watch.verdict === 'saved') return 'Saved to the SD card.';
+    if (watch.verdict === 'held') return 'Pending: no SD card; held in memory until one is inserted.';
+    if (watch.verdict === 'failing') {
+      return `Pending: the card write is failing${watch.fault ? ` (${watch.fault})` : ''}; retrying.`;
+    }
+    return 'Pending: not yet on the SD card.';
+  }
+
+  function onFlushAnswer(flush) {
+    const watch = state.flushWatch;
+    if (!watch || !flush || typeof flush !== 'object') return;
+    /* The first answer after the write may have been requested before it. */
+    if (watch.skip > 0) {
+      watch.skip--;
+      return;
+    }
+    if (watch.baseFailures === null) watch.baseFailures = Number(flush.failures) || 0;
+    let verdict = 'pending';
+    if (flush.held) verdict = 'held';
+    else if ((Number(flush.failures) || 0) > watch.baseFailures && flush.drained !== true) verdict = 'failing';
+    /* dirty 0 alone is not saved: an entry mid-flush (before read-back) or a
+     * pending tombstone also reads dirty 0. Only drained means the card has it. */
+    else if (flush.drained === true) verdict = 'saved';
+    watch.verdict = verdict;
+    watch.fault = flush.last_fault || '';
+    setStatus(state.statusBase, true);
+  }
 
   function showError(text) {
     $('errors').textContent = text;
@@ -4122,7 +4177,10 @@
     fetch: () => request('/api/status/brief', { headers: { Accept: 'application/json' } }),
     cadenceMs: STATUS_POLL_MS,
     immediate: true,
-    onAnswer: (result) => renderFlowEnds(result.body),
+    onAnswer: (result) => {
+      renderFlowEnds(result.body);
+      onFlushAnswer(result.body && result.body.sd_flush);
+    },
     onUnreachable: () => renderFlowEnds(null),
     onError: showError,
   });

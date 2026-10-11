@@ -27,6 +27,10 @@ ELIGIBLE = {
     "CLOSE": r"\.\s*close\s*\(",
     "TOTAL_SIZE": r"\bSD\s*\.\s*totalSize\s*\(",
     "USED_SIZE": r"\bSD\s*\.\s*usedSize\s*\(",
+    # The read-back's cache drop (Phase 4h H1, CR4-B2): one call to the
+    # adapter's partition-cache helper, whose route to cacheClear() is the
+    # owner's open decision (FsVolume keeps its partitions private).
+    "CACHE_DROP": r"\bsd_cache_clear\s*\(",
 }
 
 INERT = (
@@ -120,7 +124,7 @@ def assert_one_shot_body(body):
         )
         for fragment in fragments:
             primitive_sites += len(PRIMITIVE.findall(fragment))
-    assert primitive_sites == 17, "eligible primitive catalog is not exact"
+    assert primitive_sites == 18, "eligible primitive catalog is not exact"
 
     # The mount mode is the adapter's stored mode, never a literal.
     for fragment in case_fragments(clean, "BEGIN"):

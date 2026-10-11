@@ -73,6 +73,9 @@ class Device:
     def status(self):
         return self._call("GET", "/api/ota")
 
+    def api_status(self):
+        return self._call("GET", "/api/status")
+
     def put_chunk(self, image, offset, total):
         end = min(offset + CHUNK, total)
         return self._call(
@@ -171,16 +174,80 @@ def run(device, image, activate, log=print, sleep=time.sleep):
             "Re-run with --activate to proceed.")
         return 0
 
-    status, body = device.post("enable-activation")
+    status, body = post_waiting_flush(device, "enable-activation", log, sleep)
     log(f"enable-activation: {status} {body}")
     if status != 200:
-        return 1
-    status, body = device.post("activate")
+        return 1 if not is_flush_pending(status, body) else FLUSH_EXIT
+    status, body = post_waiting_flush(device, "activate", log, sleep)
     log(f"activate: {status} {body}")
+    if is_flush_pending(status, body):
+        return FLUSH_EXIT
     if status != 200 or not body.get("activating"):
+        return 1
+    fault = watch_activation(device, log, sleep)
+    if fault is not None:
+        log(f"ACTIVATION ABANDONED: activation_fault {fault}; the board "
+            "stays on the running image. This is not a success.")
         return 1
     log("activation acknowledged; the board verifies, flashes and reboots now")
     return 0
+
+
+FLUSH_EXIT = 1  # nonzero; a 409 left pending at the wait ceiling
+FLUSH_WAIT_S = 60  # N6: a full sync drains in ~40 s source-off; 30 s cut short
+FLUSH_POLL_S = 1.0
+ABANDON_FAULTS = ("ota_flush_pending", "ota_sd_busy")
+ACTIVATION_WATCH_S = 15
+ACTIVATION_POLL_S = 1.0
+
+
+def is_flush_pending(status, body):
+    return status == 409 and body.get("error") == "sd_flush_pending"
+
+
+def post_waiting_flush(device, verb, log, sleep):
+    """POST a verb; on 409 sd_flush_pending poll /api/status sd_flush (only
+    `dirty` is read) for up to FLUSH_WAIT_S, stopping the moment it drains,
+    then retry once. Still pending at the ceiling returns the last 409."""
+    status, body = device.post(verb)
+    if not is_flush_pending(status, body):
+        return status, body
+    waited = 0.0
+    while waited < FLUSH_WAIT_S:
+        st, sbody = device.api_status()
+        dirty = (sbody.get("sd_flush") or {}).get("dirty") if st == 200 else None
+        log(f"{verb}: 409 sd_flush_pending, sd_flush.dirty={dirty}; "
+            f"waited {waited:.0f}s of {FLUSH_WAIT_S}s")
+        if dirty == 0:
+            status, body = device.post(verb)
+            if not is_flush_pending(status, body):
+                return status, body
+            # Drained then re-dirtied (H9 re-check): keep waiting.
+        sleep(FLUSH_POLL_S)
+        waited += FLUSH_POLL_S
+    st, sbody = device.api_status()
+    dirty = (sbody.get("sd_flush") or {}).get("dirty") if st == 200 else None
+    log(f"{verb}: still 409 sd_flush_pending after {FLUSH_WAIT_S}s, "
+        f"sd_flush.dirty={dirty}; giving up")
+    return status, body
+
+
+def watch_activation(device, log, sleep):
+    """After an acknowledged activate, poll /api/status ota_diag
+    .activation_fault. Returns an abandon fault name, or None when none shows
+    (a transport loss means the board is rebooting: the activation is live)."""
+    waited = 0.0
+    while waited < ACTIVATION_WATCH_S:
+        st, body = device.api_status()
+        if st is None:
+            return None
+        if st == 200:
+            fault = (body.get("ota_diag") or {}).get("activation_fault")
+            if fault in ABANDON_FAULTS:
+                return fault
+        sleep(ACTIVATION_POLL_S)
+        waited += ACTIVATION_POLL_S
+    return None
 
 
 def main():

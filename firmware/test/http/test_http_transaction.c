@@ -739,7 +739,8 @@ static AiusHttpApplicationResponse upload_application(
 		publish ? AIUS_CONFIG_MAX_JSON_BYTES : 0u;
 	response.sd_job.content_type =
 		publish ? "application/json" : NULL;
-	if (mode == AIUS_SD_INSTALL_APPEND_PART) {
+	if (mode == AIUS_SD_INSTALL_APPEND_PART ||
+	    mode == AIUS_SD_INSTALL_STORE) {
 		response.sd_job.temp_path = NULL;
 		response.sd_job.backup_path = NULL;
 	}
@@ -772,6 +773,7 @@ static void test_upload_application_modes_and_publication_sizes(void)
 		{ AIUS_SD_INSTALL_REPLACE, 0 },
 		{ AIUS_SD_INSTALL_APPEND_PART, 7 },
 		{ AIUS_SD_INSTALL_FINALIZE_PART, 7 },
+		{ AIUS_SD_INSTALL_STORE, 0 },
 	};
 	size_t mode_trials = 0;
 	for (size_t i = 0; i < ARRAY_LENGTH(modes); ++i) {
@@ -791,7 +793,8 @@ static void test_upload_application_modes_and_publication_sizes(void)
 		       modes[i].initial_offset);
 		assert(!action.sd_request->publish);
 		assert(action.sd_request->content_type == NULL);
-		if (modes[i].mode == AIUS_SD_INSTALL_APPEND_PART) {
+		if (modes[i].mode == AIUS_SD_INSTALL_APPEND_PART ||
+		    modes[i].mode == AIUS_SD_INSTALL_STORE) {
 			assert(action.sd_request->temp_path == NULL);
 			assert(action.sd_request->backup_path == NULL);
 		} else {
@@ -800,7 +803,52 @@ static void test_upload_application_modes_and_publication_sizes(void)
 		}
 		mode_trials++;
 	}
-	assert(mode_trials == 3);
+	assert(mode_trials == 4);
+
+	/* Phase 4h S8: a STORE request names its target alone, at offset 0,
+	 * unpublished; COPY_BEFORE_WRITE (the overlay's flush job) and any mode
+	 * past STORE never come from an HTTP request. */
+	{
+		struct StoreReject {
+			AiusSdInstallMode mode;
+			uint64_t initial_offset;
+			bool publish;
+			bool temp;
+			bool backup;
+		};
+		static const struct StoreReject rejects[] = {
+			{ AIUS_SD_INSTALL_STORE, 7, false, false, false },
+			{ AIUS_SD_INSTALL_STORE, 0, true, false, false },
+			{ AIUS_SD_INSTALL_STORE, 0, false, true, false },
+			{ AIUS_SD_INSTALL_STORE, 0, false, false, true },
+			{ AIUS_SD_INSTALL_COPY_BEFORE_WRITE, 0, false, false, true },
+			{ (AiusSdInstallMode)(AIUS_SD_INSTALL_STORE + 1), 0, false,
+			  false, false },
+		};
+		size_t reject_trials = 0;
+		for (size_t i = 0; i < ARRAY_LENGTH(rejects); ++i) {
+			Fixture fixture;
+			init_fixture(&fixture);
+			AiusHttpAction dispatch = dispatch_upload_length(&fixture, 1);
+			AiusHttpApplicationResponse response = upload_application(
+				AIUS_SD_INSTALL_STORE, 1, rejects[i].initial_offset,
+				rejects[i].publish);
+			response.sd_job.install_mode = rejects[i].mode;
+			if (rejects[i].temp)
+				response.sd_job.temp_path = "/temp";
+			if (rejects[i].backup)
+				response.sd_job.backup_path = "/backup";
+			AiusHttpAction action = call_step(
+				&fixture, 0, application_result(&dispatch, &response));
+			assert(action.kind == AIUS_HTTP_ACTION_WRITE);
+			assert(fixture.transaction.last_fault ==
+			       AIUS_HTTP_FAULT_PROTOCOL);
+			assert(fixture.transaction.last_status == 400);
+			assert(!fixture.transaction.sd_started);
+			reject_trials++;
+		}
+		assert(reject_trials == 6);
+	}
 
 	struct PublicationCase {
 		AiusSdInstallMode mode;
@@ -1040,6 +1088,7 @@ static void test_require_existing_application_validation(void)
 		{ AIUS_SD_JOB_UPLOAD, AIUS_SD_INSTALL_REPLACE },
 		{ AIUS_SD_JOB_UPLOAD, AIUS_SD_INSTALL_APPEND_PART },
 		{ AIUS_SD_JOB_UPLOAD, AIUS_SD_INSTALL_FINALIZE_PART },
+		{ AIUS_SD_JOB_UPLOAD, AIUS_SD_INSTALL_STORE },
 		{ AIUS_SD_JOB_DOWNLOAD, AIUS_SD_INSTALL_REPLACE },
 		{ AIUS_SD_JOB_REPLAY_REFILL, AIUS_SD_INSTALL_REPLACE },
 	};
@@ -1054,7 +1103,9 @@ static void test_require_existing_application_validation(void)
 			dispatch = dispatch_upload_length(&fixture, 1);
 			response = upload_application(
 				non_delete[i].mode, 1,
-				non_delete[i].mode == AIUS_SD_INSTALL_REPLACE
+				non_delete[i].mode == AIUS_SD_INSTALL_REPLACE ||
+						non_delete[i].mode ==
+							AIUS_SD_INSTALL_STORE
 					? 0
 					: 7,
 				false);
@@ -1089,7 +1140,7 @@ static void test_require_existing_application_validation(void)
 		assert(!fixture.transaction.sd_started);
 		rejection_trials++;
 	}
-	assert(rejection_trials == 8);
+	assert(rejection_trials == 9);
 
 	size_t delete_trials = 0;
 	for (unsigned require_existing = 0;
@@ -2724,6 +2775,79 @@ static void test_sd_failure_mapping(void)
 		{ AIUS_SD_FAULT_OVERFLOW, 507, "sd_capacity", true },
 		{ AIUS_SD_FAULT_IO, 500, "sd_failure", true },
 	};
+	/* Phase 4h S8: the freeze's SD_BUSY driver fault answers sd_busy, the
+	 * shed's AUDIO_BUSY answers audio_busy, both 503 with Retry-After. */
+	struct BusyMapping {
+		uint32_t driver_fault;
+		const char *body;
+		bool download;
+	};
+	static const struct BusyMapping busy[] = {
+		{ AIUS_HTTP_DRIVER_FAULT_SD_BUSY, "\"error\":\"sd_busy\"", true },
+		{ AIUS_HTTP_DRIVER_FAULT_SD_BUSY, "\"error\":\"sd_busy\"", false },
+		{ AIUS_HTTP_DRIVER_FAULT_AUDIO_BUSY, "\"error\":\"audio_busy\"",
+		  true },
+	};
+	assert(AIUS_HTTP_DRIVER_FAULT_SD_BUSY !=
+	       AIUS_HTTP_DRIVER_FAULT_AUDIO_BUSY);
+	for (size_t i = 0; i < ARRAY_LENGTH(busy); ++i) {
+		Fixture fixture;
+		init_fixture(&fixture);
+		AiusHttpAction action;
+		AiusHttpApplicationResponse response;
+		if (busy[i].download) {
+			action = feed_request(&fixture, "GET /sd/x HTTP/1.0\r\n\r\n");
+			response = sd_job(AIUS_SD_JOB_DOWNLOAD, 200,
+			                  "application/octet-stream", NULL, 0, 0);
+		} else {
+			action = dispatch_upload_length(&fixture, 1);
+			response = upload_application(AIUS_SD_INSTALL_STORE, 1, 0,
+			                              false);
+		}
+		action = call_step(&fixture, 0, application_result(&action, &response));
+		assert(action.kind == AIUS_HTTP_ACTION_SD_START);
+		AiusHttpEvent failed = sd_result(&action, AIUS_HTTP_SD_FAILED);
+		failed.sd_fault = AIUS_SD_FAULT_MEDIA;
+		failed.sd_driver_fault = busy[i].driver_fault;
+		action = call_step(&fixture, 0, failed);
+		assert(action.kind == AIUS_HTTP_ACTION_WRITE);
+		assert(fixture.transaction.last_fault == AIUS_HTTP_FAULT_SD);
+		assert(fixture.transaction.last_driver_fault == busy[i].driver_fault);
+		assert(fixture.transaction.last_status == 503);
+		assert(contains_bytes(action.data, action.length, busy[i].body));
+		assert(contains_bytes(action.data, action.length,
+		                      "Retry-After: 1"));
+		action = finish_all_writes(&fixture, action);
+		finish_close(&fixture, action);
+	}
+	/* Phase 4h Q4, S8: an application-built 503 sd_busy (a store-full PUT,
+	 * and the runtime seam's BUSY DISPATCH answer, which is the same
+	 * immediate response) gains Retry-After from the status alone; a 200
+	 * with the same body does not. */
+	{
+		static const uint8_t sd_busy[] = "{\"ok\":false,\"error\":\"sd_busy\"}";
+		static const unsigned statuses[] = { 503u, 200u };
+		for (size_t i = 0; i < ARRAY_LENGTH(statuses); ++i) {
+			Fixture fixture;
+			init_fixture(&fixture);
+			AiusHttpAction action =
+				feed_request(&fixture, "GET /sd/x HTTP/1.0\r\n\r\n");
+			AiusHttpApplicationResponse response =
+				immediate(statuses[i], "application/json", sd_busy,
+				          sizeof(sd_busy) - 1u);
+			action = call_step(&fixture, 0,
+			                   application_result(&action, &response));
+			assert(action.kind == AIUS_HTTP_ACTION_WRITE);
+			assert(fixture.transaction.last_status == statuses[i]);
+			assert(contains_bytes(action.data, action.length,
+			                      "\"error\":\"sd_busy\""));
+			assert(contains_bytes(action.data, action.length,
+			                      "Retry-After: 1\r\n") ==
+			       (statuses[i] == 503u));
+			action = finish_all_writes(&fixture, action);
+			finish_close(&fixture, action);
+		}
+	}
 	assert(AIUS_SD_FAULT_NOT_FOUND == 18);
 	for (size_t i = 0; i < ARRAY_LENGTH(mappings); ++i) {
 		Fixture fixture;

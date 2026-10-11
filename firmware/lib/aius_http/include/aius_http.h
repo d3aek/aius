@@ -133,7 +133,8 @@ typedef struct {
 	AiusHttpRoute route;
 	uint32_t cursor;
 	uint8_t has_body;
-	/* Phase 4g: Accept-Encoding lists gzip with a nonzero q. Sits in the
+	/* Phase 4g: Accept-Encoding lists gzip with a nonzero q, or (Phase 4h
+	 * N2) does not name gzip and lists "*" with a nonzero q. Sits in the
 	 * padding after has_body so the request struct does not grow. */
 	bool accepts_gzip;
 	/* Phase 4g: If-None-Match value start as a byte offset from the request

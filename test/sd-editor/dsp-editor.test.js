@@ -1303,6 +1303,69 @@ describe('Aius SD DSP editor — optimistic concurrency', () => {
     expect(el('generation').textContent).toBe('1');
   });
 
+  describe('sd_flush verdict on the status line', () => {
+    const tick = async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+      await settle();
+    };
+    const applyWith = async (status) => {
+      await boot({ status });
+      setToken('0123456789abcdef');
+      await click('apply');
+      await tick();
+      await tick();
+    };
+
+    it('says pending while sd_flush.dirty is non-zero, then saved once it drains', async () => {
+      await applyWith(fixture('status-brief-flush-dirty.json'));
+      expect(el('status').textContent).toContain('Pending: not yet on the SD card');
+      device.status = fixture('status-brief.json');
+      await tick();
+      expect(el('status').textContent).toContain('Saved to the SD card.');
+    });
+
+    it('reads pending while an entry is flushing (dirty 0, drained false)', async () => {
+      const flushing = fixture('status-brief.json');
+      flushing.sd_flush = { ...flushing.sd_flush, dirty: 0, drained: false };
+      await applyWith(flushing);
+      expect(el('status').textContent).toContain('Pending: not yet on the SD card');
+      expect(el('status').textContent).not.toContain('Saved to the SD card');
+    });
+
+    it('reads pending for a pending tombstone (dirty 0, drained false) until drained', async () => {
+      const tombstone = fixture('status-brief.json');
+      tombstone.sd_flush = { ...tombstone.sd_flush, dirty: 0, drained: false };
+      await applyWith(tombstone);
+      expect(el('status').textContent).not.toContain('Saved to the SD card');
+      device.status = fixture('status-brief.json');
+      await tick();
+      expect(el('status').textContent).toContain('Saved to the SD card.');
+    });
+
+    it('says the writes are held when sd_flush.held is set', async () => {
+      await applyWith(fixture('status-brief-flush-held.json'));
+      expect(el('status').textContent).toContain('no SD card; held in memory');
+    });
+
+    it('reports a failing flush when failures rise while entries stay dirty', async () => {
+      await applyWith(fixture('status-brief-flush-dirty.json'));
+      device.status = fixture('status-brief-flush-failing.json');
+      await tick();
+      expect(el('status').textContent).toContain('card write is failing (crc)');
+    });
+
+    it('retries a 503 sd_busy and reads it as a rejection when it persists', async () => {
+      await boot({ put: () => jsonResponse(503, { ok: false, error: 'sd_busy' }) });
+      setToken('0123456789abcdef');
+      await click('apply');
+      for (let i = 0; i < 6; i++) await vi.advanceTimersByTimeAsync(5000);
+      await settle();
+      expect(putCalls()).toHaveLength(5);
+      expect(el('apply-state').textContent).toBe('error');
+      expect(el('status').textContent).toBe('Configuration unchanged.');
+    });
+  });
+
   /* The pending window is up to 20 s long and the form stays live throughout,
    * so adopting the device model wholesale used to throw away everything typed
    * during it (delivery audit finding). */
@@ -2339,6 +2402,40 @@ describe('Aius SD DSP editor — presets', () => {
     expect(del.url).toBe('/sd/www/presets/movie.json');
     expect(del.headers['X-Aius-SD-Auth']).toBe('0123456789abcdef');
     expect(el('preset-status').textContent).toContain('Deleted');
+  });
+
+  it('renders a preset save 503 sd_busy as a full store, once, without retrying', async () => {
+    await boot({
+      presetsIndex: PRESET_INDEX_DEFAULT,
+      presetPut: () => jsonResponse(503, { ok: false, error: 'sd_busy' }),
+    });
+    setToken('0123456789abcdef');
+    el('preset-name').value = 'evening';
+    await click('preset-save');
+    await vi.advanceTimersByTimeAsync(10000);
+    expect(device.calls.filter((call) => call.method === 'PUT' && call.url.includes('presets'))).toHaveLength(1);
+    expect(el('preset-errors').textContent).toContain('write store is full');
+    expect(el('preset-errors').textContent).toContain('card reader');
+    expect(el('preset-status').textContent).not.toContain('Saved');
+  });
+
+  it('renders a preset delete 503 sd_busy as a full store and leaves the preset listed', async () => {
+    await boot({
+      presetsIndex: PRESET_INDEX_DEFAULT,
+      presetFiles: { movie: fiveGroups('dsp-config-default.json') },
+    });
+    const inner = globalThis.fetch;
+    globalThis.fetch = vi.fn(async (url, init = {}) =>
+      init.method === 'DELETE' ? jsonResponse(503, { ok: false, error: 'sd_busy' }) : inner(url, init),
+    );
+    setToken('0123456789abcdef');
+    selectPreset('movie');
+    await click('preset-delete');
+    await vi.advanceTimersByTimeAsync(10000);
+    expect(globalThis.fetch.mock.calls.filter(([, init]) => init && init.method === 'DELETE')).toHaveLength(1);
+    expect(el('preset-errors').textContent).toContain('movie.json not deleted');
+    expect(el('preset-errors').textContent).toContain('write store is full');
+    expect(el('preset-status').textContent).not.toContain('Deleted');
   });
 
   it('renders 507 sd_upload as busy-or-refused, never as card full', async () => {

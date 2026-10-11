@@ -41,6 +41,13 @@ typedef enum {
  * an SD start refused by the admission hook). */
 #define AIUS_HTTP_DRIVER_FAULT_AUDIO_BUSY 0x41554442u
 
+/* Likewise, this value answers 503 {"error":"sd_busy"} (Phase 4h S8: an SD
+ * start refused by the SD-writes freeze, which is not audio shedding).
+ * Retry-After needs no field: every 503 this transaction writes, a driver-fault
+ * answer or an application's AIUS_HTTP_APP_IMMEDIATE status 503 alike, gains
+ * "Retry-After: 1" in aius_http_write_headers_ex. */
+#define AIUS_HTTP_DRIVER_FAULT_SD_BUSY 0x53444253u
+
 typedef enum {
 	AIUS_HTTP_APP_IMMEDIATE,
 	AIUS_HTTP_APP_SD_JOB

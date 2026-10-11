@@ -125,6 +125,13 @@ class FsVolume {
   uint32_t volumeSerial() const {
     return m_fVol ? m_fVol->volumeSerial() : 0;
   }
+  // Aius patch (Phase 4h, CR4-B2): m_fVol and m_xVol are private, so forward
+  // the mounted partition's cacheClear(), which syncs a dirty cached sector
+  // then drops the cache. nullptr on a failed sync or with no volume mounted.
+  uint8_t* cacheClear() {
+    return m_fVol ? m_fVol->cacheClear() :
+           m_xVol ? m_xVol->cacheClear() : nullptr;
+  }
   /** \return the free cluster count. */
   uint32_t freeClusterCount() const {
     return m_fVol ? m_fVol->freeClusterCount() :

@@ -20,6 +20,11 @@
 #ifndef FLASHMEM
 #define FLASHMEM
 #endif
+#ifndef PROGMEM
+#define PROGMEM
+#endif
+
+#include <stdio.h>
 
 #define AIUS_CONFIG_KEY_BUFFER_MAX 32u
 /* Only the skip-unknown path recurses on attacker structure; cap its depth. */
@@ -176,6 +181,28 @@ parse_features(AiusJsonCursor *parser, AiusConfigFeatures *features)
 	if (seen != 0x07u)
 		return AIUS_CONFIG_ERR_MISSING_FEATURE;
 	return AIUS_CONFIG_OK;
+}
+
+FLASHMEM size_t aius_config_write(const AiusConfigFeatures *features,
+                                  uint8_t *body, size_t capacity)
+{
+	/* PROGMEM: a literal here would land in DTCM .data on the target. */
+	static const char format_config[] PROGMEM =
+		"{\"features\":{\"sd_web\":%s,\"remote_control\":%s,"
+		"\"telemetry\":%s}}\n";
+	static const char kTrue[] PROGMEM = "true";
+	static const char kFalse[] PROGMEM = "false";
+	int written;
+
+	if (features == NULL || body == NULL || capacity == 0u)
+		return 0u;
+	written = snprintf((char *)body, capacity, format_config,
+	                   features->sd_web ? kTrue : kFalse,
+	                   features->remote_control ? kTrue : kFalse,
+	                   features->telemetry ? kTrue : kFalse);
+	if (written <= 0 || (size_t)written >= capacity)
+		return 0u;
+	return (size_t)written;
 }
 
 FLASHMEM AiusConfigErrorCode aius_config_parse(const uint8_t *json, size_t len,

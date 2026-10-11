@@ -247,7 +247,11 @@ static void test_init_and_absent(void)
 	AiusWebCache c;
 	AiusWebCacheHit hit;
 
-	CHECK(sizeof(AiusWebCache) < 64u);
+	/* 52 B on target (4h N1); the host's 8 B pointers make it 64. */
+	CHECK(sizeof(AiusWebCache) <= 64u);
+	CHECK(sizeof(void *) != 4u || sizeof(AiusWebCache) == 52u);
+	CHECK(sizeof(AiusWebCacheEntry) == 80u);
+	CHECK(AIUS_WEB_CACHE_MANIFEST_BYTES == 5120u);
 	CHECK(!aius_web_cache_init(&c, NULL, 0u, fake_flush_delete, NULL));
 	CHECK(!aius_web_cache_lookup(&c, "index.html", 10u, &hit, NULL));
 	CHECK(!aius_web_cache_fill_begin(&c, "index.html", 10u, 10u));
@@ -263,7 +267,8 @@ static void test_init_and_absent(void)
 	CHECK(g_cache.data_offset +
 	              (uint32_t)g_cache.data_chunks * AIUS_WEB_CACHE_CHUNK_BYTES <=
 	      sizeof(g_carve));
-	CHECK(g_cache.data_chunks == 4056u);
+	/* 4h's 80 B entries (5,120 B manifest) leave 4,054 chunks, 4g had 4,056. */
+	CHECK(g_cache.data_chunks == 4054u);
 }
 
 static void test_fill_readback_publish(void)

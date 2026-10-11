@@ -24,3 +24,11 @@ mkdir -p "$build_dir"
 	"$fw_root/lib/aius_recorder/src/aius_recorder.c" \
 	-lm -o "$build_dir/web-cache"
 "$build_dir/web-cache"
+
+# 4h's store cases (pending states, puts, tombstones, safe copy, folding).
+"$cc" -std=c11 -Wall -Wextra -Werror -O1 -g -fsanitize=address,undefined \
+	"-I$fw_root/lib/aius_web_cache/include" \
+	"$here/test_web_cache_store.c" \
+	"$fw_root/lib/aius_web_cache/src/aius_web_cache.c" \
+	-o "$build_dir/web-cache-store"
+"$build_dir/web-cache-store"

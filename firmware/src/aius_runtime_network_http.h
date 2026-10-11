@@ -61,11 +61,25 @@ extern "C" {
  *          SD_START's 500 ms F9 timer; Phase 4g's wait for a fill file to stop
  *          at its next primitive boundary) and any sd_fifo_defer()
  *          bookkeeping; this module only obeys.
+ *   BUSY   the platform's SD-writes freeze (Phase 4h H9, S8) refuses it now:
+ *          a ROUTE query answers 503 {"error":"sd_busy"} without
+ *          dispatching; an SD_START query fails the start with
+ *          AIUS_HTTP_DRIVER_FAULT_SD_BUSY, which the transaction maps to the
+ *          same 503. Both carry "Retry-After: 1" and neither calls
+ *          aius_runtime_http_note_shed() (http_shed counts audio shedding
+ *          only). The freeze's latch, and the cleanup a refusal owes
+ *          (staging disarm, a held route's fill wait), live in the callback,
+ *          as for SHED. A query is a re-consult of a held action exactly
+ *          while deferred_start_present (SD_START) or
+ *          deferred_dispatch_present (ROUTE) is still set.
  *
  * sd_job is the transaction's job request (kind, incl. OTA staging); NULL for
  * ROUTE. request is the parsed request for ROUTE (route and method repeat
  * it); NULL for SD_START. Mode lives in the callback (it reads the SD mode
- * itself). */
+ * itself). An UPLOAD SD_START in AIUS_SD_INSTALL_STORE mode (a www PUT into
+ * the PSRAM store, Phase 4h S8) reads no card and is admitted without a
+ * consult, so it never meets the fill cancel, the F2 shed, the F9 defer or
+ * the freeze; its route was admitted at DISPATCH. */
 typedef enum {
 	AIUS_HTTP_ADMIT_ROUTE = 0,
 	AIUS_HTTP_ADMIT_SD_START
@@ -74,7 +88,8 @@ typedef enum {
 typedef enum {
 	AIUS_HTTP_VERDICT_ADMIT = 0,
 	AIUS_HTTP_VERDICT_SHED,
-	AIUS_HTTP_VERDICT_DEFER
+	AIUS_HTTP_VERDICT_DEFER,
+	AIUS_HTTP_VERDICT_BUSY
 } AiusHttpAdmitVerdict;
 
 typedef struct {
@@ -87,7 +102,8 @@ typedef struct {
 
 /* Link-time hooks. The platform (optical_main.cpp) defines both; this module
  * defines weak defaults (admit everything, ignore sheds) so host builds work
- * unchanged. aius_runtime_http_note_shed() is called once per SHED verdict. */
+ * unchanged. aius_runtime_http_note_shed() is called once per SHED verdict,
+ * never for BUSY. */
 AiusHttpAdmitVerdict aius_runtime_http_admit(const AiusHttpAdmitQuery *query);
 void aius_runtime_http_note_shed(void);
 

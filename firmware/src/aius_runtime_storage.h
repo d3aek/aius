@@ -102,6 +102,21 @@ typedef struct {
 	bool (*deliver)(void *context, const uint8_t *data, size_t length);
 } AiusRuntimeStoragePublish;
 
+/* Phase 4h: the root input scratch and the STORE chunk accumulator are carved
+ * from sd_publish, which neither needs while it is in use (see the hooks
+ * below), so 4h adds no OCRAM. */
+#define AIUS_RUNTIME_STORAGE_INPUT_SCRATCH_OFFSET 0u
+#define AIUS_RUNTIME_STORAGE_STORE_CHUNK_OFFSET AIUS_RUNTIME_STORAGE_TRANSFER
+
+static_assert(AIUS_RUNTIME_STORAGE_PUBLISH_CAPACITY >=
+                      AIUS_RUNTIME_STORAGE_STORE_CHUNK_OFFSET +
+                              AIUS_RUNTIME_STORAGE_TRANSFER,
+              "sd_publish must hold the input scratch and the store chunk");
+
+/* driver_fault of a FAILED STORE upload whose sink refused a chunk or the
+ * commit (a chip CRC fault, S8); sd_fault is AIUS_SD_FAULT_IO. */
+#define AIUS_RUNTIME_STORAGE_STORE_SINK_FAULT UINT32_C(0x53544F52)
+
 /* Who owned the job a diagnostic record describes. DRAIN is an HTTP-owned job
  * whose owner was discarded and which finished on its own. */
 typedef enum {
@@ -205,7 +220,14 @@ typedef struct {
 	bool http_owned;
 	/* One outstanding correlated AIUS_SD_ACTION_OUTPUT chunk, resolved by
 	 * the transaction's ACK_DOWNLOAD or FAIL_DOWNLOAD. */
-	uint64_t output_action_id;
+	union {
+		uint64_t output_action_id;
+		/* Phase 4h S8: a STORE upload's progress, total bytes in the
+		 * high word and supplied bytes in the low, in the slot no HTTP
+		 * download uses while it runs (one transaction, one request;
+		 * every SD_START clears output_outstanding). No growth. */
+		uint64_t store_progress;
+	};
 	bool output_outstanding;
 	/* Cancellation has been requested (SD_CANCEL, FAIL_DOWNLOAD or an HTTP
 	 * release), so a terminal job result reports CANCELLED, not FAILED. */
@@ -240,7 +262,63 @@ typedef struct {
 	 * aius_runtime_storage_cancel_root(), so its CANCELLED terminal counts
 	 * a cancellation, not a root failure. Sits in the tail padding. */
 	bool root_cancelling;
+	/* Phase 4h, in the tail padding (no growth). AIUS_RUNTIME_STORAGE_FLAG_*
+	 * bits: ROOT_INPUT_FAULT, the running root job failed because its input
+	 * source refused a chunk (cleared at each root start); STORE_ACTIVE, a
+	 * STORE upload is in flight; STORE_HTTP, the HTTP correlation belongs to
+	 * the store sink (cleared by the next non-STORE SD_START or an HTTP
+	 * release), so it blocks no root start; STORE_FAILED, a chunk was
+	 * refused or malformed and the next ADVANCE answers FAILED. */
+	uint8_t flags_4h;
 } AiusRuntimeStorage;
+
+#define AIUS_RUNTIME_STORAGE_FLAG_ROOT_INPUT_FAULT 0x01u
+#define AIUS_RUNTIME_STORAGE_FLAG_STORE_ACTIVE 0x02u
+#define AIUS_RUNTIME_STORAGE_FLAG_STORE_HTTP 0x04u
+#define AIUS_RUNTIME_STORAGE_FLAG_STORE_FAILED 0x08u
+
+/* Phase 4h FR-S3 (link-time, as 4g's fill hooks; optical_main.cpp defines
+ * it): the root input source. A root job's AIUS_SD_ACTION_NEED_INPUT (a
+ * flush of the PSRAM store's pinned version) is answered from it in the same
+ * advance: it copies the source bytes at `offset` into `dst` (scratch in
+ * sd_publish, valid for the call; a publishing job is never supplied), up to
+ * `capacity`, exactly the length the job asked for, sets `*bytes` and returns
+ * true; the job's WRITE is that advance's one primitive. False is a chunk CRC
+ * fault (bind aius_sd_overlay_job_input): the job fails before the WRITE, no
+ * root failure is counted, see aius_runtime_storage_root_input_faulted(). A
+ * short `*bytes` fails the job as a counted protocol fault; the weak default,
+ * "no source", answers true with 0 bytes, so a root job reaching NEED_INPUT
+ * without one fails there instead of stalling. */
+bool aius_runtime_storage_root_input(const AiusSdJob *job, uint64_t offset,
+                                     uint8_t *dst, size_t capacity,
+                                     size_t *bytes);
+
+/* Phase 4h S8, H2 (link-time; optical_main.cpp defines all four): the PSRAM
+ * upload sink an AIUS_SD_INSTALL_STORE SD_START is diverted to before the
+ * engine, so it never reaches lib/aius_sd or the card. The service answers
+ * the transaction's SD protocol itself: STARTED once _open accepts the
+ * request (the app reserved the entry with _put_begin at DISPATCH; the weak
+ * default refuses, which answers FAILED with AIUS_SD_FAULT_INVALID_REQUEST),
+ * NEED_UPLOAD up to each 512 B boundary, _chunk with each whole 512 B chunk
+ * (or the tail), _commit after the last and COMPLETE, or _abort and FAILED
+ * (sd_fault IO, AIUS_RUNTIME_STORAGE_STORE_SINK_FAULT) when _chunk or _commit
+ * refuses (a chip CRC fault); _abort also on SD_CANCEL or an HTTP release (a
+ * client drop). It needs no idle volume and sets neither http_owned nor
+ * root_state, so a root flush or fill advances beside it, one primitive per
+ * epoch. Its chunk accumulates in sd_publish, so while a publishing root job
+ * (a CONFIG_LOAD) runs, an ADVANCE at a chunk boundary answers PROGRESS and
+ * waits, and such a job does not start while a partial chunk is held. */
+bool aius_runtime_storage_store_open(const AiusSdJobRequest *request);
+bool aius_runtime_storage_store_chunk(const uint8_t *data, size_t length);
+bool aius_runtime_storage_store_commit(uint32_t now_ms);
+void aius_runtime_storage_store_abort(void);
+
+/* Phase 4h H10 (link-time; optical_main.cpp defines it): the mount restore's
+ * sd_diag counters, settings_restores and settings_restore_faults, which
+ * aius_runtime_storage_diag_json serves after publish_dropped. Memory only.
+ * The weak default reports zero for both. */
+void aius_runtime_storage_settings_restores(uint32_t *restores,
+                                            uint32_t *faults);
 
 /* Phase 4g (aius-sample-rate-following.md G6, G8, G9): link-time hooks for the
  * one root job kind that streams, AIUS_SD_JOB_CACHE_FILL. Weak defaults keep
@@ -284,6 +362,12 @@ void aius_runtime_storage_construct(AiusRuntimeStorage *service);
 void aius_runtime_storage_set_publish(
 	AiusRuntimeStorage *service,
 	const AiusRuntimeStoragePublish *ops);
+
+/* True when the most recent root job has reached its terminal and failed
+ * because its input source refused a chunk (FR-S3, S3): the caller reports the
+ * flush as AIUS_SD_OVERLAY_JOB_CHUNK_CRC, not as a card failure. */
+bool aius_runtime_storage_root_input_faulted(
+	const AiusRuntimeStorage *service);
 
 /* Memory only: starts a job nobody asked for over HTTP -- the boot-time
  * CONFIG_LOAD, PROBE and USAGE_REFRESH loads. No SD primitive is called; the

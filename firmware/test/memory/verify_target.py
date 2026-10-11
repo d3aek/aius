@@ -63,17 +63,18 @@ ITCM_REGION_BYTES = 512 * 1024
 ITCM_BLOCK_BYTES = 32 * 1024
 ITCM_SECTIONS = frozenset({".text.itcm", ".ARM.exidx", ".fini"})
 # ITCM free = _itcm_block_count * 32 KiB minus the ITCM high-water mark (the
-# mem_report.py figure). Set from the Phase 4g link (2026-10-10): 12,900 B
-# free (4g used no ITCM), less an allowance of 1,000 B.
-ITCM_FREE_FLOOR_BYTES = 11900
-# DTCM statics end (`_ebss`). Set from the Phase 4g link (2026-10-10):
-# 0x20049900, plus the next phase's allowance of 256 B.
-DTCM_EBSS_CEILING = 0x20049A00
+# mem_report.py figure). Set from the Phase 4h link (2026-10-11): 12,708 B
+# free (4g's link had 12,900 B; its 1,000 B allowance went to 4h). The next
+# phase records its own allowance.
+ITCM_FREE_FLOOR_BYTES = 12708
+# DTCM statics end (`_ebss`). Set from the Phase 4h link (2026-10-11):
+# 0x20049560 (4g's ceiling was 0x20049A00).
+DTCM_EBSS_CEILING = 0x20049560
 # `_VectorsRam` (the 1,024 B-aligned RAM vector table, last in `.data`) sits
-# at 0x20007c00, set from the Phase 4g link (2026-10-10); `.data` growth past
-# that step moves it to the next 1,024 B step and costs 1,024 B of DTCM. New
-# strings and tables go in flash.
-VECTORS_RAM_ADDRESS = 0x20007c00
+# at 0x20007800, set from the Phase 4h link (2026-10-11; the 4g link had it
+# at 0x20007c00); `.data` growth past that step moves it to the next 1,024 B
+# step and costs 1,024 B of DTCM. New strings and tables go in flash.
+VECTORS_RAM_ADDRESS = 0x20007800
 VECTORS_RAM_STEP_BYTES = 1024
 
 SECTION_RE = re.compile(

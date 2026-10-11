@@ -43,6 +43,9 @@ private:
 class FsVolume {
 public:
 	uint8_t fatType() const;
+	/* Phase 4h CACHE_DROP: the vendor accessor over the mounted partition's
+	 * cacheClear(); nullptr with no volume mounted. */
+	uint8_t* cacheClear();
 };
 
 class SdFs {
@@ -52,6 +55,25 @@ public:
 private:
 	FsVolume volume_;
 };
+
+/* SdFat's two partition types and their cache drop, same signature as
+ * vendor/SdFat/src/FatLib/FatPartition.h:95 and ExFatLib/ExFatPartition.h:78
+ * (Phase 4h CACHE_DROP). How the adapter reaches the mounted one through
+ * FsVolume is the owner's open decision, so FsVolume does not model it yet. */
+class FatPartition {
+public:
+	uint8_t* cacheClear();
+};
+
+class ExFatPartition {
+public:
+	uint8_t* cacheClear();
+};
+
+/* Teensy core pin control the adapter's DAT3 re-mux uses (core_pins.h). */
+#define INPUT_PULLDOWN 3
+void pinMode(uint8_t pin, uint8_t mode);
+void delayMicroseconds(uint32_t usec);
 
 class SDClass {
 public:

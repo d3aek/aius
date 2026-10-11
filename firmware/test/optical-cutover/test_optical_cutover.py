@@ -1356,6 +1356,8 @@ EVENT_TYPE_VALUES = {
     "AIUS_EVENT_CLOCK_TRIM": 16,
     "AIUS_EVENT_TX_MISSED_FILL": 17,
     "AIUS_EVENT_AC3_CRC_REJECT": 18,
+    # Phase 4h (Q2): a pending preset or www entry dropped on a chip CRC fault.
+    "AIUS_EVENT_SD_FLUSH_CRC_DROP": 19,
 }
 # Values 4..10 are the fixed counter-edge range; later episode events are not.
 COUNTER_EDGE_TYPES = tuple(
@@ -2703,7 +2705,8 @@ DSP_ORIGIN_NAME_MARKER = (
     "static FLASHMEM const char *dsp_origin_name(DspModelOrigin origin)"
 )
 DSP_CONFIG_JSON_MARKER = (
-    "static FLASHMEM size_t http_dsp_config_json(uint8_t *body, size_t capacity)"
+    "static FLASHMEM size_t dsp_config_json(uint8_t *body, size_t capacity,\n"
+    "                                      bool file_form)"
 )
 
 
@@ -2777,7 +2780,9 @@ def assert_dsp_model_origin_is_staged_not_assumed(text):
 
     # Both stagers, each writing the origin with the model and before any flag.
     definitions = function_definitions(text)
-    for name in ("app_store_dsp_config", "platform_publish_config"):
+    # Phase 4h: the SD stager is settings_load(), which the settings mount
+    # policy calls from platform_publish_config.
+    for name in ("app_store_dsp_config", "settings_load"):
         assert name in definitions, f"missing DSP model stager {name!r}"
     put_body = without_comments_and_literals(definitions["app_store_dsp_config"])
     put_order = (
@@ -2790,14 +2795,27 @@ def assert_dsp_model_origin_is_staged_not_assumed(text):
     assert tuple(sorted(put_order)) == put_order, (
         "the PUT stager must stage its origin with the model"
     )
-    assert "g_dsp_apply_pending" not in put_body, (
-        "the PUT stager arms the apply flag itself, so a failed SD write could "
-        "reach the audio block boundary and the staged origin's "
-        "before-the-flag ordering is no longer the commit arm's to keep"
+    # Phase 4h (Q1, N7): with the carve the PUT stager arms Apply itself, but
+    # only once the overlay put has landed (a refusal applies nothing), and
+    # with the origin staged before the flag. The synchronous (8 MiB) path,
+    # after the overlay branch, still leaves the flag to the commit arm.
+    put_landed = put_body.find("aius_sd_overlay_put(")
+    first_arm = put_body.find("g_dsp_apply_pending = true;")
+    sync_path = put_body.find("sd_job_active_for_http()")
+    assert put_body.count("g_dsp_apply_pending = true;") == 1, (
+        "the PUT stager may arm the apply flag once, in the overlay branch"
     )
-    sd_body = without_comments_and_literals(
-        definitions["platform_publish_config"]
+    assert -1 < put_landed < put_body.find("g_pending_dsp_origin = DSP_ORIGIN_PUT;") \
+        < first_arm < sync_path, (
+        "the PUT stager arms the apply flag only after the overlay put lands "
+        "and the origin is staged, never on the synchronous path, so a failed "
+        "SD write cannot reach the audio block boundary"
     )
+    assert "g_dsp_apply_pending" not in put_body[sync_path:], (
+        "the PUT stager's synchronous path arms the apply flag itself, so a "
+        "failed SD write could reach the audio block boundary"
+    )
+    sd_body = without_comments_and_literals(definitions["settings_load"])
     sd_order = (
         sd_body.find("g_pending_dsp_model = parsed;"),
         sd_body.find("g_pending_dsp_origin = DSP_ORIGIN_SD;"),
@@ -2852,7 +2870,9 @@ def assert_dsp_model_origin_is_staged_not_assumed(text):
     )
 
     dsp_config = without_comments(function_body(text, DSP_CONFIG_JSON_MARKER))
-    assert '\\"source\\":\\"%s\\"' in dsp_config, (
+    # The serialiser is aius_optical_dsp_config_write (optical-app proves
+    # the rendered source); this body hands it the selected origin's name.
+    assert "header.source = dsp_source_name(origin);" in dsp_config, (
         "GET /api/dsp/config dropped or retyped its `source` field"
     )
     # Staged-aware since fc674c6 (defect 22): the served document describes the
@@ -3646,16 +3666,17 @@ def run_audio_cutover_self_test():
     )
     # Anchored on the two statements, not the block between them: d2d058c put
     # g_staged_generation++ and its comment in the middle of the old anchor.
-    # The two-tab indent is what distinguishes the SD stager's apply-pending
-    # arm from the three-tab PUT one.
+    # The one-tab indent is what distinguishes the SD stager (settings_load,
+    # Phase 4h) from the PUT stager's indented arms.
     origin_after_flag = text.replace(
-        "\t\tg_pending_dsp_origin = DSP_ORIGIN_SD;\n", "", 1
+        "\n\tg_pending_dsp_origin = DSP_ORIGIN_SD;\n", "\n", 1
     ).replace(
-        "\n\t\tg_dsp_apply_pending = true;",
-        "\n\t\tg_dsp_apply_pending = true;"
-        "\n\t\tg_pending_dsp_origin = DSP_ORIGIN_SD;",
+        "\n\tg_dsp_apply_pending = true;",
+        "\n\tg_dsp_apply_pending = true;"
+        "\n\tg_pending_dsp_origin = DSP_ORIGIN_SD;",
         1,
     )
+    assert origin_after_flag != text, "dsp-origin mutation anchor moved"
     _expect_fail(
         assert_dsp_model_origin_is_staged_not_assumed,
         origin_after_flag,
@@ -3676,13 +3697,16 @@ def run_audio_cutover_self_test():
         "dsp-origin/source-vocabulary-widened",
         "grew a third value",
     )
+    # The format moved to aius_optical_dsp_config_write (optical-app asserts
+    # its document has no model_origin); here the selection body must not
+    # add one either.
     origin_on_config_route = text.replace(
-        '\t                      "{\\"source\\":\\"%s\\",'
-        '\\"config_generation\\":%lu,',
-        '\t                      "{\\"source\\":\\"%s\\",'
-        '\\"model_origin\\":\\"put\\",\\"config_generation\\":%lu,',
+        '\theader.source = dsp_source_name(origin);\n',
+        '\theader.source = dsp_source_name(origin);\n'
+        '\t(void)"\\"model_origin\\":\\"put\\"";\n',
         1,
     )
+    assert origin_on_config_route != text, "dsp-origin mutation anchor moved"
     _expect_fail(
         assert_dsp_model_origin_is_staged_not_assumed,
         origin_on_config_route,
@@ -3767,6 +3791,11 @@ def _synthetic_counter_edges():
           "\trecord_event(AIUS_EVENT_CLOCK_TRIM, current_state(), 1u);\n"
           "\trecord_event(AIUS_EVENT_TX_MISSED_FILL, current_state(), 1u);\n"
           "\trecord_event(AIUS_EVENT_AC3_CRC_REJECT, current_state(), 1u);\n"
+          "}\n"
+          "static FLASHMEM void sd_overlay_event(void *, AiusSdOverlayEvent event,\n"
+          "                                      const char *)\n"
+          "{\n"
+          "\trecord_event(AIUS_EVENT_SD_FLUSH_CRC_DROP, current_state(), 1u);\n"
           "}\n"
           "static FLASHMEM uint16_t counter_edge(uint32_t current, uint32_t *previous)\n"
           "{\n"
@@ -5637,10 +5666,12 @@ FILL_STEP_HOOK = "aius_runtime_storage_fill_step_defer"
 # epoch, so a started root job never parks as ROOT_RUNNING. Phase 4g G8 is the
 # one exception: an uncancelled, non-draining CACHE_FILL root job's step waits
 # while the platform's fill hook holds; no other job is ever gated.
+# Phase 4h: pw-storage hoisted the ownerless branch into advance_ownerless(),
+# a guard-return over the same predicate (the S8 STORE sink steps beside it).
 STORAGE_OWNERLESS_ADVANCE = re.compile(
-    r"\(\s*service\s*->\s*draining\s*\|\|\s*"
-    r"service\s*->\s*root_state\s*==\s*AIUS_RUNTIME_STORAGE_ROOT_RUNNING\s*\)\s*"
-    r"&&\s*!\s*service\s*->\s*terminal_seen\s*\)\s*\{\s*"
+    r"if\s*\(\s*\(\s*!\s*service\s*->\s*draining\s*&&\s*"
+    r"service\s*->\s*root_state\s*!=\s*AIUS_RUNTIME_STORAGE_ROOT_RUNNING\s*\)\s*"
+    r"\|\|\s*service\s*->\s*terminal_seen\s*\)\s*return\s*;\s*"
     r"const\s+bool\s+fill_paused\s*=\s*"
     r"!\s*service\s*->\s*draining\s*&&\s*"
     r"service\s*->\s*root_state\s*==\s*AIUS_RUNTIME_STORAGE_ROOT_RUNNING\s*&&\s*"
@@ -5648,7 +5679,7 @@ STORAGE_OWNERLESS_ADVANCE = re.compile(
     r"!\s*service\s*->\s*root_cancelling\s*&&\s*"
     r"aius_runtime_storage_fill_step_defer\s*\(\s*&\s*service\s*->\s*job\s*\)\s*;\s*"
     r"if\s*\(\s*!\s*fill_paused\s*\)\s*"
-    r"\(void\)\s*advance\s*\(\s*service\s*,\s*now_ms\s*,\s*false\s*\)\s*;\s*\}"
+    r"\(void\)\s*advance\s*\(\s*service\s*,\s*now_ms\s*,\s*false\s*\)\s*;"
 )
 OWNERSHIP_BODY = re.compile(
     r"^\s*return\s+g_aius_spdif_tx24\s*\.\s*gate_open\s*!=\s*0u\s*&&\s*"
@@ -5708,6 +5739,14 @@ def assert_root_sd_starts_consult_fifo_defer(sources):
         own_call = min(own.find(c) for c in ROOT_SD_START_CALLS if c in own)
         if -1 < consult_at(own) < own_call:
             continue
+        if starter == "sd_flush_start_job":
+            # 4h: reached only through g_sd_flush_ops.start, which
+            # aius_optical_sd_flush_start calls after storage_ready
+            # (sd_flush_storage_ready); sd-overlay-wiring checks that order.
+            assert FIFO_DEFER_CALL in defs.get("sd_flush_storage_ready", ""), (
+                "sd_flush_storage_ready must consult sd_fifo_defer() (F2)"
+            )
+            continue
         callers = sorted(
             name for name, body in defs.items()
             if name != starter and re.search(rf"\b{starter}\s*\(", body)
@@ -5728,17 +5767,21 @@ def assert_root_sd_starts_consult_fifo_defer(sources):
     )
     storage = _clean_definitions(sources[STORAGE_SOURCE])
     stepping = [n for n, b in storage.items() if STORAGE_OWNERLESS_ADVANCE.search(b)]
-    assert stepping == ["aius_runtime_storage_service"], (
-        "aius_runtime_storage_service's ownerless branch must read `} else if "
-        "((service->draining || service->root_state == "
-        "AIUS_RUNTIME_STORAGE_ROOT_RUNNING) && !service->terminal_seen) { const "
-        "bool fill_paused = !service->draining && service->root_state == "
+    assert stepping == ["advance_ownerless"], (
+        "advance_ownerless must read `if ((!service->draining && "
+        "service->root_state != AIUS_RUNTIME_STORAGE_ROOT_RUNNING) || "
+        "service->terminal_seen) return; const bool fill_paused = "
+        "!service->draining && service->root_state == "
         "AIUS_RUNTIME_STORAGE_ROOT_RUNNING && service->job.kind == "
         "AIUS_SD_JOB_CACHE_FILL && !service->root_cancelling && "
         "aius_runtime_storage_fill_step_defer(&service->job); if (!fill_paused) "
-        "(void)advance(service, now_ms, false); }` (a started root job is never "
+        "(void)advance(service, now_ms, false);` (a started root job is never "
         "held, its start gate alone defers, except an uncancelled CACHE_FILL "
         "per G8): " + ", ".join(stepping)
+    )
+    assert "advance_ownerless(" in storage.get("aius_runtime_storage_service", ""), (
+        "aius_runtime_storage_service must step the ownerless job through "
+        "advance_ownerless()"
     )
 
 
@@ -5984,7 +6027,8 @@ ROUTE_FILL_WAIT = re.compile(
 FOLLOW_CARD = re.compile(
     r"if\s*\(\s*aius_optical_web_fill_follow_card\s*\(\s*&\s*g_web_fill_walk\s*\.\s*ready_seen\s*,"
     r"\s*&\s*g_web_fill_walk\s*\.\s*mounts_seen\s*,\s*g_sd_ready\s*,\s*storage\s*\.\s*target\s*\.\s*"
-    r"mounted\s*,\s*storage\s*\.\s*target\s*\.\s*mounts\s*\)\s*\)\s*web_cache_invalidate_all\s*\(\s*\)\s*;"
+    # Phase 4h: the arm may be a block that also sets the card-loss hold.
+    r"mounted\s*,\s*storage\s*\.\s*target\s*\.\s*mounts\s*\)\s*\)\s*\{?\s*web_cache_invalidate_all\s*\(\s*\)\s*;"
 )
 REPLAY_FILL_GATE = re.compile(
     r"if\s*\(\s*g_web_cache\s*\.\s*base\s*!=\s*nullptr\s*&&\s*!\s*g_web_fill_walk\s*\.\s*"
@@ -6151,6 +6195,310 @@ def assert_fill_resume_pause_and_presets(sources):
         "(resume offset == storage.job.end_offset): a tail's end is no chunk "
         "boundary to resume at (finding 1)"
     )
+
+
+def _strong_definition(clean, name):
+    return re.search(rf"\b{name}\s*\([^;{{}}]*\)\s*\{{", clean) is not None
+
+
+# Phase 4h: link-time hooks whose weak defaults (aius_runtime_storage.cpp)
+# would silently hide a missing definition in optical_main.cpp.
+SD_OVERLAY_STRONG_HOOKS = (
+    "aius_runtime_storage_settings_restores",
+    "aius_runtime_storage_root_input",
+    "aius_runtime_storage_store_open",
+    "aius_runtime_storage_store_chunk",
+    "aius_runtime_storage_store_commit",
+    "aius_runtime_storage_store_abort",
+)
+
+
+def _between_last(body, earlier, later):
+    """The text from the last `earlier` before the first `later` up to it."""
+    end = body.find(later)
+    assert end != -1, f"no {later}"
+    start = body.rfind(earlier, 0, end)
+    assert start != -1, f"no {earlier} before {later}"
+    return body[start:end]
+
+
+def assert_sd_overlay_wiring(sources):
+    """Phase 4h: CR4-B2 (no cacheClear here, no new W2 row), the strong
+    hooks, B6 (publish_config consults the overlay before writing g_config or
+    g_pending_dsp_model), R5-S1 / G8 (the flush start consults sd_fifo_defer()
+    and cancels a fill through web_cache_fill_cancel()), the job-end order
+    (pass and read-back notes before _job_end) and R4-B1 (in both OTA
+    services the drain gate precedes the park and a second drain query is
+    the statement right before aius_recorder_bank_park; in the reboot service
+    it immediately precedes tx_gate_actuate and reset_application)."""
+    raw = sources[OPTICAL_MAIN_SOURCE]
+    clean = without_comments_and_literals(raw)
+    assert "cacheClear" not in clean, (
+        "optical_main.cpp must not call cacheClear: the cache drop is an "
+        "adapter primitive (CR4-B2)"
+    )
+    # The put's per-chunk yield (lib/aius_web_cache) is a silent no-op until
+    # bound: the composition must bind it to the producer yield.
+    assert re.search(r"\baius_web_cache_set_put_yield\s*\(\s*web_cache_verify_yield\s*,",
+                     clean), (
+        "optical_main.cpp must call aius_web_cache_set_put_yield("
+        "web_cache_verify_yield, ...): an unbound put yield is a no-op"
+    )
+    missing = [h for h in SD_OVERLAY_STRONG_HOOKS if not _strong_definition(clean, h)]
+    assert not missing, f"optical_main.cpp must define the 4h hooks: {missing}"
+    defs = _clean_definitions(raw)
+    # B6, H10: every settings load and restore goes through the portable
+    # policy (aius_optical_settings_*, aius_optical_app.cpp, proved in
+    # optical-app), whose publication skips a shadowed path before the
+    # platform's settings_load() writes g_config or g_pending_dsp_model.
+    publish = defs["platform_publish_config"]
+    assert "aius_optical_settings_publish(" in publish, (
+        "platform_publish_config must route the settings loads through "
+        "aius_optical_settings_publish (B6, H10)"
+    )
+    for write in ("g_config = parsed;", "g_pending_dsp_model = parsed;"):
+        assert write not in publish, (
+            f"platform_publish_config writes {write} itself, around the "
+            "overlay's shadow check (B6)"
+        )
+    complete = defs["sd_step_complete"]
+    assert complete.count("aius_optical_settings_load_end(") == 3, (
+        "sd_step_complete must end LOAD_CONFIG, LOAD_DSP and the restore "
+        "steps through aius_optical_settings_load_end (H10)"
+    )
+    assert "aius_optical_settings_load_begin(" in defs["sd_start_step"], (
+        "sd_start_step must reset the load verdict (H10)"
+    )
+    app_publish = _clean_definitions(sources[APP_SOURCE]).get(
+        "aius_optical_settings_publish", "")
+    assert -1 < app_publish.find("shadowed(") < app_publish.find("load("), (
+        "aius_optical_settings_publish must consult the overlay before the "
+        "platform's load writes the running state (B6)"
+    )
+    # The flush, remount, freeze and put policy is aius_optical_sd_flush_* /
+    # aius_optical_sd_idle_step / aius_optical_sd_write_gate (aius_optical_app.cpp,
+    # proved in optical-app); optical_main.cpp binds g_sd_flush_ops and routes
+    # its call sites through it. R5-S1 / G8: the start consults storage_ready
+    # (sd_fifo_defer()) before pinning a job and cancels a fill through
+    # fill_cancel (web_cache_fill_cancel()); the job end orders the pass and
+    # read-back notes before job_end.
+    app_defs = _clean_definitions(sources[APP_SOURCE])
+    app_start = app_defs.get("aius_optical_sd_flush_start", "")
+    for needle in ("fill_cancel(", "storage_ready(", "start(context"):
+        assert needle in app_start, f"aius_optical_sd_flush_start must call {needle}"
+    assert app_start.find("storage_ready(") < app_start.find("start(context"), (
+        "aius_optical_sd_flush_start must consult storage_ready before pinning a job"
+    )
+    app_settle = app_defs.get("aius_optical_sd_flush_settle", "")
+    app_end = app_settle.find("job_end(")
+    for note in ("note_pass(", "note_readback("):
+        assert -1 < app_settle.find(note) < app_end, f"{note} must precede job_end"
+    for callback, needle in (
+        ("sd_flush_storage_ready", "sd_fifo_defer()"),
+        ("sd_flush_fill_cancel", "web_cache_fill_cancel()"),
+        ("sd_flush_start_job", "aius_sd_overlay_next_job("),
+        ("sd_flush_note_pass", "aius_sd_overlay_note_pass_closed("),
+        ("sd_flush_note_readback", "aius_sd_overlay_note_readback("),
+        ("sd_flush_job_end", "aius_sd_overlay_job_end("),
+        ("sd_flush_card_detected", "aius_sd_teensy_card_detected("),
+        ("sd_flush_playback", "pllLocked()"),
+    ):
+        assert needle in defs.get(callback, ""), f"{callback} must call {needle}"
+    ops = raw[raw.find("g_sd_flush_ops PROGMEM = {"):]
+    ops = ops[:ops.find("};")]
+    for callback in ("sd_flush_storage_ready", "sd_flush_fill_cancel",
+                     "sd_flush_start_job", "sd_flush_note_pass",
+                     "sd_flush_note_readback", "sd_flush_job_end",
+                     "sd_flush_card_detected", "sd_flush_playback"):
+        assert callback in ops, f"g_sd_flush_ops must bind {callback}"
+    routes = (
+        ("sd_lifecycle_service", "aius_optical_sd_idle_step("),
+        ("sd_flush_settle", "aius_optical_sd_flush_settle("),
+        ("service_reboot_request", "aius_optical_sd_service_gate("),
+        ("service_ota_activation", "aius_optical_sd_service_gate("),
+        ("service_ota_rehearsal", "aius_optical_sd_service_gate("),
+        ("sd_overlay_reput", "aius_optical_settings_reput("),
+        ("app_sd_ready", "aius_optical_app_card_ops_ready("),
+        ("dsp_config_json", "aius_optical_dsp_config_write("),
+        # Delivery audit: D-S2 the due predicate is the overlay's own pick;
+        # D-S1 card-gone needs DAT3 absent (flush end and the fill's hold);
+        # D-N3 REPLACE scratch names are boot-independent.
+        ("sd_flush_due", "aius_sd_overlay_job_ready("),
+        # D-S5: every card-loss decision (the flush end, the fill's hold, the
+        # lifecycle's per-pass observation) goes through the one latched
+        # classification, which re-muxes DAT3 only for a new driver fault;
+        # direct card ops count theirs; the presence read is the ops callback.
+        ("sd_flush_settle", "aius_optical_sd_card_loss("),
+        ("web_cache_fill_settle", "aius_optical_sd_card_loss("),
+        ("sd_lifecycle_service", "aius_optical_sd_card_loss("),
+        # D-S7: the two settle sites hand over the adapter's open file, so
+        # a fault is never classified (DAT3 never read) with a file open.
+        ("sd_flush_settle", "storage.target.file_open"),
+        ("sd_flush_settle", "end.loss_pending"),
+        ("web_cache_fill_settle", "storage.target.file_open"),
+        ("direct_card_settle", "aius_optical_sd_note_direct_fault("),
+        ("sd_flush_card_present_after_fault", "aius_sd_teensy_card_detected("),
+        ("sd_flush_card_present_after_fault", "aius_sd_teensy_invalidate_mount("),
+        ("sd_flush_start_job", "aius_optical_sd_flush_scratch_id("),
+        ("http_dsp_config_json", "dsp_config_json(body, capacity, false)"),
+        # NS6: the Q2 re-put writes the file form (base_generation present).
+        ("write_dsp_config_file", "dsp_config_json(body, capacity, true)"),
+        ("sd_overlay_reput", "write_dsp_config_file"),
+        ("sd_drop_orphan_put", "aius_optical_sd_flush_sweep_orphan("),
+        ("app_overlay_put_begin", "aius_optical_sd_flush_put_begin("),
+        ("sd_flush_note_probe", "aius_optical_sd_flush_note_probe("),
+    )
+    for caller, needle in routes:
+        assert needle in defs.get(caller, ""), f"{caller} must route through {needle}"
+    # D-S5: the DAT3 re-mux after a lost mount happens only inside the bound
+    # callback (and the adapter's own card-gone paths), never from the
+    # card-follow or settle call sites directly; E3's mode change never
+    # reaches it (app_sd_set_mode is checked above).
+    for caller in ("sd_flush_settle", "web_cache_fill_settle",
+                   "sd_lifecycle_service", "app_sd_set_mode"):
+        assert "aius_sd_teensy_invalidate_mount(" not in defs.get(caller, ""), (
+            f"{caller} must not re-mux DAT3 itself (D-S5, E3)"
+        )
+    assert "sd_flush_card_present_after_fault" in ops, (
+        "g_sd_flush_ops must bind sd_flush_card_present_after_fault"
+    )
+    # D-S9: one BEGIN gate (aius_optical_sd_begin_blocked), consulted by every
+    # path that can start a storage BEGIN. The storage-job start sites are a
+    # closed set (a new one fails here until it is gated), the replay job is
+    # the only direct executor, and each is reached through the gate.
+    assert "sd_flush_mounted" in ops, "g_sd_flush_ops must bind sd_flush_mounted"
+    assert "aius_optical_sd_begin_blocked(" in defs.get("sd_begin_blocked", "")
+    starters = sorted(name for name, body in defs.items()
+                      if "aius_runtime_teensy_start_storage_job(" in body)
+    assert starters == ["sd_flush_start_job", "sd_start_step",
+                        "web_cache_fill_next"], (
+        f"storage job start sites changed ({starters}): gate the new one "
+        "through sd_begin_blocked (D-S9)"
+    )
+    executors = sorted(name for name, body in defs.items()
+                       if "aius_sd_teensy_execute(" in body)
+    assert executors == ["replay_job_route"], (
+        f"direct adapter executors changed ({executors}): gate BEGIN (D-S9)"
+    )
+    for site, gate in (("sd_lifecycle_service", "sd_step_begin_blocked("),
+                       ("aius_runtime_http_admit", "sd_begin_blocked("),
+                       ("replay_job_route", "sd_replay_begin_blocked(")):
+        assert gate in defs.get(site, ""), (
+            f"{site} must consult the BEGIN gate {gate} (D-S9, D-S10, D-N9)"
+        )
+    assert "aius_optical_sd_step_begin_blocked(" in defs.get("sd_step_begin_blocked", "")
+    assert "aius_optical_sd_replay_begin_blocked(" in defs.get(
+        "sd_replay_begin_blocked", "")
+    for site in ("aius_optical_sd_flush_start", "aius_optical_sd_idle_step"):
+        assert "aius_optical_sd_begin_blocked(" in app_defs.get(site, ""), (
+            f"{site} must consult aius_optical_sd_begin_blocked (D-S9)"
+        )
+    assert "flush->fault_remount" in app_defs.get("aius_optical_sd_flush_start", ""), (
+        "aius_optical_sd_flush_start must wait for the fault remount (D-S9 a)"
+    )
+    # CR-B1: the remount schedule is read only through sd_remount_waiting
+    # (an armed flag, lapsed once due) and written only through
+    # sd_remount_schedule; the lifecycle lapses the windows every pass and
+    # keeps a skipped due probe's stamp fresh.
+    for name, body in app_defs.items():
+        if name in ("sd_remount_waiting", "sd_remount_schedule"):
+            continue
+        assert "remount_at_ms" not in body, (
+            f"{name} touches remount_at_ms outside the armed schedule (CR-B1)"
+        )
+    assert "aius_optical_sd_flush_lapse(" in app_defs.get("aius_optical_sd_card_loss", "")
+    assert "g_sd_probe_at_ms = now_ms;" in defs.get("sd_lifecycle_service", ""), (
+        "sd_lifecycle_service must refresh a skipped due probe's stamp (CR-B1)"
+    )
+    # R5-S2: both rehearsal abandons (the gate's and the second drain
+    # query's) record OTA_REHEARSAL_ABANDONED before the park.
+    rehearsal = defs["service_ota_rehearsal"]
+    rehearsal_gate = rehearsal[rehearsal.find("aius_optical_sd_service_gate("):
+                               rehearsal.find("aius_recorder_bank_park(")]
+    assert rehearsal_gate.count("ota_rehearsal_finish(OTA_REHEARSAL_ABANDONED)") == 2, (
+        "service_ota_rehearsal must finish OTA_REHEARSAL_ABANDONED on the gate's "
+        "abandon and on the final drain query (R5-S2)"
+    )
+    # GET /api/dsp/config serves the staged model while an Apply is pending,
+    # else the running one, under the generation the Apply advances.
+    dsp = defs.get("dsp_config_json", "")
+    for needle in ("apply_pending ? g_pending_dsp_model : g_active_model",
+                   "header.config_pending = apply_pending;",
+                   "header.config_generation = g_config_generation;"):
+        assert needle in dsp, f"dsp_config_json must carry `{needle}`"
+    # E3 mode-only half: POST /api/sd/mode drops the mount through the
+    # adapter and never touches DAT3 (the adapter's side, set_mode leaving
+    # dat3_remuxed clear, is sd-target's test_card_detected_and_dat3).
+    mode = defs.get("app_sd_set_mode", "")
+    assert "aius_sd_teensy_set_mode(" in mode and "dat3_remuxed" not in mode, (
+        "app_sd_set_mode must switch the mode through the adapter and leave "
+        "dat3_remuxed to it (E3)"
+    )
+    for service in ("service_ota_activation", "service_ota_rehearsal"):
+        body = defs[service]
+        park = body.find("aius_recorder_bank_park(")
+        gate = body.find("aius_optical_sd_service_gate(")
+        assert -1 < gate < park, f"{service}: the drain gate must precede the park"
+        tail = _between_last(body, "sd_flush_drained()", "aius_recorder_bank_park(")
+        assert tail.count("return") == 1 and "aius_optical_sd_service_gate(" not in tail, (
+            f"{service}: the second drain query must be the statement right "
+            "before aius_recorder_bank_park (R4-B1)"
+        )
+    reboot = defs["service_reboot_request"]
+    tail = _between_last(reboot, "aius_optical_sd_service_final(", "tx_gate_actuate(")
+    assert tail.count("return") == 1, (
+        "service_reboot_request: the second drain query must immediately "
+        "precede tx_gate_actuate and reset_application (R4-B1)"
+    )
+    assert reboot.find("tx_gate_actuate(") < reboot.find("reset_application("), (
+        "service_reboot_request must actuate the gate before the reset"
+    )
+
+
+SD_OVERLAY_CHECKS = (
+    ("sd-overlay-wiring", assert_sd_overlay_wiring),
+)
+
+
+def run_sd_overlay_self_test(sources):
+    """The 4h check discriminates: each mutation of the real sources fails."""
+    mutations = (
+        ("extern \"C\" FLASHMEM void aius_runtime_storage_settings_restores(",
+         "extern \"C\" FLASHMEM void unrelated_settings_restores("),
+        ("aius_sd_overlay_note_readback(&g_sd_overlay,",
+         "(void)(&g_sd_overlay,"),
+        ("\treturn sd_storage_idle() && !sd_fifo_defer();",
+         "\treturn sd_storage_idle();"),
+        ("aius_optical_sd_flush_sweep_orphan(\n", "(void)(\n"),
+        ("\taius_web_cache_set_put_yield(web_cache_verify_yield, nullptr);",
+         "\t(void)0;"),
+        ("\n\t\t\tota_rehearsal_finish(OTA_REHEARSAL_ABANDONED);",
+         "\n\t\t\tota_rehearsal_finish(OTA_REHEARSAL_FAIL);"),
+        ("apply_pending ? g_pending_dsp_model : g_active_model",
+         "g_active_model"),
+        ("\treturn aius_sd_overlay_job_ready(&g_sd_overlay, now_ms);",
+         "\treturn true;"),
+        ("\taius_optical_sd_note_direct_fault(&g_sd_flush);\n", "\n"),
+        ("\tif (sd_start && sd_begin_blocked(sample.now_ms)) {",
+         "\tif (false) {"),
+        ("\tif (action->kind == AIUS_SD_ACTION_BEGIN && sd_replay_begin_blocked()) {",
+         "\tif (false) {"),
+        ("\t\tend.loss_pending = loss == AIUS_OPTICAL_SD_CARD_PENDING;\n",
+         "\t\tend.card_detected = true;\n"),
+        ("\taius_sd_teensy_set_mode(target, dma);\n",
+         "\taius_sd_teensy_set_mode(target, dma);\n\ttarget->dat3_remuxed = true;\n"),
+        ("if (!sd_flush_drained()) {\n\t\tg_ota_activation_fault = "
+         "OTA_ACTIVATION_FAULT_FLUSH_PENDING;\n\t\tota_activation_recover();",
+         "if (false) {\n\t\tg_ota_activation_fault = "
+         "OTA_ACTIVATION_FAULT_FLUSH_PENDING;\n\t\tota_activation_recover();"),
+    )
+    for old, new in mutations:
+        mutated = _mutated(sources, OPTICAL_MAIN_SOURCE, old, new)
+        try:
+            assert_sd_overlay_wiring(mutated)
+        except AssertionError:
+            continue
+        raise AssertionError(f"sd-overlay-wiring passed a source with {old!r} removed")
 
 
 ADMISSION_CHECKS = (
@@ -6331,12 +6679,12 @@ def _admission_fixture():
         "\tsample.carrier = g_tx_gate_carrier ? 1u : 0u;\n}\n"
     )
     storage = (
-        "FLASHMEM bool aius_runtime_storage_service(AiusRuntimeStorage *service)\n{\n"
-        "\tif (action) {\n\t\troute(service);\n"
-        "\t} else if ((service->draining ||\n"
-        "\t            service->root_state ==\n"
-        "\t                    AIUS_RUNTIME_STORAGE_ROOT_RUNNING) &&\n"
-        "\t           !service->terminal_seen) {\n"
+        # Phase 4h: the ownerless branch as pw-storage hoisted it.
+        "FLASHMEM void advance_ownerless(AiusRuntimeStorage *service, uint32_t now_ms)\n{\n"
+        "\tif ((!service->draining &&\n"
+        "\t     service->root_state != AIUS_RUNTIME_STORAGE_ROOT_RUNNING) ||\n"
+        "\t    service->terminal_seen)\n"
+        "\t\treturn;\n"
         "\t\tconst bool fill_paused =\n"
         "\t\t\t!service->draining &&\n"
         "\t\t\tservice->root_state == AIUS_RUNTIME_STORAGE_ROOT_RUNNING &&\n"
@@ -6344,7 +6692,10 @@ def _admission_fixture():
         "\t\t\t!service->root_cancelling &&\n"
         "\t\t\taius_runtime_storage_fill_step_defer(&service->job);\n"
         "\t\tif (!fill_paused)\n"
-        "\t\t\t(void)advance(service, now_ms, false);\n\t}\n\treturn true;\n}\n"
+        "\t\t\t(void)advance(service, now_ms, false);\n}\n"
+        "FLASHMEM bool aius_runtime_storage_service(AiusRuntimeStorage *service)\n{\n"
+        "\tif (action) {\n\t\troute(service);\n"
+        "\t} else {\n\t\tadvance_ownerless(service, now_ms);\n\t}\n\treturn true;\n}\n"
         "FLASHMEM bool aius_runtime_storage_diag_json(const AiusRuntimeStorage *s)\n{\n"
         "\treturn diag_append(o, c, l, \"x\");\n}\n"
     )
@@ -6997,6 +7348,10 @@ def main():
         )
         # Phase 4f: admission and render-yield guards over the same sources.
         run_checks("admission", ADMISSION_CHECKS, read_producer_yield_sources())
+        # Phase 4h: the write-behind wiring, over the real sources only (its
+        # discrimination is proved by mutating them).
+        run_sd_overlay_self_test(read_producer_yield_sources())
+        run_checks("sd-overlay", SD_OVERLAY_CHECKS, read_producer_yield_sources())
     if args.group in ("absence", "all"):
         run_checks("absence", ABSENCE_CHECKS, text)
 

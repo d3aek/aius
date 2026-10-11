@@ -54,3 +54,14 @@ E1, E2, E6, E7 and CR5-S4):
   is zero at the start of `init`, after `end()`, and on any non-FAT volume.
   `FatPartition::volumeSerial()` and the `FsVolume::volumeSerial()` forwarder
   return the stored value with no card read.
+
+Phase 4h (CR4-B2, owner decision 2026-10-10) adds one more patch to
+`src/FsLib/FsVolume.h`:
+
+- **Cache drop (CR4-B2).** `uint8_t* FsVolume::cacheClear()` forwards to the
+  mounted partition's own `cacheClear()` (`FatPartition.h:95` or
+  `ExFatPartition.h:78`), which syncs a dirty cached sector then drops the
+  cache; `nullptr` on a failed sync or with no volume mounted. Upstream keeps
+  `m_fVol` and `m_xVol` private with no accessor, and the adapter's
+  `AIUS_SD_ACTION_CACHE_DROP` (`src/aius_sd_teensy.cpp`) needs it so a
+  copy-before-write read-back reads the card, not SdFat's cache.

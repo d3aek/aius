@@ -98,11 +98,28 @@ class Fixtures(unittest.TestCase):
         missing = sb.Chain("missing", [("fx_reset", None, "call"), ("fx_itcm_fn", None, "call")])
         self.assertEqual(s.check_chain(missing)[0],
                          ["stack-bound: chain missing: fx_reset has no edge to fx_itcm_fn"])
-        s = bound("fx_indirect.c")
+        row = aw.SiteRow("fx_ind_root", None, 1, ("taken_by", r"fx_indirect"))
+        s = bound("fx_indirect.c", aw.Tables(sites=[row]))
         ind = sb.Chain("ind", [("fx_ind_root", None, "call"), ("fx_tgt_big", None, "indirect: fx_ops")])
         self.assertEqual(s.check_chain(ind)[0], [])
         bad = sb.Chain("bad", [("fx_reset", None, "call"), ("fx_tgt_big", None, "indirect: none")])
         self.assertEqual(len(s.check_chain(bad)[0]), 1)  # fx_reset has no indirect site
+
+    def test_chain_hop_site_drift_fails(self):
+        # A hop is not walked, so check_chain holds its sites to its W4 row:
+        # a drifted count, a missing row and a row not targeting the next hop fail.
+        ind = sb.Chain("ind", [("fx_ind_root", None, "call"), ("fx_tgt_big", None, "indirect: fx_ops")])
+        drift = aw.SiteRow("fx_ind_root", None, 2, ("taken_by", r"fx_indirect"))
+        s = bound("fx_indirect.c", aw.Tables(sites=[drift]))
+        self.assertEqual(s.check_chain(ind)[0],
+                         ["stack-bound: chain ind: hop fx_ind_root has 1 indirect site(s), row records 2"])
+        s = bound("fx_indirect.c")
+        self.assertEqual(s.check_chain(ind)[0],
+                         ["stack-bound: chain ind: hop fx_ind_root has 1 unlisted indirect site(s)"])
+        other = aw.SiteRow("fx_ind_root", None, 1, ("names", [("fx_jump_table", None)]))
+        s = bound("fx_indirect.c", aw.Tables(sites=[other]))
+        self.assertEqual(s.check_chain(ind)[0],
+                         ["stack-bound: chain ind: fx_ind_root's W4 row does not target fx_tgt_big"])
 
     def test_below_root_charges_only_hook_reaching_callees(self):
         s = bound("fx_alloc.c")
@@ -197,6 +214,7 @@ class OpticalImage(unittest.TestCase):
         self.assertEqual(len(paths), len(STACK.chains))
         worst = max(p + b for (_l, p, b, _path) in paths)
         fails += sb.check_margin(worst + exc, zone)
+        fails += sb.check_under_hook_paths(STACK.chains, paths)
         self.assertEqual(fails, [], "\n".join(report))
 
 

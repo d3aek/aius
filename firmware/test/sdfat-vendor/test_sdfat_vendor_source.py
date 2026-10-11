@@ -327,6 +327,35 @@ class VolumeSerial(unittest.TestCase):
         self.assertRegex(volume, r"uint32_t volumeSerial\(\) const \{\s*return m_fVol \? m_fVol->volumeSerial\(\) : 0;\s*\}")
 
 
+class CacheClearForwarder(unittest.TestCase):
+    """Phase 4h CR4-B2: FsVolume forwards the mounted partition's cacheClear()."""
+
+    FORWARDER = (
+        r"uint8_t\* cacheClear\(\) \{\s*return m_fVol \? m_fVol->cacheClear\(\) :"
+        r"\s*m_xVol \? m_xVol->cacheClear\(\) : nullptr;\s*\}"
+    )
+
+    def test_forwards_to_the_mounted_partition_or_fails(self):
+        self.assertRegex(code(FS_VOLUME_H), self.FORWARDER)
+
+    def test_forwarder_is_public(self):
+        volume = code(FS_VOLUME_H)
+        body = volume[volume.index("class FsVolume {"):]
+        forwarder = re.search(self.FORWARDER, body)
+        self.assertIsNotNone(forwarder)
+        self.assertIn("public:", body[: forwarder.start()])
+        self.assertNotRegex(body[: forwarder.start()], r"\b(private|protected):")
+
+    def test_discriminates(self):
+        volume = code(FS_VOLUME_H)
+        for original, mutated in (
+            ("m_xVol->cacheClear() : nullptr", "m_xVol->cacheClear() : m_cache"),
+            ("return m_fVol ? m_fVol->cacheClear()", "return m_xVol ? m_xVol->cacheClear()"),
+        ):
+            self.assertIn(original, volume)
+            self.assertNotRegex(volume.replace(original, mutated, 1), self.FORWARDER)
+
+
 class SdWrapperApi(unittest.TestCase):
     def setUp(self):
         self.header = code(SD_H)

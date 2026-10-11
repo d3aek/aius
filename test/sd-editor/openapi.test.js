@@ -43,6 +43,7 @@ const APPEND_PRIMITIVES = new Map([
   ["snprintf", 2], // snprintf((char *)body, capacity, format, ...)
   ["http_json_append", 3], // http_json_append(body, capacity, length, format, ...)
   ["diag_append", 3], // aius_runtime_storage.cpp's own bounded append
+  ["dsp_json_append", 3], // aius_optical_app.cpp's dsp.json serialiser append
   ["status_append", 3], // Phase 4f: the status render's append (http_json_append plus a yield point)
 ]);
 
@@ -138,9 +139,18 @@ const EMITTERS = {
   recorder_rate_change_array: { file: "src/optical_main.cpp" },
   // GET /api/replays/status.
   http_replay_status_json: { file: "src/optical_main.cpp" },
-  // GET /api/dsp/config.
+  // GET /api/dsp/config. Phase 4h: http_dsp_config_json hands the response buffer
+  // to dsp_config_json, which hands it to the serialiser in aius_optical_app.cpp
+  // (also the Q2 re-put's file form, which adds base_generation).
   http_dsp_config_json: { file: "src/optical_main.cpp" },
-  http_dsp_eq_array: { file: "src/optical_main.cpp" },
+  dsp_config_json: { file: "src/optical_main.cpp" },
+  aius_optical_dsp_config_write: {
+    file: "src/aius_optical_app.cpp",
+    // The file form only: the GET never serves base_generation, so the extractor
+    // drops this branch and models the GET document.
+    branchLiterals: [',"base_generation":%lu'],
+  },
+  dsp_eq_array: { file: "src/aius_optical_app.cpp" },
 };
 
 /** The three documents this gate covers, and the schema each one answers to. */
@@ -156,7 +166,7 @@ const DOCUMENTS = {
     // from its own channel_names table; the extractor reads that table out of
     // the firmware and applies the parsed entry shape to each of the six names.
     dynamicKeys: () => ({
-      input_channels: firmwareStringArray("src/optical_main.cpp", "http_dsp_config_json", "channel_names", 6),
+      input_channels: firmwareStringArray("src/aius_optical_app.cpp", "aius_optical_dsp_config_write", "channel_names", 6),
     }),
   },
 };
@@ -1742,6 +1752,67 @@ describe("Aius OpenAPI contract", () => {
     expect(get.responses["200"].content["application/json"].examples.live.value).toEqual(fixture);
   });
 
+  it("documents the write-behind store's responses and sd_flush status (Phase 4h)", () => {
+    const document = JSON.parse(readFileSync(documentPath, "utf8"));
+    const { paths, components } = document;
+    // 409 sd_flush_pending on the routes that would discard an unflushed write.
+    for (const [route, method] of [
+      ["/api/reboot", "post"],
+      ["/api/ota/activate", "post"],
+    ]) {
+      const conflict = paths[route][method].responses["409"];
+      expect(conflict.content["application/json"].examples.sd_flush_pending.value, route).toEqual({
+        ok: false,
+        error: "sd_flush_pending",
+      });
+    }
+    expect(paths["/api/ota/activate"].post.responses["409"].description).toContain("rehearse");
+    // A full store answers 503 sd_busy with Retry-After on every accepted write.
+    for (const [route, method] of [
+      ["/api/dsp/config", "put"],
+      ["/api/config/public", "put"],
+      ["/sd/{resource}", "put"],
+      ["/sd/{resource}", "delete"],
+    ]) {
+      const busy = paths[route][method].responses["503"];
+      expect(busy.headers["Retry-After"], route).toEqual({ $ref: "#/components/headers/RetryAfter" });
+      expect(busy.content["application/json"].examples.sd_busy.value, route).toEqual({ ok: false, error: "sd_busy" });
+    }
+    expect(paths["/sd/{resource}"].delete.description).toContain("even for a path the card does not hold");
+    // The full sd_flush object is in /api/status; the brief carries a subset.
+    expect(components.schemas.Status.properties.sd_flush).toEqual({ $ref: "#/components/schemas/SdFlush" });
+    const full = Object.keys(components.schemas.SdFlush.properties).sort();
+    expect(full).toEqual(
+      [
+        "crc_drops",
+        "dirty",
+        "drained",
+        "failures",
+        "flushed",
+        "flushing",
+        "held",
+        "last_fault",
+        "max_settings_latency_ms",
+        "oldest_dirty_age_ms",
+        "sync_drain_ms",
+        "tombstones",
+      ].sort(),
+    );
+    expect(components.schemas.SdFlush.required.sort()).toEqual(full);
+    const brief = components.schemas.StatusBrief.properties.sd_flush.properties;
+    for (const key of Object.keys(brief)) expect(components.schemas.SdFlush.properties[key], key).toBeDefined();
+    expect(Object.keys(brief).sort()).toEqual(["dirty", "drained", "failures", "held", "last_fault"]);
+    // Diagnostics for the mount restore and the refused activation reasons.
+    const sdDiag = components.schemas.SdDiag;
+    for (const key of ["settings_restores", "settings_restore_faults"]) {
+      expect(sdDiag.properties[key], key).toBeDefined();
+      expect(sdDiag.required).toContain(key);
+    }
+    expect(components.schemas.OtaDiag.properties.activation_fault.enum).toEqual(
+      expect.arrayContaining(["ota_flush_pending", "ota_sd_busy"]),
+    );
+  });
+
   it("refuses a replay start with 503 fill_busy and Retry-After while the fill walk is incomplete (Phase 4g)", () => {
     const document = JSON.parse(readFileSync(documentPath, "utf8"));
     const post = document.paths["/api/replays/start"].post;
@@ -1775,7 +1846,7 @@ describe("Aius OpenAPI contract", () => {
       ["/api/config/public", "put", ["sd_unavailable", "sd_busy"]],
       ["/api/replays", "get", ["sd_busy"]],
       ["/sd/{resource}", "get", ["sd_unavailable", "sd_busy"]],
-      ["/sd/{resource}", "put", ["sd_unavailable"]],
+      ["/sd/{resource}", "put", ["sd_unavailable", "sd_busy"]],
       ["/sd/{resource}", "delete", ["sd_unavailable", "sd_busy"]],
     ];
     for (const [path, method, sdBodies] of sheddable) {

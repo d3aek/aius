@@ -73,6 +73,13 @@ typedef struct {
 	/* Mount mode: true is DMA SDIO, false FIFO. Set by
 	 * aius_sd_teensy_set_mode; the next real mount uses it. */
 	bool dma;
+	/* Pin 46 (DAT3) is a pulled-down GPIO rather than USDHC-muxed, so
+	 * SD.cardDetected() reads the card. Set by a failed begin (the vendored
+	 * SD.cpp re-muxes it) and by aius_sd_teensy_invalidate_mount()'s
+	 * re-mux; cleared by a successful begin; never touched by a mode change
+	 * (Phase 4h NS3, E3). While set, a card read through SdFat's volume
+	 * runs behind an un-muxed DAT3, so direct card ops refuse. */
+	bool dat3_remuxed;
 	uint32_t driver_faults;
 	uint8_t last_protocol_action;
 } AiusSdTeensy;
@@ -85,13 +92,24 @@ void aius_sd_teensy_init(AiusSdTeensy *adapter);
  * mount, a driver fault, a media check that reports the card gone. This is for
  * the signals it CANNOT see: a caller that has decided the volume is no longer
  * trustworthy (a card transition the lifecycle observed, a driver reset) says so
- * explicitly rather than leaving the adapter to infer it. Memory only; it starts
- * no card transaction and cannot fail. */
+ * explicitly rather than leaving the adapter to infer it. It starts no card
+ * transaction and cannot fail. A card-gone signal: with no file open and DAT3
+ * not already re-muxed, it re-muxes pin 46 to INPUT_PULLDOWN and waits 5 us,
+ * so aius_sd_teensy_card_detected() can read the card (Phase 4h NS3). */
 void aius_sd_teensy_invalidate_mount(AiusSdTeensy *adapter);
+
+/* Whether a card is in the slot, with no card command: SD.cardDetected(), the
+ * DAT3 level, read only while the adapter holds no mount and DAT3 is re-muxed
+ * (dat3_remuxed); otherwise, a boot's first probe included, true, so BEGIN
+ * runs as before (D3). A false read counts absent_mounts (S1, N7). The
+ * playback remount retry and the probe start a BEGIN only when this is true.
+ * Null answers false. */
+bool aius_sd_teensy_card_detected(AiusSdTeensy *adapter);
 
 /* Selects the mount mode. A change invalidates the mount (the next BEGIN
  * remounts in the new mode) only when no file is open; with one open only the
- * mode is recorded. Memory only; starts no card transaction. */
+ * mode is recorded. Memory only; starts no card transaction, and never re-muxes
+ * DAT3: the card and SdFat's volume stay usable until that BEGIN (E3). */
 void aius_sd_teensy_set_mode(AiusSdTeensy *adapter, bool dma);
 
 AiusSdEvent aius_sd_teensy_execute(

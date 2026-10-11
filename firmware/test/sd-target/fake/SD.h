@@ -46,6 +46,10 @@ private:
 class FsVolume {
 public:
 	uint8_t fatType() const;
+	/* The Aius vendor forwarder (vendor/SdFat/src/FsLib/FsVolume.h, Phase
+	 * 4h CR4-B2): the mounted partition's cacheClear(), nullptr on a failed
+	 * sync or with no volume. Signature checked by test_fake_fidelity.py. */
+	uint8_t* cacheClear();
 };
 
 class SdFs {
@@ -55,6 +59,26 @@ public:
 private:
 	FsVolume volume_;
 };
+
+/* SdFat's two partition types and their cache drop, same signature as
+ * vendor/SdFat/src/FatLib/FatPartition.h:95 and ExFatLib/ExFatPartition.h:78
+ * (checked by test_fake_fidelity.py). The fake FsVolume::cacheClear() reaches
+ * whichever the test mounted, as the vendor forwarder does. */
+class FatPartition {
+public:
+	uint8_t* cacheClear();
+};
+
+class ExFatPartition {
+public:
+	uint8_t* cacheClear();
+};
+
+/* Teensy core pin control the adapter's DAT3 re-mux uses. INPUT_PULLDOWN's
+ * value is the core's (cores/teensy4/core_pins.h, test_fake_fidelity.py). */
+#define INPUT_PULLDOWN 3
+void pinMode(uint8_t pin, uint8_t mode);
+void delayMicroseconds(uint32_t usec);
 
 class SDClass {
 public:

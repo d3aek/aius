@@ -17,6 +17,9 @@
 #ifndef FLASHMEM
 #define FLASHMEM
 #endif
+#ifndef PROGMEM
+#define PROGMEM
+#endif
 
 /* Phase 4g: the held-DISPATCH flag took the padding byte before the counters,
  * so the OCRAM-resident service did not grow. */
@@ -122,9 +125,25 @@ __attribute__((noinline)) FLASHMEM AiusIoEvent write_body_chunk(
 	                                      action->length);
 }
 
-/* Flash-resident (const). Shed route dispatches answer this without reaching
- * the application; Retry-After comes from aius_http_write_headers (503). */
-const uint8_t kShedBody[] = "{\"ok\":false,\"error\":\"audio_busy\"}";
+/* Flash-resident through PROGMEM: the Teensy link script copies plain const
+ * .rodata into DTCM .data, so `const` alone does not keep these in flash.
+ * Shed route dispatches answer this without reaching the application;
+ * Retry-After comes from aius_http_write_headers (503). */
+const uint8_t kShedBody[] PROGMEM = "{\"ok\":false,\"error\":\"audio_busy\"}";
+
+/* Flash-resident through PROGMEM. A DISPATCH refused by the SD-writes freeze
+ * (BUSY, Phase 4h S8) answers this; it is not audio shedding, so no shed is
+ * noted. */
+const uint8_t kSdBusyBody[] PROGMEM = "{\"ok\":false,\"error\":\"sd_busy\"}";
+
+/* Phase 4h S8: a www PUT into the PSRAM store reads and writes no card, so its
+ * SD_START skips the admission hook (4g's fill cancel, 4f's F2 shed and F9
+ * defer); the route's own admission already ran at DISPATCH. */
+FLASHMEM bool sd_start_reads_no_card(const AiusSdJobRequest *sd_job)
+{
+	return sd_job != nullptr && sd_job->kind == AIUS_SD_JOB_UPLOAD &&
+	       sd_job->install_mode == AIUS_SD_INSTALL_STORE;
+}
 
 FLASHMEM AiusHttpAdmitVerdict consult(const AiusRuntimeNetworkHttp *service,
                                       AiusHttpAdmitKind kind,
@@ -145,11 +164,16 @@ FLASHMEM AiusHttpAdmitVerdict consult(const AiusRuntimeNetworkHttp *service,
 	return aius_runtime_http_admit(&query);
 }
 
-/* Fails an outstanding SD_START with the audio_busy 503: the correlated
- * SD_FAILED result the storage service would have produced. */
-FLASHMEM void shed_sd_start(AiusRuntimeNetworkHttp *service,
-                            const AiusHttpAction *action)
+/* Fails an outstanding SD_START with a 503: the correlated SD_FAILED result
+ * the storage service would have produced. A SHED carries AUDIO_BUSY (503
+ * audio_busy) and is noted; a BUSY (the SD-writes freeze) carries SD_BUSY
+ * (503 sd_busy) and is not, so http_shed counts audio shedding only. */
+FLASHMEM void refuse_sd_start(AiusRuntimeNetworkHttp *service,
+                              const AiusHttpAction *action,
+                              AiusHttpAdmitVerdict verdict)
 {
+	const bool shed = verdict == AIUS_HTTP_VERDICT_SHED;
+
 	memset(&service->pending_http_event, 0,
 	       sizeof(service->pending_http_event));
 	service->pending_http_event.kind = AIUS_HTTP_EVENT_SD_RESULT;
@@ -159,9 +183,24 @@ FLASHMEM void shed_sd_start(AiusRuntimeNetworkHttp *service,
 	service->pending_http_event.sd_kind = AIUS_HTTP_SD_FAILED;
 	service->pending_http_event.sd_fault = AIUS_SD_FAULT_MEDIA;
 	service->pending_http_event.sd_driver_fault =
-		AIUS_HTTP_DRIVER_FAULT_AUDIO_BUSY;
+		shed ? AIUS_HTTP_DRIVER_FAULT_AUDIO_BUSY
+		     : AIUS_HTTP_DRIVER_FAULT_SD_BUSY;
 	service->http_event_present = true;
-	aius_runtime_http_note_shed();
+	if (shed)
+		aius_runtime_http_note_shed();
+}
+
+/* One SD_START verdict applied, fresh or held. DEFER is the caller's. */
+FLASHMEM void apply_sd_start(AiusRuntimeNetworkHttp *service,
+                             const AiusHttpAction *action,
+                             AiusHttpAdmitVerdict verdict,
+                             AiusHttpAction *storage_action)
+{
+	if (verdict == AIUS_HTTP_VERDICT_SHED ||
+	    verdict == AIUS_HTTP_VERDICT_BUSY)
+		refuse_sd_start(service, action, verdict);
+	else
+		*storage_action = *action;
 }
 
 FLASHMEM bool adapter_busy(const AiusRuntimeNetworkHttp *service)
@@ -169,10 +208,11 @@ FLASHMEM bool adapter_busy(const AiusRuntimeNetworkHttp *service)
 	return service->target.active_action.kind != AIUS_NET_ACTION_NONE;
 }
 
-/* One DISPATCH, fresh or held: a SHED answers the audio_busy 503 without
- * reaching the application; a DEFER holds the dispatch (the transaction's
- * DISPATCH action stays outstanding and the next HTTP epoch asks again,
- * without a step); an ADMIT hands the request to the application. */
+/* One DISPATCH, fresh or held: a SHED answers the audio_busy 503 and a BUSY
+ * the sd_busy 503, both without reaching the application, and only a SHED is
+ * noted; a DEFER holds the dispatch (the transaction's DISPATCH action stays
+ * outstanding and the next HTTP epoch asks again, without a step); an ADMIT
+ * hands the request to the application. */
 FLASHMEM void dispatch_route(AiusRuntimeNetworkHttp *service,
                              AiusOpticalAppDispatcher *app,
                              const AiusHttpAction *action)
@@ -184,17 +224,21 @@ FLASHMEM void dispatch_route(AiusRuntimeNetworkHttp *service,
 	service->deferred_dispatch_present = verdict == AIUS_HTTP_VERDICT_DEFER;
 	if (verdict == AIUS_HTTP_VERDICT_DEFER)
 		return;
-	if (verdict == AIUS_HTTP_VERDICT_SHED) {
-		AiusHttpApplicationResponse shed;
+	if (verdict == AIUS_HTTP_VERDICT_SHED ||
+	    verdict == AIUS_HTTP_VERDICT_BUSY) {
+		const bool shed = verdict == AIUS_HTTP_VERDICT_SHED;
+		AiusHttpApplicationResponse refusal;
 
-		memset(&shed, 0, sizeof(shed));
-		shed.kind = AIUS_HTTP_APP_IMMEDIATE;
-		shed.status = 503u;
-		shed.content_type = "application/json";
-		shed.body = kShedBody;
-		shed.body_length = sizeof(kShedBody) - 1u;
-		aius_runtime_http_note_shed();
-		retain_application_response(service, action, &shed);
+		memset(&refusal, 0, sizeof(refusal));
+		refusal.kind = AIUS_HTTP_APP_IMMEDIATE;
+		refusal.status = 503u;
+		refusal.content_type = "application/json";
+		refusal.body = shed ? kShedBody : kSdBusyBody;
+		refusal.body_length = shed ? sizeof(kShedBody) - 1u
+		                           : sizeof(kSdBusyBody) - 1u;
+		if (shed)
+			aius_runtime_http_note_shed();
+		retain_application_response(service, action, &refusal);
 		return;
 	}
 	response = aius_optical_app_http_dispatch(app, action->request);
@@ -374,10 +418,7 @@ FLASHMEM bool aius_runtime_http_service(
 			return true;
 		service->deferred_start_present = false;
 		service->http_stepped = true;
-		if (verdict == AIUS_HTTP_VERDICT_SHED)
-			shed_sd_start(service, &held);
-		else
-			*storage_action = held;
+		apply_sd_start(service, &held, verdict, storage_action);
 		return true;
 	}
 
@@ -463,20 +504,19 @@ FLASHMEM bool aius_runtime_http_service(
 		service->http_requests++;
 		dispatch_route(service, app, &action);
 		break;
-	case AIUS_HTTP_ACTION_SD_START:
-		switch (consult(service, AIUS_HTTP_ADMIT_SD_START, nullptr,
-		                action.sd_request)) {
-		case AIUS_HTTP_VERDICT_SHED:
-			shed_sd_start(service, &action);
-			break;
-		case AIUS_HTTP_VERDICT_DEFER:
+	case AIUS_HTTP_ACTION_SD_START: {
+		const AiusHttpAdmitVerdict verdict =
+			sd_start_reads_no_card(action.sd_request)
+				? AIUS_HTTP_VERDICT_ADMIT
+				: consult(service, AIUS_HTTP_ADMIT_SD_START, nullptr,
+				          action.sd_request);
+
+		if (verdict == AIUS_HTTP_VERDICT_DEFER)
 			service->deferred_start_present = true;
-			break;
-		default:
-			*storage_action = action;
-			break;
-		}
+		else
+			apply_sd_start(service, &action, verdict, storage_action);
 		break;
+	}
 	case AIUS_HTTP_ACTION_SD_STEP:
 	case AIUS_HTTP_ACTION_SD_CANCEL:
 		*storage_action = action;

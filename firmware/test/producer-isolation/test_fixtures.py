@@ -162,6 +162,14 @@ class SdAndYieldRoots(unittest.TestCase):
         t.sd_unwindowed = [("fx_file_write", "fx_file.c.o")]
         self.assertEqual(aw.check_sd_and_yield_roots(img, t), [])
 
+    def test_yield_root_row_without_yield_point_fails(self):
+        # Phase 4h: a yield-root row is a direct caller of the yield point;
+        # one naming a function that never calls it fails rather than passing.
+        img = fb.image("fx_file.c")
+        t = tables(yield_roots=[("fx_file_write", "fx_file.c.o")], sd_stack_obj=r"^$", sd_stack_name=r"^$")
+        self.assertEqual(aw.check_sd_and_yield_roots(img, t),
+                         [f"W5 (3): yield-root row fx_file_write (fx_file.c.o) does not call {aw.YIELD_POINT}"])
+
     def test_row_matching_no_symbol_fails(self):
         img = fb.image("fx_file.c")
         t = tables(sd_windowed=[("app_read_directory", None)], sd_stack_obj=r"^$", sd_stack_name=r"^$")

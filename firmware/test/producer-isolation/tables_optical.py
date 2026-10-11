@@ -198,6 +198,16 @@ TABLES = Tables(
     # yield through one of them.
     # Phase 4g: the web cache's send loop (the chunk-sourced body's source,
     # a yield every 8 chunks) and the pre-header verify's yield callback.
+    # Phase 4h accept: the one-shot aius_web_cache_put (the settings routes,
+    # the H10 restore and the Q2 re-put; 12 KB of dsp.json is 24 chunks
+    # copied and chip-CRC-checked in one call) yields after every chunk
+    # through aius_web_cache_set_put_yield, bound to web_cache_verify_yield,
+    # so its yield-root row is that row below; no new direct caller.
+    # Phase 4h flush and STORE sink: no yield point. The flush input
+    # (aius_runtime_storage_root_input > aius_web_cache_copy_chunk) and the
+    # sink's aius_web_cache_put_chunk each move one 512 B chunk per storage
+    # advance, so the epoch loop between chunks already runs the producer.
+    # W5 (3) fails a row naming a function that does not call the yield point.
     yield_roots=[("_ZL19platform_checkpointPvt", MAIN), ("_ZL13status_appendPcjPjPKcz", MAIN),
                  ("_ZN12_GLOBAL__N_1L11diag_appendEPcjPjPKcz", "aius_runtime_storage.cpp.o"),
                  ("_ZL20web_cache_body_chunkPvmPhPm", "aius_optical_app.cpp.o"),

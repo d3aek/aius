@@ -52,6 +52,7 @@ extern "C" {
  * pulls in aius_sd.h (and, through aius_http_transaction.h, aius_io.h)
  * unconditionally; the legacy SD symbols that used to collide with it are
  * gone. */
+#include "aius_dsp_config.h" /* before aius_optical_app.h: the dsp.json serialiser */
 #include "aius_optical_app.h"
 #if AIUS_OTA
 /* Staged firmware upgrade (docs/plans/aius-ota-upgrade.md). The whole OTA
@@ -140,6 +141,8 @@ extern "C" const uint8_t _flashimagelen;
 #include "aius_network_teensy.h"
 #include "aius_runtime_teensy.h"
 #include "aius_web_cache.h"
+#include "aius_sd_overlay.h"
+#include "aius_sd_overlay_request.h"
 #include "http_home_page.h"
 
 #ifndef AIUS_BUILD_GIT_REV
@@ -1149,6 +1152,10 @@ enum AiusEventType : uint8_t {
 	AIUS_EVENT_CLOCK_TRIM = 16,
 	AIUS_EVENT_TX_MISSED_FILL = 17,
 	AIUS_EVENT_AC3_CRC_REJECT = 18,
+	/* Phase 4h (Q2): a pending preset or www entry whose PSRAM chunk failed
+	 * its chip CRC was dropped; the card's older file returns at the next
+	 * refill. detail: sd_flush.crc_drops after the drop (saturating). */
+	AIUS_EVENT_SD_FLUSH_CRC_DROP = 19,
 };
 
 /* Plain DTCM .bss, deliberately not DMAMEM: OCRAM free sits at the defect-26
@@ -1455,18 +1462,122 @@ static FLASHMEM void web_cache_fill_cancel(void)
 
 /* G9: the canceller's end (4h's flush end and unfreeze; an HTTP canceller's
  * end is its job completion, aius_optical_web_fill_note_http_complete()). */
-static FLASHMEM __attribute__((unused)) void web_cache_fill_hold_release(void)
+static FLASHMEM void web_cache_fill_hold_release(void)
 {
 	aius_optical_web_fill_hold_release(&g_web_fill, millis());
 }
 
-/* `path` relative to /sd/www (the cache's key), or null outside it. */
+/* The cache's key for a card path under /aius/www/: the path relative to
+ * /aius/ (www/index.html, www/presets/x.json; 4h NS4, so dsp.json and
+ * config.json share the namespace), or null outside /aius/www/, which the
+ * fill and the job invalidation never cache. */
 static FLASHMEM const char *web_cache_rel(const char *path)
 {
-	static const char kRoot[] PROGMEM = "/aius/www/";
-	if (path == nullptr || strncmp(path, kRoot, sizeof(kRoot) - 1u) != 0)
+	static const char kWww[] PROGMEM = "/aius/www/";
+	static const size_t kRootLength = sizeof("/aius/") - 1u;
+	if (path == nullptr || strncmp(path, kWww, sizeof(kWww) - 1u) != 0)
 		return nullptr;
-	return path + sizeof(kRoot) - 1u;
+	return path + kRootLength;
+}
+
+/* Phase 4h: the SD write-behind overlay (lib/aius_sd_overlay) over the one
+ * PSRAM store above. Present exactly when the carve is (an 8 MiB fitment keeps
+ * every write synchronous, Q4). A board boots held: the first mount clears it
+ * (Q1). The job's paths are lib/aius_sd's, so the two storages must agree. */
+static_assert(AIUS_SD_OVERLAY_PATH_STORAGE == AIUS_SD_PATH_STORAGE,
+              "overlay job paths are AiusSdJobRequest paths");
+static_assert(AIUS_DSP_MODEL_MAX_JSON_BYTES <= AIUS_RUNTIME_TEENSY_APP_BODY,
+              "the Q2 re-put serialises dsp.json into the dispatcher body (D1)");
+static AiusSdOverlay g_sd_overlay;
+
+static FLASHMEM bool sd_overlay_present(void)
+{
+	return g_web_cache.base != nullptr;
+}
+
+/* The key for an absolute /aius/ path (dsp.json, config.json, www/...), or
+ * null outside /aius/. */
+static FLASHMEM const char *sd_overlay_rel(const char *path)
+{
+	static const char kRoot[] PROGMEM = AIUS_SD_OVERLAY_ROOT;
+	static const size_t kRootLength = sizeof(kRoot) - 1u;
+	if (path == nullptr || strncmp(path, kRoot, kRootLength) != 0)
+		return nullptr;
+	return path + kRootLength;
+}
+
+static FLASHMEM bool sd_overlay_shadows_path(const char *path)
+{
+	const char *rel = sd_overlay_rel(path);
+	return sd_overlay_present() && rel != nullptr &&
+	       aius_sd_overlay_shadows(&g_sd_overlay, rel, strlen(rel));
+}
+
+static FLASHMEM bool reboot_drain_complete(void);
+static FLASHMEM void sd_flush_note_probe(bool present, uint32_t now_ms);
+static FLASHMEM bool sd_freeze_active(void);
+static FLASHMEM bool sd_begin_blocked(uint32_t now_ms);
+static FLASHMEM size_t http_dsp_config_json(uint8_t *, size_t);
+static FLASHMEM size_t write_dsp_config_file(uint8_t *, size_t);
+/* The running g_config as /aius/config.json, through the serialiser beside
+ * its parser (lib/aius_config; NS6: parsing this output gives g_config's
+ * features back, proved in the config suite). 0 when it does not fit. */
+static FLASHMEM size_t write_public_config(uint8_t *body, size_t capacity)
+{
+	return aius_config_write(&g_config.features, body, capacity);
+}
+
+static FLASHMEM void record_event(uint8_t type, uint8_t state, uint16_t detail);
+static FLASHMEM uint8_t current_state(void);
+
+/* Q2: a dropped preset or www entry is logged (sd_flush.crc_drops counts
+ * it). */
+static FLASHMEM void sd_overlay_event(void *, AiusSdOverlayEvent event,
+                                      const char *)
+{
+	if (event != AIUS_SD_OVERLAY_EVENT_CRC_DROP)
+		return;
+	const uint32_t drops = g_sd_overlay.crc_drops;
+	record_event(AIUS_EVENT_SD_FLUSH_CRC_DROP, current_state(),
+	             drops > 0xFFFFu ? 0xFFFFu : (uint16_t)drops);
+}
+
+/* Q2 re-put (D1): the running settings serialised into the dispatcher's
+ * application body, borrowed only while the HTTP transaction is idle
+ * (reboot_drain_complete()'s predicate); false retries at the next service
+ * step. No new buffer anywhere. */
+static FLASHMEM bool sd_overlay_reput(void *, AiusSdOverlaySettingsFile file,
+                                      const uint8_t **bytes, uint32_t *length)
+{
+	/* The policy is aius_optical_settings_reput (proved in optical-app). */
+	return aius_optical_settings_reput(
+		&g_runtime.network_http.http, g_runtime.app.body,
+		g_runtime.app.body_capacity,
+		file == AIUS_SD_OVERLAY_FILE_DSP ? write_dsp_config_file
+		                                 : write_public_config,
+		bytes, length);
+}
+
+/* PROGMEM: flash, not DTCM .data (4e §Memory). */
+static const AiusSdOverlayPlatform g_sd_overlay_platform PROGMEM = {
+	&g_web_cache, sd_overlay_reput, sd_overlay_event, nullptr
+};
+
+/* The sd_flush status object (/api/status). The brief carries dirty, held,
+ * failures and last_fault only (openapi.json). */
+static FLASHMEM const char *sd_overlay_fault_name(uint8_t fault)
+{
+	/* PROGMEM: flash, not DTCM .rodata. */
+	static const char kFailed[] PROGMEM = "failed";
+	static const char kCardGone[] PROGMEM = "card_gone";
+	static const char kChunkCrc[] PROGMEM = "chunk_crc";
+	static const char kNone[] PROGMEM = "";
+	switch (fault) {
+	case AIUS_SD_OVERLAY_JOB_FAILED: return kFailed;
+	case AIUS_SD_OVERLAY_JOB_CARD_GONE: return kCardGone;
+	case AIUS_SD_OVERLAY_JOB_CHUNK_CRC: return kChunkCrc;
+	default: return kNone;
+	}
 }
 
 static FLASHMEM void web_cache_walk_reset(void)
@@ -1512,10 +1623,35 @@ static FLASHMEM void web_cache_invalidate_job(const AiusSdJob *job)
  * open leaves 0 and keeps it). The adapter never sees these ops, so the mount
  * is dropped here, and the cache follows it (web_cache_fill_settle()). Never
  * under an open adapter file; memory only. */
+/* Phase 4h: the write-behind flush coordinator's one instance (policy in
+ * aius_optical_app.cpp; bound below by g_sd_flush_ops). */
+static AiusOpticalSdFlush g_sd_flush;
+
 static FLASHMEM void direct_card_settle(uint32_t code)
 {
-	if (code != 0u && !g_runtime.storage.target.file_open)
+	if (code == 0u)
+		return;
+	/* D-S5: a driver fault the card-loss classification must see. */
+	aius_optical_sd_note_direct_fault(&g_sd_flush);
+	if (!g_runtime.storage.target.file_open)
 		aius_sd_teensy_invalidate_mount(&g_runtime.storage.target);
+}
+
+/* D-S1, D-S5: after a driver fault dropped the mount, whether a card is
+ * still in the slot. Every nonzero driver code drops the adapter's mount (the
+ * stale-descriptor rule stands), so the mount alone cannot tell a pulled card
+ * from a card that failed a read or write: DAT3, re-muxed as the probe's
+ * absent verdict does, can. True while mounted or with a file open (DAT3
+ * still the bus's). Bound as g_sd_flush_ops.card_present_after_fault, which
+ * aius_optical_sd_card_loss calls only for a new fault (never a mode-only
+ * drop, E3). */
+static FLASHMEM bool sd_flush_card_present_after_fault(void *)
+{
+	AiusSdTeensy *target = &g_runtime.storage.target;
+	if (target->mounted)
+		return true;
+	aius_sd_teensy_invalidate_mount(target);
+	return aius_sd_teensy_card_detected(target);
 }
 
 /* G7: dcache lines of a chunk written back and dropped, so the next read of
@@ -1620,7 +1756,7 @@ static FLASHMEM bool web_cache_seam_listing(void *, const char *dir,
                                             size_t dir_length,
                                             AiusOpticalAppDirBatch *batch)
 {
-	static const char kPresets[] PROGMEM = "presets/";
+	static const char kPresets[] PROGMEM = "www/presets/";
 	uint32_t faults;
 	if (!g_web_fill_walk.presets_complete ||
 	    dir_length != sizeof(kPresets) - 1u ||
@@ -2798,6 +2934,12 @@ FLASHMEM void AiusAudioProcessor::begin_pipeline(void)
 		else
 			(void)aius_web_cache_init(&g_web_cache, nullptr, 0u, nullptr,
 			                          nullptr);
+		/* Phase 4h: aius_web_cache_put yields once per chunk (a one-shot
+		 * accept of a large put); unbound, that yield is a silent no-op. */
+		aius_web_cache_set_put_yield(web_cache_verify_yield, nullptr);
+		/* Phase 4h: bound in every fitment (status reads it); held until
+		 * the first mount (Q1). */
+		aius_sd_overlay_init(&g_sd_overlay, &g_sd_overlay_platform, true);
 	}
 	/* Take the S/PDIF transmit DMA interrupt from the retained snapshot's
 	 * 16-bit filler. After this the wire carries our 24-bit ring verbatim;
@@ -3317,6 +3459,24 @@ extern "C" FLASHMEM AiusHttpAdmitVerdict aius_runtime_http_admit(
 {
 	const AiusOpticalAdmitSample sample = admit_sample();
 	const bool sd_start = query->kind == AIUS_HTTP_ADMIT_SD_START;
+	/* Phase 4h H9, S8: under the SD-writes freeze an HTTP SD start (fresh or
+	 * held) and a card-reading DISPATCH answer 503 sd_busy (BUSY), counted
+	 * as no shed. A STORE start never consults this hook (pw-http). */
+	if (sd_freeze_active() &&
+	    (sd_start || aius_optical_app_route_reads_card(query->request))) {
+		if (sd_start)
+			sd_disarm_shed_staging(query->sd_job);
+		else
+			aius_optical_web_fill_route_end(&g_web_fill, sample.now_ms);
+		return AIUS_HTTP_VERDICT_BUSY;
+	}
+	/* Phase 4h D-S9: the BEGIN gate. During playback with no trusted mount,
+	 * an HTTP SD job that would BEGIN ahead of the D-S8 / H3 schedule or
+	 * against a DAT3 reading no card answers 503 sd_busy (BUSY). */
+	if (sd_start && sd_begin_blocked(sample.now_ms)) {
+		sd_disarm_shed_staging(query->sd_job);
+		return AIUS_HTTP_VERDICT_BUSY;
+	}
 	/* Phase 4g G6, G9: an HTTP SD start that finds a fill file in flight
 	 * cancels it once and waits here until the fill has stopped, as for a
 	 * 4f DEFER (and outside F9's timer: the wait is the cancel's one or two
@@ -3439,36 +3599,6 @@ static FLASHMEM __attribute__((noinline)) bool status_append(
 	return true;
 }
 
-static FLASHMEM const char *http_dsp_eq_type(uint8_t type)
-{
-	switch (type) {
-	case 0: return "bypass";
-	case 1: return "highpass";
-	case 2: return "peaking";
-	case 3: return "lowpass";
-	default: return nullptr;
-	}
-}
-
-/* Serialize one bounded EQ table (`sections` of `count`) as a JSON array. Cold
- * path (config read), so FLASHMEM. Returns false on capacity exhaustion or an
- * unknown section type. */
-static FLASHMEM bool http_dsp_eq_array(char *output, size_t capacity, size_t *length,
-                                       const AiusOpticalEqConfig *sections, uint8_t count)
-{
-	if (!http_json_append(output, capacity, length, "["))
-		return false;
-	for (uint8_t index = 0; index < count && index < 2u; index++) {
-		const char *type = http_dsp_eq_type(sections[index].type);
-		if (type == nullptr || !http_json_append(output, capacity, length,
-			"%s{\"type\":\"%s\",\"frequency_hz\":%.17g,\"q\":%.17g,\"gain_db\":%.17g}",
-			index == 0 ? "" : ",", type, sections[index].frequency_hz,
-			sections[index].q, sections[index].gain_db))
-			return false;
-	}
-	return http_json_append(output, capacity, length, "]");
-}
-
 /* The two renderings of one fact, both cold (status/config reads only).
  *
  * `source` is the SHIPPED vocabulary and stays exactly two words: "default", or
@@ -3520,94 +3650,46 @@ static FLASHMEM const char *dsp_origin_name(DspModelOrigin origin)
  * neither. `config_pending` says which of the two the rest of this document
  * describes: true means these are the staged bytes awaiting a block
  * boundary. */
-static FLASHMEM size_t http_dsp_config_json(uint8_t *body, size_t capacity)
+static FLASHMEM size_t dsp_config_json(uint8_t *body, size_t capacity,
+                                      bool file_form)
 {
-	static const char *const channel_names[6] = {"fl", "fr", "fc", "lfe", "sl", "sr"};
 	/* g_pending_dsp_model/origin are written only by this HTTP thread and are
 	 * fully populated before g_dsp_apply_pending is armed, so reading them here
-	 * takes no audio-ISR race. */
+	 * takes no audio-ISR race. The serialiser is aius_optical_dsp_config_write
+	 * (aius_optical_app.cpp; NS6 round trip proved in optical-app). */
 	const bool apply_pending = g_dsp_apply_pending;
 	const AiusOpticalConfig &cfg =
 		apply_pending ? g_pending_dsp_model : g_active_model;
 	const DspModelOrigin origin =
 		apply_pending ? g_pending_dsp_origin : g_dsp_model_origin;
+	AiusOpticalDspConfigHeader header;
 	if (capacity > AIUS_OPTICAL_MODEL_MAX_JSON_BYTES)
 		capacity = AIUS_OPTICAL_MODEL_MAX_JSON_BYTES;
-	char *output = (char *)body;
-	size_t length = 0;
-	if (!http_json_append(output, capacity, &length,
-	                      "{\"source\":\"%s\",\"config_generation\":%lu,\"staged_generation\":%lu,\"config_pending\":%s,\"sample_rate_hz\":%lu,",
-	                      dsp_source_name(origin),
-	                      (unsigned long)g_config_generation,
-	                      (unsigned long)g_staged_generation,
-	                      apply_pending ? "true" : "false",
-	                      (unsigned long)cfg.sample_rate_hz))
-		return 0;
-	if (!http_json_append(output, capacity, &length,
-	                      "\"features\":{\"input_eq\":%s,\"matrix\":%s,\"output_eq\":%s,\"limiter\":%s,\"meters\":%s},",
-	                      cfg.features.input_eq ? "true" : "false",
-	                      cfg.features.matrix ? "true" : "false",
-	                      cfg.features.output_eq ? "true" : "false",
-	                      cfg.features.limiter ? "true" : "false",
-	                      cfg.features.meters ? "true" : "false"))
-		return 0;
-	if (!http_json_append(output, capacity, &length, "\"input_channels\":{"))
-		return 0;
-	for (uint8_t channel = 0; channel < 6u; channel++) {
-		const AiusOpticalInputChannelConfig &entry = cfg.input_channels[channel];
-		if (!http_json_append(output, capacity, &length,
-		                      "%s\"%s\":{\"gain_db\":%.17g,\"eq\":",
-		                      channel == 0 ? "" : ",", channel_names[channel],
-		                      entry.gain_db))
-			return 0;
-		if (!http_dsp_eq_array(output, capacity, &length, entry.eq, entry.eq_count))
-			return 0;
-		if (!http_json_append(output, capacity, &length, "}"))
-			return 0;
-	}
-	if (!http_json_append(output, capacity, &length, "},\"output_eq\":"))
-		return 0;
-	if (!http_dsp_eq_array(output, capacity, &length, cfg.output_eq, cfg.output_eq_count))
-		return 0;
 	AiusDownmixConfig resolved = aius_downmix_config_default();
 	resolved.center = cfg.matrix.center_gain_linear;
 	resolved.surround = cfg.matrix.surround_gain_linear;
 	resolved.lfe = cfg.matrix.lfe_gain_linear;
-	double headroom = cfg.matrix.clipfree ?
+	header.source = dsp_source_name(origin);
+	header.config_pending = apply_pending;
+	header.file_form = file_form;
+	header.config_generation = g_config_generation;
+	header.staged_generation = g_staged_generation;
+	header.headroom_linear = cfg.matrix.clipfree ?
 		aius_downmix_clipfree_headroom(&resolved) : cfg.matrix.headroom_linear;
-	/* lfe_crossover_hz is required by the PUT validator, so omitting it here
-	 * would make a GET -> PUT round-trip fail 400 on a missing key.
-	 *
-	 * layout_aware is the mirror hazard and the reason it is emitted even though
-	 * the validator would accept its absence: parse-without-emit makes every
-	 * GET-modify-PUT silently reset a hand-set false back to true, because absent
-	 * reads ON. The rule for this endpoint is that the two key sets match.
-	 *
-	 * THAT RULE IS WHY `model_origin` IS NOT SERVED HERE, only on /api/status.
-	 * aius_dsp_config_parse_put() answers UNKNOWN_KEY for any top-level key
-	 * outside its nine, so emitting a tenth would 400 every GET-modify-PUT that
-	 * echoes the document back -- including tools/latency/bench.py's
-	 * normalize_effective_config(), which copies every key it reads. Adding it
-	 * here is a two-file change: accept-and-ignore `model_origin` in
-	 * lib/aius_dsp_config alongside `source`, THEN emit it. */
-	/* surround_delay_ms rides the same emit-what-you-parse rule as
-	 * layout_aware: optional to the validator, always emitted, so a
-	 * GET-modify-PUT round trip cannot silently reset a hand-set value. */
-	if (!http_json_append(output, capacity, &length,
-	                      ",\"matrix\":{\"center_gain_linear\":%.17g,\"surround_gain_linear\":%.17g,\"lfe_gain_linear\":%.17g,\"lfe_crossover_hz\":%.17g,\"headroom_linear\":%.17g,\"clipfree\":%s,\"layout_aware\":%s,\"surround_delay_ms\":%.17g},",
-	                      cfg.matrix.center_gain_linear, cfg.matrix.surround_gain_linear,
-	                      cfg.matrix.lfe_gain_linear, cfg.matrix.lfe_crossover_hz,
-	                      headroom, cfg.matrix.clipfree ? "true" : "false",
-	                      cfg.matrix.layout_aware ? "true" : "false",
-	                      cfg.matrix.surround_delay_ms))
-		return 0;
-	if (!http_json_append(output, capacity, &length,
-	                      "\"limiter\":{\"enabled\":%s,\"threshold_dbfs\":%.17g,\"attack_ms\":%.17g,\"release_ms\":%.17g,\"lookahead_ms\":%.17g}}",
-	                      cfg.limiter.enabled ? "true" : "false",
-	                      cfg.limiter.threshold_dbfs, cfg.limiter.attack_ms,
-	                      cfg.limiter.release_ms, cfg.limiter.lookahead_ms))
-		return 0;
-	return length;
+	return aius_optical_dsp_config_write(&cfg, &header, body, capacity);
+}
+
+/* GET /api/dsp/config. */
+static FLASHMEM size_t http_dsp_config_json(uint8_t *body, size_t capacity)
+{
+	return dsp_config_json(body, capacity, false);
+}
+
+/* /aius/dsp.json (the Q2 re-put): the GET document plus base_generation,
+ * which the mount load's parser requires (NS6). */
+static FLASHMEM size_t write_dsp_config_file(uint8_t *body, size_t capacity)
+{
+	return dsp_config_json(body, capacity, true);
 }
 
 /* --- GET /api/meters ------------------------------------------------------
@@ -4967,8 +5049,10 @@ typedef enum {
 	OTA_ACTIVATION_FAULT_NO_PSRAM,   /* no PSRAM fitted: cannot stage */
 	OTA_ACTIVATION_FAULT_STAGE_COPY, /* the SD->PSRAM copy failed */
 	OTA_ACTIVATION_FAULT_VERIFY,     /* begin() refused (digest/signature/geometry) */
-	OTA_ACTIVATION_FAULT_GEOMETRY    /* the flash geometry refused (rehearsal:
+	OTA_ACTIVATION_FAULT_GEOMETRY,   /* the flash geometry refused (rehearsal:
 	                                  * the image reaches the scratch window) */
+	OTA_ACTIVATION_FAULT_FLUSH_PENDING, /* 4h: an unflushed write at the drain gate */
+	OTA_ACTIVATION_FAULT_SD_BUSY        /* 4h: an SD job outlasted AIUS_OPTICAL_SD_FREEZE_MS */
 } OtaActivationFault;
 static volatile OtaActivationFault g_ota_activation_fault;
 
@@ -4983,7 +5067,10 @@ static volatile OtaActivationFault g_ota_activation_fault;
 typedef enum {
 	OTA_REHEARSAL_NEVER_RUN = 0,
 	OTA_REHEARSAL_PASS = 1,
-	OTA_REHEARSAL_FAIL = 2
+	OTA_REHEARSAL_FAIL = 2,
+	/* 4h (R5-S2): abandoned at the SD drain gate before the park; the
+	 * request is cleared and never re-runs. */
+	OTA_REHEARSAL_ABANDONED = 3
 } OtaRehearsalResult;
 static volatile bool g_ota_rehearsal_requested;
 static bool g_ota_rehearsal_inject_fault;
@@ -5274,11 +5361,16 @@ static FLASHMEM bool ota_psram_present(void)
 
 static FLASHMEM const char *ota_activation_fault_name(OtaActivationFault fault)
 {
+	/* D-N2: the 4h names in flash, not DTCM .data. */
+	static const char kFlushPending[] PROGMEM = "ota_flush_pending";
+	static const char kSdBusy[] PROGMEM = "ota_sd_busy";
 	switch (fault) {
 	case OTA_ACTIVATION_FAULT_NO_PSRAM:   return "ota_no_psram";
 	case OTA_ACTIVATION_FAULT_STAGE_COPY: return "ota_stage_copy";
 	case OTA_ACTIVATION_FAULT_VERIFY:     return "ota_verify";
 	case OTA_ACTIVATION_FAULT_GEOMETRY:   return "ota_geometry";
+	case OTA_ACTIVATION_FAULT_FLUSH_PENDING: return kFlushPending;
+	case OTA_ACTIVATION_FAULT_SD_BUSY:    return kSdBusy;
 	case OTA_ACTIVATION_FAULT_NONE:
 	default:                              return "none";
 	}
@@ -5286,9 +5378,11 @@ static FLASHMEM const char *ota_activation_fault_name(OtaActivationFault fault)
 
 static FLASHMEM const char *ota_rehearsal_result_name(OtaRehearsalResult result)
 {
+	static const char kAbandoned[] PROGMEM = "abandoned"; /* D-N2: flash */
 	switch (result) {
 	case OTA_REHEARSAL_PASS: return "pass";
 	case OTA_REHEARSAL_FAIL: return "fail";
+	case OTA_REHEARSAL_ABANDONED: return kAbandoned;
 	case OTA_REHEARSAL_NEVER_RUN:
 	default:                 return "never-run";
 	}
@@ -6602,6 +6696,32 @@ static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
 		                           : "false"))
 			return 0;
 	}
+	/* Phase 4h: the write-behind overlay's sd_flush object (openapi.json's
+	 * exact key set; last_fault "" when none). */
+	{
+		static const char format_sd_flush[] PROGMEM =
+			",\"sd_flush\":{\"dirty\":%lu,\"flushing\":%lu,"
+			"\"tombstones\":%lu,\"oldest_dirty_age_ms\":%lu,"
+			"\"flushed\":%lu,\"failures\":%lu,\"crc_drops\":%lu,"
+			"\"max_settings_latency_ms\":%lu,\"sync_drain_ms\":%lu,"
+			"\"last_fault\":\"%s\",\"held\":%s,\"drained\":%s}";
+		AiusSdOverlayStatus flush;
+		aius_sd_overlay_status(&g_sd_overlay, millis(), &flush);
+		if (!status_append((char *)body, capacity, &length, format_sd_flush,
+		                   (unsigned long)flush.dirty,
+		                   (unsigned long)flush.flushing,
+		                   (unsigned long)flush.tombstones,
+		                   (unsigned long)flush.oldest_dirty_age_ms,
+		                   (unsigned long)flush.flushed,
+		                   (unsigned long)flush.failures,
+		                   (unsigned long)flush.crc_drops,
+		                   (unsigned long)flush.max_settings_latency_ms,
+		                   (unsigned long)flush.sync_drain_ms,
+		                   sd_overlay_fault_name(flush.last_fault),
+		                   flush.held ? "true" : "false",
+		                   flush.drained ? "true" : "false"))
+			return 0;
+	}
 	/* The refill job's own record, BESIDE sd_diag rather than inside it. The
 	 * two are different job streams with different owners: sd_diag belongs to
 	 * AiusRuntimeStorage, which never sees g_replay_job, so a refill fault has
@@ -6961,9 +7081,14 @@ static FLASHMEM size_t http_replay_list_json(uint8_t *body, size_t capacity)
  * and arms the ceiling from there. */
 static volatile bool g_reboot_requested;
 
+/* Phase 4h (E3): while DAT3 is re-muxed (a card-gone invalidation or a failed
+ * begin) no direct card op runs behind it, so the card routes answer 503
+ * sd_unavailable; a mode-only mount drop leaves the flag clear and SdFat's
+ * volume usable, so they run as today. */
 static FLASHMEM bool app_sd_ready(void *)
 {
-	return g_sd_ready;
+	return aius_optical_app_card_ops_ready(
+		g_sd_ready, g_runtime.storage.target.dat3_remuxed);
 }
 
 static FLASHMEM bool app_sd_busy(void *)
@@ -7013,12 +7138,22 @@ static FLASHMEM size_t http_status_brief_json(uint8_t *body, size_t capacity)
 		return 0;
 	/* PROGMEM: flash, not DTCM .rodata (4e §Memory, the .data cliff). */
 	static const char format_brief[] PROGMEM =
-		"{\"carrier\":%u,\"state\":%u,\"sample_rate\":%lu,\"pipeline_diag\":{\"codec_pc\":%u},\"tx_gate\":{\"open\":%u,\"replay_running\":%u}}";
+		"{\"carrier\":%u,\"state\":%u,\"sample_rate\":%lu,\"pipeline_diag\":{\"codec_pc\":%u},\"tx_gate\":{\"open\":%u,\"replay_running\":%u},"
+		"\"sd_flush\":{\"dirty\":%lu,\"held\":%s,\"failures\":%lu,\"last_fault\":\"%s\",\"drained\":%s}}";
+	/* Phase 4h: sd_flush carries dirty, held, failures, last_fault and
+	 * drained (D-S3: nothing dirty, flushing or tombstoned; true with no
+	 * carve) only. */
+	AiusSdOverlayStatus flush;
+	aius_sd_overlay_status(&g_sd_overlay, millis(), &flush);
 	int written = snprintf((char *)body, capacity, format_brief,
 		status[3] & 1u, status[2],
 		(unsigned long)aius_net_get_u32(status + 25),
 		(unsigned)g_audio_processor.pipeline_codec_pc(),
-		g_tx_gate_open ? 1u : 0u, g_tx_gate_replay ? 1u : 0u);
+		g_tx_gate_open ? 1u : 0u, g_tx_gate_replay ? 1u : 0u,
+		(unsigned long)flush.dirty, flush.held ? "true" : "false",
+		(unsigned long)flush.failures,
+		sd_overlay_fault_name(flush.last_fault),
+		flush.drained ? "true" : "false");
 	if (written <= 0 || (size_t)written >= capacity)
 		return 0;
 	return (size_t)written;
@@ -7096,6 +7231,18 @@ static FLASHMEM AiusOpticalAppStoreResult app_store_public_config(
 		g_config_error_count++;
 		return AIUS_OPTICAL_APP_STORE_INVALID;
 	}
+	/* Phase 4h (Q1, Q4, N7): with the carve, the put comes first, card or no
+	 * card, and only a landed put sets g_config; a store-full refusal (503
+	 * sd_busy) applies nothing. The 200 is immediate (STORE_OK). */
+	if (sd_overlay_present()) {
+		static const char kRel[] PROGMEM = "config.json";
+		if (aius_sd_overlay_put(&g_sd_overlay, kRel, sizeof(kRel) - 1u, body,
+		                        (uint32_t)length, millis()) !=
+		    AIUS_SD_OVERLAY_PUT_OK)
+			return AIUS_OPTICAL_APP_STORE_BUSY;
+		g_config = parsed;
+		return AIUS_OPTICAL_APP_STORE_OK;
+	}
 	if (sd_job_active_for_http())
 		return AIUS_OPTICAL_APP_STORE_BUSY;
 	g_pending_config = parsed;
@@ -7124,6 +7271,23 @@ static FLASHMEM AiusOpticalAppStoreResult app_store_dsp_config(
 		return AIUS_OPTICAL_APP_STORE_INVALID;
 	if (parsed.base_generation != g_config_generation)
 		return AIUS_OPTICAL_APP_STORE_STALE;
+	/* Phase 4h (Q1, Q4, N7): put first; only a landed put stages the model
+	 * and arms Apply (g_staged_generation, then the volatile flag, the
+	 * order sd_settle_http_write() keeps). A refusal applies nothing. */
+	if (sd_overlay_present()) {
+		static const char kRel[] PROGMEM = "dsp.json";
+		if (g_dsp_upload_pending)
+			return AIUS_OPTICAL_APP_STORE_BUSY;
+		if (aius_sd_overlay_put(&g_sd_overlay, kRel, sizeof(kRel) - 1u, body,
+		                        (uint32_t)length, millis()) !=
+		    AIUS_SD_OVERLAY_PUT_OK)
+			return AIUS_OPTICAL_APP_STORE_BUSY;
+		g_pending_dsp_model = parsed;
+		g_pending_dsp_origin = DSP_ORIGIN_PUT;
+		g_staged_generation++;
+		g_dsp_apply_pending = true;
+		return AIUS_OPTICAL_APP_STORE_OK;
+	}
 	if (sd_job_active_for_http())
 		return AIUS_OPTICAL_APP_STORE_BUSY;
 	g_pending_dsp_model = parsed;
@@ -7250,6 +7414,8 @@ static FLASHMEM void app_clear_counters(void *)
 	/* Phase 4f F8: the shed counts and the dispatch watermark reset; the
 	 * class cost windows do not (a cost is a model of the route). */
 	aius_optical_admission_clear(&g_http_admission);
+	/* Phase 4h: max_settings_latency_ms and sync_drain_ms reset. */
+	aius_sd_overlay_clear_stats(&g_sd_overlay);
 	/* Clearing zeroes the ingress-drop projection used by the capture latch
 	 * compares against by EQUALITY -- a clear during a live capture could
 	 * therefore mask a real overrun's 512-frame seam (latched 0, one overrun,
@@ -7544,6 +7710,9 @@ static FLASHMEM bool app_sd_set_mode(void *, bool dma)
 	 * in, before the switch, not to the new mode at the next epoch. */
 	admission_sd_window_sample();
 	aius_sd_teensy_set_mode(target, dma);
+	/* Phase 4h (H3, E3): the mode change drops the mount; no flush starts
+	 * until the next storage BEGIN remounts. */
+	aius_sd_overlay_note_card_lost(&g_sd_overlay);
 	return true;
 }
 
@@ -8549,13 +8718,161 @@ typedef enum {
 	SD_STEP_PROBE,
 	SD_STEP_LOAD_CONFIG,
 	SD_STEP_LOAD_DSP,
-	SD_STEP_USAGE
+	SD_STEP_USAGE,
+	/* Phase 4h (H10): the backup's CONFIG_LOAD after a failed target load
+	 * on a path the overlay does not shadow; the single g_sd_step, never
+	 * beside another step (S7), and only with the carve (N1). */
+	SD_STEP_RESTORE_CONFIG,
+	SD_STEP_RESTORE_DSP
 } SdLifecycleStep;
+
+/* H10: the mount load and restore policy is aius_optical_app.cpp's
+ * (aius_optical_settings_*); this file binds the parsers, the running state
+ * and the store. g_settings_mount holds the running load's verdict and the
+ * sd_diag counters. */
+static AiusOpticalSettingsMount g_settings_mount;
+static FLASHMEM bool sd_step_is_restore(void);
+
+/* pw-storage's link-time hook (weak default zeros): sd_diag's H10 counters. */
+extern "C" FLASHMEM void aius_runtime_storage_settings_restores(
+	uint32_t *restores, uint32_t *faults)
+{
+	*restores = g_settings_mount.restores;
+	*faults = g_settings_mount.restore_faults;
+}
+
+static_assert((int)AIUS_OPTICAL_SETTINGS_BACKUP_PARSED ==
+                      (int)AIUS_SD_OVERLAY_BACKUP_PARSED &&
+                  (int)AIUS_OPTICAL_SETTINGS_BACKUP_REFUSED ==
+                      (int)AIUS_SD_OVERLAY_BACKUP_REFUSED &&
+                  (int)AIUS_OPTICAL_SETTINGS_BACKUP_LOAD_FAILED ==
+                      (int)AIUS_SD_OVERLAY_BACKUP_LOAD_FAILED &&
+                  (int)AIUS_OPTICAL_SETTINGS_BACKUP_NOT_READ ==
+                      (int)AIUS_SD_OVERLAY_BACKUP_NOT_READ,
+              "the app's backup results mirror the overlay's");
+static_assert((int)AIUS_OPTICAL_SETTINGS_KEEP == (int)AIUS_SD_OVERLAY_RESTORE_KEEP &&
+                  (int)AIUS_OPTICAL_SETTINGS_RESTORE ==
+                      (int)AIUS_SD_OVERLAY_RESTORE_RESTORE &&
+                  (int)AIUS_OPTICAL_SETTINGS_FAULT ==
+                      (int)AIUS_SD_OVERLAY_RESTORE_FAULT &&
+                  (int)AIUS_OPTICAL_SETTINGS_NOTHING ==
+                      (int)AIUS_SD_OVERLAY_RESTORE_NOTHING,
+              "the app's restore decisions mirror the overlay's");
+
+static FLASHMEM bool settings_carve_present(void *)
+{
+	return sd_overlay_present();
+}
+
+static FLASHMEM bool settings_shadowed(void *, AiusOpticalSettingsFile file)
+{
+	return sd_overlay_shadows_path(file == AIUS_OPTICAL_SETTINGS_CONFIG
+	                                       ? AIUS_SD_PUBLIC_CONFIG_PATH
+	                                       : AIUS_SD_DSP_MODEL_PATH);
+}
+
+/* The target's parser into a local; applied, when asked, as the target's
+ * load always was. */
+static FLASHMEM bool settings_load(void *, AiusOpticalSettingsFile file,
+                                   const uint8_t *data, size_t length,
+                                   bool apply)
+{
+	if (file == AIUS_OPTICAL_SETTINGS_CONFIG) {
+		AiusConfig parsed;
+		(void)aius_config_parse(data, length, &parsed);
+		if (!parsed.valid) {
+			/* The target's refusal keeps today's surface: the defaults
+			 * the parser left, with its error code and message. A
+			 * refused backup leaves g_config alone. */
+			if (apply && !sd_step_is_restore())
+				g_config = parsed;
+			return false;
+		}
+		if (apply)
+			g_config = parsed;
+		return true;
+	}
+	AiusDspModel parsed;
+	if (aius_dsp_config_parse_put(data, length, &parsed) !=
+	    AIUS_DSP_CONFIG_OK)
+		return false;
+	/* A staged PUT owns g_pending_dsp_model until its commit arm settles;
+	 * a reinsert load must not write across it. */
+	if (!apply || g_dsp_upload_pending)
+		return true;
+	g_pending_dsp_model = parsed;
+	/* The origin goes with the model and BEFORE the volatile flag below,
+	 * which is the whole handoff rule. */
+	g_pending_dsp_origin = DSP_ORIGIN_SD;
+	/* Every stager advances it, this one included -- the count is "models
+	 * staged this boot", not "PUTs accepted". */
+	g_staged_generation++;
+	/* Staged, not applied: the block-boundary swap in
+	 * AiusAudioProcessor::enqueue() remains the only place the active model
+	 * changes, where config_generation increments and the active origin
+	 * adopts the staged one. */
+	g_dsp_apply_pending = true;
+	return true;
+}
+
+/* A failed target: config.json falls back to the defaults and counts one
+ * config error (as load_sd_config() did; FR-S11); dsp.json keeps the active
+ * model, the common case and not an error. */
+static FLASHMEM void settings_target_failed(void *, AiusOpticalSettingsFile file)
+{
+	if (file != AIUS_OPTICAL_SETTINGS_CONFIG)
+		return;
+	/* A refused parse already left the parser's defaults (with its error)
+	 * in g_config; a load that never reached the parser sets them. */
+	if (g_config.valid)
+		aius_config_set_defaults(&g_config);
+	g_config_error_count++;
+}
+
+static FLASHMEM void settings_put_restore(void *, AiusOpticalSettingsFile file,
+                                          const uint8_t *data, size_t length)
+{
+	static const char kConfig[] PROGMEM = "config.json";
+	static const char kDsp[] PROGMEM = "dsp.json";
+	const bool config = file == AIUS_OPTICAL_SETTINGS_CONFIG;
+	(void)aius_sd_overlay_put_restore(&g_sd_overlay, config ? kConfig : kDsp,
+	                                  config ? sizeof(kConfig) - 1u
+	                                         : sizeof(kDsp) - 1u,
+	                                  data, (uint32_t)length, millis());
+}
+
+static FLASHMEM AiusOpticalSettingsDecision settings_decide(
+	bool target_valid, AiusOpticalSettingsBackup backup)
+{
+	return (AiusOpticalSettingsDecision)aius_sd_overlay_restore_decision(
+		target_valid, (AiusSdOverlayBackupResult)backup);
+}
+
+static const AiusOpticalSettingsOps g_settings_ops PROGMEM = {
+	nullptr, settings_carve_present, settings_shadowed, settings_load,
+	settings_target_failed, settings_put_restore, settings_decide
+};
 
 /* The one owed-or-running step. g_sd_step_running distinguishes "the storage
  * service accepted it" from "it is still owed because the service was busy". */
 static SdLifecycleStep g_sd_step;
 static bool g_sd_step_running;
+
+/* H10: which settings file the running load step reads, and whether it is
+ * the backup's restore load. */
+static FLASHMEM AiusOpticalSettingsFile sd_step_settings_file(void)
+{
+	return g_sd_step == SD_STEP_LOAD_CONFIG ||
+	               g_sd_step == SD_STEP_RESTORE_CONFIG
+	               ? AIUS_OPTICAL_SETTINGS_CONFIG
+	               : AIUS_OPTICAL_SETTINGS_DSP;
+}
+
+static FLASHMEM bool sd_step_is_restore(void)
+{
+	return g_sd_step == SD_STEP_RESTORE_CONFIG ||
+	       g_sd_step == SD_STEP_RESTORE_DSP;
+}
 static uint32_t g_sd_probe_at_ms;
 
 /* Re-attaches the config-commit arm that died with service_sd_job().
@@ -8744,10 +9061,27 @@ static FLASHMEM bool sd_start_step(SdLifecycleStep step)
 		 * engine reads a transfer slice at a time into that buffer. */
 		request.publish_capacity = AIUS_DSP_MODEL_MAX_JSON_BYTES;
 		break;
+	case SD_STEP_RESTORE_CONFIG:
+	case SD_STEP_RESTORE_DSP:
+		/* H10: the target's fixed backup, read under the target's own
+		 * bound and parsed by its own parser. */
+		static const char kBackupConfig[] PROGMEM =
+			AIUS_SD_OVERLAY_BACKUP_CONFIG;
+		static const char kBackupDsp[] PROGMEM = AIUS_SD_OVERLAY_BACKUP_DSP;
+		request.kind = AIUS_SD_JOB_CONFIG_LOAD;
+		request.target_path = step == SD_STEP_RESTORE_CONFIG ? kBackupConfig
+		                                                     : kBackupDsp;
+		request.content_type = "application/json";
+		request.publish = true;
+		request.publish_capacity = step == SD_STEP_RESTORE_CONFIG
+		                                   ? AIUS_CONFIG_MAX_JSON_BYTES
+		                                   : AIUS_DSP_MODEL_MAX_JSON_BYTES;
+		break;
 	case SD_STEP_NONE:
 	default:
 		return false;
 	}
+	aius_optical_settings_load_begin(&g_settings_mount);
 	return aius_runtime_teensy_start_storage_job(&g_runtime, &request);
 }
 
@@ -8777,6 +9111,9 @@ static FLASHMEM void sd_step_complete(uint32_t now_ms)
 		g_sd_filesystem = present ? result->filesystem
 		                          : AIUS_SD_FILESYSTEM_UNKNOWN;
 		g_sd_probe_at_ms = now_ms + AIUS_SD_PROBE_INTERVAL_MS;
+		/* Phase 4h (H3, S1): a mount clears the card-loss hold; the
+		 * no-card verdict sets it, and a held retry's miss backs off. */
+		sd_flush_note_probe(present, now_ms);
 		if (present && !g_sd_ready) {
 			/* Boot and hot re-insert are the same transition, and
 			 * both reload the two SD-hosted configs -- the second
@@ -8818,20 +9155,43 @@ static FLASHMEM void sd_step_complete(uint32_t now_ms)
 		 * is that an empty or oversized file now reports "not loaded"
 		 * rather than "empty input" / "input too large", because the
 		 * bytes never reach a parser to say so. */
-		if (!ok) {
-			aius_config_set_defaults(&g_config);
-			g_config_error_count++;
-		}
-		g_sd_step = SD_STEP_LOAD_DSP;
+		/* Phase 4h: the fallback (defaults, one config error) is the
+		 * settings mount policy's settings_target_failed(); a shadowed
+		 * path counts nothing (Q1); a failed target is followed by its
+		 * backup's load with the carve only (H10, N1). */
+		g_sd_step = aius_optical_settings_load_end(
+		                    &g_settings_mount, &g_settings_ops,
+		                    AIUS_OPTICAL_SETTINGS_CONFIG, false, ok)
+		                    ? SD_STEP_RESTORE_CONFIG
+		                    : SD_STEP_LOAD_DSP;
 		return;
 	case SD_STEP_LOAD_DSP:
 		/* A missing or invalid /aius/dsp.json is the common case and is
 		 * not an error: the active model is left alone, exactly as
 		 * stage_dsp_sd_override() did. F-B2: whatever the outcome,
 		 * bring-up's loads are over; root holds may begin (latched once
-		 * per boot, so a missing dsp.json does not hold it open). */
+		 * per boot, so a missing dsp.json does not hold it open; a 4h
+		 * restore step after it is an ordinary root job). */
 		aius_optical_admission_note_bringup_loaded(&g_http_admission);
-		g_sd_step = SD_STEP_USAGE;
+		/* Phase 4h (H10): with the carve, a failed target not shadowed
+		 * is followed by its backup's load. */
+		g_sd_step = aius_optical_settings_load_end(
+		                    &g_settings_mount, &g_settings_ops,
+		                    AIUS_OPTICAL_SETTINGS_DSP, false, ok)
+		                    ? SD_STEP_RESTORE_DSP
+		                    : SD_STEP_USAGE;
+		return;
+	case SD_STEP_RESTORE_CONFIG:
+	case SD_STEP_RESTORE_DSP:
+		/* H10, FR-S5, FR-S10, FR-S11: the restore was applied and put at
+		 * publication; the policy counts the decision. */
+		(void)aius_optical_settings_load_end(
+			&g_settings_mount, &g_settings_ops,
+			step == SD_STEP_RESTORE_CONFIG ? AIUS_OPTICAL_SETTINGS_CONFIG
+			                               : AIUS_OPTICAL_SETTINGS_DSP,
+			true, ok);
+		g_sd_step = step == SD_STEP_RESTORE_CONFIG ? SD_STEP_LOAD_DSP
+		                                           : SD_STEP_USAGE;
 		return;
 	case SD_STEP_USAGE:
 		if (ok) {
@@ -8932,6 +9292,466 @@ static FLASHMEM bool web_cache_name_servable(const char *name)
 	return true;
 }
 
+/* Phase 4h: the overlay's flush job, the card-loss hold's playback remount
+ * retry (H3, S1, N5, NS3) and the H9 SD-writes freeze. One flush root job at
+ * a time; the overlay picks it (aius_sd_overlay_next_job) and this file runs
+ * it behind the same gates as every root job (sd_storage_idle(),
+ * sd_fifo_defer()), after any 4g fill file is stopped (G9) and after any HTTP
+ * request held behind that fill has run (G6). Its bytes come from the root
+ * input source (sd_flush_root_input, FR-S3). */
+/* The policy is aius_optical_sd_flush_* / aius_optical_sd_idle_step /
+ * aius_optical_sd_write_gate (aius_optical_app.cpp, proved in optical-app);
+ * this file binds the platform callbacks (g_sd_flush_ops) and keeps thin
+ * named entry points for its own call sites. */
+static_assert((int)AIUS_OPTICAL_SD_FLUSH_OK == (int)AIUS_SD_OVERLAY_JOB_OK &&
+              (int)AIUS_OPTICAL_SD_FLUSH_FAILED ==
+                      (int)AIUS_SD_OVERLAY_JOB_FAILED &&
+              (int)AIUS_OPTICAL_SD_FLUSH_CARD_GONE ==
+                      (int)AIUS_SD_OVERLAY_JOB_CARD_GONE &&
+              (int)AIUS_OPTICAL_SD_FLUSH_CHUNK_CRC ==
+                      (int)AIUS_SD_OVERLAY_JOB_CHUNK_CRC,
+              "AiusOpticalSdFlushOutcome mirrors AiusSdOverlayJobOutcome");
+static_assert((int)AIUS_WEB_CACHE_SAFE_TARGET == 0 &&
+                      (int)AIUS_WEB_CACHE_SAFE_BACKUP == 1,
+              "aius_optical_sd_flush_settle's note_pass values");
+
+
+/* FR-S3: the flush job's bytes, the overlay's pinned version, each chunk
+ * checked against its accept-time CRC; false fails the job as a chunk CRC
+ * fault before its WRITE. */
+extern "C" FLASHMEM bool aius_runtime_storage_root_input(
+	const AiusSdJob *, uint64_t offset, uint8_t *dst, size_t capacity,
+	size_t *bytes)
+{
+	uint32_t copied = 0u;
+	*bytes = 0u;
+	/* Only a flush job asks for input; any other root job meets "no
+	 * source" (0 bytes, a counted protocol fault), as the weak default. */
+	if (!g_sd_flush.running)
+		return true;
+	if (offset > UINT32_MAX ||
+	    !aius_sd_overlay_job_input(&g_sd_overlay, (uint32_t)offset, dst,
+	                               (uint32_t)capacity, &copied))
+		return false;
+	*bytes = copied;
+	return true;
+}
+
+static FLASHMEM AiusOpticalAppStoreResult sd_overlay_result(
+	AiusSdOverlayPutResult result)
+{
+	switch (result) {
+	case AIUS_SD_OVERLAY_PUT_OK: return AIUS_OPTICAL_APP_STORE_OK;
+	case AIUS_SD_OVERLAY_PUT_INVALID: return AIUS_OPTICAL_APP_STORE_INVALID;
+	default: return AIUS_OPTICAL_APP_STORE_BUSY;
+	}
+}
+
+/* ---- g_sd_flush_ops: the platform half ---- */
+static FLASHMEM bool sd_flush_present(void *)
+{
+	return sd_overlay_present();
+}
+
+static FLASHMEM bool sd_flush_ready(void *)
+{
+	return g_sd_ready;
+}
+
+static FLASHMEM bool sd_flush_held(void *)
+{
+	return aius_sd_overlay_held(&g_sd_overlay);
+}
+
+/* D-S2: due exactly when _next_job would return a job (debounce, S5 backoff,
+ * CRC_FAULTED and held all applied), so the flush start cancels a fill file
+ * only for a job that will start; a backed-off or faulted entry no longer
+ * steals every pass and the walk completes. */
+static FLASHMEM bool sd_flush_due(void *, uint32_t now_ms)
+{
+	return aius_sd_overlay_job_ready(&g_sd_overlay, now_ms);
+}
+
+static FLASHMEM bool sd_flush_overlay_drained(void *)
+{
+	return aius_sd_overlay_drained(&g_sd_overlay);
+}
+
+static FLASHMEM bool sd_flush_http_deferred(void *)
+{
+	return g_runtime.network_http.deferred_start_present ||
+	       g_runtime.network_http.deferred_dispatch_present;
+}
+
+static FLASHMEM bool sd_flush_fill_in_flight(void *)
+{
+	return web_cache_fill_in_flight();
+}
+
+static FLASHMEM void sd_flush_fill_cancel(void *)
+{
+	web_cache_fill_cancel();
+}
+
+static FLASHMEM void sd_flush_fill_hold_release(void *)
+{
+	web_cache_fill_hold_release();
+}
+
+/* R5-S1, G8: a flush job start waits while sd_fifo_defer() holds. */
+static FLASHMEM bool sd_flush_storage_ready(void *)
+{
+	return sd_storage_idle() && !sd_fifo_defer();
+}
+
+static FLASHMEM AiusOpticalSdFlushStart sd_flush_start_job(
+	void *, uint32_t now_ms, AiusOpticalSdFlushJob *out)
+{
+	AiusSdOverlayJob job;
+	AiusSdJobRequest request;
+	char temp[AIUS_SD_PATH_STORAGE];
+
+	if (!aius_sd_overlay_next_job(&g_sd_overlay, now_ms, &job))
+		return AIUS_OPTICAL_SD_FLUSH_START_NONE;
+	if (job.kind == AIUS_SD_OVERLAY_JOB_REPLACE) {
+		/* Today's two-rename install, with its own scratch pair (the job
+		 * carries no backup path for a sync entry, so its array holds the
+		 * .bak name). D-N3: named from the version and the target, never a
+		 * per-boot counter, so an earlier boot's cut leftover (the only
+		 * copy of its file) is not reused by another file's flush. */
+		static const char kTemp[] PROGMEM = "/aius/.flush-%08lx.tmp";
+		static const char kBackup[] PROGMEM = "/aius/.flush-%08lx.bak";
+		const uint32_t seq =
+			aius_optical_sd_flush_scratch_id(job.file_crc, job.target_path);
+		(void)snprintf(temp, sizeof(temp), kTemp, (unsigned long)seq);
+		(void)snprintf(job.backup_path, sizeof(job.backup_path), kBackup,
+		               (unsigned long)seq);
+	}
+	if (!aius_sd_overlay_job_request(&job, temp, job.backup_path, &request) ||
+	    !aius_runtime_teensy_start_storage_job(&g_runtime, &request))
+		return AIUS_OPTICAL_SD_FLUSH_START_REFUSED;
+	out->copy_before_write = job.kind == AIUS_SD_OVERLAY_JOB_COPY_BEFORE_WRITE;
+	out->target_first = job.order == AIUS_SD_OVERLAY_ORDER_TARGET_FIRST;
+	out->skip_backup = job.skip_backup;
+	return AIUS_OPTICAL_SD_FLUSH_START_STARTED;
+}
+
+static FLASHMEM void sd_flush_job_end(void *, AiusOpticalSdFlushOutcome outcome,
+                                      uint32_t now_ms)
+{
+	aius_sd_overlay_job_end(&g_sd_overlay, (AiusSdOverlayJobOutcome)outcome,
+	                        now_ms);
+}
+
+static FLASHMEM void sd_flush_note_pass(void *, uint8_t safe_copy)
+{
+	aius_sd_overlay_note_pass_closed(&g_sd_overlay,
+	                                 (AiusWebCacheSafeCopy)safe_copy);
+}
+
+static FLASHMEM void sd_flush_note_readback(void *, bool ok)
+{
+	aius_sd_overlay_note_readback(&g_sd_overlay, ok);
+}
+
+static FLASHMEM void sd_flush_note_mounted(void *, uint32_t now_ms)
+{
+	aius_sd_overlay_note_mounted(&g_sd_overlay, now_ms);
+}
+
+static FLASHMEM void sd_flush_note_card_lost(void *)
+{
+	aius_sd_overlay_note_card_lost(&g_sd_overlay);
+}
+
+/* The probe-skip predicate: no routine card touch while live audio is on
+ * the wire (sd_lifecycle_service explains both predicates); a boot's first
+ * bring-up is exempt. */
+static FLASHMEM bool sd_flush_playback(void *)
+{
+	return g_sd_bringup_done &&
+	       (g_tx_gate_open || AudioInputSPDIF3::pllLocked());
+}
+
+static FLASHMEM bool sd_flush_card_detected(void *)
+{
+	return aius_sd_teensy_card_detected(&g_runtime.storage.target);
+}
+
+/* The freeze's wait: no SD job of any owner in flight. */
+static FLASHMEM bool sd_flush_settled(void *)
+{
+	return sd_storage_idle() && !g_runtime.storage.http_owned &&
+	       g_runtime.storage.root_state != AIUS_RUNTIME_STORAGE_ROOT_RUNNING;
+}
+
+static FLASHMEM const char *sd_flush_fill_rel(void *)
+{
+	return web_cache_rel(g_runtime.storage.job.target_path);
+}
+
+static FLASHMEM bool sd_flush_cancel_root(void *)
+{
+	return aius_runtime_storage_cancel_root(&g_runtime.storage);
+}
+
+static FLASHMEM AiusOpticalAppStoreResult sd_flush_put_begin(
+	void *, const char *rel, size_t rel_length, uint32_t length)
+{
+	return sd_overlay_result(
+		aius_sd_overlay_put_begin(&g_sd_overlay, rel, rel_length, length));
+}
+
+static FLASHMEM void sd_flush_put_abort(void *)
+{
+	aius_sd_overlay_put_abort(&g_sd_overlay);
+}
+
+static FLASHMEM bool sd_flush_mounted(void *)
+{
+	return g_runtime.storage.target.mounted;
+}
+
+static const AiusOpticalSdFlushOps g_sd_flush_ops PROGMEM = {
+	nullptr,
+	sd_flush_present,
+	sd_flush_ready,
+	sd_flush_held,
+	sd_flush_due,
+	sd_flush_overlay_drained,
+	sd_flush_http_deferred,
+	sd_flush_fill_in_flight,
+	sd_flush_fill_cancel,
+	sd_flush_fill_hold_release,
+	sd_flush_storage_ready,
+	sd_flush_start_job,
+	sd_flush_job_end,
+	sd_flush_note_pass,
+	sd_flush_note_readback,
+	sd_flush_note_mounted,
+	sd_flush_note_card_lost,
+	sd_flush_playback,
+	sd_flush_card_detected,
+	sd_flush_settled,
+	sd_flush_fill_rel,
+	sd_flush_cancel_root,
+	sd_flush_put_begin,
+	sd_flush_put_abort,
+	sd_flush_card_present_after_fault,
+	sd_flush_mounted,
+};
+
+/* ---- named entry points for this file's call sites ---- */
+static FLASHMEM void sd_flush_note_card_gone(uint32_t now_ms)
+{
+	aius_optical_sd_flush_note_card_gone(&g_sd_flush, now_ms);
+}
+
+static FLASHMEM void sd_flush_note_probe(bool present, uint32_t now_ms)
+{
+	aius_optical_sd_flush_note_probe(&g_sd_flush, &g_sd_flush_ops, present,
+	                                 now_ms);
+}
+
+/* Ends the flush job that just reached its terminal (the engine's view of
+ * it; the policy orders the notes before the job end). */
+static FLASHMEM void sd_flush_settle(uint32_t now_ms)
+{
+	const AiusRuntimeStorage &storage = g_runtime.storage;
+	const AiusSdResult *result;
+	AiusOpticalSdFlushEnd end;
+
+	if (!g_sd_flush.running ||
+	    storage.root_state == AIUS_RUNTIME_STORAGE_ROOT_RUNNING)
+		return;
+	result = aius_runtime_storage_root_result(&storage);
+	end.result = result != nullptr;
+	end.fault = result != nullptr && result->kind == AIUS_SD_RESULT_FAULT;
+	end.input_faulted = aius_runtime_storage_root_input_faulted(&storage);
+	end.mounted = storage.target.mounted;
+	{
+		/* D-S7: never classified with a file open; the end then waits. */
+		const AiusOpticalSdCardLoss loss = aius_optical_sd_card_loss(
+			&g_sd_flush, &g_sd_flush_ops, g_sd_ready,
+			storage.target.mounted, storage.target.file_open,
+			storage.target.driver_faults, now_ms);
+		end.loss_pending = loss == AIUS_OPTICAL_SD_CARD_PENDING;
+		end.card_detected = loss != AIUS_OPTICAL_SD_CARD_GONE;
+	}
+	/* CR2-S1: the pass record from the job itself (never null), whatever
+	 * the terminal's result or outcome. */
+	{
+		const AiusSdResult *record = aius_sd_job_result(&storage.job);
+		end.readback_mismatch = record != nullptr && record->readback_mismatch;
+		end.passes_closed = record != nullptr ? record->passes_closed : 0u;
+	}
+	aius_optical_sd_flush_settle(&g_sd_flush, &g_sd_flush_ops, &end, now_ms);
+}
+
+static FLASHMEM void sd_freeze_release(void)
+{
+	aius_optical_sd_freeze_release(&g_sd_flush, &g_sd_flush_ops);
+}
+
+static FLASHMEM bool sd_flush_drained(void)
+{
+	return aius_optical_sd_flush_drained(&g_sd_flush_ops);
+}
+
+/* D-S9: the one BEGIN gate (aius_optical_sd_begin_blocked), for the paths
+ * this file starts: the lifecycle's root steps, HTTP SD_START admission and
+ * the replay job's BEGIN (the flush and fill starts take it in the seam). */
+static FLASHMEM bool sd_begin_blocked(uint32_t now_ms)
+{
+	return aius_optical_sd_begin_blocked(&g_sd_flush, &g_sd_flush_ops, now_ms);
+}
+
+static FLASHMEM bool sd_step_begin_blocked(uint32_t now_ms)
+{
+	return aius_optical_sd_step_begin_blocked(&g_sd_flush, &g_sd_flush_ops,
+	                                          now_ms);
+}
+
+static FLASHMEM bool sd_replay_begin_blocked(void)
+{
+	return aius_optical_sd_replay_begin_blocked(&g_sd_flush, &g_sd_flush_ops);
+}
+
+static FLASHMEM bool sd_freeze_active(void)
+{
+	return g_sd_flush.frozen;
+}
+
+/* S8: the STORE upload sink (link-time hooks), the overlay's streamed put.
+ * _open accepts only the put the route reserved (g_sd_flush.put_open, open
+ * from the route's put_begin to the sink's commit or abort, or the orphan
+ * sweep, NS5). */
+extern "C" FLASHMEM bool aius_runtime_storage_store_open(
+	const AiusSdJobRequest *request)
+{
+	return g_sd_flush.put_open && request != nullptr &&
+	       request->install_mode == AIUS_SD_INSTALL_STORE;
+}
+
+extern "C" FLASHMEM bool aius_runtime_storage_store_chunk(const uint8_t *data,
+                                                          size_t length)
+{
+	return g_sd_flush.put_open &&
+	       aius_sd_overlay_put_chunk(&g_sd_overlay, data,
+	                                 (uint32_t)length) ==
+	               AIUS_SD_OVERLAY_PUT_OK;
+}
+
+extern "C" FLASHMEM bool aius_runtime_storage_store_commit(uint32_t now_ms)
+{
+	if (!aius_optical_sd_flush_put_close(&g_sd_flush))
+		return false;
+	return aius_sd_overlay_put_commit(&g_sd_overlay, now_ms) ==
+	       AIUS_SD_OVERLAY_PUT_OK;
+}
+
+extern "C" FLASHMEM void aius_runtime_storage_store_abort(void)
+{
+	aius_optical_sd_flush_put_abort(&g_sd_flush, &g_sd_flush_ops);
+}
+
+/* NS5, D4: the orphan put sweep, as sd_drop_orphan_staging() disarms an
+ * orphaned staging. */
+static FLASHMEM void sd_drop_orphan_put(void)
+{
+	aius_optical_sd_flush_sweep_orphan(
+		&g_sd_flush, &g_sd_flush_ops, &g_runtime.network_http.http,
+		g_runtime.network_http.deferred_start_present,
+		g_runtime.storage_action_present);
+}
+
+static FLASHMEM bool app_overlay_present(void *)
+{
+	return sd_overlay_present();
+}
+
+/* A www PUT's accept (NS2, B1), counted in www_cache.fill_cancels. */
+static FLASHMEM AiusOpticalAppStoreResult app_overlay_put_begin(
+	void *, const char *rel, size_t rel_length, uint32_t length)
+{
+	return aius_optical_sd_flush_put_begin(&g_sd_flush, &g_sd_flush_ops,
+	                                       &g_web_fill.cancels, rel,
+	                                       rel_length, length);
+}
+
+static FLASHMEM void app_overlay_put_abort(void *)
+{
+	aius_optical_sd_flush_put_abort(&g_sd_flush, &g_sd_flush_ops);
+}
+
+static FLASHMEM AiusOpticalAppStoreResult app_overlay_tombstone(
+	void *, const char *rel, size_t rel_length)
+{
+	return sd_overlay_result(aius_sd_overlay_tombstone(
+		&g_sd_overlay, rel, rel_length, millis()));
+}
+
+static FLASHMEM bool app_overlay_drained(void *)
+{
+	return sd_flush_drained();
+}
+
+/* S6: one pending row into a card-read batch: a name the card already listed
+ * (case-folded, as FAT names are) takes the pending size; a new one is
+ * appended. */
+static FLASHMEM bool sd_overlay_merge_row(void *context, const char *name,
+                                          size_t name_length,
+                                          uint32_t size_bytes,
+                                          bool is_directory)
+{
+	AiusOpticalAppDirBatch *batch = (AiusOpticalAppDirBatch *)context;
+	for (size_t i = 0; i < batch->count; i++) {
+		AiusOpticalAppDirEntry *entry = &batch->entries[i];
+		if (!entry->is_directory && strlen(entry->name) == name_length &&
+		    strncasecmp(entry->name, name, name_length) == 0) {
+			entry->size_bytes = size_bytes;
+			return true;
+		}
+	}
+	return web_cache_listing_row(context, name, name_length, size_bytes,
+	                             is_directory);
+}
+
+static FLASHMEM void app_overlay_merge_listing(void *, const char *dir,
+                                               size_t dir_length,
+                                               AiusOpticalAppDirBatch *batch)
+{
+	char key[AIUS_WEB_CACHE_PATH_MAX + 1u];
+	size_t kept = 0u;
+
+	/* Tombstoned names leave the card's rows first. */
+	for (size_t i = 0; i < batch->count; i++) {
+		const AiusOpticalAppDirEntry *entry = &batch->entries[i];
+		const size_t name_length = strlen(entry->name);
+		if (!entry->is_directory &&
+		    dir_length + name_length <= AIUS_WEB_CACHE_PATH_MAX) {
+			memcpy(key, dir, dir_length);
+			memcpy(key + dir_length, entry->name, name_length);
+			if (aius_web_cache_pending_state(&g_web_cache, key,
+			                                 dir_length + name_length) ==
+			    AIUS_WEB_CACHE_STATE_TOMBSTONE)
+				continue;
+		}
+		if (kept != i)
+			batch->entries[kept] = *entry;
+		kept++;
+	}
+	batch->count = kept;
+	(void)aius_web_cache_pending_listing(&g_web_cache, dir, dir_length,
+	                                     sd_overlay_merge_row, batch);
+}
+
+static const AiusOpticalAppSdOverlay g_sd_overlay_seam PROGMEM = {
+	nullptr, app_overlay_present, app_overlay_put_begin,
+	app_overlay_put_abort, app_overlay_tombstone, app_overlay_drained,
+	app_overlay_merge_listing
+};
+
 /* Settles the fill file that just ended, then follows the card: a card gone
  * or a new mount (remount, card swap, mode change) drops every entry and
  * restarts the walk. Also releases an HTTP canceller whose request ended
@@ -9024,8 +9844,22 @@ static FLASHMEM void web_cache_fill_settle(uint32_t now_ms)
 	if (aius_optical_web_fill_follow_card(&g_web_fill_walk.ready_seen,
 	                                      &g_web_fill_walk.mounts_seen,
 	                                      g_sd_ready, storage.target.mounted,
-	                                      storage.target.mounts))
+	                                      storage.target.mounts)) {
+		/* Phase 4h (H3, H11): invalidate drops clean entries only (the
+		 * store's own rule); a card found gone also sets the hold. */
 		web_cache_invalidate_all();
+		/* A PENDING drop (a file still open) is classified at the first
+		 * pass with none (sd_lifecycle_service), whose card-gone verdict
+		 * notes the hold itself (D-S7). */
+		if (aius_optical_sd_card_loss(&g_sd_flush, &g_sd_flush_ops,
+		                              g_sd_ready, storage.target.mounted,
+		                              storage.target.file_open,
+		                              storage.target.driver_faults,
+		                              now_ms) == AIUS_OPTICAL_SD_CARD_GONE) {
+			aius_sd_overlay_note_card_lost(&g_sd_overlay);
+			sd_flush_note_card_gone(now_ms);
+		}
+	}
 }
 
 /* Owner (closure nit A): a playing replay pauses the fill, SWITCHING_TO_REPLAY
@@ -9050,7 +9884,7 @@ static FLASHMEM void web_cache_fill_next(uint32_t now_ms)
 	AiusOpticalAppDirBatch batch;
 	AiusOpticalAppDirEntry *const entries = g_runtime.app.index_entries;
 
-	if (g_web_cache.base == nullptr || !g_sd_ready ||
+	if (g_web_cache.base == nullptr || !g_sd_ready || g_sd_flush.frozen ||
 	    !g_web_fill_walk.ready_seen || g_web_fill_walk.walk_complete ||
 	    g_web_fill_walk.running ||
 	    aius_optical_web_fill_paused(&g_web_fill, now_ms,
@@ -9130,6 +9964,10 @@ static FLASHMEM void web_cache_fill_next(uint32_t now_ms)
 			g_web_fill_walk.dir_clean = false;
 			continue;
 		}
+		/* Phase 4h (S6, H11): a path the overlay shadows or tombstones
+		 * counts as attempted and published; the store serves it. */
+		if (sd_overlay_shadows_path(path))
+			continue;
 		/* A faulted entry is dropped by the lookup, so it fills here. */
 		if (aius_web_cache_lookup(&g_web_cache, rel, strlen(rel), &hit,
 		                          nullptr))
@@ -9156,7 +9994,7 @@ static FLASHMEM void web_cache_fill_next(uint32_t now_ms)
 	/* This directory is done; G6's presets listing comes from the manifest
 	 * only once every presets file was published. */
 	if (g_web_fill_walk.dir_ordinal != 0u &&
-	    strcmp(g_web_fill_walk.dir, "presets") == 0)
+	    strcasecmp(g_web_fill_walk.dir, "presets") == 0) /* N1 */
 		g_web_fill_walk.presets_complete =
 			g_web_fill_walk.dir_clean && !batch.more &&
 			batch.hidden == 0u;
@@ -9180,21 +10018,59 @@ static FLASHMEM void sd_lifecycle_service(uint32_t now_ms)
 	 * and destroy the terminal state the commit arm reads. */
 	sd_settle_http_write();
 	sd_drop_orphan_staging();
+	sd_drop_orphan_put();
 
+	sd_flush_settle(now_ms);
 	web_cache_fill_settle(now_ms);
+	/* Phase 4h: the overlay's service step (Q2 re-puts, CRC drops, burst
+	 * bookkeeping) and its coalesced USAGE_REFRESH. */
+	if (sd_overlay_present()) {
+		aius_sd_overlay_service(&g_sd_overlay, now_ms);
+		if (aius_sd_overlay_take_usage_refresh(&g_sd_overlay))
+			g_sd_usage_refresh_pending = true;
+	}
 
 	if (g_runtime.storage.root_state ==
 	    AIUS_RUNTIME_STORAGE_ROOT_RUNNING)
 		return;
+	/* D-S5: classify any fault-dropped mount once per pass, with no file
+	 * open (a direct card op's included), so a present card's remount is
+	 * scheduled for the idle step below; a mode-only drop is never
+	 * classified (E3). */
+	if (!g_runtime.storage.target.file_open)
+		(void)aius_optical_sd_card_loss(
+			&g_sd_flush, &g_sd_flush_ops, g_sd_ready,
+			g_runtime.storage.target.mounted, false,
+			g_runtime.storage.target.driver_faults, now_ms);
 	if (g_sd_step_running)
 		sd_step_complete(now_ms);
 	if (g_sd_step == SD_STEP_NONE) {
-		/* Phase 4g: with no lifecycle step due, the next fill file. */
-		if ((int32_t)(now_ms - g_sd_probe_at_ms) < 0) {
-			web_cache_fill_next(now_ms);
+		/* Phase 4h: the idle step's choice is portable policy
+		 * (aius_optical_sd_idle_step, proved in optical-app): a due flush
+		 * goes before the probe and the fill; a held flush's playback
+		 * remount retry is a probe step (H3); NS7: no probe BEGIN while
+		 * DAT3 (re-muxed, no mount held) reads no card; no SD job of ours
+		 * starts while the H9 freeze holds. */
+		const bool probe_due = (int32_t)(now_ms - g_sd_probe_at_ms) >= 0;
+		const AiusOpticalSdIdleStep idle = aius_optical_sd_idle_step(
+			&g_sd_flush, &g_sd_flush_ops, now_ms, probe_due);
+		/* CR-B1: a due probe skipped this pass (playback, a flush, the
+		 * BEGIN gate) stays due with a fresh stamp, so a skip longer than
+		 * 2^31 ms (24.8 days of playback) never turns it "not due" and
+		 * stalls detection after the source stops. */
+		if (probe_due && (idle == AIUS_OPTICAL_SD_IDLE_FILL ||
+		                  idle == AIUS_OPTICAL_SD_IDLE_WAIT))
+			g_sd_probe_at_ms = now_ms;
+		if (idle == AIUS_OPTICAL_SD_IDLE_WAIT)
+			return;
+		if (idle == AIUS_OPTICAL_SD_IDLE_NO_CARD) {
+			g_sd_probe_at_ms = now_ms + AIUS_SD_PROBE_INTERVAL_MS;
 			return;
 		}
-		/* No routine card touch while live audio is on the wire: every
+		/* Phase 4g: with no lifecycle step due (or the probe skipped for
+		 * playback, below), the next fill file.
+		 *
+		 * No routine card touch while live audio is on the wire: every
 		 * probe is one SdioCard primitive at checkpoint 8, and a card
 		 * that wanders into internal wear-leveling holds that primitive
 		 * for an unbounded time (582 ms witnessed 2026-08-16) -- longer
@@ -9233,9 +10109,9 @@ static FLASHMEM void sd_lifecycle_service(uint32_t now_ms)
 		 * the source went quiet, exactly when the owner was using the
 		 * system. Until g_sd_ready has been achieved once this boot the
 		 * probe runs regardless of the carrier; steady-state deferral
-		 * (hot swap detection, usage refresh) is unchanged. */
-		if (g_sd_bringup_done &&
-		    (g_tx_gate_open || AudioInputSPDIF3::pllLocked())) {
+		 * (hot swap detection, usage refresh) is unchanged. Both
+		 * predicates are sd_flush_playback(). */
+		if (idle == AIUS_OPTICAL_SD_IDLE_FILL) {
 			web_cache_fill_next(now_ms);
 			return;
 		}
@@ -9245,7 +10121,15 @@ static FLASHMEM void sd_lifecycle_service(uint32_t now_ms)
 		return;
 	/* Phase 4f F2: a root job start waits while sd_fifo_defer() holds; the
 	 * step stays chosen and starts on a later epoch. */
-	if (sd_fifo_defer())
+	/* 4h H9: freeze. D-S9, D-N9: the BEGIN gate; only the probe step the
+	 * remount retry chose passes it. */
+	if (sd_fifo_defer() || g_sd_flush.frozen || sd_step_begin_blocked(now_ms))
+		return;
+	/* Phase 4h S8: a publishing step (a CONFIG_LOAD) does not start while a
+	 * STORE upload holds the publication buffer; the step stays owed and
+	 * retries next epoch rather than being dropped as a refused request. */
+	if ((g_runtime.storage.flags_4h &
+	     AIUS_RUNTIME_STORAGE_FLAG_STORE_ACTIVE) != 0u)
 		return;
 	if (sd_start_step(g_sd_step))
 		g_sd_step_running = true;
@@ -9271,41 +10155,24 @@ static FLASHMEM bool platform_publish_config(void *, const uint8_t *data,
 {
 	if (data == nullptr || !g_sd_step_running)
 		return false;
-
-	if (g_sd_step == SD_STEP_LOAD_CONFIG) {
-		(void)aius_config_parse(data, length, &g_config);
-		if (!g_config.valid)
-			g_config_error_count++;
-		return true;
+	/* Phase 4h (B6, Q1, H10): the target loads and their backups' restore
+	 * loads go through the portable settings mount policy
+	 * (aius_optical_settings_publish, aius_optical_app.cpp), which skips a
+	 * shadowed path and calls settings_load() below for the parse. */
+	switch (g_sd_step) {
+	case SD_STEP_LOAD_CONFIG:
+	case SD_STEP_LOAD_DSP:
+	case SD_STEP_RESTORE_CONFIG:
+	case SD_STEP_RESTORE_DSP:
+		return aius_optical_settings_publish(
+			&g_settings_mount, &g_settings_ops, sd_step_settings_file(),
+			sd_step_is_restore(), data, length);
+	default:
+		/* No load is in flight, so these bytes belong to a job this file
+		 * did not start. Refusing faults that job (AIUS_SD_FAULT_PUBLISH)
+		 * rather than completing it as though it had published. */
+		return false;
 	}
-	if (g_sd_step == SD_STEP_LOAD_DSP) {
-		AiusDspModel parsed;
-
-		/* A staged PUT owns g_pending_dsp_model until its commit arm
-		 * settles; a reinsert load must not write across it. */
-		if (g_dsp_upload_pending)
-			return true;
-		if (aius_dsp_config_parse_put(data, length, &parsed) !=
-		    AIUS_DSP_CONFIG_OK)
-			return true;
-		g_pending_dsp_model = parsed;
-		/* The origin goes with the model and BEFORE the volatile flag
-		 * below, which is the whole handoff rule. */
-		g_pending_dsp_origin = DSP_ORIGIN_SD;
-		/* Every stager advances it, this one included -- the count is
-		 * "models staged this boot", not "PUTs accepted". */
-		g_staged_generation++;
-		/* Staged, not applied: the block-boundary swap in
-		 * AiusAudioProcessor::enqueue() remains the only place the
-		 * active model changes, where config_generation increments and
-		 * the active origin adopts the staged one. */
-		g_dsp_apply_pending = true;
-		return true;
-	}
-	/* No load is in flight, so these bytes belong to a job this file did not
-	 * start. Refusing faults that job (AIUS_SD_FAULT_PUBLISH) rather than
-	 * completing it as though it had published. */
-	return false;
 }
 
 /* Builds one event for the refill job, in the adapter's own shape. */
@@ -9330,6 +10197,17 @@ static FLASHMEM AiusSdEvent replay_job_make_event(AiusSdEventKind kind,
  * epoch's step. */
 static FLASHMEM void replay_job_route(const AiusSdAction *action)
 {
+	/* Phase 4h D-S9, D-S10: the replay job's own BEGIN is blocked only while
+	 * DAT3 reads no card (a real pull: the job fails as a driver fault with
+	 * no card touch and the replay stops); never by the remount schedule, so
+	 * a transient fault remounts at once as before 4h. */
+	if (action->kind == AIUS_SD_ACTION_BEGIN && sd_replay_begin_blocked()) {
+		g_replay_job_event = replay_job_make_event(
+			AIUS_SD_EVENT_FAULT, action->action_id,
+			AIUS_SD_TEENSY_DRIVER_FAULT);
+		g_replay_job_event_present = true;
+		return;
+	}
 	switch (action->kind) {
 	case AIUS_SD_ACTION_NONE:
 	case AIUS_SD_ACTION_COMPLETE:
@@ -10783,6 +11661,9 @@ FLASHMEM void setup(void)
 	 * misses everything while the carve is absent (8 MiB fitments). After
 	 * the runtime's aius_optical_app_init(), which clears it. */
 	(void)aius_optical_app_set_web_cache(&g_runtime.app, &g_web_cache_seam);
+	/* Phase 4h: the dispatcher's overlay seam (the flush input and the www
+	 * PUT sink are link-time hooks). */
+	(void)aius_optical_app_set_sd_overlay(&g_runtime.app, &g_sd_overlay_seam);
 #if AIUS_OTA
 	/* Install the OTA seam AFTER the dispatcher is constructed: the runtime's
 	 * aius_optical_app_init() zeroes the OTA slot, and ota_compose() then binds
@@ -11012,6 +11893,7 @@ static FLASHMEM bool reboot_drain_complete(void)
 {
 	const AiusHttpTransaction *http = &g_runtime.network_http.http;
 
+	/* The same predicate as aius_optical_app_http_idle (the Q2 re-put's). */
 	return http->state == AIUS_HTTP_TX_IDLE &&
 	       http->outstanding_action == AIUS_HTTP_ACTION_NONE;
 }
@@ -11035,6 +11917,20 @@ static FLASHMEM void service_reboot_request(uint32_t now_ms)
 	}
 	if (reboot_drain_complete() ||
 	    (int32_t)(now_ms - g_reboot_deadline_ms) >= 0) {
+		/* Phase 4h (H9, R4-B1, R5-S2): the drain gate and SD-writes
+		 * freeze; an expired freeze ceiling resets as today's ceiling
+		 * does (the drain already passed). An unflushed write abandons:
+		 * unfreeze and clear the request, so it never re-runs. */
+		const AiusOpticalSdService gate = aius_optical_sd_service_gate(
+			&g_sd_flush, &g_sd_flush_ops, &g_reboot_requested, now_ms, true);
+		if (gate == AIUS_OPTICAL_SD_SERVICE_WAIT)
+			return;
+		if (gate != AIUS_OPTICAL_SD_SERVICE_RUN ||
+		    !aius_optical_sd_service_final(&g_sd_flush, &g_sd_flush_ops,
+		                                   &g_reboot_requested)) {
+			g_reboot_deadline_armed = false;
+			return;
+		}
 		/* "Reboot with TX disabled first": a clean driven LOW until the ROM
 		 * takes the pad back to its undriven reset default, rather than a
 		 * carrier that dies mid-frame at reset. */
@@ -11078,6 +11974,18 @@ static FLASHMEM void ota_activation_recover(void)
 	(void)aius_ota_abandon_activation(&g_ota_session);
 	g_ota_activation_requested = false;
 	g_ota_activation_deadline_armed = false;
+	sd_freeze_release(); /* 4h: a refused activation unfreezes SD writes */
+}
+
+/* Phase 4h (H9, R4-B1): the OTA services' drain gate verdict as a fault, or
+ * NONE to proceed (WAIT never reaches here). */
+static FLASHMEM OtaActivationFault ota_sd_gate_fault(AiusOpticalSdService gate)
+{
+	if (gate == AIUS_OPTICAL_SD_SERVICE_FLUSH_PENDING)
+		return OTA_ACTIVATION_FAULT_FLUSH_PENDING;
+	if (gate == AIUS_OPTICAL_SD_SERVICE_SD_BUSY)
+		return OTA_ACTIVATION_FAULT_SD_BUSY;
+	return OTA_ACTIVATION_FAULT_NONE;
 }
 
 static FLASHMEM void service_ota_activation(uint32_t now_ms)
@@ -11090,6 +11998,21 @@ static FLASHMEM void service_ota_activation(uint32_t now_ms)
 	if (!reboot_drain_complete() &&
 	    (int32_t)(now_ms - g_ota_activation_deadline_ms) < 0)
 		return;
+	/* Phase 4h: the drain gate and freeze, before any one-way step; an
+	 * abandon unfreezes and clears the request (aius_optical_sd_service_gate,
+	 * proved in optical-app). */
+	{
+		const AiusOpticalSdService gate = aius_optical_sd_service_gate(
+			&g_sd_flush, &g_sd_flush_ops, &g_ota_activation_requested,
+			now_ms, false);
+		if (gate == AIUS_OPTICAL_SD_SERVICE_WAIT)
+			return;
+		if (gate != AIUS_OPTICAL_SD_SERVICE_RUN) {
+			g_ota_activation_fault = ota_sd_gate_fault(gate);
+			ota_activation_recover();
+			return;
+		}
+	}
 
 	uint8_t running_digest[AIUS_OTA_DIGEST_BYTES];
 	AiusOtaActivatePrimitives primitives = ota_activate_primitives();
@@ -11108,7 +12031,14 @@ static FLASHMEM void service_ota_activation(uint32_t now_ms)
 	 * audio in, and the deliberate price of keeping the marginal pad-2
 	 * chip out of the dark window. No PSRAM -> ota_no_psram (the same
 	 * gate app_ota_activate() applies synchronously; re-checked here so
-	 * this path never touches flash without it). */
+	 * this path never touches flash without it).
+	 * Phase 4h (R4-B1): the second drain query is the statement right
+	 * before the park; a write accepted during the freeze wait abandons. */
+	if (!sd_flush_drained()) {
+		g_ota_activation_fault = OTA_ACTIVATION_FAULT_FLUSH_PENDING;
+		ota_activation_recover();
+		return;
+	}
 	(void)aius_recorder_bank_park(&g_recorder_bank);
 	g_recorder_present = false;
 	if (!ota_psram_staging(&psram_base, &psram_capacity)) {
@@ -11199,6 +12129,7 @@ static FLASHMEM void ota_rehearsal_finish(OtaRehearsalResult result)
 	g_ota_rehearsal_result = result;
 	g_ota_rehearsal_requested = false;
 	g_ota_rehearsal_deadline_armed = false;
+	sd_freeze_release(); /* 4h: a rehearsal that returns unfreezes SD writes */
 }
 
 static FLASHMEM void service_ota_rehearsal(uint32_t now_ms)
@@ -11211,6 +12142,20 @@ static FLASHMEM void service_ota_rehearsal(uint32_t now_ms)
 	if (!reboot_drain_complete() &&
 	    (int32_t)(now_ms - g_ota_rehearsal_deadline_ms) < 0)
 		return;
+	/* Phase 4h: the drain gate and freeze, before any one-way step (as the
+	 * activation's). */
+	{
+		const AiusOpticalSdService gate = aius_optical_sd_service_gate(
+			&g_sd_flush, &g_sd_flush_ops, &g_ota_rehearsal_requested,
+			now_ms, false);
+		if (gate == AIUS_OPTICAL_SD_SERVICE_WAIT)
+			return;
+		if (gate != AIUS_OPTICAL_SD_SERVICE_RUN) {
+			g_ota_activation_fault = ota_sd_gate_fault(gate);
+			ota_rehearsal_finish(OTA_REHEARSAL_ABANDONED);
+			return;
+		}
+	}
 
 	uint8_t running_digest[AIUS_OTA_DIGEST_BYTES];
 	AiusOtaActivatePrimitives primitives =
@@ -11264,7 +12209,14 @@ static FLASHMEM void service_ota_rehearsal(uint32_t now_ms)
 	 * activation -- the rehearsal proves the real pre-window path, park
 	 * included, not a stand-in. The recorder stays parked until the reset
 	 * at the tail of this function -- the reboot the rehearsal already owes
-	 * for audio, now performed rather than waited for. */
+	 * for audio, now performed rather than waited for.
+	 * Phase 4h (R4-B1): the second drain query is the statement right
+	 * before the park. */
+	if (!sd_flush_drained()) {
+		g_ota_activation_fault = OTA_ACTIVATION_FAULT_FLUSH_PENDING;
+		ota_rehearsal_finish(OTA_REHEARSAL_ABANDONED);
+		return;
+	}
 	(void)aius_recorder_bank_park(&g_recorder_bank);
 	g_recorder_present = false;
 	if (!ota_psram_staging(&psram_base, &psram_capacity)) {

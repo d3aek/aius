@@ -36,16 +36,11 @@ built); replace wholesale on the next handover.
   BUILT** (2026-10-10): host suites green, optical images with every
   post-link guard and OCRAM at each env's floor, delivery audits and
   closures passed; their device runs are the owner's and none has run.
-  4h PLANNED and READY (contract revised 2026-10-10: disconnect hold,
-  discard dropped, store cap, owner answers Q1 to Q4 and Q-A; focused
-  review and six closures, the last READY). 4b (acceptance umbrella)
-  PLANNED: it closes after 4e to 4h's device runs. 4j PLANNED and READY
-  (idle DSP apply, owner): after 4h, before 4i's removal; prebuild review
-  and two closures folded 2026-10-10. 4i PLANNED and READY (owner
-  2026-10-10: retire replay after 4h and 4b): three closures folded
-  2026-10-10. 4h IMPLEMENTATION IN FLIGHT (2026-10-10, orchestration
-  posture checkpoint), uncommitted until its proof is green.
-  The owner holds two gates (below).
+  **4h BUILT** (2026-10-11): host proof and all four images green,
+  delivery audit and closures recorded in its body; its device runs are
+  the owner's. 4i and 4j PLANNED and READY. 4b (acceptance umbrella)
+  PLANNED: it closes after 4e to 4h's device runs. The owner holds two
+  gates (below).
 - **Board.** Runs `df966f17b370` (Phase 4a) in slot 1, deployed by OTA
   2026-10-06, healthy-boot self-commit. It is the owner's **fail-safe
   rollback candidate** (2026-10-07): tag `fw-rollback-df966f17b370`,
@@ -67,12 +62,11 @@ built); replace wholesale on the next handover.
   first. (2) Every device session is the owner's: 4e runs 1 and 2 (run 1
   ends with an OTA stage and rehearsal) and its E7 verdict, then 4f's
   source-off and AC-3 runs, then 4g's run 1 (source off, after a full
-  sync that uploads the bundles) and run 2 (AC-3 page loads). An E7 verdict of B2 re-plans 4f to 4h before
+  sync that uploads the bundles) and run 2 (AC-3 page loads), then 4h's
+  AC-3 and accidental-disconnect runs. An E7 verdict of B2 re-plans 4f to 4h before
   their device runs (4f's body records this).
-- **Next action.** Re-enter `orchestrate-plan` on this doc and dispatch
-  Phase 4h per its fan-out (READY). In parallel, two read-only reviews:
-  the 4i closure review of its folded prebuild review, and a 4j prebuild
-  review. Prove, audit and commit 4h as 4g was; then 4j.
+- **Next action.** Phase 4j (parent-only, idle DSP apply), then 4k,
+  then 4b's device sessions (owner), then 4i.
 - **What landed this run** (aius commits; each followed by a upstream repository
   pointer bump; foreign commits from the mixer session omitted):
 
@@ -104,6 +98,7 @@ built); replace wholesale on the next handover.
 | `21c8f52` | Phase 4e BUILT: vendored SdFat and SD (DMA, card-wait hook, DTCM bounce), producer-yield library, adapter fault split and mode route, windows and yield points, per-env OCRAM floors, producer-isolation and stack-bound suites, delivery-audit fixes (D-B1 MPU trap, D-S1 to D-S4) | 22 host suites (verifier run), all four images and every post-link guard, delivery audit closure PASS |
 | `9c9bd88` | Phase 4f BUILT: link-time admission (route and SD-start shedding, 503 audio_busy with Retry-After), live_owns_ring, time-aged bucketed cost windows, FIFO start-gate deferral with bring-up latch, render and storage-diag yields, /api/status/brief, shared web poller with 503 skip and GET timeout, capture.py 503 skips, dsp_model_pad.py, D-S7, delivery-audit fixes (F-B1, F-B2, F-S1 to F-S6) | 14 host suites (verifier run), all four images, OCRAM at every floor, delivery audit closure PASS |
 | this commit | handover: this state; 4g gains starting figures and three carried-in items | none needed |
+| pending commit | Phase 4h BUILT: write-behind settings flush over 4g's PSRAM store (sd-overlay), disconnect hold and remount retry, copy-before-write saves with mount restore, PSRAM upload sink, BUSY verdict and SD-writes freeze, OTA and reboot drain gate, `sd_flush` status, public `FsVolume::cacheClear`, delivery-audit and clean-room fixes (D-S4, D-N10 and CR-N2 recorded as residual risks; D-N8 deferred to 4k) | 21 host suites, vitest, ota client, shellcheck (verifier run); all four images with every post-link guard; delivery audit FAIL then four closures FAIL and a fifth PASS; clean-room HOLD then three closures HOLD and a fourth PASS |
 
 - **Uncommitted tree.** Nothing of this session's. Foreign and left
   alone: `docs/plans/aius-sd-mixer-dashboard.md` and
@@ -2214,6 +2209,13 @@ paragraph in the firmware conventions:
 > `.rodata` (format strings, constant tables) can cost the stack zone a
 > kilobyte. Put new strings and tables in flash (`PROGMEM`/`FLASHMEM`)
 > and read slot-a's `.data` size and stack zone after every link.
+
+Also promoted at 4b (found in 4h's build, 2026-10-11): the glitch-stamp
+paragraph's event-kind list gains kind 19 (`SD_FLUSH_CRC_DROP`, a preset
+or www entry dropped on a PSRAM CRC fault; it freezes no flight-recorder
+capture) beside 14 to 18, and §Device access and OTA names the
+`/api/status` `sd_flush` fields an owner reads: `dirty`, `held`,
+`drained`, `failures` and `last_fault`.
 
 **Owner ruling 2026-10-07:** loading the SD interfaces must never cause
 audio issues; the audio hot path always has priority. OTA is the
@@ -5000,7 +5002,7 @@ clean-room, and implementation carries a delivery audit per phase.
 ```yaml
 phase: 4h
 title: Settings writes complete into PSRAM and reach the card within seconds
-status: planned
+status: built # 2026-10-11: host proof green (21 suites, vitest, ota client, shellcheck; verifier run), all four optical images with every post-link guard and OCRAM at each floor, delivery audit FAIL (D-B1) then four closures FAIL and a fifth PASS; clean-room HOLD then three closures HOLD and a fourth PASS; device runs are the owner's (no OTA until the owner's go-ahead)
 depends-on: phase-4g
 prebuild-review: ready # 2026-10-10 revision (disconnect hold, 4g reconciled): focused review NOT READY, then closures one to five NOT READY (NB1, D1 to D6, E1 to E3, F1, G1 and nits), each folded with the owner's answers (discard dropped, Q1 to Q4, Q-A); sixth closure READY, its four nits folded. Before the revision: copy-before-write per owner 2026-10-07, focused review FR-B1, FR-S1 to S13 folded, closure READY with FR2-S1 to S3 folded
 outcome: >-
@@ -5030,9 +5032,11 @@ outcome: >-
   evicts nothing, and an 8 MiB fitment (no carve) keeps today's
   synchronous card writes (owner Q4, H19). The manifest's 64 entries are
   a documented cap (owner Q-A): with about 35 or more presets on the
-  card the post-mount fill fills it, and then every write (DSP Apply,
-  config, preset save) and every DELETE of an uncached preset answers
-  503 sd_busy until entries free. A DELETE of a cached preset still
+  card the post-mount fill fills it, and then a DSP Apply or public
+  config write still lands when its file already holds an unleased store
+  entry (overwritten in place) and answers 503 sd_busy only when it has
+  none, while a preset save and a DELETE of an uncached preset answer
+  503 sd_busy until entries free (CR4-N1). A DELETE of a cached preset still
   lands, since its tombstone reuses that entry, and frees it once
   flushed, until the next mount's fill takes it again; beyond that the
   UI cannot free space, and removing presets with a card reader
@@ -5139,7 +5143,7 @@ commit-checkpoint:
   green: [sd-overlay, sd, sd-target, fake-fidelity, optical-app, optical-cutover, ota, http, web-cache, www-bundle, status-body-bound, sd-editor, stack-bound, producer-isolation, runtime-target, memory, registry, itcm-placement]
   buildable: [teensy41-optical, teensy41-optical-slot-a]
   parent-commit: "feat(aius): write-behind settings flush with disconnect hold and copy-before-write saves (Phase 4h)"
-  coordination: owned-path sets are disjoint (aius_sd_teensy.cpp and .h, sd-target and fake-fidelity are copy-before-write's alone; the sync tool, the bundler and www-bundle are www-tools' alone; aius_web_cache and web-cache are sd-overlay's alone; runtime-target is parent-wiring's, edited for the new adapter case only after copy-before-write's report; 4h no longer edits firmware/vendor/SdFat/** or firmware/test/sdfat-vendor/**, which stay 4e's)
+  coordination: owned-path sets are disjoint (aius_sd_teensy.cpp and .h, sd-target and fake-fidelity are copy-before-write's alone; the sync tool, the bundler and www-bundle are www-tools' alone; aius_web_cache and web-cache are sd-overlay's alone; runtime-target is parent-wiring's, edited for the new adapter case only after copy-before-write's report; firmware/vendor/SdFat/** and firmware/test/sdfat-vendor/** stay 4e's, except that 4h adds one public FsVolume::cacheClear accessor there (owner 2026-10-10, recorded in PATCHED_SHA256 and NOTICE.md))
 ```
 
 - **Rename-gap scope (owner, 2026-10-07): settings files only.**
@@ -5795,6 +5799,34 @@ but an 8 MiB fitment has no cache, so there every page load is exposed
 in that window (CR3-S3, with the window as corrected at the clean-room
 round 3 closure).
 
+**Residual risks found in the build (2026-10-11).**
+
+- **D-S4, preset cuts (owner 2026-10-11: accepted, rare, low stakes).**
+  Presets get copy-before-write but no mount restore: a cut in a
+  preset's target pass leaves a torn target served until it is
+  re-saved, and after a reboot the next save of that preset writes the
+  backup first, so a second cut in that pass loses the preset.
+- **A cut between a save's two passes.** It leaves the older complete
+  save in the target and the newer only in the backup; the mount keeps
+  the target (KEEP), so that save is lost, as the owner's "a power cut
+  may lose the save in progress" allows.
+- **DAT3 on the board.** DAT3 reading high on a present initialised
+  card, and low after the re-mux on a pulled one, is host-faked and only
+  proven on the board.
+- **A settings re-put on a full store with no entry of its own waits.**
+  It waits for an entry to free, so drain stays false and OTA and
+  reboot answer 409; it needs a PSRAM entry fault on top of a full
+  manifest.
+- **D-N10, replay refill with a pulled card.** During a replay, a card
+  pulled while a flush is in flight can let the replay refill BEGIN with
+  no card (S1's unhooked BEGIN); narrower than before 4h, and it ends
+  with 4i's replay removal.
+- **CR-N2, USB bootloader entry.** It bypasses the drain gate, so
+  pending writes are lost; entering it is a bench owner action.
+- **Stack-bound site rows.** The walker checks W4 site rows only for
+  functions a chain visits, so an unvisited row's count can drift
+  unnoticed.
+
 **Prebuild review round 2 (2026-10-07, `reviewer` `opus`): NOT READY.**
 
 - **B6 (blocker).** A card reinsert reloads settings from the card,
@@ -6396,6 +6428,232 @@ nit is followed by its resolution.
   `_put_commit` retires an older non-running TOMBSTONE and keeps a
   running one pinned, and that lookup takes the newest by `commit_seq`.
 
+#### Build decisions (2026-10-10 to 2026-10-11)
+
+- **Parent-wiring ran as six slices.** pw-http (BUSY verdict,
+  `SD_BUSY` fault, Accept-Encoding `*`, STORE install range), pw-docs
+  (openapi, itcm-placement), pw-core (`optical_main.cpp`,
+  `aius_optical_app.*`), pw-storage (`aius_runtime_storage.*`,
+  runtime-target), walker (stack-bound, producer-isolation) and
+  data-diet (strings to flash), so no two slices shared a file.
+- **CACHE_DROP reaches `cacheClear` through a new public
+  `FsVolume::cacheClear` in the vendored SdFat.** Owner 2026-10-10,
+  chosen over a private-access trick or dropping the cache drop;
+  recorded in `PATCHED_SHA256` and `NOTICE.md`.
+- **`aius_runtime_storage`'s root input and PSRAM upload sink are
+  link-time hooks `optical_main.cpp` defines**
+  (`aius_runtime_storage_root_input`, `_store_open`, `_store_chunk`,
+  `_store_commit`, `_store_abort`, `_settings_restores`), as 4g's fill
+  hooks are, so `sizeof(AiusRuntimeStorage)` is unchanged. A publishing
+  CONFIG_LOAD root job (LOAD_CONFIG, LOAD_DSP, RESTORE) waits while a
+  STORE upload runs and retries.
+- **Policy moved out of `optical_main.cpp` into host-compiled seams.**
+  So the proof is host tests, not source scans: `AiusOpticalSdFlush`
+  with an ops table (flush start and settle, card-loss hold, remount
+  retry, freeze, drain gate, put-stops-fill, orphan sweep),
+  `aius_optical_settings_load_begin`, `_publish` and `_load_end` (H10
+  restore), `aius_optical_sd_service_gate` (OTA and reboot abandon) and
+  `aius_config_write` (`write_public_config`'s serialiser, in
+  `lib/aius_config`); optical-cutover checks pin each call site.
+- **`aius_web_cache_put` yields once per chunk.** It goes through 4g's
+  `web_cache_verify_yield` (`aius_web_cache_set_put_yield`); the flush
+  and the STORE sink move one 512 B chunk per advance and take no
+  yield, since each advance already returns to the epoch.
+- **Memory held by repacking and flash placement.** `AiusSdJob`
+  repacked to HEAD's 696 B (an `__arm__` assert pins it); new strings,
+  `aius_runtime_storage.cpp`'s existing diag formats and pw-http's 503
+  bodies moved to flash; `_VectorsRam` moved from `0x20007c00` to
+  `0x20007800` and the memory suite re-pinned to the slot-a link (OCRAM
+  free 131,744 B at the floor, ITCM free 12,708 B, `_ebss`
+  `0x20049560`).
+- **Every 503 carries `Retry-After: 1`.** Through
+  `aius_http_write_headers_ex`, `sd_busy` included, so a client has one
+  retry rule.
+- **Event kind 19 is `AIUS_EVENT_SD_FLUSH_CRC_DROP`.** Its detail is
+  `sd_flush.crc_drops` after the drop, capped at `0xFFFF`; it freezes
+  no flight-recorder capture.
+- **`/api/status` `sd_flush` keys.** `dirty`, `flushing`, `tombstones`,
+  `oldest_dirty_age_ms`, `flushed`, `failures`, `crc_drops`,
+  `max_settings_latency_ms`, `sync_drain_ms`, `last_fault` (a string),
+  `held`, `drained`; `/api/status/brief` carries `dirty`, `held`,
+  `failures`, `last_fault` and `drained`, and the editor says saved only
+  when drained (D-S3).
+- **The Q2 re-put writes `dsp.json` in file form with
+  `base_generation`.** The GET document lacks it, and the mount load's
+  `aius_dsp_config_parse_put` refused it (the NS6 round-trip test found
+  it).
+- **A mount drop counts as card-gone only when DAT3 reads no card after
+  a driver fault.** A write fault on a present card is a counted S5 try
+  with backoff (D-S1); a mode-only drop never re-muxes DAT3 (D-S5, E3).
+- **REPLACE scratch names derive from
+  `aius_optical_sd_flush_scratch_id(file_crc, target_path)`.** A retry
+  reuses them, so no boot's first REPLACE removes a previous boot's only
+  copy (D-N3).
+- **Only `www/presets/<name>.json` is settings class.** Other names
+  under `www/presets/` stay sync class (D-N5).
+- **Tools follow the new answers.** `www_bundle.py --referenced` lets
+  `aius-sd-sync.sh --file` decide whether a bundle step is needed;
+  `aius_ota_flash.py` waits out `409 sd_flush_pending` on
+  enable-activation and activate and watches 15 s after activate for an
+  abandoned activation; dsp-editor answers a preset `503 sd_busy` with
+  "the SD write store is full; deleting presets with a card reader
+  frees space" and no retry.
+- **The stack-bound walker checks chain hops' indirect site counts
+  against the W4 rows.** A drift had passed unnoticed; a drifted count
+  now fails (fixture `test_chain_hop_site_drift_fails`).
+- **A full store still takes a DSP Apply or public-config write whose
+  file holds an unleased entry (CR4-N1, orchestrator call pending the
+  owner's confirmation).** The put overwrites that entry in place (the
+  CR3-B1 fix), so Apply keeps working on a full store; only a write
+  with no entry of its own, a preset save or a DELETE of an uncached
+  preset answers `503 sd_busy`. This widens owner Q-A's wording ("every
+  write" refused) in the permissive direction; the interrogate step at
+  the end of this phase asks the owner.
+
+#### Delivery audit (2026-10-11)
+
+**Delivery audit: FAIL** (one blocker, four should-fix, five nits). Each
+item is followed by its resolution.
+
+- **D-B1.** A CRC-faulted tombstone re-committed in place could delete
+  the wrong preset. Resolved: a CRC-faulted tombstone is now dropped.
+- **D-S1.** A write fault on a present card counted as card-gone.
+  Resolved: card-gone needs DAT3 reading no card after a driver fault;
+  otherwise it is a counted S5 try with backoff.
+- **D-S2.** The flush-due check read status (any tombstone, any dirty
+  entry past the debounce), so a backed-off or CRC-faulted entry kept
+  cancelling the fill. Resolved: due is `aius_sd_overlay_job_ready`,
+  true exactly when `_next_job` would return a job.
+- **D-S3.** The editor said saved before the store drained. Resolved:
+  saved only when `sd_flush.drained`.
+- **D-S4.** Presets get no mount restore. Owner 2026-10-11: recorded as
+  a residual risk (§Residual risks found in the build).
+- **D-N1.** A tombstone reusing a slot whose previous backup DELETE had
+  completed could skip its own backup DELETE. Resolved: a settings
+  tombstone always DELETEs its backup before its target.
+- **D-N2.** The 4h OTA fault and result names sat in DTCM `.data`.
+  Resolved: `ota_flush_pending`, `ota_sd_busy` and `abandoned` are in
+  flash.
+- **D-N3.** REPLACE scratch names changed per boot, so a boot's first
+  REPLACE could remove a previous boot's only copy. Resolved: names
+  derive from `aius_optical_sd_flush_scratch_id(file_crc, target_path)`.
+- **D-N4.** The plan doc was not in the diff: 4h still read
+  `status: planned` and its coordination line said 4h does not edit
+  the vendored SdFat. Resolved: this commit flips the status, corrects
+  the coordination line for the `FsVolume::cacheClear` accessor and
+  records these build decisions.
+- **D-N5.** Every name under `www/presets/` was settings class.
+  Resolved: only `www/presets/<name>.json`.
+
+**Closure 1: FAIL.**
+
+- **D-S5.** The D-S1 fix re-muxed DAT3 on any mount drop, so a mode
+  change left card reads answering 503 until a remount (E3). Resolved:
+  `aius_optical_sd_card_loss` classifies only when a driver-fault count
+  moved (the adapter's `driver_faults` plus direct card-op faults
+  counted in `direct_card_settle`), with one verdict per drop.
+
+**Closure 2: FAIL.**
+
+- **D-S7.** A card pulled with a file open was classified present (DAT3
+  cannot be re-muxed with a file open), so the flush counted an S5 try
+  and a remount BEGIN ran with no card. Resolved: no classification
+  while a file is open; the verdict stays PENDING (the flush end waits,
+  no S5 try, no remount) until the first pass with no file open.
+- **D-S8.** A present card with a bad sector looped remount and refill
+  during playback. Resolved: the fault remount waits 2 s, doubles on a
+  fault within 60 s of the last remount up to a 60 s cap, and resets
+  only after a quiet minute.
+- **D-N7.** The 8 MiB fitment remounted itself during playback.
+  Resolved: no fault remount without the carve.
+
+**Closure 3: FAIL.**
+
+- **D-S9.** The flush start bypassed the remount schedule and the
+  card-detect read, so a card pulled after a present verdict set no hold
+  and a flush retry ran BEGIN with no card. Resolved: one gate,
+  `aius_optical_sd_begin_blocked`, on every storage BEGIN path (flush
+  start, fill start, lifecycle steps, HTTP SD_START, the replay refill),
+  blocking during playback without a trusted mount when the schedule is
+  not due or DAT3 reads no card (which sets held); optical-cutover pins
+  every path.
+
+**Closure 4: FAIL.**
+
+- **D-S10.** Routing the replay refill through the gate's schedule
+  ended a replay after one transient fault. Resolved: the replay refill
+  skips the schedule half and is blocked only while DAT3 reads no card.
+- **D-N9.** A deferred scheduled probe step left `remount_running` set
+  and opened the gate for other BEGINs. Resolved: only the step the
+  remount retry chose passes.
+- **D-N8.** Deferred to Phase 4k: a blocked SD start with no card
+  answers `503 sd_busy`, not `sd_unavailable`.
+
+**Closure 5: PASS.**
+
+#### Clean-room review (2026-10-11)
+
+**Clean-room review: HOLD** (CR-B1, CR-S1, CR-N1, CR-N2). Each item is
+followed by its resolution.
+
+- **CR-B1.** Signed 32-bit `millis()` compares stalled the remount
+  schedule and the overlay's debounce and backoff after 24.8 days.
+  Resolved: an armed-flag schedule behind one read and write helper,
+  lapse latching, a probe restamp while skipped, and unsigned elapsed
+  time in the overlay; long-lapse tests.
+- **CR-S1.** A manifest-entry CRC fault during a flush wrote another
+  entry's bytes over the target and the backup. Resolved: `copy_chunk`
+  and `flush_begin` re-check the entry CRC, and `job_input` fails before
+  any write.
+- **CR-N1.** A faulted settings path was trusted. Resolved: an
+  `ENTRY_FAULTED` flag; both settings files are re-put and the entry
+  dropped.
+- **CR-N2.** USB bootloader entry resets without the drain gate.
+  Resolved: recorded as a residual risk; avoiding it is a bench owner
+  action.
+
+**Closure 1: HOLD.**
+
+- **CR2-S1.** A fault in a settings save's second pass left the safe
+  copy on the torn file. Resolved: `set_safe` skips only
+  `ENTRY_FAULTED` entries, and the pass notes are forwarded from the
+  job's own record before `_job_end`, whatever the outcome.
+- **CR2-N1.** A faulted preset entry with a full manifest blocked the
+  drain forever. Resolved: faulted entries are dropped first.
+
+**Closure 2: HOLD.**
+
+- **CR3-B1.** The CR2-N1 fix let drain read true with a re-put owed,
+  losing an Apply on reboot. Resolved: an owed re-put always keeps
+  drain false, and a settings put overwrites its own unleased entry in
+  place when the store is full.
+
+**Closure 3: HOLD.**
+
+- **CR4-S1.** A fault during an in-place put destroyed the pending
+  version it replaced. Resolved: `PUT_FAULT_LOST` and
+  `_FAULT_LOST_BACKUP` make the overlay owe that key's re-put with its
+  safe copy; a preset's is dropped and counted.
+- **CR4-N1.** The outcome still said every write is refused on a full
+  store. Resolved: the outcome's cap sentence reworded (§Build
+  decisions, CR4-N1).
+
+**Closure 4: PASS.**
+
+#### Interrogate the user: confirm CR4-N1
+
+**Step: Interrogate the user: confirm CR4-N1.** Ask: "With a full
+PSRAM store, DSP Apply and config saves now still land when their file
+already has a store entry (only presets are refused). Your Q-A answer
+said every write is refused. Keep the more permissive behaviour?"
+
+- **Keep (recommended)**: the build stays as it is; the outcome's
+  wording stands.
+- **Revert to refusing**: a full store refuses every write, Apply and
+  config included, as Q-A said.
+
+Blocks: nothing.
+
 ### Phase 4i Retire replay
 
 ```yaml
@@ -6873,6 +7131,35 @@ and N1 to N3 resolved; the new findings:
   proofs agree.
 - **N3.** The producer root's mangled symbol is named, to be checked
   against the built ELF.
+
+### Phase 4k A blocked SD start with no card answers sd_unavailable
+
+```yaml
+phase: 4k
+title: A blocked SD start with no card answers sd_unavailable
+status: planned
+depends-on: phase-4h
+prebuild-review: pending
+outcome: >-
+  While DAT3 reads no card, an HTTP SD_START or card-reading DISPATCH
+  refused by aius_optical_sd_begin_blocked answers 503 sd_unavailable,
+  not sd_busy, so a client does not read a pulled card as a busy one
+  (4h delivery audit D-N8; optical_main.cpp's blocked SD_START path near
+  the admit callback, which answers sd_busy today via
+  AIUS_HTTP_VERDICT_BUSY).
+unit: component-behind-interface
+seams:
+  - "firmware/src/aius_runtime_network_http.h and .cpp: a fifth admit verdict, AIUS_HTTP_VERDICT_UNAVAILABLE, mapped to 503 sd_unavailable for a held SD_START (a driver fault beside SD_BUSY) and for a held DISPATCH, not counted in http_shed"
+  - "firmware/src/optical_main.cpp: the admit callback returns it when the gate blocks with DAT3 reading no card"
+targeted-proof:
+  - "host: http and runtime-target cases for the new verdict on a fresh and a held SD_START and DISPATCH, with no shed noted"
+  - "host: an optical-app or optical-cutover case that the callback picks UNAVAILABLE only when DAT3 reads no card"
+fan-out: none # two files and their suites
+```
+
+**Deferred from 4h because it is a nit.** Every 503 already carries
+`Retry-After: 1`, so a client retries either way, and reopening
+pw-http's seam in 4h would have cost another image and audit round.
 
 ### Phase 4c `test.sh` runs every `--suite` given ✓ SHIPPED 2026-10-06
 

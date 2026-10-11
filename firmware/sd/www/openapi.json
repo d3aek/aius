@@ -29,7 +29,7 @@
     "/api/status/brief": {
       "get": {
         "operationId": "getStatusBrief",
-        "description": "Compact status for the editor's flow ends (Phase 4f F3): exactly carrier, state, sample_rate, pipeline_diag.codec_pc, tx_gate.open and tx_gate.replay_running, under the full body's names and nesting and from the same sources. Under 512 bytes. GET only; POST answers 405.",
+        "description": "Compact status for the editor's flow ends (Phase 4f F3): exactly carrier, state, sample_rate, pipeline_diag.codec_pc, tx_gate.open, tx_gate.replay_running and the five sd_flush keys the editor's pending-versus-saved indicator reads (dirty, held, failures, last_fault, drained), under the full body's names and nesting and from the same sources. Under 512 bytes. GET only; POST answers 405.",
         "responses": {
           "200": {
             "description": "Compact status snapshot",
@@ -43,7 +43,8 @@
                       "state": 4,
                       "sample_rate": 48000,
                       "pipeline_diag": { "codec_pc": 1 },
-                      "tx_gate": { "open": 1, "replay_running": 0 }
+                      "tx_gate": { "open": 1, "replay_running": 0 },
+                      "sd_flush": { "dirty": 0, "held": false, "failures": 0, "last_fault": "", "drained": true }
                     }
                   }
                 }
@@ -114,12 +115,12 @@
       },
       "put": {
         "operationId": "putDspConfig",
-        "description": "Authenticated, validated, bounded replacement of the effective DSP configuration. The body carries the same eight keys the GET returns plus base_generation; all nine are required, source must be the literal \"sd\", and unknown or duplicate keys are rejected. A 200 means the write to /aius/dsp.json is durable and the validated model is staged, not that it is live: the apply and the config_generation increment happen at the next audio block boundary. An invalid body, a stale base_generation, or an SD failure leave both SD and the active DSP snapshot untouched.",
+        "description": "Authenticated, validated, bounded replacement of the effective DSP configuration. The body carries the same eight keys the GET returns plus base_generation; all nine are required, source must be the literal \"sd\", and unknown or duplicate keys are rejected. A 200 means the body was accepted into the write-behind store (with or without a card) and the validated model is staged, not that it is on the card or live: the card write follows in the background (poll sd_flush.dirty in GET /api/status/brief; 0 means flushed), and the apply and the config_generation increment happen at the next audio block boundary. GET /sd/aius/dsp.json returns the accepted bytes at once. An invalid body, a stale base_generation, or a full store with no entry of its own for dsp.json (503 sd_busy) leave the active DSP snapshot untouched.",
         "parameters": [{ "$ref": "#/components/parameters/SdAuth" }],
         "requestBody": { "$ref": "#/components/requestBodies/DspConfigUpdate" },
         "responses": {
           "200": {
-            "description": "Body validated and written to /aius/dsp.json. Emitted once the SD job completes; the model is staged, and the apply plus config_generation increment happen at the next audio block boundary.",
+            "description": "Body validated and accepted at once, with or without a card; the card write follows (sd_flush). The model is staged, and the apply plus config_generation increment happen at the next audio block boundary.",
             "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Ack" } } }
           },
           "400": {
@@ -175,7 +176,7 @@
             }
           },
           "503": {
-            "description": "The SD card is not ready (sd_unavailable), or another SD job is already in flight (sd_busy). audio_busy: shed while live input owns the transmit ring and the body parse's or the store job's start cost exceeds the ring margin (Phase 4f admission); carries Retry-After: 1; retry. Neither SD nor the active DSP snapshot is touched.",
+            "description": "sd_busy: the write-behind store is full and dsp.json has no entry of its own, so nothing is accepted or applied; carries Retry-After; retry once sd_flush.dirty falls. A full store still accepts this write when dsp.json already has an unleased entry, which is overwritten in place. With about 35 or more presets on the card the post-mount fill leaves the store full. sd_unavailable only on a board without the PSRAM store (8 MiB fitment); with the store a write is accepted with no card. audio_busy: shed while live input owns the transmit ring and the body parse's or the store job's start cost exceeds the ring margin (Phase 4f admission); carries Retry-After: 1; retry. The active DSP snapshot is not touched.",
             "headers": { "Retry-After": { "$ref": "#/components/headers/RetryAfter" } },
             "content": {
               "application/json": {
@@ -436,8 +437,19 @@
     "/api/reboot": {
       "post": {
         "operationId": "reboot",
-        "description": "Acknowledges before reboot. The connection then closes and subsequent requests require a new boot session. A reboot DESTROYS a frozen flight-recorder capture: recorder state is internal RAM and the boot probe resets the PSRAM chips.",
-        "responses": { "200": { "$ref": "#/components/responses/Ack" } }
+        "description": "Acknowledges before reboot. The connection then closes and subsequent requests require a new boot session. A reboot DESTROYS a frozen flight-recorder capture: recorder state is internal RAM and the boot probe resets the PSRAM chips. Refused with 409 sd_flush_pending while any settings or www write is dirty, flushing or tombstoned (sd_flush.drained false): poll sd_flush in GET /api/status/brief until it drains, then retry.",
+        "responses": {
+          "200": { "$ref": "#/components/responses/Ack" },
+          "409": {
+            "description": "sd_flush_pending: an accepted write has not reached the card yet (sd_flush.dirty, flushing or tombstones non-zero). Nothing is reset.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "examples": { "sd_flush_pending": { "value": { "ok": false, "error": "sd_flush_pending" } } }
+              }
+            }
+          }
+        }
       }
     },
     "/api/ota": {
@@ -585,8 +597,13 @@
             "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
           },
           "409": {
-            "description": "ota_activation_disabled: the runtime latch is off (activation not enabled on this device). ota_state: the image is not ARMED.",
-            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+            "description": "ota_activation_disabled: the runtime latch is off (activation not enabled on this device). ota_state: the image is not ARMED. sd_flush_pending: an accepted settings or www write has not reached the card (sd_flush.drained false); poll sd_flush until it drains and retry. POST /api/ota/rehearse refuses the same way. A write accepted after this check abandons the activation with ota_diag.activation_fault ota_flush_pending, and an SD job outlasting the freeze ceiling with ota_sd_busy; the board stays up in both.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "examples": { "sd_flush_pending": { "value": { "ok": false, "error": "sd_flush_pending" } } }
+              }
+            }
           }
         }
       }
@@ -931,7 +948,7 @@
           "200": { "$ref": "#/components/responses/Ack" },
           "400": { "$ref": "#/components/responses/Error" },
           "503": {
-            "description": "sd_unavailable with no card; sd_busy while an SD job holds the volume. audio_busy: shed while live input owns the transmit ring and the body parse's or the store job's start cost exceeds the ring margin (Phase 4f admission); carries Retry-After: 1; retry.",
+            "description": "sd_busy: the write-behind store is full and config.json has no entry of its own, so nothing is accepted or applied; carries Retry-After; retry. A full store still accepts this write when config.json already has an unleased entry, which is overwritten in place (with about 35 or more presets on the card the post-mount fill leaves the store full). sd_unavailable only on a board without the PSRAM store (8 MiB fitment); with the store a write is accepted with no card and flushes at the next mount. audio_busy: shed while live input owns the transmit ring and the body parse's or the store job's start cost exceeds the ring margin (Phase 4f admission); carries Retry-After: 1; retry.",
             "headers": { "Retry-After": { "$ref": "#/components/headers/RetryAfter" } },
             "content": {
               "application/json": {
@@ -1008,7 +1025,9 @@
       "get": {
         "operationId": "getSdResource",
         "responses": {
-          "200": { "description": "File contents" },
+          "200": {
+            "description": "File contents. A file accepted by a PUT and not yet flushed is served from the write-behind store, with or without a card; so is /sd/aius/dsp.json."
+          },
           "404": { "$ref": "#/components/responses/Error" },
           "413": { "$ref": "#/components/responses/Error" },
           "503": {
@@ -1029,7 +1048,7 @@
       },
       "put": {
         "operationId": "putSdResource",
-        "description": "Atomically replaces a file under www/. The body is streamed directly to SD (so it needs a Content-Length; a chunked body is refused) and is limited by the card and uint32 Content-Length, not firmware RAM. Content-Range is ignored on this route: unlike the replay upload there is no chunked resume, one request is the whole file. The 200 is emitted only after the temp-and-backup replace commits durably. Refusal order is fixed: the *config.json write guard outranks authentication, which outranks media state.",
+        "description": "Atomically replaces a file under www/. The body is streamed directly to SD (so it needs a Content-Length; a chunked body is refused) and is limited by the card and uint32 Content-Length, not firmware RAM. Content-Range is ignored on this route: unlike the replay upload there is no chunked resume, one request is the whole file. The 200 is emitted at accept, once the body is in the write-behind store, with or without a card; the card write follows (poll sd_flush.dirty). Refusal order is fixed: the *config.json write guard outranks authentication, which outranks media state.",
         "requestBody": { "$ref": "#/components/requestBodies/RawFile" },
         "parameters": [{ "$ref": "#/components/parameters/SdAuth" }],
         "responses": {
@@ -1053,13 +1072,14 @@
             }
           },
           "503": {
-            "description": "No SD card is mounted (sd_unavailable). audio_busy: shed while live input owns the transmit ring and the SD job's start cost exceeds the ring margin (Phase 4f admission); carries Retry-After: 1; retry.",
+            "description": "sd_busy: the write-behind store is full (no free entry or run); carries Retry-After; retry once sd_flush.dirty falls. With about 35 or more presets on the card that is every write after the post-mount fill. sd_unavailable only on a board without the PSRAM store (8 MiB fitment); with the store a write is accepted with no card. audio_busy: shed while live input owns the transmit ring and the SD job's start cost exceeds the ring margin (Phase 4f admission); carries Retry-After: 1; retry.",
             "headers": { "Retry-After": { "$ref": "#/components/headers/RetryAfter" } },
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/Error" },
                 "examples": {
                   "sd_unavailable": { "value": { "ok": false, "error": "sd_unavailable" } },
+                  "sd_busy": { "value": { "ok": false, "error": "sd_busy" } },
                   "audio_busy": { "value": { "ok": false, "error": "audio_busy" } }
                 }
               }
@@ -1094,7 +1114,7 @@
       },
       "delete": {
         "operationId": "deleteSdResource",
-        "description": "Deletes a file under www/. Same guard order as PUT: the *config.json guard, then authentication, then media state.",
+        "description": "Deletes a file under www/. Same guard order as PUT: the *config.json guard, then authentication, then media state. The 200 is emitted at accept: the delete is a tombstone in the write-behind store that hides the file at once and flushes to the card later, so it answers 200 even for a path the card does not hold, and with or without a card. 503 sd_busy when the tombstone finds no entry (the store is full).",
         "parameters": [{ "$ref": "#/components/parameters/SdAuth" }],
         "responses": {
           "200": { "$ref": "#/components/responses/Ack" },
@@ -1329,8 +1349,24 @@
       "StatusBrief": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["carrier", "state", "sample_rate", "pipeline_diag", "tx_gate"],
+        "required": ["carrier", "state", "sample_rate", "pipeline_diag", "tx_gate", "sd_flush"],
         "properties": {
+          "sd_flush": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["dirty", "held", "failures", "last_fault", "drained"],
+            "description": "The five sd_flush keys the editor needs; the full object is in GET /api/status.",
+            "properties": {
+              "dirty": { "type": "integer", "minimum": 0, "description": "Entries accepted and not yet flushed." },
+              "held": { "type": "boolean", "description": "Flushing is held: the card is gone." },
+              "failures": { "type": "integer", "minimum": 0, "description": "Failed flush jobs, saturating." },
+              "last_fault": { "type": "string", "description": "Name of the last flush failure; empty when none." },
+              "drained": {
+                "type": "boolean",
+                "description": "True only when nothing is dirty, flushing or tombstoned."
+              }
+            }
+          },
           "carrier": { "type": "integer", "minimum": 0, "maximum": 1 },
           "state": { "type": "integer", "minimum": 0 },
           "sample_rate": { "type": "integer", "minimum": 0 },
@@ -2152,6 +2188,68 @@
           }
         }
       },
+      "SdFlush": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "The write-behind store's flush state (settings and www writes accepted at once, flushed to the card in the background). drained true means every accepted write is on the card; OTA activate, OTA rehearse and POST /api/reboot answer 409 sd_flush_pending until then. The brief status carries the dirty, held, failures and last_fault subset.",
+        "required": [
+          "dirty",
+          "flushing",
+          "tombstones",
+          "oldest_dirty_age_ms",
+          "flushed",
+          "failures",
+          "crc_drops",
+          "max_settings_latency_ms",
+          "sync_drain_ms",
+          "last_fault",
+          "held",
+          "drained"
+        ],
+        "properties": {
+          "dirty": { "type": "integer", "minimum": 0, "description": "Entries accepted and not yet flushed." },
+          "flushing": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Entries being flushed, and running tombstone deletes."
+          },
+          "tombstones": { "type": "integer", "minimum": 0, "description": "Accepted deletes not yet flushed." },
+          "oldest_dirty_age_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Age of the oldest dirty entry; 0 when none."
+          },
+          "flushed": { "type": "integer", "minimum": 0, "description": "Entries flushed and read back, saturating." },
+          "failures": { "type": "integer", "minimum": 0, "description": "Failed flush jobs, saturating." },
+          "crc_drops": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Pending preset or www entries dropped by a chip CRC fault; the card's older file returns at the next refill. A dsp.json or config.json fault is re-put, never dropped."
+          },
+          "max_settings_latency_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Longest accept-to-flushed time of a settings write; reset by POST /api/clear."
+          },
+          "sync_drain_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Duration of the last sync burst until drained; reset by POST /api/clear."
+          },
+          "last_fault": {
+            "type": "string",
+            "description": "Name of the last flush failure (the job outcome); empty when none."
+          },
+          "held": {
+            "type": "boolean",
+            "description": "No flush starts: the card was found gone. The next mount clears it."
+          },
+          "drained": {
+            "type": "boolean",
+            "description": "True only when nothing is dirty, flushing or tombstoned."
+          }
+        }
+      },
       "SdDiag": {
         "type": "object",
         "additionalProperties": false,
@@ -2176,6 +2274,8 @@
           "open_misses",
           "absent_mounts",
           "busy_timeouts",
+          "settings_restores",
+          "settings_restore_faults",
           "hook_calls",
           "sd_window_nonyield_max_us",
           "root_state",
@@ -2268,6 +2368,16 @@
             "type": "integer",
             "minimum": 0,
             "description": "1 s busy-wait expiries in the vendored SDIO driver (BUSY_TIMEOUT_MICROS), the operational meaning of a DMA hang."
+          },
+          "settings_restores": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Mount restores of a settings file (dsp.json, config.json, a preset) from its backup after the target failed its validator."
+          },
+          "settings_restore_faults": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Mount restores refused: the backup's bytes reached the parser and were rejected, so the file stays unrestored."
           },
           "hook_calls": {
             "type": "integer",
@@ -4203,6 +4313,7 @@
           "net_diag": { "$ref": "#/components/schemas/NetDiag" },
           "tx_gate": { "$ref": "#/components/schemas/TxGate" },
           "sd_diag": { "$ref": "#/components/schemas/SdDiag" },
+          "sd_flush": { "$ref": "#/components/schemas/SdFlush" },
           "www_cache": { "$ref": "#/components/schemas/WwwCache" },
           "replay_diag": { "$ref": "#/components/schemas/ReplayDiag" },
           "audio_diag": { "$ref": "#/components/schemas/AudioDiag" },
@@ -4459,13 +4570,21 @@
           },
           "activation_fault": {
             "type": "string",
-            "enum": ["none", "ota_no_psram", "ota_stage_copy", "ota_verify", "ota_geometry"],
-            "description": "The last activation or rehearsal refusal reason, so a status poller sees why a deferred flash act did not run: no PSRAM fitted, the SD-to-PSRAM copy failed, the pre-window verification refused, or the flash geometry refused (rehearsal: the image reaches the scratch window)."
+            "enum": [
+              "none",
+              "ota_no_psram",
+              "ota_stage_copy",
+              "ota_verify",
+              "ota_geometry",
+              "ota_flush_pending",
+              "ota_sd_busy"
+            ],
+            "description": "The last activation or rehearsal refusal reason, so a status poller sees why a deferred flash act did not run: no PSRAM fitted, the SD-to-PSRAM copy failed, the pre-window verification refused, or the flash geometry refused (rehearsal: the image reaches the scratch window). ota_flush_pending: a settings or www write was accepted after the route check and has not flushed (sd_flush.drained false); the activation was abandoned and the recorder stays live. ota_sd_busy: an SD job outlasted the freeze ceiling; the activation was abandoned."
           },
           "rehearsal": {
             "type": "string",
-            "enum": ["never-run", "pass", "fail"],
-            "description": "The 2026-08-01 re-proof's verdict: never-run until the operator triggers POST /api/ota/rehearse (or /api/ota/rehearse-fault), then pass if the run reached its arm's expected terminal -- the emulated reset for the positive arm, the head-compare FAULTED halt for the fault-injected one."
+            "enum": ["never-run", "pass", "fail", "abandoned"],
+            "description": "The 2026-08-01 re-proof's verdict: never-run until the operator triggers POST /api/ota/rehearse (or /api/ota/rehearse-fault); abandoned when the rehearsal did not run because a settings write was pending (activation_fault ota_flush_pending) or an SD job outlasted the 2 s freeze (ota_sd_busy), and the board stays up; otherwise pass if the run reached its arm's expected terminal -- the emulated reset for the positive arm, the head-compare FAULTED halt for the fault-injected one."
           },
           "rehearsal_fault": {
             "type": "integer",
@@ -4855,13 +4974,13 @@
       },
       "Event": {
         "type": "object",
-        "description": "One ring entry. Types 1-3 are transitions; 4-10 are counter edges, emitted from the epoch loop at most once per counter per epoch, so a burst is one event carrying the delta rather than one event per increment; 11-13 are clock episodes; 14-18 are the output-glitch family, posted from the audio producer at the instant the thing happened because each names a bounded event with a size.",
+        "description": "One ring entry. Types 1-3 are transitions; 4-10 are counter edges, emitted from the epoch loop at most once per counter per epoch, so a burst is one event carrying the delta rather than one event per increment; 11-13 are clock episodes; 14-18 are the output-glitch family, posted from the audio producer at the instant the thing happened because each names a bounded event with a size; 19 is a write-behind drop.",
         "properties": {
           "sequence": { "type": "integer" },
           "uptime_ms": { "type": "integer" },
           "type": {
             "type": "integer",
-            "description": "Allocated once, never renumbered or reused; a reader must ignore a value it does not know. 1 state (S/PDIF lock or pipeline classification moved), 2 test tone toggled, 3 replay stopped by itself, 4 audio overruns, 5 datagrams that failed decode, 6 UDP service calls over budget, 7 config parse failed, 8 network stack restarted, 9 DHCP lease bound, 10 retained watchdog early-reset count, 11 accepted live nominal rate, 12 refused-rate episode, 13 failed clock apply, 14 gate-open underrun episode (posted when it ends), 15 latency-governor trim, 16 accepted same-nominal PLL trim, 17 missed transmit fills, 18 a compressed access unit refused by its own syncframe CRC and replaced by silence.",
+            "description": "Allocated once, never renumbered or reused; a reader must ignore a value it does not know. 1 state (S/PDIF lock or pipeline classification moved), 2 test tone toggled, 3 replay stopped by itself, 4 audio overruns, 5 datagrams that failed decode, 6 UDP service calls over budget, 7 config parse failed, 8 network stack restarted, 9 DHCP lease bound, 10 retained watchdog early-reset count, 11 accepted live nominal rate, 12 refused-rate episode, 13 failed clock apply, 14 gate-open underrun episode (posted when it ends), 15 latency-governor trim, 16 accepted same-nominal PLL trim, 17 missed transmit fills, 18 a compressed access unit refused by its own syncframe CRC and replaced by silence, 19 a pending preset or www entry dropped after a chip CRC fault (AIUS_EVENT_SD_FLUSH_CRC_DROP; counted in sd_flush.crc_drops, the card's older file returns at the next refill).",
             "minimum": 1
           },
           "state": { "type": "integer" },

@@ -747,6 +747,20 @@ static void test_accept_encoding(void)
 	assert(!gzip_for("Accept-Encoding: identity"));
 	assert(!gzip_for("Accept-Encoding: gzipx"));
 	assert(!gzip_for("Accept-Encoding:"));
+	/* Phase 4h N2: "*" with q > 0 matches gzip unless gzip is refused by
+	 * name; "*;q=0" selects nothing. */
+	assert(gzip_for("Accept-Encoding: *"));
+	assert(gzip_for("Accept-Encoding: identity, *;q=0.5"));
+	assert(!gzip_for("Accept-Encoding: *;q=0"));
+	assert(!gzip_for("Accept-Encoding: * ; q = 0.0"));
+	assert(!gzip_for("Accept-Encoding: *, gzip;q=0"));
+	assert(!gzip_for("Accept-Encoding: gzip;q=0, *"));
+	assert(gzip_for("Accept-Encoding: *;q=0, gzip"));
+	assert(gzip_for("Accept-Encoding: gzip, *;q=0"));
+	assert(!gzip_for("Accept-Encoding: **"));
+	assert(!gzip_for("Accept-Encoding: deflate\r\nAccept-Encoding: *;q=0"));
+	assert(gzip_for("Accept-Encoding: *\r\nAccept-Encoding: deflate"));
+	assert(!gzip_for("Accept-Encoding: *\r\nAccept-Encoding: gzip;q=0"));
 }
 
 static void test_if_none_match(void)

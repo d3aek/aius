@@ -186,6 +186,9 @@ EXPECTED_LDF_LIBS = frozenset({
     "SPI",
     "SdFat",
     "aius_a52",
+    # The A/B slot logic and the SD write-behind overlay (Phase 4h): both are
+    # linked by every optical env, gated to 0 ITCM bytes, never allowlisted.
+    "aius_ab",
     "aius_auth",
     "aius_boot",
     "aius_codec_api",
@@ -199,6 +202,7 @@ EXPECTED_LDF_LIBS = frozenset({
     "aius_pipeline",
     "aius_recorder",
     "aius_replay",
+    "aius_sd_overlay",
     "aius_usb_control",
     # The PSRAM web cache (Phase 4g): resolved by LDF in every optical env,
     # gated (every definition FLASHMEM, no `.text`), never allowlisted.

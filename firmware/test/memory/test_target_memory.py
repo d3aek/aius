@@ -41,8 +41,8 @@ def fixture(environment=ENV):
         verify.Symbol(verify.OCRAM_END - floor, 0, 12, "_heap_start"),
         verify.Symbol(verify.OCRAM_END, 0, None, "_heap_end"),
         verify.Symbol(6, 0, None, "_itcm_block_count"),
-        verify.Symbol(0x20049900, 0, 18, "_ebss"),
-        verify.Symbol(0x20007C00, 704, 14, "_VectorsRam"),
+        verify.Symbol(0x20049560, 0, 18, "_ebss"),
+        verify.Symbol(0x20007800, 704, 14, "_VectorsRam"),
     ]
     return sections, symbols
 
@@ -124,12 +124,14 @@ def main():
     )
     expect_failure(sections, low_headroom, "below its committed")
 
-    # Canonical RAM1 budgets: the post-4g link passes with its allowances.
+    # Canonical RAM1 budgets: the post-4h link (slot-a, 2026-10-11) sits
+    # at its own figures (the fixture ITCM is 4g's 12,900 B, above it).
     assert verify.canonical_budgets(sections, symbols) == (
-        12900, 0x20049900, 0x20007C00
+        12900, 0x20049560, 0x20007800
     )
-    assert verify.ITCM_FREE_FLOOR_BYTES == 12900 - 1000
-    assert verify.DTCM_EBSS_CEILING == 0x20049900 + 256
+    assert verify.ITCM_FREE_FLOOR_BYTES == 12708
+    assert verify.DTCM_EBSS_CEILING == 0x20049560
+    assert verify.VECTORS_RAM_ADDRESS == 0x20007800
 
     def with_symbol(name, value):
         out = [s for s in symbols if s.name != name]

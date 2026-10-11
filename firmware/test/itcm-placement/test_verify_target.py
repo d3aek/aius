@@ -275,6 +275,25 @@ class RealTableTests(unittest.TestCase):
         self.assertIn("aius_web_cache", VERIFY.EXPECTED_LDF_LIBS)
         self.assertNotIn("aius_web_cache", VERIFY.ITCM_ALLOWED_LDF_LIBS)
 
+    def test_the_ab_and_sd_overlay_libraries_are_gated_not_allowlisted(self) -> None:
+        """Phase 4h (N4): both libraries are expected in the link and held to
+        zero `.text`, and a link missing either fails against the real table."""
+        for library in ("aius_ab", "aius_sd_overlay"):
+            with self.subTest(library=library):
+                self.assertIn(library, VERIFY.EXPECTED_LDF_LIBS)
+                self.assertNotIn(library, VERIFY.ITCM_ALLOWED_LDF_LIBS)
+                paths = [
+                    f"lib{index:03x}/{name}/{name}.c.o"
+                    for index, name in enumerate(
+                        sorted(VERIFY.EXPECTED_LDF_LIBS - {library}), start=1
+                    )
+                ]
+                with self.assertRaisesRegex(
+                    VERIFY.VerificationError, r"expected LDF libraries are absent"
+                ) as caught:
+                    VERIFY.verify_ldf_libraries(paths, lambda path: COLD)
+                self.assertIn(library, str(caught.exception))
+
 
 GOOD_INI = """; Fake project.
 [common]

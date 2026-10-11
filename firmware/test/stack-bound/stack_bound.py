@@ -81,11 +81,21 @@ class Chain:
     hook: the symbol the below-root walk ends at, the card-wait hook unless
     set (Phase 4f: the status render's chain ends at aius_producer_yield_point,
     reached through each render append).
+    full: charge the root's whole resolved closure (its deepest path, every
+    callee, W4 sites recorded on every visited node), not only the callees
+    that reach a hook (Phase 4h: the accept, flush-input and Q2 re-put roots
+    reach neither the card wait nor a yield, W2: a root may be any linked
+    symbol, and the hop check fails one inlined away).
+    under_hook_paths: the chain's total must not exceed the deepest hook
+    chain's (Phase 4h D1: the Q2 re-put's charge sits under the deepest
+    hook path).
     """
     label: str
     hops: list
     unwindowed: bool = False
     hook: str | None = None
+    full: bool = False
+    under_hook_paths: bool = False
 
 
 @dataclass
@@ -222,6 +232,19 @@ class StackBound:
                 return [f"stack-bound: chain {ch.label}: hop {n} resolves to {len(got)} symbols"], None
             addrs.append(got[0])
         fails = []
+        # Every hop's indirect sites are a W4 row at the measured count (a
+        # hop is not walked, so the walk's own record never sees its drift).
+        for a in addrs:
+            n = len(self.img.sites[a]) if a not in self.img.veneer else 0
+            if not n:
+                continue
+            r = self.w.row_for(a)
+            if r is None:
+                fails.append(f"stack-bound: chain {ch.label}: hop {self.img.funcs[a].name} has {n} "
+                             f"unlisted indirect site(s)")
+            elif r.count != n:
+                fails.append(f"stack-bound: chain {ch.label}: hop {self.img.funcs[a].name} has {n} "
+                             f"indirect site(s), row records {r.count}")
         for x, y, (n, _o, via) in zip(addrs, addrs[1:], ch.hops[1:]):
             if via == "call":
                 if y not in {self.img.collapse(b) for b in self.img.edges[x]}:
@@ -229,6 +252,11 @@ class StackBound:
             elif not self.img.sites[x] or y not in self.img.taken:
                 fails.append(f"stack-bound: chain {ch.label}: {self.img.funcs[x].name} has no indirect "
                              f"site reaching {n} (sites {len(self.img.sites[x])}, taken {y in self.img.taken})")
+            else:
+                r = self.w.row_for(x)
+                if r is not None and y not in {self.img.collapse(b) for b in self.w.row_targets(r)}:
+                    fails.append(f"stack-bound: chain {ch.label}: {self.img.funcs[x].name}'s W4 row "
+                                 f"does not target {n}")
         return fails, addrs
 
     def below_root(self, root: int, unwindowed: bool, hook_name: str | None = None) -> tuple[int, list]:
@@ -330,9 +358,23 @@ class StackBound:
             if addrs is None:
                 continue
             prefix = sum(self.frame(a) for a in addrs[:-1])
-            below, path = self.below_root(addrs[-1], ch.unwindowed, ch.hook)
+            if ch.full:
+                below, path = self.full_below(addrs[-1])
+            else:
+                below, path = self.below_root(addrs[-1], ch.unwindowed, ch.hook)
             out.append((ch.label, prefix, below, [h[0] for h in ch.hops[:-1]] + path))
         return out
+
+    def full_below(self, root: int) -> tuple[int, list]:
+        """Deepest path over the root's whole resolved closure (a Chain's full mode).
+
+        The same charging as the handler walks: .su or declared frames, W3
+        leaves at their declared inclusive depth, W4 sites at their deepest
+        row target (an unlisted site fails), W6 components as rows (an
+        undeclared one fails), and a pass under any yield or hook reached.
+        """
+        self.prepare([root])
+        return self.depth(root), self.path(root)
 
     def exception_chain(self) -> int:
         """Per NVIC preemption level, the deepest handler path plus the FPU extended frame."""
@@ -350,6 +392,15 @@ class StackBound:
             lvl = h.priority >> 4
             levels[lvl] = max(levels.get(lvl, 0), d + FPU_EXTENDED_FRAME)
         return sum(levels.values())
+
+
+def check_under_hook_paths(chains, paths) -> list[str]:
+    """Phase 4h D1: a chain flagged under_hook_paths totals no more than the deepest hook chain."""
+    by = {label: p + b for (label, p, b, _path) in paths}
+    hooked = [by[c.label] for c in chains if not c.full and c.label in by]
+    worst = max(hooked, default=0)
+    return [f"stack-bound: chain {c.label}: {by[c.label]} B exceeds the deepest hook path {worst} B"
+            for c in chains if c.under_hook_paths and c.label in by and by[c.label] > worst]
 
 
 MPU_GUARD = 32  # NOACCESS region at _ebss trapping overflow, cores/teensy4/startup.c:313-314

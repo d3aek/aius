@@ -23,6 +23,10 @@
 #include <string.h>
 
 #include "aius_producer_yield.h"
+#include "aius_sd_overlay.h"
+#include "aius_web_cache.h"
+
+#include <string>
 
 #define ARRAY_COUNT(values) (sizeof(values) / sizeof((values)[0]))
 #define CHECK(condition) check((condition), #condition, __LINE__)
@@ -301,10 +305,19 @@ struct SdFake {
 	uint32_t busy_timeouts;
 	unsigned clear_error_calls;
 	bool begin_dma;
+	/* Phase 4h: the DAT3 re-mux (pinMode, the 5 us settle) and the partition
+	 * cache drops. None is a card primitive. */
+	unsigned pin_mode_calls;
+	uint8_t last_pin;
+	uint8_t last_pin_mode;
+	uint32_t delay_us;
+	unsigned fat_cache_clears;
+	unsigned exfat_cache_clears;
 	/* Phase 4e: card primitives seen inside and outside the producer-yield
 	 * SD window (aius_runtime_storage.cpp's window around the execute). */
 	unsigned windowed_primitives;
 	unsigned unwindowed_primitives;
+	unsigned write_calls;
 };
 
 static SdFake g_sd;
@@ -348,11 +361,14 @@ File::operator bool() const
 	return valid_;
 }
 
+/* Phase 4h FR-S1: truncate(L) cuts the file to L and leaves the position
+ * there, as FatFile::truncate does; REPLACE passes 0. */
 bool File::truncate(uint64_t size)
 {
-	(void)size;
 	sd_primitive();
-	g_sd.data_length = 0u;
+	if (size < g_sd.data_length)
+		g_sd.data_length = (size_t)size;
+	g_sd.read_offset = (size_t)size;
 	return true;
 }
 
@@ -401,11 +417,18 @@ size_t File::read(uint8_t *buffer, size_t length)
 size_t File::write(const uint8_t *buffer, size_t length)
 {
 	sd_primitive();
+	g_sd.write_calls++;
 	if (g_sd.write_fails)
 		return 0u;
-	for (size_t i = 0; i < length; ++i)
-		if (g_sd.data_length < sizeof(g_sd.data))
-			g_sd.data[g_sd.data_length++] = buffer[i];
+	/* Positioned (Phase 4h: copy-before-write SEEKs 0 to rewrite chunk 0
+	 * in place); an append open starts at the end. */
+	for (size_t i = 0; i < length; ++i) {
+		if (g_sd.read_offset >= sizeof(g_sd.data))
+			break;
+		g_sd.data[g_sd.read_offset++] = buffer[i];
+		if (g_sd.read_offset > g_sd.data_length)
+			g_sd.data_length = g_sd.read_offset;
+	}
 	return length;
 }
 
@@ -468,13 +491,12 @@ bool SDClass::mkdir(const char *path)
 File SDClass::open(const char *path, uint8_t mode)
 {
 	(void)path;
-	(void)mode;
 	sd_primitive();
 	g_sd.open_calls++;
 	if (!g_sd.open_ok)
 		return File(false);
 	g_sd.file_open = true;
-	g_sd.read_offset = 0u;
+	g_sd.read_offset = mode == FILE_WRITE ? g_sd.data_length : 0u;
 	return File(true);
 }
 
@@ -525,6 +547,61 @@ uint8_t FsVolume::fatType() const
 FsVolume *SdFs::vol()
 {
 	return &volume_;
+}
+
+/* Phase 4h CACHE_DROP: the vendor FsVolume accessor the adapter calls (the
+ * real one forwards to the mounted partition's cacheClear(), which syncs a
+ * dirty cached sector and drops it; nullptr with no volume). The fake has no
+ * volume, so it counts the call and returns nullptr. Not a card primitive. */
+static unsigned g_fsvolume_cache_clears;
+/* Phase 4h: a mounted volume's successful drop (the real one returns the
+ * cache buffer), for the copy-before-write cases. Default off. */
+static bool g_fsvolume_cache_clear_ok;
+static uint8_t g_fsvolume_cache_byte;
+
+uint8_t *FsVolume::cacheClear()
+{
+	g_fsvolume_cache_clears++;
+	return g_fsvolume_cache_clear_ok ? &g_fsvolume_cache_byte : nullptr;
+}
+
+/* Phase 4h H10: optical_main.cpp's restore counters, faked for sd_diag. */
+static uint32_t g_settings_restores;
+static uint32_t g_settings_restore_faults;
+
+extern "C" void aius_runtime_storage_settings_restores(uint32_t *restores,
+                                                       uint32_t *faults)
+{
+	*restores = g_settings_restores;
+	*faults = g_settings_restore_faults;
+}
+
+/* The partitions' own drops, kept for signature parity with the vendored
+ * headers (test_fake_fidelity.py); count calls only. */
+uint8_t *FatPartition::cacheClear()
+{
+	g_sd.fat_cache_clears++;
+	return nullptr;
+}
+
+uint8_t *ExFatPartition::cacheClear()
+{
+	g_sd.exfat_cache_clears++;
+	return nullptr;
+}
+
+/* The adapter's DAT3 re-mux; the level it then reads is g_sd.card_detected
+ * through SDClass::cardDetected(). */
+void pinMode(uint8_t pin, uint8_t mode)
+{
+	g_sd.pin_mode_calls++;
+	g_sd.last_pin = pin;
+	g_sd.last_pin_mode = mode;
+}
+
+void delayMicroseconds(uint32_t usec)
+{
+	g_sd.delay_us += usec;
 }
 
 /* ------------------------------------------------------------------ */
@@ -3838,6 +3915,26 @@ static void test_storage_diagnostics(void)
 		CHECK(strstr(json, "\"last_failure\":null}") != nullptr);
 		CHECK(strstr(json, "\"busy_refusals\":0") != nullptr);
 		CHECK(strstr(json, "\"mounts\":0") != nullptr);
+		/* Phase 4h H10: the restore counters, from the platform hook,
+		 * right after publish_dropped. */
+		CHECK(strstr(json, "\"publish_dropped\":0,\"settings_restores\":0,"
+		                   "\"settings_restore_faults\":0,\"mounts\":") !=
+		      nullptr);
+		g_settings_restores = 3u;
+		g_settings_restore_faults = 1u;
+		{
+			char restored[sizeof(json)];
+			size_t restored_length = 0u;
+			restored[0] = '\0';
+			CHECK(aius_runtime_storage_diag_json(
+				&storage, nullptr, restored, sizeof(restored),
+				&restored_length));
+			CHECK(strstr(restored, "\"settings_restores\":3,"
+			                       "\"settings_restore_faults\":1,") !=
+			      nullptr);
+		}
+		g_settings_restores = 0u;
+		g_settings_restore_faults = 0u;
 		/* Phase 4e keys: mode, the two non-fault classes, the driver's
 		 * busy timeouts and the wait hook's own record. */
 		CHECK(strstr(json, "\"sd_mode\":\"none\","
@@ -4881,6 +4978,966 @@ static void test_held_dispatch(void)
 	g_admit.armed = false;
 }
 
+/* ------------------------------------------------------------------ */
+/* Phase 4h FR-S3, S3, S8: root input source and the STORE sink        */
+/* ------------------------------------------------------------------ */
+
+static uint32_t crc32_of(const uint8_t *data, size_t length)
+{
+	uint32_t crc = 0xFFFFFFFFu;
+
+	for (size_t i = 0; i < length; ++i) {
+		crc ^= data[i];
+		for (unsigned bit = 0; bit < 8u; ++bit)
+			crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1u)));
+	}
+	return ~crc;
+}
+
+/* The pinned version a flush supplies: one buffer serving both passes. */
+static struct {
+	uint8_t bytes[AIUS_DSP_MODEL_MAX_JSON_BYTES];
+	size_t length;
+	unsigned calls;
+	uint64_t fault_offset; /* UINT64_MAX: never fault */
+	bool present;          /* false: behave as the weak default */
+	const AiusSdJob *last_job;
+} g_source;
+
+/* The link-time root input hook, as optical_main.cpp binds the overlay. */
+extern "C" bool aius_runtime_storage_root_input(const AiusSdJob *job,
+                                                uint64_t offset, uint8_t *dst,
+                                                size_t capacity, size_t *bytes)
+{
+	if (!g_source.present) {
+		*bytes = 0u;
+		return true;
+	}
+	g_source.calls++;
+	g_source.last_job = job;
+	if (offset == g_source.fault_offset)
+		return false;
+	CHECK(offset % AIUS_RUNTIME_STORAGE_TRANSFER == 0u);
+	CHECK(offset + capacity <= g_source.length);
+	memcpy(dst, g_source.bytes + offset, capacity);
+	*bytes = capacity;
+	return true;
+}
+
+static AiusSdJobRequest cbw_request(void)
+{
+	AiusSdJobRequest request;
+
+	memset(&request, 0, sizeof(request));
+	request.kind = AIUS_SD_JOB_UPLOAD;
+	request.install_mode = AIUS_SD_INSTALL_COPY_BEFORE_WRITE;
+	request.target_path = "/aius/dsp.json";
+	request.backup_path = "/aius/.bak-dsp.json";
+	request.total = g_source.length;
+	request.expected_crc32 = crc32_of(g_source.bytes, g_source.length);
+	return request;
+}
+
+/* A 24-sector dsp.json against the fakes, with or without a source. */
+static void arm_cbw(AiusRuntimeStorage *storage, bool source)
+{
+	arm_root_storage(storage, 0u, false);
+	g_sd.exists_result = true;
+	g_fsvolume_cache_clears = 0u;
+	g_fsvolume_cache_clear_ok = true;
+	memset(&g_source, 0, sizeof(g_source));
+	g_source.length = 24u * AIUS_RUNTIME_STORAGE_TRANSFER;
+	g_source.fault_offset = UINT64_MAX;
+	for (size_t i = 0; i < g_source.length; ++i)
+		g_source.bytes[i] = (uint8_t)((i * 13u + 5u) & 0xffu);
+	g_source.present = source;
+}
+
+/* Card calls this epoch: the fake's primitives plus the volume cache drop,
+ * which the fake does not count as a primitive. */
+static unsigned card_calls(void)
+{
+	return g_sd.primitive_calls + g_fsvolume_cache_clears;
+}
+
+/* The PSRAM store, faked: what the sink received and how it ended. */
+static struct {
+	uint32_t crc;      /* running CRC-32 state of the received bytes */
+	uint64_t bytes;
+	unsigned chunks;
+	unsigned short_chunks;
+	unsigned commits;
+	unsigned aborts;
+	unsigned fail_chunk; /* nonzero: refuse this 1-based chunk */
+	bool present;        /* false: behave as the weak defaults */
+	unsigned opens;
+} g_store;
+
+/* The link-time STORE sink hooks, as optical_main.cpp binds the overlay. */
+extern "C" bool aius_runtime_storage_store_open(const AiusSdJobRequest *request)
+{
+	CHECK(request->install_mode == AIUS_SD_INSTALL_STORE);
+	g_store.opens++;
+	return g_store.present;
+}
+
+extern "C" bool aius_runtime_storage_store_chunk(const uint8_t *data,
+                                                 size_t length)
+{
+	CHECK(g_store.present);
+	g_store.chunks++;
+	if (length != AIUS_RUNTIME_STORAGE_TRANSFER)
+		g_store.short_chunks++;
+	if (g_store.fail_chunk != 0u && g_store.chunks == g_store.fail_chunk)
+		return false;
+	for (size_t i = 0; i < length; ++i) {
+		g_store.crc ^= data[i];
+		for (unsigned bit = 0; bit < 8u; ++bit)
+			g_store.crc = (g_store.crc >> 1) ^
+			              (0xEDB88320u & (0u - (g_store.crc & 1u)));
+	}
+	g_store.bytes += length;
+	return true;
+}
+
+extern "C" bool aius_runtime_storage_store_commit(uint32_t now_ms)
+{
+	(void)now_ms;
+	CHECK(g_store.present);
+	g_store.commits++;
+	return true;
+}
+
+extern "C" void aius_runtime_storage_store_abort(void)
+{
+	g_store.aborts++;
+}
+
+static void arm_store(AiusRuntimeStorage *storage)
+{
+	(void)storage;
+	memset(&g_store, 0, sizeof(g_store));
+	g_store.crc = 0xFFFFFFFFu;
+	g_store.present = true;
+}
+
+/* openapi.json's byte at `i` (262,071 B). */
+static uint8_t store_pattern(uint64_t i)
+{
+	return (uint8_t)((i * 31u + 7u) & 0xffu);
+}
+
+/* One SD checkpoint with `action` (or none); asserts the epoch's bound. */
+static AiusHttpEvent storage_epoch(AiusRuntimeStorage *storage,
+                                   const AiusHttpAction *action,
+                                   uint32_t *now_ms)
+{
+	const AiusRuntimeBudget *budget =
+		aius_runtime_budget(AIUS_BOOT_CHECKPOINT_SD);
+	const unsigned before = card_calls();
+	AiusHttpEvent event;
+
+	CHECK(aius_runtime_storage_service(storage, budget, (*now_ms)++, action,
+	                                   &event));
+	CHECK(card_calls() - before <= 1u);
+	return event;
+}
+
+/* Streams a STORE upload of `total` bytes the way the transaction does
+ * (ADVANCE, NEED_UPLOAD, SUPPLY of at most AIUS_HTTP_RX_QUOTA), stopping
+ * after `stop_after` supplied bytes. Returns the terminal event kind, or
+ * PROGRESS when stopped early. Each call is one epoch. */
+static AiusHttpSdEventKind stream_store(AiusRuntimeStorage *storage,
+                                        uint64_t total, uint64_t stop_after,
+                                        uint32_t *now_ms, unsigned *epochs)
+{
+	static uint8_t piece[AIUS_HTTP_RX_QUOTA];
+	AiusSdJobRequest request;
+	AiusHttpAction action;
+	AiusHttpEvent event;
+	uint64_t id = 900u;
+	uint64_t supplied = 0u;
+
+	memset(&request, 0, sizeof(request));
+	request.kind = AIUS_SD_JOB_UPLOAD;
+	request.install_mode = AIUS_SD_INSTALL_STORE;
+	request.target_path = "/aius/www/openapi.json";
+	request.total = total;
+	memset(&action, 0, sizeof(action));
+	action.kind = AIUS_HTTP_ACTION_SD_START;
+	action.action_id = id++;
+	action.sd_request = &request;
+	event = storage_epoch(storage, &action, now_ms);
+	(*epochs)++;
+	CHECK(event.sd_kind == AIUS_HTTP_SD_STARTED);
+	CHECK(event.sd_capacity == AIUS_RUNTIME_STORAGE_TRANSFER);
+	CHECK(!storage->http_owned);
+	for (unsigned guard = 0; guard < 8000u; ++guard) {
+		size_t want;
+		memset(&action, 0, sizeof(action));
+		action.kind = AIUS_HTTP_ACTION_SD_STEP;
+		action.action_id = id++;
+		action.sd_operation = AIUS_HTTP_SD_OP_ADVANCE;
+		event = storage_epoch(storage, &action, now_ms);
+		(*epochs)++;
+		if (event.sd_kind != AIUS_HTTP_SD_NEED_UPLOAD)
+			return event.sd_kind;
+		want = event.sd_length;
+		CHECK(want != 0u && want <= AIUS_RUNTIME_STORAGE_TRANSFER);
+		/* The transaction offers at most its RX quota per step. */
+		if (want > sizeof(piece))
+			want = sizeof(piece);
+		for (size_t i = 0; i < want; ++i)
+			piece[i] = store_pattern(supplied + i);
+		memset(&action, 0, sizeof(action));
+		action.kind = AIUS_HTTP_ACTION_SD_STEP;
+		action.action_id = id++;
+		action.sd_operation = AIUS_HTTP_SD_OP_SUPPLY_UPLOAD;
+		action.data = piece;
+		action.length = want;
+		event = storage_epoch(storage, &action, now_ms);
+		(*epochs)++;
+		CHECK(event.sd_kind == AIUS_HTTP_SD_PROGRESS);
+		supplied += want;
+		if (supplied >= stop_after)
+			return AIUS_HTTP_SD_PROGRESS;
+	}
+	CHECK(false);
+	return AIUS_HTTP_SD_FAILED;
+}
+
+static void test_root_input_and_store(void)
+{
+	static const char *const keys[] = {
+		"cbw.root-90-epochs",   "cbw.no-source",
+		"cbw.chunk-crc",        "cbw.readback-accept-crc",
+		"store.beside-root",    "store.client-drop",
+		"store.chunk-fault",    "store.no-sink"
+	};
+	AiusRuntimeStorage *storage = new AiusRuntimeStorage;
+	AiusSdJobRequest request;
+	uint32_t now_ms;
+
+	validate_unique_keys("registry.cbw", keys, ARRAY_COUNT(keys), 8u);
+
+	current_key = "cbw.root-90-epochs";
+	{
+		unsigned epochs = 0u;
+		arm_cbw(storage, true);
+		request = cbw_request();
+		now_ms = 1u;
+		CHECK(aius_runtime_storage_start_root_job(storage, &request,
+		                                          now_ms));
+		CHECK(card_calls() == 0u);
+		while (storage->root_state ==
+		               AIUS_RUNTIME_STORAGE_ROOT_RUNNING &&
+		       epochs < 200u) {
+			AiusHttpEvent event = storage_epoch(storage, nullptr,
+			                                    &now_ms);
+			CHECK(event.kind == AIUS_HTTP_EVENT_NONE);
+			epochs++;
+		}
+		CHECK(storage->root_state ==
+		      AIUS_RUNTIME_STORAGE_ROOT_COMPLETE);
+		/* 3N + 17 primitives for N = 24, plus the COMPLETE advance. */
+		CHECK(epochs == 90u);
+		CHECK(card_calls() == 89u);
+		CHECK(g_fsvolume_cache_clears == 1u);
+		/* 24 inputs per pass (chunk 1 to 23, then the real chunk 0),
+		 * both passes from the one pinned buffer. */
+		CHECK(g_source.calls == 48u);
+		CHECK(g_source.last_job == &storage->job);
+		CHECK(g_sd.data_length == g_source.length);
+		CHECK(memcmp(g_sd.data, g_source.bytes, g_source.length) == 0);
+		CHECK(storage->diag.root_failures == 0u);
+		CHECK(!aius_runtime_storage_root_input_faulted(storage));
+	}
+
+	current_key = "cbw.no-source";
+	{
+		unsigned epochs = 0u;
+		arm_cbw(storage, false);
+		request = cbw_request();
+		now_ms = 1u;
+		CHECK(aius_runtime_storage_start_root_job(storage, &request,
+		                                          now_ms));
+		while (storage->root_state ==
+		               AIUS_RUNTIME_STORAGE_ROOT_RUNNING &&
+		       epochs < 200u) {
+			(void)storage_epoch(storage, nullptr, &now_ms);
+			epochs++;
+		}
+		CHECK(storage->root_state == AIUS_RUNTIME_STORAGE_ROOT_FAILED);
+		CHECK(epochs < 12u);
+		CHECK(!g_sd.file_open);
+		/* Only the zero chunk 0 was written. */
+		CHECK(g_sd.write_calls == 1u);
+		CHECK(storage->diag.root_failures == 1u);
+		CHECK(!aius_runtime_storage_root_input_faulted(storage));
+	}
+
+	current_key = "cbw.chunk-crc";
+	{
+		unsigned epochs = 0u;
+		arm_cbw(storage, true);
+		g_source.fault_offset = 5u * AIUS_RUNTIME_STORAGE_TRANSFER;
+		request = cbw_request();
+		now_ms = 1u;
+		CHECK(aius_runtime_storage_start_root_job(storage, &request,
+		                                          now_ms));
+		while (storage->root_state ==
+		               AIUS_RUNTIME_STORAGE_ROOT_RUNNING &&
+		       epochs < 200u) {
+			(void)storage_epoch(storage, nullptr, &now_ms);
+			epochs++;
+		}
+		CHECK(storage->root_state == AIUS_RUNTIME_STORAGE_ROOT_FAILED);
+		/* The zero chunk 0 and chunks 1 to 4; chunk 5 never written. */
+		CHECK(g_sd.write_calls == 5u);
+		CHECK(g_source.calls == 5u);
+		CHECK(!g_sd.file_open);
+		CHECK(aius_runtime_storage_root_input_faulted(storage));
+		CHECK(storage->diag.root_failures == 0u);
+		CHECK(storage->diag.last_failure.sequence == 0u);
+	}
+
+	current_key = "cbw.readback-accept-crc";
+	{
+		/* The card holds exactly the supplied bytes, but the accept-time
+		 * CRC disagrees (a PSRAM fault the chunk CRCs did not see), so
+		 * the read-back fails: it is checked against what was accepted,
+		 * not against what was re-read. */
+		unsigned epochs = 0u;
+		const AiusSdResult *result;
+		arm_cbw(storage, true);
+		request = cbw_request();
+		request.expected_crc32 ^= 1u;
+		now_ms = 1u;
+		CHECK(aius_runtime_storage_start_root_job(storage, &request,
+		                                          now_ms));
+		while (storage->root_state ==
+		               AIUS_RUNTIME_STORAGE_ROOT_RUNNING &&
+		       epochs < 200u) {
+			(void)storage_epoch(storage, nullptr, &now_ms);
+			epochs++;
+		}
+		CHECK(storage->root_state == AIUS_RUNTIME_STORAGE_ROOT_FAILED);
+		CHECK(memcmp(g_sd.data, g_source.bytes, g_source.length) == 0);
+		result = aius_runtime_storage_root_result(storage);
+		CHECK(result != nullptr);
+		CHECK(result->fault == AIUS_SD_FAULT_VERIFY);
+		CHECK(result->readback_mismatch);
+		CHECK(!aius_runtime_storage_root_input_faulted(storage));
+		CHECK(storage->diag.root_failures == 1u);
+	}
+
+	current_key = "store.beside-root";
+	{
+		/* openapi.json streamed into the store while a root flush job
+		 * advances beside it: the root job's 89 card calls are the only
+		 * card calls, one per epoch at most, and the root job is never
+		 * refused or preempted. */
+		const uint64_t total = 262071u;
+		uint8_t expected_tail[1];
+		unsigned epochs = 0u;
+		AiusHttpSdEventKind end;
+		arm_cbw(storage, true);
+		arm_store(storage);
+		request = cbw_request();
+		now_ms = 1u;
+		CHECK(aius_runtime_storage_start_root_job(storage, &request,
+		                                          now_ms));
+		end = stream_store(storage, total, UINT64_MAX, &now_ms,
+		                   &epochs);
+		CHECK(end == AIUS_HTTP_SD_COMPLETE);
+		CHECK(epochs > 90u);
+		CHECK(storage->root_state ==
+		      AIUS_RUNTIME_STORAGE_ROOT_COMPLETE);
+		CHECK(card_calls() == 89u);
+		CHECK(storage->diag.busy_refusals == 0u);
+		CHECK(!storage->http_owned);
+		CHECK(!(storage->flags_4h &
+		        AIUS_RUNTIME_STORAGE_FLAG_STORE_ACTIVE));
+		CHECK(g_store.bytes == total);
+		CHECK(g_store.chunks == 512u);
+		CHECK(g_store.short_chunks == 1u);
+		CHECK(g_store.commits == 1u);
+		CHECK(g_store.aborts == 0u);
+		CHECK(g_store.opens == 1u);
+		{
+			uint32_t crc = 0xFFFFFFFFu;
+			for (uint64_t i = 0; i < total; ++i) {
+				expected_tail[0] = store_pattern(i);
+				crc ^= expected_tail[0];
+				for (unsigned bit = 0; bit < 8u; ++bit)
+					crc = (crc >> 1) ^
+					      (0xEDB88320u & (0u - (crc & 1u)));
+			}
+			CHECK(g_store.crc == crc);
+		}
+		CHECK(memcmp(g_sd.data, g_source.bytes, g_source.length) == 0);
+		/* A STORE correlation leaves the root start gate open. */
+		request = cbw_request();
+		CHECK(aius_runtime_storage_start_root_job(storage, &request,
+		                                          now_ms));
+	}
+
+	current_key = "store.client-drop";
+	{
+		unsigned epochs = 0u;
+		arm_cbw(storage, false);
+		arm_store(storage);
+		now_ms = 1u;
+		CHECK(stream_store(storage, 262071u, 4096u, &now_ms, &epochs) ==
+		      AIUS_HTTP_SD_PROGRESS);
+		CHECK(storage->flags_4h & AIUS_RUNTIME_STORAGE_FLAG_STORE_ACTIVE);
+		/* The accumulator shares sd_publish: a publishing root job
+		 * waits for the upload; a non-publishing one would start. */
+		request = config_load_request(AIUS_RUNTIME_STORAGE_TRANSFER);
+		CHECK(!aius_runtime_storage_start_root_job(storage, &request,
+		                                           now_ms));
+		aius_runtime_storage_release_http(storage);
+		CHECK(g_store.aborts == 1u);
+		CHECK(g_store.commits == 0u);
+		CHECK(!(storage->flags_4h &
+		        AIUS_RUNTIME_STORAGE_FLAG_STORE_ACTIVE));
+		CHECK(card_calls() == 0u);
+		CHECK(storage->job.state == AIUS_SD_IDLE);
+		CHECK(!storage->draining);
+		CHECK(aius_runtime_storage_start_root_job(storage, &request,
+		                                          now_ms));
+	}
+
+	current_key = "store.chunk-fault";
+	{
+		unsigned epochs = 0u;
+		AiusHttpAction action;
+		AiusHttpEvent event;
+		arm_cbw(storage, false);
+		arm_store(storage);
+		g_store.fail_chunk = 3u;
+		now_ms = 1u;
+		CHECK(stream_store(storage, 262071u, UINT64_MAX, &now_ms,
+		                   &epochs) == AIUS_HTTP_SD_FAILED);
+		CHECK(storage->pending_http_event.sd_fault == AIUS_SD_FAULT_IO);
+		CHECK(storage->pending_http_event.sd_driver_fault ==
+		      AIUS_RUNTIME_STORAGE_STORE_SINK_FAULT);
+		CHECK(g_store.aborts == 1u);
+		CHECK(g_store.commits == 0u);
+		CHECK(g_store.chunks == 3u);
+		CHECK(card_calls() == 0u);
+		/* A cancel after the terminal answers CANCELLED, no abort. */
+		memset(&action, 0, sizeof(action));
+		action.kind = AIUS_HTTP_ACTION_SD_CANCEL;
+		action.action_id = 5000u;
+		event = storage_epoch(storage, &action, &now_ms);
+		CHECK(event.sd_kind == AIUS_HTTP_SD_CANCELLED);
+		CHECK(g_store.aborts == 1u);
+	}
+
+	current_key = "store.no-sink";
+	{
+		AiusHttpAction action;
+		AiusHttpEvent event;
+		AiusSdJobRequest store_request;
+		arm_cbw(storage, false);
+		memset(&g_store, 0, sizeof(g_store));
+		memset(&store_request, 0, sizeof(store_request));
+		store_request.kind = AIUS_SD_JOB_UPLOAD;
+		store_request.install_mode = AIUS_SD_INSTALL_STORE;
+		store_request.target_path = "/aius/www/a.js";
+		store_request.total = 10u;
+		memset(&action, 0, sizeof(action));
+		action.kind = AIUS_HTTP_ACTION_SD_START;
+		action.action_id = 7u;
+		action.sd_request = &store_request;
+		now_ms = 1u;
+		event = storage_epoch(storage, &action, &now_ms);
+		CHECK(event.sd_kind == AIUS_HTTP_SD_FAILED);
+		CHECK(event.sd_fault == AIUS_SD_FAULT_INVALID_REQUEST);
+		CHECK(storage->job.state == AIUS_SD_IDLE);
+		CHECK(card_calls() == 0u);
+		CHECK(g_store.opens == 1u);
+		CHECK(g_store.aborts == 0u);
+	}
+
+	g_fsvolume_cache_clear_ok = false;
+	delete storage;
+}
+
+/* Turns the www PUT the app just answered into a STORE start, as pw-core's
+ * dispatch_sd_upload will build it, before the transaction consumes it. */
+static void store_flip_hook(void)
+{
+	AiusRuntimeNetworkHttp &nh = g_runtime.network_http;
+
+	AiusSdJobRequest &job = nh.pending_application_response.sd_job;
+
+	/* The shape aius_optical_app.cpp's STORE builder gives: target only,
+	 * no temp or backup path, no publish. */
+	if (nh.application_response_present &&
+	    job.kind == AIUS_SD_JOB_UPLOAD &&
+	    job.install_mode != AIUS_SD_INSTALL_STORE) {
+		job.install_mode = AIUS_SD_INSTALL_STORE;
+		job.temp_path = nullptr;
+		job.backup_path = nullptr;
+		job.publish = false;
+		job.publish_capacity = 0u;
+	}
+}
+
+/* pw-http's BUSY verdict (S8) and the STORE start's hook bypass, through the
+ * composed runtime; and the CONFIG_LOAD retry rule beside a STORE upload. */
+static void test_sd_busy_and_store(void)
+{
+	static const char *const keys[] = {
+		"busy.dispatch", "busy.sd-start", "busy.store-skips-hook",
+		"store.config-load-waits"
+	};
+	static const char *const list_request =
+		"GET /api/replays HTTP/1.1\r\nHost: aius\r\n\r\n";
+	static const char *const download_request =
+		"GET /sd/www/data.bin HTTP/1.1\r\nHost: aius\r\n\r\n";
+	/* An UPLOAD start the app builds today; store_flip_hook turns it into
+	 * the STORE start pw-core's www PUT builds. */
+	static const char *const put_request =
+		"PUT /api/dsp/config HTTP/1.1\r\nHost: aius\r\n"
+		"X-Aius-SD-Auth: token\r\nContent-Type: application/json\r\n"
+		"Content-Length: 5\r\n\r\n{\"a\":";
+	uint32_t now_ms;
+
+	validate_unique_keys("registry.busy", keys, ARRAY_COUNT(keys), 4u);
+
+	current_key = "busy.dispatch";
+	for (unsigned held = 0; held < 2u; ++held) {
+		admit_reset();
+		now_ms = 1u;
+		bring_online(&now_ms);
+		g_app.sd_ready = true;
+		g_admit.route_verdict = AIUS_HTTP_VERDICT_BUSY;
+		g_admit.route_defer_left = held != 0u ? 2u : 0u;
+		admit_send(list_request);
+		drive_epochs(&now_ms, 14u);
+		CHECK(g_admit.route_queries == (held != 0u ? 3u : 1u));
+		CHECK(!g_runtime.network_http.deferred_dispatch_present);
+		CHECK(g_app.replay_list_calls == 0u);
+		CHECK(sink_contains("HTTP/1.0 503"));
+		CHECK(sink_contains("{\"ok\":false,\"error\":\"sd_busy\"}"));
+		CHECK(!sink_contains("audio_busy"));
+		CHECK(g_admit.shed_notes == 0u);
+	}
+
+	current_key = "busy.sd-start";
+	for (unsigned held = 0; held < 2u; ++held) {
+		admit_reset();
+		now_ms = 1u;
+		bring_online(&now_ms);
+		memcpy(g_sd.data, "hello-sd", 8u);
+		g_sd.data_length = 8u;
+		g_sd.primitive_calls = 0u;
+		g_admit.sd_verdict = AIUS_HTTP_VERDICT_BUSY;
+		g_admit.sd_defer_left = held != 0u ? 2u : 0u;
+		admit_send(download_request);
+		drive_epochs(&now_ms, 30u);
+		CHECK(g_admit.sd_queries == (held != 0u ? 3u : 1u));
+		CHECK(!g_runtime.network_http.deferred_start_present);
+		CHECK(g_sd.primitive_calls == 0u);
+		CHECK(g_runtime.storage.diag.http_jobs == 0u);
+		CHECK(sink_contains("HTTP/1.0 503"));
+		CHECK(sink_contains("sd_busy"));
+		CHECK(!sink_contains("hello-sd"));
+		CHECK(g_admit.shed_notes == 0u);
+	}
+
+	current_key = "busy.store-skips-hook";
+	{
+		unsigned card_before;
+		admit_reset();
+		now_ms = 1u;
+		bring_online(&now_ms);
+		g_app.store_accept = true;
+		arm_store(&g_runtime.storage);
+		g_admit.sd_verdict = AIUS_HTTP_VERDICT_DEFER;
+		g_admit.sd_defer_left = 1000u;
+		card_before = g_sd.primitive_calls;
+		g_replay_hook = store_flip_hook;
+		admit_send(put_request);
+		drive_epochs(&now_ms, 40u);
+		g_replay_hook = nullptr;
+		CHECK(g_admit.sd_queries == 0u);
+		CHECK(!g_runtime.network_http.deferred_start_present);
+		CHECK(g_store.opens == 1u);
+		CHECK(g_store.bytes == 5u);
+		CHECK(g_store.commits == 1u);
+		CHECK(g_store.aborts == 0u);
+		CHECK(g_sd.primitive_calls == card_before);
+		CHECK(sink_contains("HTTP/1.0 20"));
+	}
+
+	current_key = "store.config-load-waits";
+	{
+		/* A CONFIG_LOAD requested mid-upload is refused (its buffer
+		 * holds the STORE's chunk) and starts once the upload commits. */
+		AiusRuntimeStorage *storage = new AiusRuntimeStorage;
+		AiusSdJobRequest load;
+		AiusHttpAction action;
+		AiusHttpEvent event;
+		unsigned epochs = 0u;
+		uint64_t id = 7000u;
+		uint8_t piece[AIUS_HTTP_RX_QUOTA];
+		uint64_t supplied = 256u;
+
+		memset(&event, 0, sizeof(event));
+		arm_root_storage(storage, AIUS_RUNTIME_STORAGE_TRANSFER, true);
+		arm_store(storage);
+		now_ms = 1u;
+		CHECK(stream_store(storage, 1000u, 256u, &now_ms, &epochs) ==
+		      AIUS_HTTP_SD_PROGRESS);
+		load = config_load_request(AIUS_RUNTIME_STORAGE_TRANSFER);
+		CHECK(!aius_runtime_storage_start_root_job(storage, &load,
+		                                           now_ms));
+		CHECK(storage->root_state == AIUS_RUNTIME_STORAGE_ROOT_IDLE);
+		for (unsigned guard = 0; guard < 20u; ++guard) {
+			memset(&action, 0, sizeof(action));
+			action.kind = AIUS_HTTP_ACTION_SD_STEP;
+			action.action_id = id++;
+			action.sd_operation = AIUS_HTTP_SD_OP_ADVANCE;
+			event = storage_epoch(storage, &action, &now_ms);
+			if (event.sd_kind != AIUS_HTTP_SD_NEED_UPLOAD)
+				break;
+			/* Still refused while the upload runs. */
+			CHECK(!aius_runtime_storage_start_root_job(
+				storage, &load, now_ms));
+			size_t want = event.sd_length < sizeof(piece)
+				              ? event.sd_length
+				              : sizeof(piece);
+			for (size_t i = 0; i < want; ++i)
+				piece[i] = store_pattern(supplied + i);
+			memset(&action, 0, sizeof(action));
+			action.kind = AIUS_HTTP_ACTION_SD_STEP;
+			action.action_id = id++;
+			action.sd_operation = AIUS_HTTP_SD_OP_SUPPLY_UPLOAD;
+			action.data = piece;
+			action.length = want;
+			event = storage_epoch(storage, &action, &now_ms);
+			CHECK(event.sd_kind == AIUS_HTTP_SD_PROGRESS);
+			supplied += want;
+		}
+		CHECK(event.sd_kind == AIUS_HTTP_SD_COMPLETE);
+		CHECK(supplied == 1000u);
+		CHECK(g_store.commits == 1u);
+		CHECK(g_store.bytes == 1000u);
+		CHECK(aius_runtime_storage_start_root_job(storage, &load,
+		                                          now_ms));
+		/* The STORE's retained COMPLETE is still reported beside it
+		 * until the transaction's next action, so step the root job
+		 * with the epoch bound alone. */
+		for (unsigned guard = 0; guard < 40u &&
+		                         storage->root_state ==
+		                                 AIUS_RUNTIME_STORAGE_ROOT_RUNNING;
+		     ++guard)
+			(void)storage_epoch(storage, nullptr, &now_ms);
+		CHECK(storage->root_state ==
+		      AIUS_RUNTIME_STORAGE_ROOT_COMPLETE);
+		CHECK(g_publish.calls == 1u);
+		CHECK(g_store.aborts == 0u);
+		delete storage;
+	}
+}
+
+/* ------------------------------------------------------------------ */
+/* Phase 4h NS4: the dispatcher over the REAL store                    */
+/* ------------------------------------------------------------------ */
+/* The seams below bind the dispatcher's web cache and overlay members to
+ * lib/aius_web_cache and lib/aius_sd_overlay exactly as optical_main.cpp's
+ * g_web_cache_seam / g_sd_overlay_seam do (one adapter per member), so the
+ * keys the dispatcher derives from a request path are proved against the
+ * keys the store holds: /aius/-relative ("www/presets/x.json", "dsp.json"). */
+alignas(64) static uint8_t g_store_carve[AIUS_WEB_CACHE_CARVE_BYTES];
+static AiusWebCache g_store_cache;
+static AiusSdOverlay g_store_overlay;
+static AiusOpticalAppDispatcher g_store_dispatcher;
+static uint8_t g_store_body[AIUS_RUNTIME_TEENSY_APP_BODY];
+static uint8_t g_store_raw[2048];
+static AiusHttpRequest g_store_request;
+
+static void store_flush_delete(void *, uint32_t) {}
+
+static bool store_reput(void *, AiusSdOverlaySettingsFile, const uint8_t **,
+                        uint32_t *)
+{
+	return false;
+}
+
+static void store_event(void *, AiusSdOverlayEvent, const char *) {}
+
+static const AiusSdOverlayPlatform g_store_platform = {
+	&g_store_cache, store_reput, store_event, nullptr
+};
+
+static bool store_seam_lookup(void *, const char *path, size_t length,
+                              AiusOpticalAppWebHit *out, char *etag,
+                              size_t etag_capacity, bool *fault)
+{
+	AiusWebCacheHit hit;
+	*fault = false;
+	if (length > AIUS_WEB_CACHE_PATH_MAX ||
+	    !aius_web_cache_lookup(&g_store_cache, path, length, &hit, fault) ||
+	    aius_web_cache_etag(&hit, etag, etag_capacity) == 0u)
+		return false;
+	out->entry = hit.entry;
+	out->length = hit.length;
+	return true;
+}
+
+static bool store_seam_lease(void *, uint8_t entry)
+{
+	return aius_web_cache_lease(&g_store_cache, entry);
+}
+
+static void store_seam_release(void *, uint8_t entry)
+{
+	aius_web_cache_release(&g_store_cache, entry);
+}
+
+static bool store_seam_verify(void *, uint8_t entry)
+{
+	return aius_web_cache_verify(&g_store_cache, entry, nullptr, nullptr);
+}
+
+static bool store_seam_copy_chunk(void *, uint8_t entry, uint16_t chunk,
+                                  uint8_t *dst, uint32_t *bytes)
+{
+	return aius_web_cache_copy_chunk(&g_store_cache, entry, chunk, dst, bytes);
+}
+
+static void store_seam_refill(void *) {}
+
+static bool store_listing_row(void *context, const char *name,
+                              size_t name_length, uint32_t size_bytes,
+                              bool is_directory)
+{
+	AiusOpticalAppDirBatch *batch = (AiusOpticalAppDirBatch *)context;
+	if (batch->count >= batch->capacity) {
+		batch->more = true;
+		return false;
+	}
+	if (name_length > AIUS_OPTICAL_APP_INDEX_NAME_MAX) {
+		batch->hidden++;
+		return true;
+	}
+	AiusOpticalAppDirEntry *entry = &batch->entries[batch->count++];
+	memcpy(entry->name, name, name_length);
+	entry->name[name_length] = '\0';
+	entry->size_bytes = size_bytes;
+	entry->is_directory = is_directory;
+	return true;
+}
+
+/* The walk's presets_complete taken as true: the manifest is the listing. */
+static bool store_seam_listing(void *, const char *dir, size_t dir_length,
+                               AiusOpticalAppDirBatch *batch)
+{
+	static const char kPresets[] = "www/presets/";
+	if (dir_length != sizeof(kPresets) - 1u ||
+	    memcmp(dir, kPresets, dir_length) != 0)
+		return false;
+	(void)aius_web_cache_listing(&g_store_cache, dir, dir_length,
+	                             store_listing_row, batch);
+	return true;
+}
+
+static bool store_overlay_present(void *) { return true; }
+
+static AiusOpticalAppStoreResult store_result(AiusSdOverlayPutResult result)
+{
+	switch (result) {
+	case AIUS_SD_OVERLAY_PUT_OK: return AIUS_OPTICAL_APP_STORE_OK;
+	case AIUS_SD_OVERLAY_PUT_INVALID: return AIUS_OPTICAL_APP_STORE_INVALID;
+	default: return AIUS_OPTICAL_APP_STORE_BUSY;
+	}
+}
+
+static AiusOpticalAppStoreResult store_overlay_put_begin(void *,
+                                                         const char *rel,
+                                                         size_t rel_length,
+                                                         uint32_t length)
+{
+	return store_result(aius_sd_overlay_put_begin(&g_store_overlay, rel,
+	                                              rel_length, length));
+}
+
+static void store_overlay_put_abort(void *)
+{
+	aius_sd_overlay_put_abort(&g_store_overlay);
+}
+
+static AiusOpticalAppStoreResult store_overlay_tombstone(void *,
+                                                         const char *rel,
+                                                         size_t rel_length)
+{
+	return store_result(aius_sd_overlay_tombstone(&g_store_overlay, rel,
+	                                              rel_length, 1u));
+}
+
+static bool store_overlay_drained(void *)
+{
+	return aius_sd_overlay_drained(&g_store_overlay);
+}
+
+/* The card read, never reached here: the manifest serves the listing (the
+ * count proves it). */
+static unsigned g_store_card_reads;
+
+static AiusOpticalAppDirResult store_read_directory(void *, const char *,
+                                                    AiusOpticalAppDirBatch *)
+{
+	g_store_card_reads++;
+	return AIUS_OPTICAL_APP_DIR_FAILED;
+}
+
+static void store_overlay_merge(void *, const char *, size_t,
+                                AiusOpticalAppDirBatch *)
+{
+}
+
+/* PUT /api/dsp/config's accept, as optical_main.cpp's app_store_dsp_config
+ * puts the body under the store key "dsp.json". */
+static AiusOpticalAppStoreResult store_dsp_config(void *, const uint8_t *body,
+                                                  size_t length)
+{
+	static const char kKey[] = "dsp.json";
+	return store_result(aius_sd_overlay_put(&g_store_overlay, kKey,
+	                                        sizeof(kKey) - 1u, body,
+	                                        (uint32_t)length, 1u));
+}
+
+static const AiusHttpApplicationResponse *store_dispatch(const char *raw)
+{
+	const size_t length = strlen(raw);
+	CHECK(length < sizeof(g_store_raw));
+	memcpy(g_store_raw, raw, length);
+	CHECK(aius_http_parse(g_store_raw, length, &g_store_request) ==
+	      AIUS_HTTP_OK);
+	return aius_optical_app_http_dispatch(&g_store_dispatcher,
+	                                      &g_store_request);
+}
+
+static bool store_body_has(const AiusHttpApplicationResponse *response,
+                           const char *needle)
+{
+	const std::string body((const char *)response->body,
+	                       response->body_length);
+	return body.find(needle) != std::string::npos;
+}
+
+static void test_dispatch_real_store(void)
+{
+	static const char *const keys[] = {
+		"store.www-put-dirty-hit", "store.gz-key", "store.presets-listing",
+		"store.dsp-alias"
+	};
+	static const AiusOpticalAppWebCache web_seam = {
+		nullptr, store_seam_lookup, store_seam_lease, store_seam_release,
+		store_seam_verify, store_seam_copy_chunk, store_seam_refill,
+		store_seam_listing
+	};
+	static const AiusOpticalAppSdOverlay overlay_seam = {
+		nullptr, store_overlay_present, store_overlay_put_begin,
+		store_overlay_put_abort, store_overlay_tombstone,
+		store_overlay_drained, store_overlay_merge
+	};
+	static const uint8_t kPreset[10] = { '{', '"', 'x', '"', ':', '1', '}',
+	                                     ' ', ' ', '\n' };
+	static const uint8_t kPlain[20] = { 'p' };
+	static const uint8_t kGz[7] = { 0x1f, 0x8b, 8 };
+	static const char kDsp[] = "{\"dsp\":1}";
+	const AiusHttpApplicationResponse *response;
+	AiusOpticalApp app = app_table();
+
+	validate_unique_keys("registry.store-dispatch", keys, ARRAY_COUNT(keys),
+	                     4u);
+	memset(&g_app, 0, sizeof(g_app));
+	g_app.sd_ready = false; /* no card: every hit below is the store's */
+	g_app.auth_ok = true;
+	app.store_dsp_config = store_dsp_config;
+	app.read_directory = store_read_directory;
+	CHECK(aius_web_cache_init(&g_store_cache, g_store_carve,
+	                          sizeof(g_store_carve), store_flush_delete,
+	                          nullptr));
+	aius_sd_overlay_init(&g_store_overlay, &g_store_platform, true);
+	CHECK(aius_optical_app_init(&g_store_dispatcher, &app, g_store_body,
+	                            sizeof(g_store_body)));
+	CHECK(aius_optical_app_set_web_cache(&g_store_dispatcher, &web_seam));
+	CHECK(aius_optical_app_set_sd_overlay(&g_store_dispatcher, &overlay_seam));
+
+	/* PUT /sd/www/presets/x.json reserves the store's PUTTING entry under
+	 * its /aius/-relative key; the STORE sink's chunk and commit (as
+	 * aius_runtime_storage_store_* do) make it DIRTY; the dispatcher's GET
+	 * then hits that entry with no card. */
+	current_key = "store.www-put-dirty-hit";
+	response = store_dispatch("PUT /sd/www/presets/x.json HTTP/1.1\r\n"
+	                          "X-Aius-SD-Auth: token\r\n"
+	                          "Content-Length: 10\r\n\r\n");
+	CHECK(response != nullptr && response->kind == AIUS_HTTP_APP_SD_JOB);
+	CHECK(response->sd_job.install_mode == AIUS_SD_INSTALL_STORE);
+	CHECK(strcmp(response->sd_job.target_path, "/aius/www/presets/x.json") ==
+	      0);
+	CHECK(aius_web_cache_pending_state(&g_store_cache, "www/presets/x.json",
+	                                   18u) != AIUS_WEB_CACHE_STATE_DIRTY);
+	CHECK(aius_sd_overlay_put_chunk(&g_store_overlay, kPreset,
+	                                sizeof(kPreset)) == AIUS_SD_OVERLAY_PUT_OK);
+	CHECK(aius_sd_overlay_put_commit(&g_store_overlay, 2u) ==
+	      AIUS_SD_OVERLAY_PUT_OK);
+	CHECK(aius_web_cache_pending_state(&g_store_cache, "www/presets/x.json",
+	                                   18u) == AIUS_WEB_CACHE_STATE_DIRTY);
+	response = store_dispatch("GET /sd/www/presets/x.json HTTP/1.1\r\n\r\n");
+	CHECK(response != nullptr && response->status == 200u);
+	CHECK(response->body_length == sizeof(kPreset));
+
+	/* The .html.gz variant is looked up under its own /aius/-relative key
+	 * when the client accepts gzip; the plain one otherwise. */
+	current_key = "store.gz-key";
+	CHECK(aius_sd_overlay_put(&g_store_overlay, "www/index.html", 14u, kPlain,
+	                          sizeof(kPlain), 3u) == AIUS_SD_OVERLAY_PUT_OK);
+	CHECK(aius_sd_overlay_put(&g_store_overlay, "www/index.html.gz", 17u, kGz,
+	                          sizeof(kGz), 3u) == AIUS_SD_OVERLAY_PUT_OK);
+	response = store_dispatch("GET /sd/www/index.html HTTP/1.1\r\n"
+	                          "Accept-Encoding: gzip\r\n\r\n");
+	CHECK(response != nullptr && response->status == 200u);
+	CHECK(response->body_length == sizeof(kGz));
+	response = store_dispatch("GET /sd/www/index.html HTTP/1.1\r\n\r\n");
+	CHECK(response != nullptr && response->status == 200u);
+	CHECK(response->body_length == sizeof(kPlain));
+
+	/* The presets listing reads the manifest's www/presets/ rows. */
+	current_key = "store.presets-listing";
+	response = store_dispatch("GET /sd/www/presets/ HTTP/1.1\r\n\r\n");
+	CHECK(response != nullptr && response->status == 200u);
+	CHECK(store_body_has(response, "x.json"));
+	CHECK(!store_body_has(response, "index.html"));
+	CHECK(g_store_card_reads == 0u);
+
+	/* GET /sd/aius/dsp.json after PUT /api/dsp/config hits the store's
+	 * "dsp.json" entry with the accepted bytes. */
+	current_key = "store.dsp-alias";
+	{
+		char raw[256];
+		(void)snprintf(raw, sizeof(raw),
+		               "PUT /api/dsp/config HTTP/1.1\r\n"
+		               "X-Aius-SD-Auth: token\r\n"
+		               "Content-Length: %zu\r\n\r\n%s",
+		               sizeof(kDsp) - 1u, kDsp);
+		response = store_dispatch(raw);
+	}
+	CHECK(response != nullptr && response->status == 200u);
+	CHECK(aius_web_cache_pending_state(&g_store_cache, "dsp.json", 8u) ==
+	      AIUS_WEB_CACHE_STATE_DIRTY);
+	response = store_dispatch("GET /sd/aius/dsp.json HTTP/1.1\r\n\r\n");
+	CHECK(response != nullptr && response->status == 200u);
+	CHECK(response->body_length == sizeof(kDsp) - 1u);
+}
+
 int main(void)
 {
 	aius_producer_yield_configure(600u, AIUS_PRODUCER_YIELD_LATE_US_DEFAULT);
@@ -4899,6 +5956,9 @@ int main(void)
 	test_epoch_traces();
 	test_http_admission();
 	test_held_dispatch();
+	test_root_input_and_store();
+	test_sd_busy_and_store();
+	test_dispatch_real_store();
 	printf("ok runtime-target oracle\n");
 	return 0;
 }

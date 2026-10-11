@@ -103,12 +103,13 @@ class BundleTests(unittest.TestCase):
         self.assertIn("<\\/SCRIPT", text)
         self.assertIn("<\\/style>", text)
 
-    def test_html_comment_open_escaped_in_script(self):
-        make_tree(self.www, {"a.js": 'var s = "<!--"; // <!-- <script>\n'})
-        www_bundle.build(self.www, self.out)
-        text = self.read_gz("index.html")
-        self.assertNotIn("<!--", text)
-        self.assertIn('var s = "<\\!--";', text)
+    def test_html_comment_open_in_script_fails_naming_page_and_asset(self):
+        make_tree(self.www, {"a.js": 'var s = "<!--";\n'})
+        with self.assertRaises(www_bundle.BundleError) as ctx:
+            www_bundle.build(self.www, self.out)
+        self.assertIn("index.html", str(ctx.exception))
+        self.assertIn("a.js", str(ctx.exception))
+        self.assertEqual(www_bundle.main(["--www", str(self.www), "--out", str(self.out)]), 1)
 
     def test_out_is_required_and_source_tree_untouched(self):
         make_tree(self.www)
@@ -257,6 +258,19 @@ class SyncTests(unittest.TestCase):
     def test_file_mode_non_inlined_file_uploads_no_bundle(self):
         result = self.run_sync(["200"], "--file", "other.txt")
         self.assertEqual([u.rsplit("/", 1)[1] for u in self.uploads()], ["other.txt"])
+
+    def test_file_mode_non_inlined_file_ignores_a_missing_page(self):
+        (self.www / "mixer.html").unlink()
+        result = self.run_sync(["200"], "--file", "other.txt")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("bundle", result.stderr)
+        self.assertEqual([u.rsplit("/", 1)[1] for u in self.uploads()], ["other.txt"])
+
+    def test_file_mode_page_with_missing_asset_fails_before_upload(self):
+        (self.www / "upgrade.js").unlink()
+        result = self.run_sync(["200"], "--file", "mixer.html")
+        self.assertEqual(result.returncode, 1)
+        self.assertFalse(self.log.exists())
 
     def test_503_retry_after_over_budget_gives_up_at_once(self):
         result = self.run_sync(["503 16"], "--file", "other.txt")

@@ -15,7 +15,7 @@
 #         usb-control, replay, replay-samples, tx-gate, tx-governor, tx-fill-sensor, tx-fill-witness, underrun-episodes, input-liveness, input-dark, event-ring, recorder, boot, boot-target, fault-target, ota,
 #         build-metadata, runtime, network-transport, sd, sd-target, optical-app,
 #         optical-cutover, status-body-bound, runtime-target, memory, itcm-placement, fake-fidelity,
-#         sdfat-vendor, producer-yield, producer-isolation, stack-bound, www-bundle, measure-vectors, web-cache, registry, sd-editor.
+#         sdfat-vendor, producer-yield, producer-isolation, stack-bound, www-bundle, measure-vectors, web-cache, sd-overlay, registry, sd-editor.
 #
 # That list is not documentation: the `registry` suite fails when it, the suites
 # table in README.md, and the arms of the `case` below disagree with the
@@ -1108,10 +1108,17 @@ optical-app)
 		"-I$fw_root/lib/aius_sd/include" \
 		"-I$fw_root/lib/aius_usb_control/include" \
 		"-I$fw_root/lib/aius_json/include" \
+		"-I$fw_root/lib/aius_dsp_config/include" \
 		"-I$fw_root/src")
 	optical_app_oracle="$build_dir/optical-app-oracle.o"
 	optical_app_parser="$build_dir/optical-app-http.o"
 	optical_app_json="$build_dir/optical-app-json.o"
+	# Phase 4h NS6: the dsp.json round trip parses the serialiser's output
+	# with the real PUT parser.
+	optical_app_dsp_config="$build_dir/optical-app-dsp-config.o"
+	"$cc" "${cflags[@]}" -Wpedantic "${optical_app_inc[@]}" \
+		-c "$fw_root/lib/aius_dsp_config/src/aius_dsp_config.c" \
+		-o "$optical_app_dsp_config"
 	"$cc" "${cflags[@]}" -Wpedantic "${optical_app_inc[@]}" \
 		-c "$fw_root/test/optical-app/test_optical_app.c" \
 		-o "$optical_app_oracle"
@@ -1129,6 +1136,7 @@ optical-app)
 		"$optical_app_oracle" \
 		"$optical_app_parser" \
 		"$optical_app_json" \
+		"$optical_app_dsp_config" \
 		-o "$optical_app_out"
 	"$optical_app_out"
 	python3 "$fw_root/test/optical-app/test_bitstream_ui.py"
@@ -1234,15 +1242,22 @@ runtime-target)
 		"-I$fw_root/lib/aius_runtime/include" \
 		"-I$fw_root/lib/aius_usb_control/include" \
 		"-I$fw_root/lib/aius_producer_yield/include" \
+		"-I$fw_root/lib/aius_web_cache/include" \
+		"-I$fw_root/lib/aius_sd_overlay/include" \
+		"-I$fw_root/lib/aius_ota/include" \
+		"-I$fw_root/lib/aius_recorder/include" \
 		"-I$fw_root/src")
 	# aius_json is here because aius_optical_app.cpp's replay body reader is one
 	# of its three callers; the two config parsers are the others, and neither
-	# links into this suite.
+	# links into this suite. Phase 4h NS4: the real store (aius_web_cache,
+	# aius_sd_overlay) behind the dispatcher's web cache and overlay seams.
 	runtime_target_portable=()
 	for portable in aius_net/src/aius_net aius_http/src/aius_http \
 		aius_http/src/aius_http_transaction aius_sd/src/aius_sd \
 		aius_usb_control/src/aius_usb_control \
 		aius_json/src/aius_json \
+		aius_web_cache/src/aius_web_cache \
+		aius_sd_overlay/src/aius_sd_overlay \
 		aius_producer_yield/src/aius_producer_yield \
 		aius_runtime/src/aius_runtime; do
 		object="$build_dir/runtime-target-$(basename "$portable").o"
@@ -1405,6 +1420,44 @@ web-cache)
 		"$fw_root/lib/aius_recorder/src/aius_recorder.c" \
 		-lm -o "$web_cache_out"
 	"$web_cache_out"
+	# Phase 4h: the store half (DIRTY, FLUSHING, TOMBSTONE and PUTTING
+	# entries, commit_seq, case folding, the safe-copy bit) on its own binary.
+	web_cache_store_out="$build_dir/web-cache-store"
+	"$cc" "${cflags[@]}" \
+		"-I$fw_root/lib/aius_web_cache/include" \
+		"$fw_root/test/web-cache/test_web_cache_store.c" \
+		"$fw_root/lib/aius_web_cache/src/aius_web_cache.c" \
+		-o "$web_cache_store_out"
+	"$web_cache_store_out"
+	;;
+sd-overlay)
+	# The PSRAM write-behind overlay (lib/aius_sd_overlay, Phase 4h) over the
+	# real store (lib/aius_web_cache), plus the FR-S6 power-cut model: lib/aius_sd
+	# drives the stateful fake card (test/sd-overlay/fake_card.c), and the mount
+	# load checks each surviving file with the real dsp.json and config.json
+	# parsers. -lm for the dsp.json parser's number decode.
+	sd_overlay_out="$build_dir/sd-overlay"
+	"$cc" "${cflags[@]}" \
+		"-I$fw_root/lib/aius_sd_overlay/include" \
+		"-I$fw_root/lib/aius_web_cache/include" \
+		"-I$fw_root/lib/aius_sd/include" \
+		"-I$fw_root/lib/aius_config/include" \
+		"-I$fw_root/lib/aius_dsp_config/include" \
+		"-I$fw_root/lib/aius_json/include" \
+		"-I$fw_root/lib/aius_ota/include" \
+		"-I$fw_root/lib/aius_recorder/include" \
+		"$fw_root/test/sd-overlay/test_sd_overlay.c" \
+		"$fw_root/test/sd-overlay/fake_card.c" \
+		"$fw_root/lib/aius_sd_overlay/src/aius_sd_overlay.c" \
+		"$fw_root/lib/aius_web_cache/src/aius_web_cache.c" \
+		"$fw_root/lib/aius_sd/src/aius_sd.c" \
+		"$fw_root/lib/aius_config/src/aius_config.c" \
+		"$fw_root/lib/aius_dsp_config/src/aius_dsp_config.c" \
+		"$fw_root/lib/aius_json/src/aius_json.c" \
+		"$fw_root/lib/aius_ota/src/aius_ota_staging.c" \
+		"$fw_root/lib/aius_recorder/src/aius_recorder.c" \
+		-lm -o "$sd_overlay_out"
+	"$sd_overlay_out"
 	;;
 registry)
 	# The guard on this file. Every other arm is hand-maintained, so a suite

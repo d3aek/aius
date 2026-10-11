@@ -939,6 +939,510 @@ typedef struct {
 bool aius_optical_app_set_web_cache(AiusOpticalAppDispatcher *dispatcher,
                                     const AiusOpticalAppWebCache *web_cache);
 
+/* Phase 4h: the SD write-behind overlay seam (lib/aius_sd_overlay, owned by
+ * the composition). While `present` reads true (the PSRAM carve is fitted),
+ * settings and www writes are accepted into the store and answered 200 at
+ * accept, card or no card (Q1, B2); with it false (8 MiB) every route keeps
+ * its synchronous card write (Q4). Keys are relative to /aius/.
+ *   put_begin  a www PUT: reserves the streamed put for `length` bytes; OK,
+ *              BUSY (store full: 503 sd_busy) or INVALID (507 sd_upload).
+ *   put_abort  frees that reservation when no STORE request follows.
+ *   tombstone  a www DELETE: OK whether or not the card holds the file (S2),
+ *              BUSY when no entry is free (N3).
+ *   drained    nothing dirty, flushing or tombstoned (FR-S8): OTA activate,
+ *              OTA rehearse and POST /api/reboot answer 409 sd_flush_pending
+ *              otherwise.
+ *   merge_listing  a card-read listing of directory `dir` ("www/" or
+ *              "www/presets/", relative to /aius/) gets the store's pending
+ *              rows (a pending size replaces the card's; a new name is
+ *              appended while capacity lasts, else `more`) and loses its
+ *              tombstoned names (S6). */
+typedef struct {
+	void *context;
+	bool (*present)(void *context);
+	AiusOpticalAppStoreResult (*put_begin)(void *context, const char *rel,
+	                                       size_t rel_length, uint32_t length);
+	void (*put_abort)(void *context);
+	AiusOpticalAppStoreResult (*tombstone)(void *context, const char *rel,
+	                                       size_t rel_length);
+	bool (*drained)(void *context);
+	void (*merge_listing)(void *context, const char *dir, size_t dir_length,
+	                      AiusOpticalAppDirBatch *batch);
+} AiusOpticalAppSdOverlay;
+
+/* Installs the overlay seam (every member but `context` required) or removes
+ * it with NULL; held in DTCM like the web cache seam and cleared by
+ * aius_optical_app_init(). False for an invalid dispatcher or a half-wired
+ * table. */
+bool aius_optical_app_set_sd_overlay(AiusOpticalAppDispatcher *dispatcher,
+                                     const AiusOpticalAppSdOverlay *overlay);
+
+/* Phase 4h H10: the mount load and restore of the two settings files, as
+ * portable policy. The composition's SD step machine runs the CONFIG_LOAD
+ * jobs (the target, then on a failure its fixed backup) and reports each
+ * publication and each job end here; the platform callbacks own the parsers,
+ * the running state and the store.
+ *
+ *   carve_present  the PSRAM store is fitted (no carve: no restore, N1)
+ *   shadowed       the store shadows the target path (Q1: acknowledge, do not
+ *                  apply, count nothing, restore nothing)
+ *   load           the target's parser over `data` (a backup uses its
+ *                  target's parser) into a local; true when it passes, and
+ *                  then, when `apply`, applies it as the target's load
+ *                  would (config: g_config; dsp: staged with its origin and
+ *                  the apply flag)
+ *   target_failed  a failed target load's fallback, called exactly once per
+ *                  failed target (config.json: defaults and one config error,
+ *                  FR-S11; dsp.json: nothing, the active model stays)
+ *   put_restore    the backup's bytes as a restore-created put of the target
+ *   decide         aius_sd_overlay_restore_decision (H10, FR-S5, FR-S10)
+ */
+typedef enum {
+	AIUS_OPTICAL_SETTINGS_CONFIG = 0, /* /aius/config.json */
+	AIUS_OPTICAL_SETTINGS_DSP = 1     /* /aius/dsp.json */
+} AiusOpticalSettingsFile;
+
+/* Mirrors lib/aius_sd_overlay's AiusSdOverlayBackupResult and
+ * AiusSdOverlayRestoreDecision value for value (optical_main.cpp
+ * static-asserts it), so this file needs no overlay include. */
+typedef enum {
+	AIUS_OPTICAL_SETTINGS_BACKUP_NOT_READ = 0,
+	AIUS_OPTICAL_SETTINGS_BACKUP_PARSED = 1,
+	AIUS_OPTICAL_SETTINGS_BACKUP_REFUSED = 2,
+	AIUS_OPTICAL_SETTINGS_BACKUP_LOAD_FAILED = 3
+} AiusOpticalSettingsBackup;
+
+typedef enum {
+	AIUS_OPTICAL_SETTINGS_KEEP = 0,
+	AIUS_OPTICAL_SETTINGS_RESTORE = 1,
+	AIUS_OPTICAL_SETTINGS_FAULT = 2,
+	AIUS_OPTICAL_SETTINGS_NOTHING = 3
+} AiusOpticalSettingsDecision;
+
+typedef struct {
+	void *context;
+	bool (*carve_present)(void *context);
+	bool (*shadowed)(void *context, AiusOpticalSettingsFile file);
+	bool (*load)(void *context, AiusOpticalSettingsFile file,
+	             const uint8_t *data, size_t length, bool apply);
+	void (*target_failed)(void *context, AiusOpticalSettingsFile file);
+	void (*put_restore)(void *context, AiusOpticalSettingsFile file,
+	                    const uint8_t *data, size_t length);
+	AiusOpticalSettingsDecision (*decide)(bool target_valid,
+	                                      AiusOpticalSettingsBackup backup);
+} AiusOpticalSettingsOps;
+
+/* The per-load verdict and the sd_diag counters (settings_restores,
+ * settings_restore_faults). Zero-initialise. */
+typedef struct {
+	uint32_t restores;
+	uint32_t restore_faults;
+	uint8_t verdict; /* the running load's publication verdict */
+} AiusOpticalSettingsMount;
+
+/* A load (target or backup) is starting: forget the last verdict. */
+void aius_optical_settings_load_begin(AiusOpticalSettingsMount *mount);
+
+/* The running load published `data`. `backup` false: the target's load;
+ * true: its backup's (the restore step). Always acknowledges (returns true):
+ * a refused parse is a property of the file, not a job fault. */
+bool aius_optical_settings_publish(AiusOpticalSettingsMount *mount,
+                                   const AiusOpticalSettingsOps *ops,
+                                   AiusOpticalSettingsFile file, bool backup,
+                                   const uint8_t *data, size_t length);
+
+/* The running load's job ended (`job_ok` false: open, size, read or publish
+ * fault). For a target: true when its backup's load must run next (the
+ * restore step, S7: the single next step). For a backup: counts the
+ * decision and returns false. */
+bool aius_optical_settings_load_end(AiusOpticalSettingsMount *mount,
+                                    const AiusOpticalSettingsOps *ops,
+                                    AiusOpticalSettingsFile file, bool backup,
+                                    bool job_ok);
+
+/* Phase 4h: the write-behind flush coordinator, as portable policy. One
+ * instance per process (optical_main.cpp's), driven at the composition's
+ * seams; the platform callbacks own the overlay store, the storage engine,
+ * the 4g fill and the card pins. It holds:
+ *   - the flush job: one at a time, started only with nothing held, frozen
+ *     or card-unready, after any HTTP SD start or card-reading DISPATCH held
+ *     behind the fill has run (G6) and after the fill file it stops has
+ *     stopped (G9); its end releases the fill hold only if it stopped a fill
+ *     (S9, R5-S1). No replay interlock (Q3).
+ *   - the card-loss hold's playback remount retry (H3, S1, N5, NS3) and the
+ *     NS7 no-card probe skip: the idle step's choice.
+ *   - the H9 SD-writes freeze and the OTA/reboot drain gate (R4-B1, FR-S8).
+ *   - the one streamed www put (NS2, NS5, D4).
+ *
+ * Callbacks (every member but `context` required):
+ *   present         the PSRAM carve is fitted (false: drained, no flush)
+ *   ready           the card is ready (the lifecycle's g_sd_ready)
+ *   held            the overlay's card-loss hold
+ *   due             a tombstone, or a dirty entry past its debounce
+ *   drained         the overlay holds nothing dirty, flushing or tombstoned
+ *   http_deferred   an HTTP SD start or card-reading DISPATCH is held (G6)
+ *   fill_in_flight  a 4g fill file is in flight
+ *   fill_cancel     stops it through the latching 4g cancel (holds the fill)
+ *   fill_hold_release  the canceller's release of that latch
+ *   storage_ready   no SD job in flight and no FIFO deferral (F2)
+ *   start           picks and starts the next flush job; fills `job`
+ *   job_end         the overlay's job end (also the refused start's FAILED)
+ *   note_pass       a closed pass of a COPY_BEFORE_WRITE (an
+ *                   AiusWebCacheSafeCopy value)
+ *   note_readback   its read-back verdict
+ *   note_mounted    a held-clearing mount
+ *   note_card_lost  the probe's no-card verdict
+ *   playback        the probe-skip predicate (bring-up done, source on)
+ *   card_detected   DAT3 reads a card
+ *   settled         no SD job of any owner in flight (the freeze's wait)
+ *   fill_rel        the in-flight fill file's /aius/-relative key, or NULL
+ *   cancel_root     stops that fill file with no hold latched (a put reads no
+ *                   card); true when it stopped one
+ *   put_begin       the overlay's streamed put reservation
+ *   put_abort       frees it */
+#define AIUS_OPTICAL_SD_FLUSH_REMOUNT_MS 2000u     /* H3: first playback retry */
+#define AIUS_OPTICAL_SD_FLUSH_REMOUNT_MAX_MS 60000u /* S1: doubling cap */
+#define AIUS_OPTICAL_SD_FLUSH_FLAP_MS 5000u        /* N5: a gone card this soon
+                                                     after a held-clearing mount
+                                                     is a failed retry */
+#define AIUS_OPTICAL_SD_FREEZE_MS 2000u            /* H9: the freeze's ceiling */
+
+/* Mirrors lib/aius_sd_overlay's AiusSdOverlayJobOutcome value for value
+ * (optical_main.cpp static-asserts it). */
+typedef enum {
+	AIUS_OPTICAL_SD_FLUSH_OK = 0,
+	AIUS_OPTICAL_SD_FLUSH_FAILED = 1,
+	AIUS_OPTICAL_SD_FLUSH_CARD_GONE = 2,
+	AIUS_OPTICAL_SD_FLUSH_CHUNK_CRC = 3
+} AiusOpticalSdFlushOutcome;
+
+typedef enum {
+	AIUS_OPTICAL_SD_FLUSH_START_NONE = 0, /* no job due */
+	AIUS_OPTICAL_SD_FLUSH_START_STARTED,
+	AIUS_OPTICAL_SD_FLUSH_START_REFUSED   /* the engine refused the request */
+} AiusOpticalSdFlushStart;
+
+typedef struct {
+	bool copy_before_write; /* AIUS_SD_OVERLAY_JOB_COPY_BEFORE_WRITE */
+	bool target_first;      /* AIUS_SD_OVERLAY_ORDER_TARGET_FIRST */
+	bool skip_backup;
+} AiusOpticalSdFlushJob;
+
+/* The terminal of the running flush job, as the storage engine reports it. */
+typedef struct {
+	bool result;            /* a result record exists */
+	bool fault;             /* its kind is FAULT */
+	bool input_faulted;     /* the root input refused a chunk (FR-S3) */
+	bool mounted;           /* the adapter still trusts its mount */
+	bool loss_pending;      /* D-S7: the card-loss verdict is PENDING (a
+	                           file still open): the end waits, unsettled */
+	bool card_detected;     /* D-S1: DAT3 read after a lost mount (true
+	                           while mounted); a lost mount with a card
+	                           detected is a read or write error, not a
+	                           card-gone fault */
+	bool readback_mismatch;
+	uint8_t passes_closed;
+} AiusOpticalSdFlushEnd;
+
+typedef struct {
+	void *context;
+	bool (*present)(void *context);
+	bool (*ready)(void *context);
+	bool (*held)(void *context);
+	bool (*due)(void *context, uint32_t now_ms);
+	bool (*drained)(void *context);
+	bool (*http_deferred)(void *context);
+	bool (*fill_in_flight)(void *context);
+	void (*fill_cancel)(void *context);
+	void (*fill_hold_release)(void *context);
+	bool (*storage_ready)(void *context);
+	AiusOpticalSdFlushStart (*start)(void *context, uint32_t now_ms,
+	                                 AiusOpticalSdFlushJob *job);
+	void (*job_end)(void *context, AiusOpticalSdFlushOutcome outcome,
+	                uint32_t now_ms);
+	void (*note_pass)(void *context, uint8_t safe_copy);
+	void (*note_readback)(void *context, bool ok);
+	void (*note_mounted)(void *context, uint32_t now_ms);
+	void (*note_card_lost)(void *context);
+	bool (*playback)(void *context);
+	bool (*card_detected)(void *context);
+	bool (*settled)(void *context);
+	const char *(*fill_rel)(void *context);
+	bool (*cancel_root)(void *context);
+	AiusOpticalAppStoreResult (*put_begin)(void *context, const char *rel,
+	                                       size_t rel_length, uint32_t length);
+	void (*put_abort)(void *context);
+	/* D-S5: after a driver fault dropped the mount, re-mux DAT3 and read it
+	 * (true: a card is in the slot). Called only for a NEW fault, never for
+	 * a mode-only drop (E3). */
+	bool (*card_present_after_fault)(void *context);
+	/* D-S9: the adapter holds a trusted mount (a BEGIN then reuses it, no
+	 * card transaction). */
+	bool (*mounted)(void *context);
+} AiusOpticalSdFlushOps;
+
+/* Zero-initialise. */
+typedef struct {
+	uint32_t remount_at_ms;
+	uint32_t remount_interval_ms; /* 0: AIUS_OPTICAL_SD_FLUSH_REMOUNT_MS */
+	uint32_t mounted_at_ms;       /* the last held-clearing mount */
+	uint32_t freeze_latched_at_ms;
+	bool running;
+	bool copy_before_write;
+	bool target_first;
+	bool skip_backup;
+	bool cancelled_fill;   /* this flush stopped a fill file (S9) */
+	bool remount_running;  /* the probe in flight is the held retry */
+	bool mount_seen;       /* mounted_at_ms is meaningful */
+	bool frozen;
+	bool freeze_cancelled_fill; /* the freeze stopped a fill (R5-S1, S9) */
+	bool put_open;         /* the one streamed put (NS5) */
+	bool fault_remount;    /* D-S5: a fault dropped a present card's mount */
+	bool remount_armed;    /* CR-B1: remount_at_ms is a pending schedule; a
+	                          lapsed or never-set one reads due, and stays
+	                          lapsed however long ago (no 2^31 ms revival) */
+	uint8_t loss;          /* AiusOpticalSdCardLoss latched for this drop */
+	uint8_t fault_backoff; /* D-S8: 0 quiet, n: delay 2 s << (n - 1), cap 60 s */
+	uint32_t last_fault_ms; /* D-S8: the last FAULT_PRESENT classification
+	                           or fault remount (the quiet window's start) */
+	uint16_t direct_faults; /* direct card ops' driver faults (wrapping) */
+	uint32_t faults_seen;  /* the fault count at the last observation */
+} AiusOpticalSdFlush;
+
+/* D-S5: what a lost mount means. Classified once per driver fault (the
+ * adapter's driver_faults plus the direct card ops', noted through
+ * aius_optical_sd_note_direct_fault); a mount dropped by a mode change
+ * (POST /api/sd/mode) moves no fault count, so DAT3 is never re-muxed for it
+ * and the card stays readable on SdFat's volume (E3). The verdict is latched
+ * until the mount returns, so every caller in a pass agrees. */
+/*
+ * D-S7: never classified while an adapter file is open (DAT3 is still the
+ * bus's, so the read would report present): the fault stays unconsumed and
+ * the verdict is PENDING until the first call with no file open; a flush
+ * job's end waits for it (no S5 try, no remount). A card-gone verdict notes
+ * the hold itself (note_card_lost, N5's flap note).
+ * D-S8: the fault remount is due AIUS_OPTICAL_SD_FLUSH_REMOUNT_MS after the
+ * fault; a further FAULT_PRESENT within AIUS_OPTICAL_SD_FAULT_QUIET_MS of the
+ * last doubles the delay to AIUS_OPTICAL_SD_FLUSH_REMOUNT_MAX_MS, and a
+ * successful mount does not reset it (only a quiet period does).
+ * D-N7: with no PSRAM carve a fault drop is card-gone with no re-mux and no
+ * self-initiated remount (the 8 MiB fitment's behaviour). */
+#define AIUS_OPTICAL_SD_FAULT_QUIET_MS 60000u
+typedef enum {
+	AIUS_OPTICAL_SD_CARD_KEPT = 0,      /* mounted, or a fault-free drop */
+	AIUS_OPTICAL_SD_CARD_GONE,          /* not ready, or DAT3 reads no card */
+	AIUS_OPTICAL_SD_CARD_FAULT_PRESENT, /* a fault, card present: remount on
+	                                       the D-S8 schedule (the held
+	                                       retry's gates, also during
+	                                       playback); no hold */
+	AIUS_OPTICAL_SD_CARD_PENDING        /* D-S7: a fault with a file open */
+} AiusOpticalSdCardLoss;
+
+AiusOpticalSdCardLoss aius_optical_sd_card_loss(AiusOpticalSdFlush *flush,
+                                                const AiusOpticalSdFlushOps *ops,
+                                                bool card_ready, bool mounted,
+                                                bool file_open,
+                                                uint32_t driver_faults,
+                                                uint32_t now_ms);
+/* A direct card op ended with a nonzero driver code. */
+void aius_optical_sd_note_direct_fault(AiusOpticalSdFlush *flush);
+
+/* CR-B1: the seam's millis windows lapse explicitly, as 4g's fill hold does:
+ * the remount schedule (remount_armed), the N5 flap window (mount_seen), the
+ * D-S8 quiet window (fault_backoff) each latch "lapsed" once observed past
+ * their bound, so an uptime past 2^31 ms or a schedule older than 2^31 ms
+ * never reads as pending again. Called every lifecycle pass
+ * (aius_optical_sd_card_loss does), and by every reader. */
+void aius_optical_sd_flush_lapse(AiusOpticalSdFlush *flush, uint32_t now_ms);
+
+/* D-S9, the one BEGIN gate: true when a storage job that would BEGIN must
+ * not start now. During playback (the probe-skip predicate) with no trusted
+ * mount, no BEGIN starts ahead of the D-S8 / H3 schedule (a fault remount
+ * or the carve's hold not yet due) or while DAT3 reads no card (which also
+ * sets the hold). The scheduled remount itself (remount_running) and any
+ * BEGIN that reuses a mount are never blocked. Consulted by every BEGIN
+ * path: the lifecycle's root steps, the flush start, the fill start, an
+ * HTTP SD job's SD_START admission and the replay job's BEGIN. */
+bool aius_optical_sd_begin_blocked(AiusOpticalSdFlush *flush,
+                                   const AiusOpticalSdFlushOps *ops,
+                                   uint32_t now_ms);
+/* D-N9: the lifecycle's root step start. The probe step the remount retry
+ * chose (remount_running, held by that one step until aius_optical_sd_idle_
+ * step runs again) passes; every other step takes the BEGIN gate. Other
+ * BEGIN paths never inherit the remount's slot. */
+bool aius_optical_sd_step_begin_blocked(AiusOpticalSdFlush *flush,
+                                        const AiusOpticalSdFlushOps *ops,
+                                        uint32_t now_ms);
+/* D-S10: the replay refill's BEGIN: blocked only while DAT3 reads no card
+ * during playback with no mount (a real pull: the replay stops); never by
+ * the schedule, so a transient fault remounts at once as before 4h. Replay
+ * retires in 4i. */
+bool aius_optical_sd_replay_begin_blocked(AiusOpticalSdFlush *flush,
+                                          const AiusOpticalSdFlushOps *ops);
+
+/* The lifecycle's choice with no step running (the order is the policy: a
+ * due flush, then the held remount retry, then the NS7 no-card skip, then the
+ * fill, then the probe). */
+typedef enum {
+	AIUS_OPTICAL_SD_IDLE_WAIT = 0, /* frozen, or a flush owns this pass */
+	AIUS_OPTICAL_SD_IDLE_NO_CARD,  /* probe due, DAT3 reads no card: no BEGIN;
+	                                  the caller re-arms its probe timer */
+	AIUS_OPTICAL_SD_IDLE_FILL,     /* the next fill file */
+	AIUS_OPTICAL_SD_IDLE_PROBE,    /* a probe step (a due probe off playback) */
+	AIUS_OPTICAL_SD_IDLE_REMOUNT   /* the held flush's remount retry probe */
+} AiusOpticalSdIdleStep;
+
+AiusOpticalSdIdleStep aius_optical_sd_idle_step(AiusOpticalSdFlush *flush,
+                                                const AiusOpticalSdFlushOps *ops,
+                                                uint32_t now_ms, bool probe_due);
+
+/* Starts the next due flush. True while a flush owns this pass (started, or
+ * waiting for the fill file it cancelled to stop): start no fill file. */
+bool aius_optical_sd_flush_start(AiusOpticalSdFlush *flush,
+                                 const AiusOpticalSdFlushOps *ops,
+                                 uint32_t now_ms);
+/* The running flush job reached its terminal (the caller checks the engine's
+ * root job is no longer running): the pass and read-back notes, then
+ * job_end; a card-gone outcome is noted (N5); the fill hold is released only
+ * if this flush stopped a fill (S9). No-op with no flush running. */
+void aius_optical_sd_flush_settle(AiusOpticalSdFlush *flush,
+                                  const AiusOpticalSdFlushOps *ops,
+                                  const AiusOpticalSdFlushEnd *end,
+                                  uint32_t now_ms);
+/* D-S1: the card-gone classification. A lost mount is card-gone only when
+ * DAT3 then reads no card (or the lifecycle's card is not ready); a card
+ * still detected failed a read or write: the job fails as a counted S5 try
+ * with backoff and no hold is set. */
+bool aius_optical_sd_card_gone(bool card_ready, bool mounted,
+                               bool card_detected);
+
+/* D-N3: the REPLACE flush's scratch name id, from the pinned version's
+ * accept CRC and its target path. Boot-independent, so a scratch pair a cut
+ * left behind in an earlier boot (the only copy of its file) is never reused
+ * by a different file's flush (a 2^-32 collision); the same file with the
+ * same bytes reuses it harmlessly (latest wins). */
+uint32_t aius_optical_sd_flush_scratch_id(uint32_t file_crc,
+                                          const char *target_path);
+
+/* A card-gone fault (a job's or a direct card op's): within
+ * AIUS_OPTICAL_SD_FLUSH_FLAP_MS of a held-clearing mount it backs off (N5). */
+void aius_optical_sd_flush_note_card_gone(AiusOpticalSdFlush *flush,
+                                          uint32_t now_ms);
+/* The probe's verdict: a mount while held clears the hold; no card notes the
+ * loss, and a held retry that found none backs off (S1). */
+void aius_optical_sd_flush_note_probe(AiusOpticalSdFlush *flush,
+                                      const AiusOpticalSdFlushOps *ops,
+                                      bool present, uint32_t now_ms);
+/* FR-S8: nothing dirty, flushing or tombstoned (always true with no carve). */
+bool aius_optical_sd_flush_drained(const AiusOpticalSdFlushOps *ops);
+
+/* H9, R4-B1: the OTA and reboot services' gate, after their HTTP drain wait
+ * and before any one-way step. The drain re-check precedes the freeze latch;
+ * the latched freeze then waits for any in-flight SD job under
+ * AIUS_OPTICAL_SD_FREEZE_MS. PASS obliges the caller to query
+ * aius_optical_sd_flush_drained() again as the statement immediately before
+ * its one-way step. */
+typedef enum {
+	AIUS_OPTICAL_SD_GATE_WAIT = 0, /* frozen, an SD job still in flight */
+	AIUS_OPTICAL_SD_GATE_PASS,     /* frozen and settled */
+	AIUS_OPTICAL_SD_GATE_DRAIN,    /* unflushed writes: ota_flush_pending */
+	AIUS_OPTICAL_SD_GATE_BUSY      /* the ceiling passed: ota_sd_busy */
+} AiusOpticalSdGate;
+
+AiusOpticalSdGate aius_optical_sd_write_gate(AiusOpticalSdFlush *flush,
+                                             const AiusOpticalSdFlushOps *ops,
+                                             uint32_t now_ms);
+/* Unfreezes; releases the fill hold only if the freeze stopped a fill (S9). */
+void aius_optical_sd_freeze_release(AiusOpticalSdFlush *flush,
+                                    const AiusOpticalSdFlushOps *ops);
+
+/* A www PUT's accept (NS2, B1): a fill file of the same path (case-folded)
+ * in flight is stopped with no hold latched, counted in `*fill_cancels`
+ * (www_cache.fill_cancels); then the overlay's reservation. BUSY while a put
+ * is already open. */
+AiusOpticalAppStoreResult aius_optical_sd_flush_put_begin(
+	AiusOpticalSdFlush *flush, const AiusOpticalSdFlushOps *ops,
+	uint32_t *fill_cancels, const char *rel, size_t rel_length,
+	uint32_t length);
+/* The STORE sink's commit: true when a put was open (now closed). */
+bool aius_optical_sd_flush_put_close(AiusOpticalSdFlush *flush);
+/* Frees an open put's reservation (no-op with none open). */
+void aius_optical_sd_flush_put_abort(AiusOpticalSdFlush *flush,
+                                     const AiusOpticalSdFlushOps *ops);
+/* NS5, D4: an open put whose transaction can no longer start or finish its
+ * STORE sink (aius_optical_app_sd_staging_orphaned) is aborted. */
+void aius_optical_sd_flush_sweep_orphan(AiusOpticalSdFlush *flush,
+                                        const AiusOpticalSdFlushOps *ops,
+                                        const AiusHttpTransaction *http,
+                                        bool deferred_start_present,
+                                        bool storage_action_present);
+
+/* R4-B1, R5-S2: the OTA activation, OTA rehearsal and reboot services' SD
+ * step, once their HTTP drain wait has ended. `*requested` is the service's
+ * request flag: an abandon unfreezes and clears it, so the service never
+ * re-runs (every later call answers IDLE: no park, no reset) until a new
+ * request. `reset_on_busy`: the reboot service resets past the freeze
+ * ceiling; the OTA services abandon with ota_sd_busy. */
+typedef enum {
+	AIUS_OPTICAL_SD_SERVICE_IDLE = 0,      /* no request */
+	AIUS_OPTICAL_SD_SERVICE_WAIT,          /* frozen, an SD job in flight */
+	AIUS_OPTICAL_SD_SERVICE_RUN,           /* proceed toward the one-way step */
+	AIUS_OPTICAL_SD_SERVICE_FLUSH_PENDING, /* abandoned: ota_flush_pending */
+	AIUS_OPTICAL_SD_SERVICE_SD_BUSY        /* abandoned: ota_sd_busy */
+} AiusOpticalSdService;
+
+AiusOpticalSdService aius_optical_sd_service_gate(
+	AiusOpticalSdFlush *flush, const AiusOpticalSdFlushOps *ops,
+	volatile bool *requested, uint32_t now_ms, bool reset_on_busy);
+/* The second drain query, the statement immediately before the one-way step
+ * (the recorder park, the reset). False: a write was accepted during the
+ * wait; unfrozen and `*requested` cleared (ota_flush_pending). */
+bool aius_optical_sd_service_final(AiusOpticalSdFlush *flush,
+                                   const AiusOpticalSdFlushOps *ops,
+                                   volatile bool *requested);
+
+/* E3: direct card ops (a /sd/ index, a replay listing) run only with the
+ * card ready and DAT3 not re-muxed (a card-gone invalidation or a failed
+ * begin); a mode-only mount drop (POST /api/sd/mode) leaves DAT3 clear, so
+ * they read the card as today and the next storage BEGIN remounts. */
+bool aius_optical_app_card_ops_ready(bool card_ready, bool dat3_remuxed);
+
+/* The HTTP transaction is idle with nothing outstanding: the reboot drain
+ * predicate, and the Q2 re-put's borrow condition. False for NULL. */
+bool aius_optical_app_http_idle(const AiusHttpTransaction *http);
+
+/* D1, Q2: a settings re-put serialises the running settings into the
+ * dispatcher's application body, borrowed only while the transaction is idle
+ * (a GET /api/status response being sent waits); false retries at the next
+ * service step. `writer` returns 0 when the document does not fit. */
+typedef size_t (*AiusOpticalSettingsWriter)(uint8_t *body, size_t capacity);
+bool aius_optical_settings_reput(const AiusHttpTransaction *http,
+                                 uint8_t *body, size_t capacity,
+                                 AiusOpticalSettingsWriter writer,
+                                 const uint8_t **bytes, uint32_t *length);
+
+/* GET /api/dsp/config and /aius/dsp.json (write_dsp_config): the model
+ * serialised with its header. `headroom_linear` is the served pad (with
+ * clipfree, the computed one). */
+typedef struct {
+	const char *source;         /* "sd" or "default" (dsp_source_name) */
+	bool config_pending;        /* the model is the staged one */
+	bool file_form;             /* /aius/dsp.json (a Q2 re-put): adds the
+	                               base_generation key the load requires; the
+	                               GET document omits it */
+	uint32_t config_generation;
+	uint32_t staged_generation;
+	double headroom_linear;
+} AiusOpticalDspConfigHeader;
+
+#ifdef AIUS_DSP_CONFIG_H
+/* NS6: the file form parses with aius_dsp_config_parse_put to the same model
+ * (the GET form lacks base_generation, so the parser refuses it). 0 when it does not fit `capacity` or an EQ type is unknown. */
+size_t aius_optical_dsp_config_write(const AiusDspModel *model,
+                                     const AiusOpticalDspConfigHeader *header,
+                                     uint8_t *body, size_t capacity);
+#endif
+
 /* Drops a pending OTA absorb WITHOUT applying it -- the drain backstop for a
  * job whose owning connection was released before its terminal (the storage
  * service drains it ownerless, so the transaction's settle hook never fires).

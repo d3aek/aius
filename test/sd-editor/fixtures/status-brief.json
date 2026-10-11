@@ -3,5 +3,6 @@
   "state": 4,
   "sample_rate": 48000,
   "pipeline_diag": { "codec_pc": 1 },
-  "tx_gate": { "open": 1, "replay_running": 0 }
+  "tx_gate": { "open": 1, "replay_running": 0 },
+  "sd_flush": { "dirty": 0, "held": false, "failures": 0, "last_fault": "", "drained": true }
 }

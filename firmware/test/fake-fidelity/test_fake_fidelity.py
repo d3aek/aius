@@ -157,7 +157,47 @@ CHECKS = [
         "vendor/SD/src/SD.h",
         ["BUILTIN_SDCARD"],
     ),
+    (
+        # The DAT3 re-mux's pin mode (Phase 4h NS3). A wrong value here would
+        # leave the host proving a pull-down the board never applies.
+        "test/sd-target/fake/SD.h",
+        "cores/teensy4/core_pins.h",
+        ["INPUT_PULLDOWN"],
+    ),
 ]
+
+# (fake path, real header, class, method) -- a member declaration the fake must
+# spell as the vendored header does (return type, name, parameters). The
+# module docstring scopes this file to constants because signature drift
+# fails the target compile; these rows are the exception the plan names
+# (Phase 4h N5): the adapter's route to cacheClear() is not compiled for the
+# target in any host run, so nothing else would notice the fake drifting.
+SIGNATURES = [
+    (
+        "test/sd-target/fake/SD.h",
+        "vendor/SdFat/src/FatLib/FatPartition.h",
+        "FatPartition",
+        "cacheClear",
+    ),
+    (
+        "test/sd-target/fake/SD.h",
+        "vendor/SdFat/src/ExFatLib/ExFatPartition.h",
+        "ExFatPartition",
+        "cacheClear",
+    ),
+    (
+        # The Aius vendor forwarder the adapter's CACHE_DROP calls (owner,
+        # 2026-10-10; vendor/SdFat/NOTICE.md).
+        "test/sd-target/fake/SD.h",
+        "vendor/SdFat/src/FsLib/FsVolume.h",
+        "FsVolume",
+        "cacheClear",
+    ),
+]
+
+# Kept as a switch for a future vendor bump that removes the forwarder; live
+# since the owner chose the FsVolume accessor route (2026-10-10).
+SIGNATURES_PARKED = False
 
 # (fake path, real header tree, what the tree is) -- every enum member the fake
 # declares is compared, with no name list at all. FNET's socket-option enum
@@ -225,6 +265,24 @@ SELF_CHECKS = [
         "#define SRC_SRSR_WDOG3_RST_B",
         "#define SRC_SRSR_WARM_BOOT",
         "SRC_SRSR_WARM_BOOT",
+    ),
+    (
+        # The DAT3 re-mux's INPUT_PULLDOWN at the core's INPUT_PULLUP value.
+        "test/sd-target/fake/SD.h",
+        "#define INPUT_PULLDOWN 3",
+        "#define INPUT_PULLDOWN 2",
+        "INPUT_PULLDOWN",
+    ),
+]
+
+# Run only while SIGNATURES is live (see SIGNATURES_PARKED): a cacheClear that
+# returns nothing, the drift a fake written from memory would carry.
+SIGNATURE_SELF_CHECKS = [
+    (
+        "test/sd-target/fake/SD.h",
+        "class FatPartition {\npublic:\n\tuint8_t* cacheClear();",
+        "class FatPartition {\npublic:\n\tvoid cacheClear();",
+        "FatPartition::cacheClear",
     ),
 ]
 
@@ -452,11 +510,60 @@ def invention_failures(fake_relative, fake_text, cache):
     return failures, checked
 
 
+def member_declaration(source, class_name, method):
+    """`return-type method(params)`, whitespace-normalised, or None.
+
+    The first declaration of `method` after `class <class_name>`'s opening
+    brace. Spacing around `*` and `&` is normalised so `uint8_t* f()` and
+    `uint8_t *f()` compare equal; anything else that differs is drift.
+    """
+    clean = COMMENT_RE.sub(" ", source)
+    opening = re.search(rf"\bclass\s+{re.escape(class_name)}\b[^;{{]*\{{", clean)
+    if opening is None:
+        return None
+    match = re.search(
+        rf"^[ \t]*([^\n;{{}}()]*?)\b{re.escape(method)}\s*\(([^)]*)\)",
+        clean[opening.end():],
+        re.M,
+    )
+    if match is None:
+        return None
+    text = f"{match.group(1)} {method}({match.group(2)})"
+    text = re.sub(r"\s*([*&])\s*", r"\1 ", text)
+    return " ".join(text.split())
+
+
+def signature_failures(fake_relative, fake_text, cache, parked=None):
+    """SIGNATURES: each listed member declared as the vendored header does."""
+    if SIGNATURES_PARKED if parked is None else parked:
+        return [], 0
+    failures = []
+    checked = 0
+    for fake_rel, real_rel, class_name, method in SIGNATURES:
+        if fake_rel != fake_relative:
+            continue
+        if real_rel not in cache["sources"]:
+            cache["sources"][real_rel] = read_real(real_rel)
+        want = member_declaration(cache["sources"][real_rel], class_name, method)
+        got = member_declaration(fake_text, class_name, method)
+        if want is None:
+            failures.append(f"{real_rel}: no {class_name}::{method} to compare")
+        elif got != want:
+            failures.append(
+                f"{fake_rel}: {class_name}::{method} is {got!r}, "
+                f"{real_rel} says {want!r}"
+            )
+        else:
+            checked += 1
+    return failures, checked
+
+
 def failures_for(fake_relative, fake_text, cache):
     """Every disagreement between one fake and the framework it stands for."""
     failures = []
     checked = 0
-    for check in (named_constant_failures, enum_member_failures, invention_failures):
+    for check in (named_constant_failures, enum_member_failures,
+                  invention_failures, signature_failures):
         found, count = check(fake_relative, fake_text, cache)
         failures.extend(found)
         checked += count
@@ -485,7 +592,8 @@ def self_check(cache):
     is a defect shape this repository actually shipped.
     """
     failures = []
-    for fake_rel, original, replacement, expected in SELF_CHECKS:
+    rows = SELF_CHECKS + ([] if SIGNATURES_PARKED else SIGNATURE_SELF_CHECKS)
+    for fake_rel, original, replacement, expected in rows:
         text = read_fake(fake_rel)
         if original not in text:
             failures.append(

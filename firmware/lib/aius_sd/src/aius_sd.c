@@ -50,6 +50,57 @@ static FLASHMEM void clear_result(AiusSdResult *result)
 	memset(result, 0, sizeof(*result));
 }
 
+/* zlib-compatible CRC-32 (crc 0 to start), the web cache's file CRC, so a
+ * copy-before-write read-back compares against the accept-time CRC the store
+ * recorded. Bitwise: one 512 B read costs 4,096 shift steps, and the library
+ * stays free of a table and of a dependency on the store. */
+static FLASHMEM uint32_t crc32_update(uint32_t crc, const uint8_t *data,
+	                              size_t length)
+{
+	crc = ~crc;
+	for (size_t index = 0u; index < length; index++) {
+		crc ^= data[index];
+		for (unsigned bit = 0u; bit < 8u; bit++)
+			crc = (crc >> 1) ^ (UINT32_C(0xEDB88320) &
+			                    (0u - (crc & 1u)));
+	}
+	return ~crc;
+}
+
+/* AiusSdJob's copy_flags bits. */
+#define AIUS_SD_COPY_TARGET_FIRST 0x01u
+#define AIUS_SD_COPY_SKIP_BACKUP 0x02u
+#define AIUS_SD_COPY_HEAD 0x04u
+#define AIUS_SD_COPY_READBACK_MISMATCH 0x08u
+
+/* Copy-before-write fits AiusSdJob's pre-4h padding: OCRAM holds two jobs
+ * (the storage service's and the replay's) against a fixed floor, so the job
+ * may not grow on the target ABI (short enums, 8-byte uint64 alignment). */
+#if defined(__arm__)
+typedef char aius_sd_job_size_pinned[sizeof(AiusSdJob) == 696u ? 1 : -1];
+typedef char aius_sd_result_size_pinned[sizeof(AiusSdResult) == 40u ? 1 : -1];
+#endif
+
+static FLASHMEM bool copy_flag(const AiusSdJob *job, uint8_t flag)
+{
+	return (job->copy_flags & flag) != 0u;
+}
+
+static FLASHMEM void set_copy_flag(AiusSdJob *job, uint8_t flag, bool on)
+{
+	if (on)
+		job->copy_flags = (uint8_t)(job->copy_flags | flag);
+	else
+		job->copy_flags = (uint8_t)(job->copy_flags & ~flag);
+}
+
+static FLASHMEM void mirror_copy_result(AiusSdJob *job)
+{
+	job->result.passes_closed = job->copy_pass;
+	job->result.readback_mismatch =
+		copy_flag(job, AIUS_SD_COPY_READBACK_MISMATCH);
+}
+
 static FLASHMEM bool job_is_quiescent(const AiusSdJob *job)
 {
 	if (job->state == AIUS_SD_IDLE)
@@ -131,6 +182,7 @@ static FLASHMEM void finish_failure(AiusSdJob *job)
 			: job->transferred;
 	job->result.fault = job->last_fault;
 	job->result.driver_fault = job->last_driver_fault;
+	mirror_copy_result(job);
 	set_phase(job, AIUS_SD_PHASE_TERMINAL, AIUS_SD_FAILED);
 }
 
@@ -165,6 +217,7 @@ static FLASHMEM void finish_success(AiusSdJob *job)
 		return;
 	}
 
+	mirror_copy_result(job);
 	set_phase(job, AIUS_SD_PHASE_TERMINAL, AIUS_SD_DONE);
 }
 
@@ -262,10 +315,12 @@ static FLASHMEM AiusSdFault validate_request(const AiusSdJob *job,
 {
 	if (request == NULL)
 		return AIUS_SD_FAULT_INVALID_REQUEST;
+	/* STORE belongs to the PSRAM sink, never to a card (NS8). */
 	if (request->kind < AIUS_SD_JOB_PROBE ||
 	    request->kind > AIUS_SD_JOB_CACHE_FILL ||
 	    request->install_mode < AIUS_SD_INSTALL_REPLACE ||
-	    request->install_mode > AIUS_SD_INSTALL_FINALIZE_PART)
+	    request->install_mode > AIUS_SD_INSTALL_STORE ||
+	    request->install_mode == AIUS_SD_INSTALL_STORE)
 		return AIUS_SD_FAULT_INVALID_REQUEST;
 	if (job->buffer == NULL || job->capacity == 0u ||
 	    job->capacity > AIUS_SD_MAX_TRANSFER)
@@ -411,6 +466,23 @@ static FLASHMEM AiusSdFault validate_request(const AiusSdJob *job,
 				return AIUS_SD_FAULT_INVALID_REQUEST;
 			}
 			break;
+
+		case AIUS_SD_INSTALL_COPY_BEFORE_WRITE:
+			if (request->initial_offset != 0u ||
+			    request->total == 0u || request->publish ||
+			    request->content_type != NULL ||
+			    request->temp_path != NULL)
+				return AIUS_SD_FAULT_INVALID_REQUEST;
+			if (!copy_canonical_path(request->target_path, target) ||
+			    !copy_canonical_path(request->backup_path, backup))
+				return AIUS_SD_FAULT_PATH;
+			if (!paths_are_distinct(target, NULL, backup))
+				return AIUS_SD_FAULT_PATH;
+			break;
+
+		case AIUS_SD_INSTALL_STORE:
+		default:
+			return AIUS_SD_FAULT_INVALID_REQUEST;
 		}
 		break;
 	}
@@ -496,6 +568,13 @@ FLASHMEM void aius_sd_job_start(AiusSdJob *job,
 	job->require_existing =
 		request_copy.kind == AIUS_SD_JOB_DELETE &&
 		request_copy.require_existing;
+	if (request_copy.install_mode == AIUS_SD_INSTALL_COPY_BEFORE_WRITE) {
+		set_copy_flag(job, AIUS_SD_COPY_TARGET_FIRST,
+		              request_copy.target_first);
+		set_copy_flag(job, AIUS_SD_COPY_SKIP_BACKUP,
+		              request_copy.skip_backup);
+		job->expected_crc32 = request_copy.expected_crc32;
+	}
 	set_phase(job, AIUS_SD_PHASE_BEGIN, AIUS_SD_PREPARE);
 }
 
@@ -597,15 +676,32 @@ FLASHMEM bool aius_sd_job_supply(AiusSdJob *job,
 	if (job_is_quiescent(job))
 		return false;
 
+	bool copy_input = job->phase == AIUS_SD_PHASE_CBW_INPUT;
 	bool correct_state =
 		job->state == AIUS_SD_NEED_INPUT &&
-		job->phase == AIUS_SD_PHASE_UPLOAD_INPUT &&
+		(job->phase == AIUS_SD_PHASE_UPLOAD_INPUT || copy_input) &&
 		job->outstanding_action == AIUS_SD_ACTION_NONE &&
 		job->requested != 0u;
 	if (!correct_state) {
 		record_fault(job, AIUS_SD_FAULT_PROTOCOL, 0u);
 		route_abort(job);
 		return false;
+	}
+
+	/* A copy-before-write chunk is supplied whole: the source is the
+	 * pinned version in PSRAM, so a short supply is a caller defect. */
+	if (copy_input) {
+		if (data == NULL || length != job->requested) {
+			record_fault(job, AIUS_SD_FAULT_PROTOCOL, 0u);
+			route_abort(job);
+			return false;
+		}
+		memcpy(job->buffer, data, length);
+		job->buffer_offset = 0u;
+		job->pending = length;
+		job->requested = 0u;
+		set_phase(job, AIUS_SD_PHASE_CBW_WRITE, AIUS_SD_WRITE);
+		return true;
 	}
 
 	uint64_t remaining = job->total - job->transferred;
@@ -696,11 +792,26 @@ static FLASHMEM const char *upload_file_path(const AiusSdJob *job)
 		       : job->temp_path;
 }
 
+static FLASHMEM bool is_copy_before_write(const AiusSdJob *job)
+{
+	return job->kind == AIUS_SD_JOB_UPLOAD &&
+	       job->install_mode == AIUS_SD_INSTALL_COPY_BEFORE_WRITE;
+}
+
+static FLASHMEM uint8_t copy_pass_count(const AiusSdJob *job)
+{
+	return copy_flag(job, AIUS_SD_COPY_SKIP_BACKUP) ? 1u : 2u;
+}
+
+/* The walk covers the paths the job writes: target, temp and backup for an
+ * install, the target alone for an append, and for copy-before-write the
+ * target and then the backup, or the target alone with skip_backup. One
+ * EXISTS per directory per path, not deduplicated (FR-S2). */
 static FLASHMEM const char *mkdir_source_path(const AiusSdJob *job, uint8_t index)
 {
 	if (index == 0u)
 		return job->target_path;
-	if (index == 1u)
+	if (index == 1u && !is_copy_before_write(job))
 		return job->temp_path;
 	return job->backup_path;
 }
@@ -709,6 +820,8 @@ static FLASHMEM bool prepare_next_directory(AiusSdJob *job)
 {
 	uint8_t path_count =
 		job->install_mode == AIUS_SD_INSTALL_APPEND_PART ? 1u : 3u;
+	if (is_copy_before_write(job))
+		path_count = copy_pass_count(job);
 
 	while (job->mkdir_path_index < path_count) {
 		const char *path =
@@ -733,6 +846,52 @@ static FLASHMEM bool prepare_next_directory(AiusSdJob *job)
 
 	job->directory_path[0] = '\0';
 	return false;
+}
+
+/* Copy-before-write pass geometry. The pass writes the target when it is the
+ * only pass, or when it is the first pass of a target-first job, or the second
+ * of a backup-first one. */
+static FLASHMEM bool copy_pass_is_target(const AiusSdJob *job)
+{
+	return copy_flag(job, AIUS_SD_COPY_SKIP_BACKUP) ||
+	       ((job->copy_pass == 0u) ==
+	        copy_flag(job, AIUS_SD_COPY_TARGET_FIRST));
+}
+
+static FLASHMEM const char *copy_pass_path(const AiusSdJob *job)
+{
+	return copy_pass_is_target(job) ? job->target_path : job->backup_path;
+}
+
+/* More than one chunk: the pass zeroes chunk 0 first and writes it last, so a
+ * cut anywhere between leaves a file its validator rejects (FR-S1). */
+static FLASHMEM bool copy_is_multi_chunk(const AiusSdJob *job)
+{
+	return job->total > (uint64_t)job->capacity;
+}
+
+static FLASHMEM size_t copy_chunk_length(const AiusSdJob *job, uint64_t offset)
+{
+	uint64_t remaining = job->total - offset;
+	return remaining < (uint64_t)job->capacity ? (size_t)remaining
+	                                           : job->capacity;
+}
+
+static FLASHMEM void begin_copy_pass(AiusSdJob *job)
+{
+	job->transferred = 0u;
+	set_copy_flag(job, AIUS_SD_COPY_HEAD, false);
+	job->requested = 0u;
+	job->pending = 0u;
+	job->buffer_offset = 0u;
+	set_phase(job, AIUS_SD_PHASE_CBW_OPEN, AIUS_SD_OPEN);
+}
+
+static FLASHMEM void await_copy_input(AiusSdJob *job)
+{
+	job->requested = 0u;
+	job->buffer_offset = 0u;
+	set_phase(job, AIUS_SD_PHASE_CBW_INPUT, AIUS_SD_NEED_INPUT);
 }
 
 static FLASHMEM const char *existence_path(const AiusSdJob *job)
@@ -820,6 +979,12 @@ static FLASHMEM void emit_mkdir_or_next(AiusSdJob *job, AiusSdAction *action)
 
 	if (job->install_mode == AIUS_SD_INSTALL_REPLACE) {
 		emit_upload_open(job, action);
+		return;
+	}
+	if (is_copy_before_write(job)) {
+		job->copy_pass = 0u;
+		begin_copy_pass(job);
+		emit_for_phase(job, action);
 		return;
 	}
 
@@ -1068,6 +1233,74 @@ static FLASHMEM void emit_for_phase(AiusSdJob *job, AiusSdAction *action)
 			action->path = job->temp_path;
 		break;
 
+	case AIUS_SD_PHASE_CBW_OPEN:
+		if (emit_correlated(job, action,
+		                    AIUS_SD_ACTION_OPEN_WRITE_BEGIN, false))
+			action->path = copy_pass_path(job);
+		break;
+	case AIUS_SD_PHASE_CBW_ZERO_WRITE:
+		if (emit_correlated(job, action, AIUS_SD_ACTION_WRITE, false)) {
+			action->buffer = job->buffer + job->buffer_offset;
+			action->length = job->pending;
+			action->offset = (uint64_t)job->buffer_offset;
+		}
+		break;
+	case AIUS_SD_PHASE_CBW_INPUT: {
+		if (job->requested != 0u)
+			break;
+		uint64_t source = copy_flag(job, AIUS_SD_COPY_HEAD)
+			                  ? 0u
+			                  : job->transferred;
+		job->requested = copy_chunk_length(job, source);
+		emit_uncorrelated(action, AIUS_SD_ACTION_NEED_INPUT);
+		action->length = job->requested;
+		action->offset = source;
+		break;
+	}
+	case AIUS_SD_PHASE_CBW_WRITE:
+		if (emit_correlated(job, action, AIUS_SD_ACTION_WRITE, false)) {
+			action->buffer = job->buffer + job->buffer_offset;
+			action->length = job->pending;
+			action->offset = (copy_flag(job, AIUS_SD_COPY_HEAD)
+				                  ? 0u
+				                  : job->transferred) +
+			                 (uint64_t)job->buffer_offset;
+		}
+		break;
+	case AIUS_SD_PHASE_CBW_TRUNCATE:
+		if (emit_correlated(job, action, AIUS_SD_ACTION_TRUNCATE,
+		                    false))
+			action->offset = job->total;
+		break;
+	case AIUS_SD_PHASE_CBW_SEEK:
+		if (emit_correlated(job, action, AIUS_SD_ACTION_SEEK, false))
+			action->offset = 0u;
+		break;
+	case AIUS_SD_PHASE_CBW_CLOSE:
+	case AIUS_SD_PHASE_VERIFY_CLOSE:
+		(void)emit_correlated(job, action, AIUS_SD_ACTION_CLOSE, false);
+		break;
+	case AIUS_SD_PHASE_CACHE_DROP:
+		(void)emit_correlated(job, action, AIUS_SD_ACTION_CACHE_DROP,
+		                      false);
+		break;
+	case AIUS_SD_PHASE_VERIFY_OPEN:
+		if (emit_correlated(job, action, AIUS_SD_ACTION_OPEN_READ,
+		                    false))
+			action->path = job->target_path;
+		break;
+	case AIUS_SD_PHASE_VERIFY_SIZE:
+		(void)emit_correlated(job, action, AIUS_SD_ACTION_FILE_SIZE,
+		                      false);
+		break;
+	case AIUS_SD_PHASE_VERIFY_READ:
+		if (emit_correlated(job, action, AIUS_SD_ACTION_READ, false)) {
+			action->buffer = job->buffer;
+			action->length = copy_chunk_length(job, job->transferred);
+			action->offset = job->transferred;
+		}
+		break;
+
 	case AIUS_SD_PHASE_TERMINAL:
 		if (job->terminal_emitted)
 			break;
@@ -1297,6 +1530,57 @@ static FLASHMEM void handle_ok_event(AiusSdJob *job)
 	case AIUS_SD_PHASE_CLEANUP_TEMP:
 		finish_failure(job);
 		break;
+	case AIUS_SD_PHASE_CBW_OPEN:
+		job->file_open = true;
+		if (copy_is_multi_chunk(job)) {
+			memset(job->buffer, 0, job->capacity);
+			job->pending = job->capacity;
+			job->buffer_offset = 0u;
+			set_phase(job, AIUS_SD_PHASE_CBW_ZERO_WRITE,
+			          AIUS_SD_WRITE);
+		} else {
+			set_copy_flag(job, AIUS_SD_COPY_HEAD, true);
+			await_copy_input(job);
+		}
+		break;
+	case AIUS_SD_PHASE_CBW_TRUNCATE:
+		if (copy_is_multi_chunk(job))
+			set_phase(job, AIUS_SD_PHASE_CBW_SEEK, AIUS_SD_WRITE);
+		else
+			set_phase(job, AIUS_SD_PHASE_CBW_CLOSE, AIUS_SD_WRITE);
+		break;
+	case AIUS_SD_PHASE_CBW_SEEK:
+		set_copy_flag(job, AIUS_SD_COPY_HEAD, true);
+		await_copy_input(job);
+		break;
+	case AIUS_SD_PHASE_CBW_CLOSE:
+		job->file_open = false;
+		job->copy_pass++;
+		if (job->copy_pass < copy_pass_count(job))
+			begin_copy_pass(job);
+		else
+			set_phase(job, AIUS_SD_PHASE_CACHE_DROP, AIUS_SD_READ);
+		break;
+	case AIUS_SD_PHASE_CACHE_DROP:
+		job->verify_crc32 = 0u;
+		job->transferred = 0u;
+		set_phase(job, AIUS_SD_PHASE_VERIFY_OPEN, AIUS_SD_READ);
+		break;
+	case AIUS_SD_PHASE_VERIFY_OPEN:
+		job->file_open = true;
+		set_phase(job, AIUS_SD_PHASE_VERIFY_SIZE, AIUS_SD_READ);
+		break;
+	case AIUS_SD_PHASE_VERIFY_CLOSE:
+		job->file_open = false;
+		if (job->verify_crc32 != job->expected_crc32) {
+			set_copy_flag(job, AIUS_SD_COPY_READBACK_MISMATCH, true);
+			record_fault(job, AIUS_SD_FAULT_VERIFY, 0u);
+			finish_failure(job);
+		} else {
+			job->transferred = job->total;
+			finish_success(job);
+		}
+		break;
 	default:
 		record_fault(job, AIUS_SD_FAULT_PROTOCOL, 0u);
 		break;
@@ -1450,6 +1734,15 @@ static FLASHMEM void handle_size_event(AiusSdJob *job, uint64_t size)
 		set_phase(job, AIUS_SD_PHASE_DOWNLOAD_SEEK,
 		          AIUS_SD_READ);
 		break;
+	case AIUS_SD_PHASE_VERIFY_SIZE:
+		job->captured_size = size;
+		if (size != job->total) {
+			set_copy_flag(job, AIUS_SD_COPY_READBACK_MISMATCH, true);
+			record_fault(job, AIUS_SD_FAULT_VERIFY, 0u);
+		} else {
+			set_phase(job, AIUS_SD_PHASE_VERIFY_READ, AIUS_SD_READ);
+		}
+		break;
 	case AIUS_SD_PHASE_INSTALL_PUBLISH_SIZE:
 		job->captured_size = size;
 		if (size != job->end_offset || size == 0u ||
@@ -1511,6 +1804,39 @@ static FLASHMEM void handle_bytes_event(AiusSdJob *job, size_t bytes)
 		else
 			set_phase(job, AIUS_SD_PHASE_UPLOAD_INPUT,
 			          AIUS_SD_NEED_INPUT);
+		break;
+	case AIUS_SD_PHASE_CBW_ZERO_WRITE:
+	case AIUS_SD_PHASE_CBW_WRITE:
+		job->buffer_offset += bytes;
+		job->pending -= bytes;
+		if (job->pending != 0u)
+			break;
+		if (job->phase == AIUS_SD_PHASE_CBW_ZERO_WRITE) {
+			job->transferred = (uint64_t)job->capacity;
+			await_copy_input(job);
+		} else if (copy_flag(job, AIUS_SD_COPY_HEAD)) {
+			job->buffer_offset = 0u;
+			set_phase(job,
+			          copy_is_multi_chunk(job)
+				          ? AIUS_SD_PHASE_CBW_CLOSE
+				          : AIUS_SD_PHASE_CBW_TRUNCATE,
+			          AIUS_SD_WRITE);
+		} else {
+			job->transferred += (uint64_t)job->buffer_offset;
+			job->buffer_offset = 0u;
+			if (job->transferred == job->total)
+				set_phase(job, AIUS_SD_PHASE_CBW_TRUNCATE,
+				          AIUS_SD_WRITE);
+			else
+				await_copy_input(job);
+		}
+		break;
+	case AIUS_SD_PHASE_VERIFY_READ:
+		job->verify_crc32 =
+			crc32_update(job->verify_crc32, job->buffer, bytes);
+		job->transferred += (uint64_t)bytes;
+		if (job->transferred == job->total)
+			set_phase(job, AIUS_SD_PHASE_VERIFY_CLOSE, AIUS_SD_READ);
 		break;
 	case AIUS_SD_PHASE_DOWNLOAD_READ:
 		job->pending = bytes;
@@ -1677,6 +2003,7 @@ static FLASHMEM AiusSdEventKind expected_event_kind(AiusSdActionKind action)
 	case AIUS_SD_ACTION_REMOVE:
 	case AIUS_SD_ACTION_CLOSE:
 	case AIUS_SD_ACTION_PUBLISH_CONFIG:
+	case AIUS_SD_ACTION_CACHE_DROP:
 		return AIUS_SD_EVENT_OK;
 	default:
 		return AIUS_SD_EVENT_NONE;
@@ -1690,6 +2017,8 @@ static FLASHMEM size_t outstanding_byte_length(const AiusSdJob *job)
 	if (job->phase == AIUS_SD_PHASE_CONFIG_READ ||
 	    job->phase == AIUS_SD_PHASE_INSTALL_PUBLISH_READ)
 		return publication_read_length(job);
+	if (job->phase == AIUS_SD_PHASE_VERIFY_READ)
+		return copy_chunk_length(job, job->transferred);
 	if (job->phase == AIUS_SD_PHASE_DOWNLOAD_READ) {
 		uint64_t absolute = job->initial_offset + job->transferred;
 		uint64_t remaining = job->end_offset - absolute;

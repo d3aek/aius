@@ -13,12 +13,15 @@ Usage:
 
 --out is required (never defaults into the source tree). Writes <page>.html.gz
 per page. --inlined instead prints "<page> <asset>" per inlined asset, asset
-relative to --www, and writes nothing. Exit 1 on a missing
-page or asset, or an inlined script that reads document.currentScript.src
+relative to --www, and writes nothing. --referenced prints the assets existing
+pages reference without reading them (never fails on a missing page or asset).
+Exit 1 on a missing page or asset, a script containing "<!--" (page and asset
+named), or an inlined script that reads document.currentScript.src
 (the bundle has no script URL). Exit 2 on a usage error.
 """
 import argparse
 import gzip
+import posixpath
 import re
 import sys
 from pathlib import Path
@@ -79,8 +82,10 @@ def bundle_page(www, page, assets=None):
         attrs = _SRC.sub("", tag.split(">", 1)[0][len("<script"):]).strip()
         body = _read_asset(www, page, ref, assets)
         body = _CLOSE_SCRIPT.sub(r"<\\/\1", body)
-        # "<!--" can enter the double-escaped script state; "<\!--" is the same JS.
-        body = _HTML_COMMENT_OPEN.sub(r"<\\!--", body)
+        # "<!--" can enter the double-escaped script state; rewriting it would
+        # change string literals, so the build refuses it instead.
+        if _HTML_COMMENT_OPEN.search(body):
+            raise BundleError(f"{page}: inlined script contains <!--: {ref}")
         opener = "<script" + (" " + attrs if attrs else "") + ">"
         return f"{opener}\n{body}\n</script>"
 
@@ -89,6 +94,28 @@ def bundle_page(www, page, assets=None):
         if _CURRENT_SCRIPT_SRC.search(block.group(1)):
             raise BundleError(f"{page}: an inlined script reads document.currentScript.src")
     return out
+
+
+def referenced(www):
+    """Returns the set of asset paths any existing page references, unread."""
+    www = Path(www)
+    refs = set()
+    for page in PAGES:
+        src = www / page
+        if not src.is_file():
+            continue
+        for match in _TAG.finditer(src.read_text(encoding="utf-8")):
+            tag = match.group(0)
+            if tag[:5].lower() == "<link":
+                if not _REL_SHEET.search(tag):
+                    continue
+                m = _HREF.search(tag)
+            else:
+                m = _SRC.search(tag.split(">", 1)[0] + ">")
+            if m:
+                ref = (m.group(1) or m.group(2)).split("?", 1)[0].split("#", 1)[0]
+                refs.add(posixpath.normpath(ref))
+    return refs
 
 
 def build(www, out):
@@ -121,7 +148,12 @@ def main(argv=None):
     parser.add_argument("--www", required=True)
     parser.add_argument("--out")
     parser.add_argument("--inlined", action="store_true")
+    parser.add_argument("--referenced", action="store_true")
     args = parser.parse_args(argv)
+    if args.referenced:
+        for asset in sorted(referenced(args.www)):
+            print(asset)
+        return 0
     if not args.inlined and not args.out:
         parser.error("--out is required (or use --inlined)")
     try:

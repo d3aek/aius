@@ -395,9 +395,20 @@ static FLASHMEM int qvalue_is_zero(const uint8_t *value, const uint8_t *end)
 	return 1;
 }
 
-/* One Accept-Encoding value. Only the gzip coding matters; last gzip entry wins. */
+/* Accept-Encoding verdicts for one coding name: not listed, refused (q=0) or
+ * accepted (any other q, or none). */
+enum {
+	AIUS_HTTP_CODING_UNLISTED = 0,
+	AIUS_HTTP_CODING_REFUSED,
+	AIUS_HTTP_CODING_ACCEPTED
+};
+
+/* One Accept-Encoding value. Only gzip and the "*" wildcard matter; the last
+ * entry of each wins. The caller combines them after every header line
+ * (Phase 4h N2): gzip by name decides, else "*" with q > 0 selects gzip, as
+ * RFC 9110 12.5.3 lets "*" match any coding not otherwise listed. */
 static FLASHMEM void scan_accept_encoding(const uint8_t *cursor, const uint8_t *end,
-	                              AiusHttpRequest *request)
+	                              int *gzip, int *star)
 {
 	while (cursor < end) {
 		const uint8_t *comma = (const uint8_t *)memchr(cursor, ',', (size_t)(end - cursor));
@@ -405,7 +416,12 @@ static FLASHMEM void scan_accept_encoding(const uint8_t *cursor, const uint8_t *
 		const uint8_t *semi = (const uint8_t *)memchr(cursor, ';', (size_t)(item_end - cursor));
 		const uint8_t *coding_end;
 		const uint8_t *coding = trim_ws(cursor, semi == NULL ? item_end : semi, &coding_end);
-		if (header_name_equals(coding, (size_t)(coding_end - coding), "gzip")) {
+		int *verdict = NULL;
+		if (header_name_equals(coding, (size_t)(coding_end - coding), "gzip"))
+			verdict = gzip;
+		else if (coding_end - coding == 1 && coding[0] == '*')
+			verdict = star;
+		if (verdict != NULL) {
 			int zero = 0;
 			if (semi != NULL) {
 				const uint8_t *param_end;
@@ -420,7 +436,7 @@ static FLASHMEM void scan_accept_encoding(const uint8_t *cursor, const uint8_t *
 					}
 				}
 			}
-			request->accepts_gzip = !zero;
+			*verdict = zero ? AIUS_HTTP_CODING_REFUSED : AIUS_HTTP_CODING_ACCEPTED;
 		}
 		if (comma == NULL)
 			break;
@@ -434,6 +450,8 @@ static FLASHMEM void extract_cache_headers(const uint8_t *base,
 {
 	const uint8_t *cursor = headers;
 	const uint8_t *end = headers + length;
+	int gzip = AIUS_HTTP_CODING_UNLISTED;
+	int star = AIUS_HTTP_CODING_UNLISTED;
 	while (cursor < end) {
 		const uint8_t *line_end = find_bytes(cursor, (size_t)(end - cursor), "\r\n", 2);
 		const uint8_t *colon;
@@ -445,7 +463,7 @@ static FLASHMEM void extract_cache_headers(const uint8_t *base,
 			const uint8_t *value;
 			if (header_name_equals(cursor, name_length, "Accept-Encoding")) {
 				value = trim_ws(colon + 1, line_end, &value_end);
-				scan_accept_encoding(value, value_end, request);
+				scan_accept_encoding(value, value_end, &gzip, &star);
 			} else if (header_name_equals(cursor, name_length, "If-None-Match") &&
 			           request->if_none_match_offset == 0u) {
 				value = trim_ws(colon + 1, line_end, &value_end);
@@ -457,6 +475,9 @@ static FLASHMEM void extract_cache_headers(const uint8_t *base,
 		if (line_end == end) break;
 		cursor = line_end + 2;
 	}
+	request->accepts_gzip =
+		gzip == AIUS_HTTP_CODING_ACCEPTED ||
+		(gzip == AIUS_HTTP_CODING_UNLISTED && star == AIUS_HTTP_CODING_ACCEPTED);
 }
 
 FLASHMEM bool aius_http_if_none_match(const AiusHttpRequest *request, const char *etag)

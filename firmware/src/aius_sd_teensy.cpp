@@ -24,6 +24,8 @@
 namespace {
 
 constexpr size_t kMaximumTransfer = 512u;
+/* BUILTIN_SDCARD's DAT3 on Teensy 4.1 (_SD_DAT3, vendor/SD/src/SD.cpp:29). */
+constexpr uint8_t kSdDat3Pin = 46u;
 
 FLASHMEM AiusSdEvent none_event()
 {
@@ -59,9 +61,14 @@ FLASHMEM bool rename_payload(const AiusSdAction *action)
 	       action->offset == 0u && action->fault == 0u;
 }
 
+FLASHMEM bool seek_payload(const AiusSdAction *action);
+
+/* TRUNCATE carries the new length in `offset` (0 for REPLACE's truncate to
+ * empty, the file length for a copy-before-write pass, FR-S1), bounded as a
+ * SEEK's position is. */
 FLASHMEM bool truncate_payload(const AiusSdAction *action)
 {
-	return empty_payload(action);
+	return seek_payload(action);
 }
 
 FLASHMEM bool seek_payload(const AiusSdAction *action)
@@ -154,6 +161,16 @@ FLASHMEM bool action_id_valid(const AiusSdAction *action)
  * an unmounted volume (0) and exFAT (64) among them -- is UNKNOWN, which is the
  * answer the legacy switch this restores gave for a type it did not recognise.
  * Widening the vocabulary would be a wire change rather than a fix. */
+/* Syncs the mounted partition's dirty cached sector, then drops the cache, so
+ * the read-back that follows reads the card (Phase 4h H1, CR4-B2). True on
+ * success. FsVolume::cacheClear() is the Aius vendor forwarder (owner,
+ * 2026-10-10; vendor/SdFat/NOTICE.md) to whichever of FatPartition.h:95 or
+ * ExFatPartition.h:78 is mounted; nullptr on a failed sync or no volume. */
+FLASHMEM bool sd_cache_clear()
+{
+	return SD.sdfs.vol()->cacheClear() != nullptr;
+}
+
 FLASHMEM AiusSdFilesystem filesystem_of(uint8_t fat_type)
 {
 	switch (fat_type) {
@@ -187,6 +204,7 @@ FLASHMEM void aius_sd_teensy_init(AiusSdTeensy *adapter)
 	adapter->absent_mounts = 0u;
 	adapter->busy_timeouts = 0u;
 	adapter->dma = false;
+	adapter->dat3_remuxed = false;
 	adapter->last_protocol_action = (uint8_t)AIUS_SD_ACTION_NONE;
 }
 
@@ -195,6 +213,34 @@ FLASHMEM void aius_sd_teensy_invalidate_mount(AiusSdTeensy *adapter)
 	if (adapter == nullptr)
 		return;
 	adapter->mounted = false;
+	/* Every caller is a card-gone signal (a direct card op's driver fault,
+	 * the probe's card-absent verdict). After a successful begin pin 46
+	 * stays USDHC-muxed with a 47 k pull-up and would read a card present
+	 * forever, so it is re-muxed as a pulled-down GPIO, as the vendored
+	 * SD.cpp:96-98 does after a failed begin, and given 5 us to settle
+	 * before aius_sd_teensy_card_detected() trusts it (NS3). Never with a
+	 * file open: the handle still owns the bus. Already re-muxed (a failed
+	 * begin, an earlier invalidation) needs nothing. */
+	if (adapter->file_open || adapter->dat3_remuxed)
+		return;
+	pinMode(kSdDat3Pin, INPUT_PULLDOWN);
+	delayMicroseconds(5u);
+	adapter->dat3_remuxed = true;
+}
+
+FLASHMEM bool aius_sd_teensy_card_detected(AiusSdTeensy *adapter)
+{
+	if (adapter == nullptr)
+		return false;
+	/* DAT3 is only readable once re-muxed and only meaningful with no
+	 * mount held; otherwise (a boot's first probe included) report present
+	 * and let BEGIN run as today (D3). */
+	if (adapter->mounted || !adapter->dat3_remuxed)
+		return true;
+	const bool present = SD.cardDetected();
+	if (!present && adapter->absent_mounts != UINT32_MAX)
+		adapter->absent_mounts++;
+	return present;
 }
 
 FLASHMEM void aius_sd_teensy_set_mode(AiusSdTeensy *adapter, bool dma)
@@ -257,6 +303,9 @@ FLASHMEM AiusSdEvent aius_sd_teensy_execute(
 		const uint32_t ended = micros();
 		record_duration(adapter, started, ended);
 		adapter->mounted = success;
+		/* A successful begin re-muxes DAT3 to the USDHC; a failed one
+		 * leaves it a pulled-down GPIO (vendored SD.cpp:96-98). */
+		adapter->dat3_remuxed = !success;
 		if (success)
 			return action_event(AIUS_SD_EVENT_OK, action->action_id);
 		/* No card inserted is absence, not a fault: DAT3 reads low
@@ -368,7 +417,7 @@ FLASHMEM AiusSdEvent aius_sd_teensy_execute(
 			return protocol_fault(adapter, action);
 		SD.clearError();
 		const uint32_t started = micros();
-		const bool success = adapter->file.truncate(0u);
+		const bool success = adapter->file.truncate(action->offset);
 		const uint32_t ended = micros();
 		record_duration(adapter, started, ended);
 		return success
@@ -520,6 +569,24 @@ FLASHMEM AiusSdEvent aius_sd_teensy_execute(
 			action_event(AIUS_SD_EVENT_SIZE, action->action_id);
 		event.size = size;
 		return event;
+	}
+
+	case AIUS_SD_ACTION_CACHE_DROP: {
+		if (!action_id_valid(action) || !empty_payload(action) ||
+		    adapter->file_open)
+			return protocol_fault(adapter, action);
+		SD.clearError();
+		const uint32_t started = micros();
+		const bool success = sd_cache_clear();
+		const uint32_t ended = micros();
+		record_duration(adapter, started, ended);
+		if (success)
+			return action_event(AIUS_SD_EVENT_OK, action->action_id);
+		/* The sync write failing is the card failing; a zero code (no
+		 * partition mounted, or the placeholder) is no driver fault. */
+		if (SD.sdErrorCode() != 0u)
+			return hard_driver_fault(adapter, action->action_id);
+		return fault_event(action->action_id);
 	}
 
 	default:

@@ -37,7 +37,27 @@ typedef enum {
 typedef enum {
 	AIUS_SD_INSTALL_REPLACE,
 	AIUS_SD_INSTALL_APPEND_PART,
-	AIUS_SD_INSTALL_FINALIZE_PART
+	AIUS_SD_INSTALL_FINALIZE_PART,
+	/* A settings save (Phase 4h H4): two full copies, the target and its
+	 * fixed backup_path, each overwritten in place with no temp file, no
+	 * RENAME and no REMOVE. A pass of an N-chunk file (N > 1) is
+	 * OPEN_WRITE_BEGIN, a WRITE of a zero chunk 0 the job fills itself, one
+	 * NEED_INPUT + WRITE per chunk 1 to N - 1, TRUNCATE to the length, SEEK
+	 * 0, NEED_INPUT + WRITE of the real chunk 0, CLOSE (N + 5 primitives);
+	 * a one-chunk file is OPEN_WRITE_BEGIN, WRITE, TRUNCATE, CLOSE (4). The
+	 * passes run backup then target, or target then backup with
+	 * target_first, or the target alone with skip_backup; then one
+	 * CACHE_DROP and the target's read-back (OPEN_READ, FILE_SIZE, a READ
+	 * per chunk, CLOSE), whose CRC-32 must equal expected_crc32. UPLOAD
+	 * only; backup_path required, temp_path NULL, total > 0, no publish.
+	 * A chunk is the job's transfer capacity (512 B in every caller). */
+	AIUS_SD_INSTALL_COPY_BEFORE_WRITE,
+	/* A www PUT into the PSRAM store (Phase 4h S8, NS8). Expressible in a
+	 * request so the HTTP transaction's SD_START can carry it, and routed
+	 * to the store before the engine; aius_sd_job_start rejects it with
+	 * AIUS_SD_FAULT_INVALID_REQUEST and issues no primitive, so it can
+	 * never reach a card even if that routing fails. */
+	AIUS_SD_INSTALL_STORE
 } AiusSdInstallMode;
 
 typedef enum {
@@ -103,7 +123,21 @@ typedef enum {
 	AIUS_SD_PHASE_ROLLBACK,
 	AIUS_SD_PHASE_CLEANUP_CLOSE,
 	AIUS_SD_PHASE_CLEANUP_TEMP,
-	AIUS_SD_PHASE_TERMINAL
+	AIUS_SD_PHASE_TERMINAL,
+	/* Copy-before-write (Phase 4h), appended after TERMINAL so every
+	 * earlier value, published as fault_phase, keeps its number. */
+	AIUS_SD_PHASE_CBW_OPEN,
+	AIUS_SD_PHASE_CBW_ZERO_WRITE,
+	AIUS_SD_PHASE_CBW_INPUT,
+	AIUS_SD_PHASE_CBW_WRITE,
+	AIUS_SD_PHASE_CBW_TRUNCATE,
+	AIUS_SD_PHASE_CBW_SEEK,
+	AIUS_SD_PHASE_CBW_CLOSE,
+	AIUS_SD_PHASE_CACHE_DROP,
+	AIUS_SD_PHASE_VERIFY_OPEN,
+	AIUS_SD_PHASE_VERIFY_SIZE,
+	AIUS_SD_PHASE_VERIFY_READ,
+	AIUS_SD_PHASE_VERIFY_CLOSE
 } AiusSdPhase;
 
 typedef enum {
@@ -180,7 +214,12 @@ typedef enum {
 	AIUS_SD_ACTION_USED_SIZE,
 	AIUS_SD_ACTION_PUBLISH_CONFIG,
 	AIUS_SD_ACTION_COMPLETE,
-	AIUS_SD_ACTION_FAIL
+	AIUS_SD_ACTION_FAIL,
+	/* Syncs the mounted volume's dirty cached sector, then drops the
+	 * cache, so the read-back that follows reads the card, not SdFat's
+	 * cache (Phase 4h H1, CR4-B2). No payload; answered with OK. Appended
+	 * so every earlier action keeps its number. */
+	AIUS_SD_ACTION_CACHE_DROP
 } AiusSdActionKind;
 
 typedef struct {
@@ -214,6 +253,16 @@ typedef struct {
 	bool publish;
 	size_t publish_capacity;
 	bool require_existing;
+	/* AIUS_SD_INSTALL_COPY_BEFORE_WRITE only; ignored by every other mode.
+	 * target_first: write the target before the backup (the path's safe
+	 * copy is the backup, so the backup is written last); false writes the
+	 * backup first. skip_backup: write the target alone (a restore-created
+	 * entry whose backup already holds these bytes); backup_path is still
+	 * required and target_first is then immaterial. expected_crc32: the
+	 * zlib CRC-32 of the accepted bytes, which the read-back must match. */
+	bool target_first;
+	bool skip_backup;
+	uint32_t expected_crc32;
 } AiusSdJobRequest;
 
 typedef enum {
@@ -244,7 +293,10 @@ typedef enum {
 	AIUS_SD_FAULT_CANCELLED = 15,
 	AIUS_SD_FAULT_CLEANUP = 16,
 	AIUS_SD_FAULT_RANGE = 17,
-	AIUS_SD_FAULT_NOT_FOUND = 18
+	AIUS_SD_FAULT_NOT_FOUND = 18,
+	/* A copy-before-write read-back whose size or CRC-32 differs from the
+	 * bytes accepted. */
+	AIUS_SD_FAULT_VERIFY = 19
 } AiusSdFault;
 
 typedef struct {
@@ -254,6 +306,14 @@ typedef struct {
 	 * volume type the probe's own media check read off the mounted card. A
 	 * probe that found no media, or any other job kind, leaves it UNKNOWN. */
 	AiusSdFilesystem filesystem;
+	/* Copy-before-write only, placed in the padding before total_bytes so
+	 * the result keeps its pre-4h size on the ARM ABI. passes_closed: how
+	 * many passes reached a successful CLOSE (0 to 2), so the caller knows
+	 * which file holds the pinned version complete: the first pass's file
+	 * after 1, both after 2. readback_mismatch: both passes closed and the
+	 * read-back's size or CRC-32 disagreed (AIUS_SD_FAULT_VERIFY). */
+	uint8_t passes_closed;
+	bool readback_mismatch;
 	uint64_t total_bytes;
 	uint64_t used_bytes;
 	uint64_t transferred_bytes;
@@ -307,6 +367,16 @@ typedef struct {
 	 * failed its write and one that failed its install rename are
 	 * indistinguishable. NONE while no fault has been recorded. */
 	AiusSdPhase fault_phase;
+	/* Copy-before-write state (Phase 4h), in the padding before `result`
+	 * and at the tail, so AiusSdJob keeps its pre-4h 696 B on the ARM ABI:
+	 * OCRAM holds two jobs and its floor is fixed (static assert in
+	 * aius_sd.c). copy_flags: target first, skip backup, the real chunk 0
+	 * being written, a read-back mismatch. copy_pass: the pass index, which
+	 * is also how many passes' CLOSE succeeded. The pass cursor (the next
+	 * source offset) and the read-back cursor reuse `transferred`. */
+	uint8_t copy_flags;
+	uint8_t copy_pass;
+	uint32_t expected_crc32;
 	AiusSdResult result;
 	bool target_existed;
 	bool backup_moved;
@@ -321,6 +391,9 @@ typedef struct {
 	bool abort_requested;
 	bool action_ids_exhausted;
 	bool terminal_emitted;
+	/* The running read-back CRC-32 (copy-before-write), in the tail
+	 * padding. */
+	uint32_t verify_crc32;
 } AiusSdJob;
 
 void aius_sd_job_init(AiusSdJob *job, uint8_t *buffer, size_t capacity);
