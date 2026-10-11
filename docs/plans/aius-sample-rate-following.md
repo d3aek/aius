@@ -66,7 +66,7 @@ built); replace wholesale on the next handover.
   AC-3 and accidental-disconnect runs. An E7 verdict of B2 re-plans 4f to 4h before
   their device runs (4f's body records this).
 - **Next action.** Phase 4j (parent-only, idle DSP apply), then 4k,
-  then 4b's device sessions (owner), then 4i.
+  then 4l, then 4b's device sessions (owner), then 4i.
 - **What landed this run** (aius commits; each followed by a upstream repository
   pointer bump; foreign commits from the mixer session omitted):
 
@@ -6502,13 +6502,13 @@ nit is followed by its resolution.
   against the W4 rows.** A drift had passed unnoticed; a drifted count
   now fails (fixture `test_chain_hop_site_drift_fails`).
 - **A full store still takes a DSP Apply or public-config write whose
-  file holds an unleased entry (CR4-N1, orchestrator call pending the
-  owner's confirmation).** The put overwrites that entry in place (the
-  CR3-B1 fix), so Apply keeps working on a full store; only a write
+  file holds an unleased entry (CR4-N1; owner 2026-10-11: kept, with a
+  16-preset cap, Phase 4l).** The put overwrites that entry in place
+  (the CR3-B1 fix), so Apply keeps working on a full store; only a write
   with no entry of its own, a preset save or a DELETE of an uncached
   preset answers `503 sd_busy`. This widens owner Q-A's wording ("every
-  write" refused) in the permissive direction; the interrogate step at
-  the end of this phase asks the owner.
+  write" refused) in the permissive direction, an orchestrator call the
+  owner confirmed.
 
 #### Delivery audit (2026-10-11)
 
@@ -6639,20 +6639,6 @@ followed by its resolution.
   decisions, CR4-N1).
 
 **Closure 4: PASS.**
-
-#### Interrogate the user: confirm CR4-N1
-
-**Step: Interrogate the user: confirm CR4-N1.** Ask: "With a full
-PSRAM store, DSP Apply and config saves now still land when their file
-already has a store entry (only presets are refused). Your Q-A answer
-said every write is refused. Keep the more permissive behaviour?"
-
-- **Keep (recommended)**: the build stays as it is; the outcome's
-  wording stands.
-- **Revert to refusing**: a full store refuses every write, Apply and
-  config included, as Q-A said.
-
-Blocks: nothing.
 
 ### Phase 4i Retire replay
 
@@ -7160,6 +7146,48 @@ fan-out: none # two files and their suites
 **Deferred from 4h because it is a nit.** Every 503 already carries
 `Retry-After: 1`, so a client retries either way, and reopening
 pw-http's seam in 4h would have cost another image and audit round.
+
+### Phase 4l At most 16 saved presets
+
+```yaml
+phase: 4l
+title: At most 16 saved presets
+status: planned
+depends-on: phase-4h
+prebuild-review: pending
+outcome: >-
+  A preset save that would create a 17th preset under
+  /aius/www/presets/ (counting the card's presets after the post-mount
+  fill plus pending puts, minus pending tombstones, case-folded names)
+  answers 409 preset_limit with no store entry used, while saving over
+  an existing preset and deleting one always work; the editor shows
+  "Preset limit reached (16); delete one to save another". With at most
+  16 presets, the 27-file web app and the two settings files, the
+  64-entry store keeps headroom, so Apply, config and preset saves never
+  meet 503 sd_busy from presets (owner 2026-10-11, answering 4h CR4-N1).
+  A card already holding more than 16 presets keeps them readable and
+  deletable, and new saves are refused until the count falls to 15 or
+  fewer.
+unit: component-behind-interface
+seams:
+  - "firmware/lib/aius_sd_overlay: the preset count and the cap check at accept"
+  - "firmware/src/aius_optical_app.cpp: 409 preset_limit on the preset PUT route"
+  - "firmware/sd/www/openapi.json: 409 preset_limit"
+  - "firmware/sd/www/dsp-editor.js and test/sd-editor/dsp-editor.test.js: the message"
+  - "Phase 4h's outcome sentence on the 64-entry cap and its residual risk on a full store, updated when 4l ships"
+targeted-proof:
+  - "host: sd-overlay cases: a 17th new name refused, an overwrite of an existing name at 16 accepted, a delete at 16 then a new save accepted, case-variant names counted once, a pending tombstone frees a slot, a card with 20 presets keeps all 20 served and refuses new ones"
+  - "host: an optical-app route case for 409 preset_limit"
+  - "host: an sd-editor message case"
+  - "host: the openapi test"
+fan-out: none # one library, one route, one UI message and the spec
+review-intensity: active
+```
+
+**The cap keeps the store from filling.** Owner 2026-10-11: 35
+presets is far more than operation needs. With at most 16, the store
+never fills from presets, which removes the full-store paths 4h had to
+guard.
 
 ### Phase 4c `test.sh` runs every `--suite` given ✓ SHIPPED 2026-10-06
 
