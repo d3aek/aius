@@ -185,9 +185,9 @@
       label: 'Input channels',
       featureLabel: 'Input EQ',
       groups: ['input_channels'],
-      /* Per-channel trim is NOT the input EQ: it runs whatever this flag says,
-       * so the note refuses to let the dimmed panel imply otherwise. */
-      offNote: 'EQ bypassed; per-channel trim still runs',
+      /* The firmware skips the whole input stage, per-channel trim included,
+       * when this flag is off (aius_dsp_runtime_config.c input_stage_active). */
+      offNote: 'EQ and trim bypassed',
     },
     {
       key: 'matrix',
@@ -2508,9 +2508,15 @@
   const roundLinear = (value) => Math.round(value * 1000) / 1000;
 
   /* (rect, client coords) -> the two model values a drag can carry. */
-  const pointToEq = (rect, clientX, clientY) => ({
+  const pointToEq = (rect, clientX, clientY, offsetDb = 0) => ({
     frequency_hz: roundHz(xToHz(clientX, rect)),
-    gain_db: roundDb(yToDb(clientY, rect)),
+    gain_db: roundDb(
+      clamp(
+        ((rect.top + rect.height / 2 - clientY) / (rect.height / 2)) * CURVE_SPAN_DB - (Number.isFinite(offsetDb) ? offsetDb : 0),
+        -CURVE_SPAN_DB,
+        CURVE_SPAN_DB,
+      ),
+    ),
   });
 
   /* One arrow press. Proportional, because a fixed 10 Hz is a semitone at the
@@ -2521,13 +2527,16 @@
     return roundHz(clamp(direction > 0 ? base * NUDGE_HZ_RATIO : base / NUDGE_HZ_RATIO, CURVE_MIN_HZ, CURVE_MAX_HZ));
   };
 
-  /* (sections, rect, rate) -> the polyline the canvas strokes for the whole
-   * cascade. An empty or all-bypassed cascade is a flat line at 0 dB. */
-  function curvePoints(sections, rect, sampleRateHz) {
+  /* (sections, rect, rate, offsetDb) -> the polyline the canvas strokes for the
+   * whole cascade, lifted by the channel trim so the plot shows total level.
+   * An empty or all-bypassed cascade is a flat line at the offset (0 dB by
+   * default). */
+  function curvePoints(sections, rect, sampleRateHz, offsetDb = 0) {
+    const offset = Number.isFinite(offsetDb) ? offsetDb : 0;
     const points = [];
     for (let step = 0; step <= CURVE_STEPS; step++) {
       const x = rect.left + (rect.width * step) / CURVE_STEPS;
-      points.push({ x, y: dbToY(cascadeMagnitudeDb(sections, xToHz(x, rect), sampleRateHz), rect) });
+      points.push({ x, y: dbToY(cascadeMagnitudeDb(sections, xToHz(x, rect), sampleRateHz) + offset, rect) });
     }
     return points;
   }
@@ -2535,12 +2544,16 @@
   /* One draggable point per active section, carrying the slot so a gesture
    * knows which fields it is editing. A highpass has no gain, so its handle
    * rides the 0 dB line. */
-  const handlePoints = (sections, rect) =>
+  const handlePoints = (sections, rect, offsetDb = 0) =>
     (Array.isArray(sections) ? sections : []).filter(isActiveSection).map((section) => ({
       slot: section.slot,
       type: section.type,
       x: hzToX(section.frequency_hz, rect),
-      y: dbToY(section.type === 'peaking' && Number.isFinite(section.gain_db) ? section.gain_db : 0, rect),
+      y: dbToY(
+        (section.type === 'peaking' && Number.isFinite(section.gain_db) ? section.gain_db : 0) +
+          (Number.isFinite(offsetDb) ? offsetDb : 0),
+        rect,
+      ),
     }));
 
   /* Nearest handle within the grab radius, or null. */
@@ -2815,6 +2828,22 @@
     });
   }
 
+  /* Distinct trim offsets (dB) an entity's curve is drawn at: one per bonded
+   * member's own input_channels.<ch>.gain_db. Empty trim set is [0]. The firmware
+   * skips the whole input stage (trim included) when features.input_eq is off,
+   * and so does this: bypassed, or the output entity, draws at 0. */
+  function curveOffsets(entity) {
+    const bypassed = !field('features.input_eq').checked;
+    const trims = entity.bases
+      .filter((base) => base.startsWith('input_channels.'))
+      .map((base) => (bypassed ? 0 : numberOf(`${base}.gain_db`, 0)));
+    return trims.length === 0 ? [0] : [...new Set(trims)];
+  }
+
+  /* The offset of the member whose sections the handles edit (the left/primary
+   * base); 0 under input_eq bypass or for the output entity. */
+  const handleOffset = (entity) => curveOffsets({ bases: entity.bases.slice(0, 1) })[0];
+
   const entityCascade = (entity) => resolveCascade(entity.bases.map((base) => curveSections(base)));
 
   const curveSampleRate = () =>
@@ -3013,16 +3042,18 @@
       context.globalAlpha = chosen ? 1 : CURVE_DIM_ALPHA;
       context.strokeStyle = entity.colour;
       context.lineWidth = (chosen ? 2 : 1) * scale;
-      context.beginPath();
-      curvePoints(resolved.get(entity.key).sections, rect, rate).forEach((point, index) => {
-        if (index === 0) context.moveTo(point.x, point.y);
-        else context.lineTo(point.x, point.y);
-      });
-      context.stroke();
+      for (const offset of curveOffsets(entity)) {
+        context.beginPath();
+        curvePoints(resolved.get(entity.key).sections, rect, rate, offset).forEach((point, index) => {
+          if (index === 0) context.moveTo(point.x, point.y);
+          else context.lineTo(point.x, point.y);
+        });
+        context.stroke();
+      }
       context.globalAlpha = 1;
     }
 
-    const handles = handlePoints(resolved.get(selected.key).sections, rect);
+    const handles = handlePoints(resolved.get(selected.key).sections, rect, handleOffset(selected));
     for (const handle of handles) {
       context.fillStyle = selected.colour;
       context.strokeStyle = handle.slot === state.activeSlot ? '#e8edf2' : '#101318';
@@ -3252,7 +3283,7 @@
   function handleUnder(event) {
     const rect = clientRect();
     if (!rect) return null;
-    const points = handlePoints(entityCascade(selectedEntity()).sections, rect);
+    const points = handlePoints(entityCascade(selectedEntity()).sections, rect, handleOffset(selectedEntity()));
     return pickHandle(points, event.clientX, event.clientY, HANDLE_GRAB_PX);
   }
 
@@ -3398,7 +3429,7 @@
     }
     const rect = clientRect();
     if (!rect) return;
-    const point = pointToEq(rect, event.clientX, event.clientY);
+    const point = pointToEq(rect, event.clientX, event.clientY, handleOffset(drag.entity));
     surfaceWrite(drag.entity, drag.slot, 'frequency_hz', point.frequency_hz);
     /* Only a peaking section carries gain -- the rule collectEqSection()
      * applies -- so a highpass handle moves horizontally only. */
@@ -3440,7 +3471,7 @@
     readout.hidden = false;
     const unit = { left: 0, top: 0, width: 1, height: 1 };
     readout.style.left = `${(clamp(hzToX(Number.isFinite(hz) ? hz : CURVE_MIN_HZ, unit), 0, 1) * 100).toFixed(1)}%`;
-    readout.style.top = `${(clamp(dbToY(type === 'peaking' ? gain : 0, unit), 0, 1) * 100).toFixed(1)}%`;
+    readout.style.top = `${(clamp(dbToY((type === 'peaking' ? gain : 0) + handleOffset(entity), unit), 0, 1) * 100).toFixed(1)}%`;
   }
 
   function hideReadout() {

@@ -39,6 +39,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const here = dirname(fileURLToPath(import.meta.url));
 const www = resolve(here, '../../firmware/sd/www');
 const fixture = (name) => JSON.parse(readFileSync(resolve(here, 'fixtures', name), 'utf8'));
+/* The plot's pointer tests aim at atDb(gain_db); trim lifts handles, so they run trim-free. */
+const untrimmed = (config) => {
+  for (const channel of Object.values(config.input_channels)) channel.gain_db = 0;
+  return config;
+};
 const indexHtml = readFileSync(resolve(www, 'index.html'), 'utf8');
 const sharedSource = readFileSync(resolve(www, 'sd-shared.js'), 'utf8');
 const editorSource = readFileSync(resolve(www, 'dsp-editor.js'), 'utf8');
@@ -1099,14 +1104,14 @@ describe('Aius SD DSP editor — stage panels', () => {
     expect(el('off:limiter').textContent).toBe('');
   });
 
-  /* Per-channel trim is not the input EQ: it runs whatever the flag says, so
-   * the note refuses to let the dimmed panel imply otherwise. */
-  it('says the per-channel trim survives its own panel being bypassed', async () => {
+  /* The firmware skips the whole input stage, trim included, when the flag is
+   * off, so the note says both stopped. */
+  it('says the per-channel trim is bypassed with its panel', async () => {
     await boot();
     await setCheck('features.input_eq', false);
 
     expect(el('card-input-channels').dataset.stage).toBe('off');
-    expect(el('off:input_eq').textContent).toBe('EQ bypassed; per-channel trim still runs');
+    expect(el('off:input_eq').textContent).toBe('EQ and trim bypassed');
   });
 
   it('marks each panel dirty on its own', async () => {
@@ -2842,7 +2847,7 @@ describe('Aius SD DSP editor — curve and geometry maths', () => {
 
 describe('Aius SD DSP editor — the stacked EQ plot', () => {
   it('draws every cascade on one plot, with the selected one emphasised', async () => {
-    await boot({ config: fixture('dsp-config-sd.json') });
+    await boot({ config: untrimmed(fixture('dsp-config-sd.json')) });
 
     const cascades = cascadePaths();
     expect(cascades).toHaveLength(ENTITIES.length);
@@ -2869,7 +2874,7 @@ describe('Aius SD DSP editor — the stacked EQ plot', () => {
   });
 
   it('moves the handles and the emphasis when another chip is picked', async () => {
-    await boot({ config: fixture('dsp-config-sd.json') });
+    await boot({ config: untrimmed(fixture('dsp-config-sd.json')) });
 
     chip('output').click();
     await settle();
@@ -2890,7 +2895,7 @@ describe('Aius SD DSP editor — the stacked EQ plot', () => {
   });
 
   it('strokes the selected cascade where its section sits', async () => {
-    await boot({ config: fixture('dsp-config-sd.json') });
+    await boot({ config: untrimmed(fixture('dsp-config-sd.json')) });
     chip('output').click();
     await settle();
 
@@ -2899,6 +2904,83 @@ describe('Aius SD DSP editor — the stacked EQ plot', () => {
     const top = curve.reduce((best, op) => (op[2] < best[2] ? op : best));
     expect(Math.abs(top[1] - atHz(4000))).toBeLessThan(6);
     expect(maths().yToDb(top[2], CURVE_RECT)).toBeCloseTo(2, 2);
+  });
+
+  describe('trim offset', () => {
+    const frontCurves = () => cascadePaths().filter((path) => strokeOf(path)[2] === 2);
+    const peakDb = (path) =>
+      maths().yToDb(
+        vertices(path).reduce((best, op) => (op[2] < best[2] ? op : best))[2],
+        CURVE_RECT,
+      );
+
+    it('lifts the curve by exactly the trim dB', async () => {
+      await boot({ config: fixture('dsp-config-sd.json') });
+      await setNumber('input_channels.fl.gain_db', '0');
+      await setNumber('input_channels.fr.gain_db', '0');
+      const before = vertices(selectedCascade()).map((op) => op[2]);
+      await setNumber('input_channels.fl.gain_db', '-3');
+      await setNumber('input_channels.fr.gain_db', '-3');
+      const after = vertices(selectedCascade()).map((op) => op[2]);
+      expect(after).toHaveLength(before.length);
+      before.forEach((y, index) => {
+        expect(maths().yToDb(after[index], CURVE_RECT) - maths().yToDb(y, CURVE_RECT)).toBeCloseTo(-3, 6);
+      });
+    });
+
+    it('draws each bonded member at its own trim', async () => {
+      await boot({ config: fixture('dsp-config-sd.json') });
+      await setNumber('input_channels.fl.gain_db', '0');
+      await setNumber('input_channels.fr.gain_db', '-4');
+      expect(frontCurves()).toHaveLength(2);
+      const [a, b] = frontCurves().map(peakDb);
+      expect(Math.abs(a - b)).toBeCloseTo(4, 6);
+    });
+
+    it('draws the handle at gain_db plus the primary member trim', async () => {
+      await boot({ config: fixture('dsp-config-sd.json') });
+      await setNumber('input_channels.fl.gain_db', '-2');
+      await setNumber('input_channels.fr.gain_db', '-5');
+      const gain = Number(valueOf('input_channels.fl.eq.0.gain_db'));
+      expect(handlesOf('curve')[0][2]).toBeCloseTo(atDb(gain - 2), 6);
+    });
+
+    it('writes gain_db = y_db - trim on a drag', async () => {
+      await boot({ config: fixture('dsp-config-sd.json') });
+      stubRect();
+      setToken('0123456789abcdef');
+      await setNumber('input_channels.fl.gain_db', '-2');
+      await setNumber('input_channels.fr.gain_db', '-2');
+      const start = handlesOf('curve')[0];
+      pointer('pointerdown', start[1], start[2]);
+      pointer('pointermove', atHz(300), atDb(6));
+      pointer('pointerup', atHz(300), atDb(6));
+      await settle();
+      expect(valueOf('input_channels.fl.eq.0.gain_db')).toBe('8');
+      expect(handlesOf('curve')[0][2]).toBeCloseTo(atDb(6), 6);
+    });
+
+    it('lifts no handle when input_eq is off', async () => {
+      await boot({ config: fixture('dsp-config-sd.json') });
+      await setNumber('input_channels.fl.gain_db', '-2');
+      await setCheck('features.input_eq', false);
+      const gain = Number(valueOf('input_channels.fl.eq.0.gain_db'));
+      expect(handlesOf('curve')[0][2]).toBeCloseTo(atDb(gain), 6);
+    });
+
+    it('applies no trim offset when input_eq is off', async () => {
+      await boot({ config: fixture('dsp-config-sd.json') });
+      await setNumber('input_channels.fl.gain_db', '-3');
+      await setNumber('input_channels.fr.gain_db', '-3');
+      const trimmed = vertices(selectedCascade()).map((op) => op[2]);
+      await setCheck('features.input_eq', false);
+      const bypassed = vertices(selectedCascade()).map((op) => op[2]);
+      await setNumber('input_channels.fl.gain_db', '0');
+      await setNumber('input_channels.fr.gain_db', '0');
+      const flat = vertices(selectedCascade()).map((op) => op[2]);
+      expect(bypassed).toEqual(flat);
+      expect(bypassed).not.toEqual(trimmed);
+    });
   });
 
   it('redraws from the form, so a typed edit and a removed section both show', async () => {
@@ -2922,7 +3004,7 @@ describe('Aius SD DSP editor — the stacked EQ plot', () => {
 
 describe('Aius SD DSP editor — editing through the plot', () => {
   it('writes a dragged handle into the same fields text mode edits', async () => {
-    await boot({ config: fixture('dsp-config-sd.json') });
+    await boot({ config: untrimmed(fixture('dsp-config-sd.json')) });
     stubRect();
     setToken('0123456789abcdef');
 
@@ -2948,7 +3030,7 @@ describe('Aius SD DSP editor — editing through the plot', () => {
 
   /* A pair is one entity here by contract, so one gesture writes both members. */
   it('writes both members of a stereo pair from one gesture', async () => {
-    await boot({ config: fixture('dsp-config-sd.json') });
+    await boot({ config: untrimmed(fixture('dsp-config-sd.json')) });
     stubRect();
 
     pointer('pointerdown', atHz(120), atDb(-4.5));
@@ -2965,7 +3047,7 @@ describe('Aius SD DSP editor — editing through the plot', () => {
   /* fl carries one section and fr two: the pair is UNLINKED, and the first
    * surface edit adopts the LEFT member into both -- announced first. */
   it('announces adopting the left member before the first edit of an unlinked pair', async () => {
-    await boot({ config: fixture('dsp-config-sd.json') });
+    await boot({ config: untrimmed(fixture('dsp-config-sd.json')) });
     stubRect();
     expect(el('unlinked:front').hidden).toBe(false);
     expect(valueOf('input_channels.fr.eq.1.type')).toBe('highpass');
@@ -2985,7 +3067,7 @@ describe('Aius SD DSP editor — editing through the plot', () => {
   });
 
   it('leaves a divergent pair alone until the surface is used', async () => {
-    await boot({ config: fixture('dsp-config-sd.json') });
+    await boot({ config: untrimmed(fixture('dsp-config-sd.json')) });
     // sl carries a bypass section and sr none: unlinked, and untouched.
     expect(el('unlinked:surround').hidden).toBe(false);
     expect(valueOf('input_channels.sl.eq.0.type')).toBe('bypass');
@@ -2994,7 +3076,7 @@ describe('Aius SD DSP editor — editing through the plot', () => {
   });
 
   it('moves a highpass handle in frequency only -- it has no gain to drag', async () => {
-    await boot({ config: fixture('dsp-config-sd.json') });
+    await boot({ config: untrimmed(fixture('dsp-config-sd.json')) });
     stubRect();
     chip('centre').click();
     await settle();
@@ -3010,7 +3092,7 @@ describe('Aius SD DSP editor — editing through the plot', () => {
   });
 
   it('ignores a press away from a handle, and a move after the pointer is up', async () => {
-    await boot({ config: fixture('dsp-config-sd.json') });
+    await boot({ config: untrimmed(fixture('dsp-config-sd.json')) });
     stubRect();
 
     pointer('pointerdown', atHz(8000), atDb(20));
@@ -3029,7 +3111,7 @@ describe('Aius SD DSP editor — editing through the plot', () => {
   });
 
   it('selects the section it grabbed, so the keyboard follows the pointer', async () => {
-    await boot({ config: fixture('dsp-config-sd.json') });
+    await boot({ config: untrimmed(fixture('dsp-config-sd.json')) });
     stubRect();
     chip('front').click();
     await settle();
@@ -3046,7 +3128,7 @@ describe('Aius SD DSP editor — editing through the plot', () => {
   });
 
   it('shows the values a drag is writing, beside the handle writing them', async () => {
-    await boot({ config: fixture('dsp-config-sd.json') });
+    await boot({ config: untrimmed(fixture('dsp-config-sd.json')) });
     stubRect();
 
     expect(el('curve-readout').hidden).toBe(true);
@@ -3064,7 +3146,7 @@ describe('Aius SD DSP editor — editing through the plot', () => {
   });
 
   it('uses Shift captured at pointer-down to drag Q without moving frequency or gain', async () => {
-    await boot({ config: fixture('dsp-config-sd.json') });
+    await boot({ config: untrimmed(fixture('dsp-config-sd.json')) });
     stubRect();
     const x = atHz(120);
     const y = atDb(-4.5);
@@ -3085,7 +3167,7 @@ describe('Aius SD DSP editor — editing through the plot', () => {
   /* An unconditional touch-action:none made the plot a scroll trap on touch
    * (UX finding E1): panning is suppressed for the duration of a grab only. */
   it('suppresses panning only while a handle is actually held', async () => {
-    await boot({ config: fixture('dsp-config-sd.json') });
+    await boot({ config: untrimmed(fixture('dsp-config-sd.json')) });
     stubRect();
     expect(el('curve').style.touchAction).toBe('');
 
@@ -3097,7 +3179,7 @@ describe('Aius SD DSP editor — editing through the plot', () => {
   });
 
   it('offers a pointer cursor within grab range and a crosshair elsewhere', async () => {
-    await boot({ config: fixture('dsp-config-sd.json') });
+    await boot({ config: untrimmed(fixture('dsp-config-sd.json')) });
     stubRect();
 
     pointer('pointermove', atHz(120), atDb(-4.5));
@@ -3110,7 +3192,7 @@ describe('Aius SD DSP editor — editing through the plot', () => {
   /* The wheel used to hijack the page's scroll and silently edit Q from 14 px
    * away (UX finding E3). */
   it('takes the wheel for Q only while a handle is held or the plot has focus', async () => {
-    await boot({ config: fixture('dsp-config-sd.json') });
+    await boot({ config: untrimmed(fixture('dsp-config-sd.json')) });
     stubRect();
     const x = atHz(120);
     const y = atDb(-4.5);
@@ -3136,7 +3218,7 @@ describe('Aius SD DSP editor — editing through the plot', () => {
   });
 
   it('clamps a wheeled Q to the field bounds', async () => {
-    await boot({ config: fixture('dsp-config-sd.json') });
+    await boot({ config: untrimmed(fixture('dsp-config-sd.json')) });
     stubRect();
     el('curve').focus();
 
@@ -3151,7 +3233,7 @@ describe('Aius SD DSP editor — editing through the plot', () => {
   });
 
   it('adopts an unlinked pair before a wheeled Q lands on it', async () => {
-    await boot({ config: fixture('dsp-config-sd.json') });
+    await boot({ config: untrimmed(fixture('dsp-config-sd.json')) });
     stubRect();
     el('curve').focus();
     expect(el('unlinked:front').hidden).toBe(false);
@@ -3166,7 +3248,7 @@ describe('Aius SD DSP editor — editing through the plot', () => {
   });
 
   it('nudges the selected section with the arrow keys', async () => {
-    await boot({ config: fixture('dsp-config-sd.json') });
+    await boot({ config: untrimmed(fixture('dsp-config-sd.json')) });
 
     key('ArrowRight');
     await settle();
@@ -3188,7 +3270,7 @@ describe('Aius SD DSP editor — editing through the plot', () => {
   });
 
   it('leaves a highpass gain alone under the arrow keys', async () => {
-    await boot({ config: fixture('dsp-config-sd.json') });
+    await boot({ config: untrimmed(fixture('dsp-config-sd.json')) });
     chip('centre').click();
     await settle();
 
@@ -3201,7 +3283,7 @@ describe('Aius SD DSP editor — editing through the plot', () => {
   });
 
   it('cycles the selected section from the keyboard', async () => {
-    await boot({ config: fixture('dsp-config-sd.json') });
+    await boot({ config: untrimmed(fixture('dsp-config-sd.json')) });
     expect(el('curve-caption').textContent).toContain('section 1 of 2');
 
     key('PageDown');
@@ -3216,7 +3298,7 @@ describe('Aius SD DSP editor — editing through the plot', () => {
   it('does not drag when the DOM has no layout to map against', async () => {
     // The unstubbed happy-dom rect is all zeroes; a real browser is proven by
     // slice 4's on-device pass, never by synthetic dispatch.
-    await boot({ config: fixture('dsp-config-sd.json') });
+    await boot({ config: untrimmed(fixture('dsp-config-sd.json')) });
 
     pointer('pointerdown', 249, 142);
     pointer('pointermove', 400, 60);
@@ -3228,7 +3310,7 @@ describe('Aius SD DSP editor — editing through the plot', () => {
   /* The visible Q affordance (2026-07-27 feedback, item 2): the wheel still
    * works, but a wheel is invisible and touch has none. */
   it('edits the selected section Q from the visible box, into both pair members', async () => {
-    await boot({ config: fixture('dsp-config-sd.json') });
+    await boot({ config: untrimmed(fixture('dsp-config-sd.json')) });
     setToken('0123456789abcdef');
     expect(el('curve-q').disabled).toBe(false);
     expect(el('curve-q').value).toBe('1.2');
@@ -3247,7 +3329,7 @@ describe('Aius SD DSP editor — editing through the plot', () => {
   });
 
   it('follows the selection with the Q box, and disables it with no active section', async () => {
-    await boot({ config: fixture('dsp-config-sd.json') });
+    await boot({ config: untrimmed(fixture('dsp-config-sd.json')) });
     expect(el('curve-q').value).toBe('1.2');
 
     // The output cascade's section carries Q 0.9.
@@ -3315,7 +3397,7 @@ describe('Aius SD DSP editor — adding sections from the plot', () => {
   });
 
   it('treats a double-click on a handle as handle fiddling, not an add', async () => {
-    await boot({ config: fixture('dsp-config-sd.json') });
+    await boot({ config: untrimmed(fixture('dsp-config-sd.json')) });
     stubRect();
 
     dblclick(atHz(120), atDb(-4.5));
@@ -3325,7 +3407,7 @@ describe('Aius SD DSP editor — adding sections from the plot', () => {
   });
 
   it('adopts an unlinked pair before adding to it', async () => {
-    await boot({ config: fixture('dsp-config-sd.json') });
+    await boot({ config: untrimmed(fixture('dsp-config-sd.json')) });
     stubRect();
 
     dblclick(atHz(6000), atDb(0));
@@ -3339,7 +3421,7 @@ describe('Aius SD DSP editor — adding sections from the plot', () => {
   });
 
   it('removes the active section from BOTH pair members via the visible button', async () => {
-    await boot({ config: fixture('dsp-config-sd.json') });
+    await boot({ config: untrimmed(fixture('dsp-config-sd.json')) });
     setToken('0123456789abcdef');
     stubRect();
 

@@ -41,7 +41,8 @@ built); replace wholesale on the next handover.
   the owner's. **4j BUILT** (2026-10-11): host proof and all four images
   green, delivery audit closure PASS; its device run is the owner's, and
   its N9 notes edit waits on the mixer session's hold. **4k BUILT**
-  (2026-10-11). **4l BUILT** (2026-10-11). 4i PLANNED and READY. 4b (acceptance umbrella)
+  (2026-10-11). **4l BUILT** (2026-10-11). **4m BUILT** (2026-10-11,
+  the mixer plan's Phase 1e). 4i PLANNED and READY. 4b (acceptance umbrella)
   PLANNED: it closes after 4e to 4h's device runs. The owner holds two
   gates (below).
 - **Board.** Runs `df966f17b370` (Phase 4a) in slot 1, deployed by OTA
@@ -72,7 +73,8 @@ built); replace wholesale on the next handover.
   sync that uploads the bundles) and run 2 (AC-3 page loads), then 4h's
   AC-3 and accidental-disconnect runs. An E7 verdict of B2 re-plans 4f to 4h before
   their device runs (4f's body records this).
-- **Next action.** 4j N9 once the mixer doc is released, then 4b's
+- **Next action.** 4j N9 and 4m's mixer-doc flip once the mixer doc is
+  released, then 4b's
   device sessions (owner), then 4i.
 - **What landed this run** (aius commits; each followed by a upstream repository
   pointer bump; foreign commits from the mixer session omitted):
@@ -106,7 +108,8 @@ built); replace wholesale on the next handover.
 | `9c9bd88` | Phase 4f BUILT: link-time admission (route and SD-start shedding, 503 audio_busy with Retry-After), live_owns_ring, time-aged bucketed cost windows, FIFO start-gate deferral with bring-up latch, render and storage-diag yields, /api/status/brief, shared web poller with 503 skip and GET timeout, capture.py 503 skips, dsp_model_pad.py, D-S7, delivery-audit fixes (F-B1, F-B2, F-S1 to F-S6) | 14 host suites (verifier run), all four images, OCRAM at every floor, delivery audit closure PASS |
 | this commit | handover: this state; 4g gains starting figures and three carried-in items | none needed |
 | `35c6585` | Phase 4h BUILT: write-behind settings flush over 4g's PSRAM store (sd-overlay), disconnect hold and remount retry, copy-before-write saves with mount restore, PSRAM upload sink, BUSY verdict and SD-writes freeze, OTA and reboot drain gate, `sd_flush` status, public `FsVolume::cacheClear`, delivery-audit and clean-room fixes (D-S4, D-N10 and CR-N2 recorded as residual risks; D-N8 deferred to 4k) | 21 host suites, vitest, ota client, shellcheck (verifier run); all four images with every post-link guard; delivery audit FAIL then four closures FAIL and a fifth PASS; clean-room HOLD then three closures HOLD and a fourth PASS |
-| this commit | Phase 4l BUILT: 16-preset cap at accept (409 preset_limit, sd_busy until the walk completes), one-pass count, editor message and leading-dot rule, openapi 409; 4h cap text rewritten | 8 host suites (verifier rerun), all four images with every post-link guard and OCRAM at each floor; delivery audit FAIL (B1, S1, S2) then closure PASS |
+| this commit | Phase 4m BUILT (mixer plan Phase 1e, owner-approved): "EQ and trim bypassed" note, EQ curve and handles at each member's trim offset on both SD pages | sd-editor vitest 6 files, 432 tests (verifier run); Chromium probe of the mixer preview |
+| `d1ab0f4` | Phase 4l BUILT: 16-preset cap at accept (409 preset_limit, sd_busy until the walk completes), one-pass count, editor message and leading-dot rule, openapi 409; 4h cap text rewritten | 8 host suites (verifier rerun), all four images with every post-link guard and OCRAM at each floor; delivery audit FAIL (B1, S1, S2) then closure PASS |
 | `baa8e2c` | Phase 4k BUILT: tri-state BEGIN gate (NONE, WAIT, NO_CARD), AIUS_HTTP_VERDICT_UNAVAILABLE as 503 sd_unavailable for a refused SD_START, verdict switches with no default, AIUS_HTTP_DRIVER_FAULT_SD_UNAVAILABLE, upgrade.js stop case | 8 host suites (verifier run), all four images with every post-link guard and OCRAM at each floor; delivery audit PASS |
 | `8c2c67a` | Phase 4j BUILT: idle DSP apply (predicate and shared decision in `aius_dsp_runtime_config`, block stamp, noinline `dsp_idle_apply_service` producer root, millis() at the call site), tool text and CONTRIBUTING; 4k and 4l prebuild reviews folded with owner answers (4k staging stops on sd_unavailable; 4l sd_busy until counted, 409 once 16 counted) | 7 host suites (verifier run), all four images with every post-link guard and OCRAM at each floor; delivery audit FAIL (S1) then closure PASS |
 
@@ -7392,6 +7395,43 @@ cap.
   the code is correct today). A failed root directory read ends the walk
   with nothing counted (closure N2), a card fault outside the owner's
   scope.
+
+### Phase 4m Mixer Phase 1e: bypass note truth and trim on the EQ curve
+
+The mixer plan's Phase 1e
+([`aius-sd-mixer-dashboard.md`](aius-sd-mixer-dashboard.md) §Phase 1e),
+run here because this session holds both of its seams. Owner approved
+the design 2026-10-11 ("incorporate the mixer session changes, the new
+design is approved").
+
+```yaml
+outcome: the input_eq bypass note says "EQ and trim bypassed"; each channel's EQ curve sits at its trim offset on both SD pages; the stale +-24 gain-bound comment reads +-12
+seams: [firmware/sd/www/dsp-editor.js, test/sd-editor/dsp-editor.test.js]
+targeted-proof: dsp-editor.test.js cases for the note text, a curve point shifting by exactly the trim dB, per-member offsets on a bonded pair, and no offset with input_eq off; sd-editor vitest green; Chromium probe of the mixer preview showing the curve move on a trim step
+unit: implementer
+status: built # 2026-10-11
+```
+
+- **Decision (orchestrator, 2026-10-11).** With `features.input_eq` off
+  the curve takes no trim offset, because the firmware skips the whole
+  input stage, trim included (`aius_dsp_runtime_config.c`). The EQ
+  sections still draw, as before.
+- **Decision (orchestrator, 2026-10-11).** EQ handles ride the curve:
+  `handleOffset` (the primary member's trim) lifts the drawn handle, and
+  the same offset drives the hit-test and comes off in `pointToEq`, so a
+  drag writes the section gain unchanged by trim.
+- **Deviation.** The "+-24" comment the mixer plan called stale is
+  correct: it contrasts the plot's +-12 with the firmware's
+  `EQ_GAIN_{MIN,MAX}_DB` +-24. Left unchanged.
+- **Built (2026-10-11).** `curveOffsets` gives one polyline per distinct
+  member trim; the classic `index.html` curve changes too. Pointer tests
+  written against an untrimmed plot run on an `untrimmed(config)` copy,
+  because the fixture carries -3.5 dB trims. Probe: the front curve
+  moved 37.5 px on a -3 dB trim step (12.5 px/dB).
+- **Accepted residue.** The trim field allows down to -60 dB, so a deep
+  trim draws the curve below the +-12 plot.
+- **Mixer doc.** Its Phase 1e status flip waits on the mixer session's
+  hold of that file, like 4j N9.
 
 ### Phase 4c `test.sh` runs every `--suite` given ✓ SHIPPED 2026-10-06
 
