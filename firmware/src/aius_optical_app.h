@@ -1262,8 +1262,15 @@ void aius_optical_sd_flush_lapse(AiusOpticalSdFlush *flush, uint32_t now_ms);
  * sets the hold). The scheduled remount itself (remount_running) and any
  * BEGIN that reuses a mount are never blocked. Consulted by every BEGIN
  * path: the lifecycle's root steps, the flush start, the fill start, an
- * HTTP SD job's SD_START admission and the replay job's BEGIN. */
-bool aius_optical_sd_begin_blocked(AiusOpticalSdFlush *flush,
+ * HTTP SD job's SD_START admission and the replay job's BEGIN. The answer
+ * is a gate: NONE (not blocked), WAIT (the schedule holds the BEGIN; DAT3 is
+ * not read) or NO_CARD (DAT3 read no card, read once). */
+typedef enum {
+	AIUS_OPTICAL_SD_BEGIN_NONE = 0,
+	AIUS_OPTICAL_SD_BEGIN_WAIT,
+	AIUS_OPTICAL_SD_BEGIN_NO_CARD
+} AiusOpticalSdBeginGate;
+AiusOpticalSdBeginGate aius_optical_sd_begin_blocked(AiusOpticalSdFlush *flush,
                                    const AiusOpticalSdFlushOps *ops,
                                    uint32_t now_ms);
 /* D-N9: the lifecycle's root step start. The probe step the remount retry

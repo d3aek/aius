@@ -5491,8 +5491,8 @@ static void store_flip_hook(void)
 static void test_sd_busy_and_store(void)
 {
 	static const char *const keys[] = {
-		"busy.dispatch", "busy.sd-start", "busy.store-skips-hook",
-		"store.config-load-waits"
+		"busy.dispatch", "busy.sd-start", "unavailable.sd-start",
+		"busy.store-skips-hook", "store.config-load-waits"
 	};
 	static const char *const list_request =
 		"GET /api/replays HTTP/1.1\r\nHost: aius\r\n\r\n";
@@ -5506,7 +5506,7 @@ static void test_sd_busy_and_store(void)
 		"Content-Length: 5\r\n\r\n{\"a\":";
 	uint32_t now_ms;
 
-	validate_unique_keys("registry.busy", keys, ARRAY_COUNT(keys), 4u);
+	validate_unique_keys("registry.busy", keys, ARRAY_COUNT(keys), 5u);
 
 	current_key = "busy.dispatch";
 	for (unsigned held = 0; held < 2u; ++held) {
@@ -5545,6 +5545,32 @@ static void test_sd_busy_and_store(void)
 		CHECK(g_runtime.storage.diag.http_jobs == 0u);
 		CHECK(sink_contains("HTTP/1.0 503"));
 		CHECK(sink_contains("sd_busy"));
+		CHECK(!sink_contains("hello-sd"));
+		CHECK(g_admit.shed_notes == 0u);
+	}
+
+	/* Phase 4k: an UNAVAILABLE verdict (no card) answers sd_unavailable,
+	 * not sd_busy or audio_busy, and touches nothing. */
+	current_key = "unavailable.sd-start";
+	for (unsigned held = 0; held < 2u; ++held) {
+		admit_reset();
+		now_ms = 1u;
+		bring_online(&now_ms);
+		memcpy(g_sd.data, "hello-sd", 8u);
+		g_sd.data_length = 8u;
+		g_sd.primitive_calls = 0u;
+		g_admit.sd_verdict = AIUS_HTTP_VERDICT_UNAVAILABLE;
+		g_admit.sd_defer_left = held != 0u ? 2u : 0u;
+		admit_send(download_request);
+		drive_epochs(&now_ms, 30u);
+		CHECK(g_admit.sd_queries == (held != 0u ? 3u : 1u));
+		CHECK(!g_runtime.network_http.deferred_start_present);
+		CHECK(g_sd.primitive_calls == 0u);
+		CHECK(g_runtime.storage.diag.http_jobs == 0u);
+		CHECK(sink_contains("HTTP/1.0 503"));
+		CHECK(sink_contains("sd_unavailable"));
+		CHECK(!sink_contains("sd_busy"));
+		CHECK(!sink_contains("audio_busy"));
 		CHECK(!sink_contains("hello-sd"));
 		CHECK(g_admit.shed_notes == 0u);
 	}

@@ -48,6 +48,12 @@ typedef enum {
  * "Retry-After: 1" in aius_http_write_headers_ex. */
 #define AIUS_HTTP_DRIVER_FAULT_SD_BUSY 0x53444253u
 
+/* Phase 4k: the admission refusal of an SD start with no card (DAT3 reads
+ * none during playback). It answers the same 503 {"error":"sd_unavailable"}
+ * as any other driver fault; the distinct value lets the admission seam name
+ * the cause and tests tell it from SD_BUSY. */
+#define AIUS_HTTP_DRIVER_FAULT_SD_UNAVAILABLE 0x53444E43u
+
 typedef enum {
 	AIUS_HTTP_APP_IMMEDIATE,
 	AIUS_HTTP_APP_SD_JOB

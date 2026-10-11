@@ -2402,18 +2402,20 @@ FLASHMEM void aius_optical_sd_note_direct_fault(AiusOpticalSdFlush *flush)
 	flush->direct_faults++;
 }
 
-FLASHMEM bool aius_optical_sd_begin_blocked(AiusOpticalSdFlush *flush,
-                                            const AiusOpticalSdFlushOps *ops,
-                                            uint32_t now_ms)
+FLASHMEM AiusOpticalSdBeginGate aius_optical_sd_begin_blocked(
+	AiusOpticalSdFlush *flush, const AiusOpticalSdFlushOps *ops,
+	uint32_t now_ms)
 {
 	void *const context = ops->context;
 	if (ops->mounted(context) || !ops->playback(context))
-		return false;
+		return AIUS_OPTICAL_SD_BEGIN_NONE;
 	if ((flush->fault_remount ||
 	     (ops->present(context) && ops->held(context))) &&
 	    sd_remount_waiting(flush, now_ms))
-		return true;
-	return aius_optical_sd_replay_begin_blocked(flush, ops);
+		return AIUS_OPTICAL_SD_BEGIN_WAIT;
+	return aius_optical_sd_replay_begin_blocked(flush, ops)
+	               ? AIUS_OPTICAL_SD_BEGIN_NO_CARD
+	               : AIUS_OPTICAL_SD_BEGIN_NONE;
 }
 
 FLASHMEM bool aius_optical_sd_step_begin_blocked(
@@ -2422,7 +2424,8 @@ FLASHMEM bool aius_optical_sd_step_begin_blocked(
 {
 	if (flush->remount_running)
 		return false;
-	return aius_optical_sd_begin_blocked(flush, ops, now_ms);
+	return aius_optical_sd_begin_blocked(flush, ops, now_ms) !=
+	       AIUS_OPTICAL_SD_BEGIN_NONE;
 }
 
 FLASHMEM bool aius_optical_sd_replay_begin_blocked(
@@ -2607,7 +2610,8 @@ FLASHMEM AiusOpticalSdIdleStep aius_optical_sd_idle_step(
 	 * predicate; first bring-up exempt). */
 	if (!probe_due || ops->playback(ops->context))
 		/* D-S9: a fill file BEGINs too. */
-		return aius_optical_sd_begin_blocked(flush, ops, now_ms)
+		return aius_optical_sd_begin_blocked(flush, ops, now_ms) !=
+		                       AIUS_OPTICAL_SD_BEGIN_NONE
 		               ? AIUS_OPTICAL_SD_IDLE_WAIT
 		               : AIUS_OPTICAL_SD_IDLE_FILL;
 	return AIUS_OPTICAL_SD_IDLE_PROBE;
@@ -2629,7 +2633,9 @@ FLASHMEM bool aius_optical_sd_flush_start(AiusOpticalSdFlush *flush,
 	/* D-S9: after a fault on a present card the flush waits for the fault
 	 * remount (D-S8's schedule), and no flush BEGIN starts against the
 	 * BEGIN gate. */
-	if (flush->fault_remount || aius_optical_sd_begin_blocked(flush, ops, now_ms))
+	if (flush->fault_remount ||
+	    aius_optical_sd_begin_blocked(flush, ops, now_ms) !=
+		    AIUS_OPTICAL_SD_BEGIN_NONE)
 		return false;
 	if (!ops->due(context, now_ms))
 		return false;

@@ -6778,11 +6778,33 @@ static void test_sd_card_loss_call_sites(void)
 	assert(g_ff.card_lost >= 1u && !flush.fault_remount);
 	assert(d5_observe(&flush, &adapter, 2011u) == AIUS_OPTICAL_SD_CARD_GONE);
 	g_ff.held = true; /* the overlay's note_card_lost */
+	unsigned no_card_gates = 0u;
 	for (t = 2012u; t < 120000u; t += 250u) {
 		assert(aius_optical_sd_idle_step(&flush, &g_ff_ops, t, false) ==
 		       AIUS_OPTICAL_SD_IDLE_WAIT);
-		assert(aius_optical_sd_begin_blocked(&flush, &g_ff_ops, t));
+		/* The held retry's schedule answers WAIT without reading DAT3 while
+		 * it is pending; once due, DAT3 reads no card (B1). */
+		const bool pending = flush.remount_armed &&
+		                     (int32_t)(t - flush.remount_at_ms) < 0;
+		const AiusOpticalSdBeginGate gate =
+			aius_optical_sd_begin_blocked(&flush, &g_ff_ops, t);
+		assert(gate == (pending ? AIUS_OPTICAL_SD_BEGIN_WAIT
+		                        : AIUS_OPTICAL_SD_BEGIN_NO_CARD));
+		no_card_gates += gate == AIUS_OPTICAL_SD_BEGIN_NO_CARD;
 	}
+	/* The lifecycle re-arms the schedule at every due pass, so the gate
+	 * sees it pending above. Once the schedule is due and nothing re-arms
+	 * it, DAT3 is read once and reads no card. */
+	{
+		const unsigned lost = g_ff.card_lost;
+		assert(flush.remount_armed);
+		assert(aius_optical_sd_begin_blocked(&flush, &g_ff_ops,
+		                                     flush.remount_at_ms) ==
+		       AIUS_OPTICAL_SD_BEGIN_NO_CARD);
+		assert(g_ff.card_lost == lost + 1u);
+		no_card_gates++;
+	}
+	assert(no_card_gates > 0u);
 	assert(g_ff.starts == 0u && !flush.running);
 	/* The card returns: DAT3 reads present, the held retry remounts. */
 	g_ff.card_in_slot = true;
@@ -6799,10 +6821,12 @@ static void test_sd_card_loss_call_sites(void)
 	 * and a reused mount is never blocked. */
 	g_ff.playback = false;
 	g_ff.card_detected = false;
-	assert(!aius_optical_sd_begin_blocked(&flush, &g_ff_ops, 0u));
+	assert(aius_optical_sd_begin_blocked(&flush, &g_ff_ops, 0u) ==
+	       AIUS_OPTICAL_SD_BEGIN_NONE);
 	g_ff.playback = true;
 	g_ff.adapter_mounted = true;
-	assert(!aius_optical_sd_begin_blocked(&flush, &g_ff_ops, 0u));
+	assert(aius_optical_sd_begin_blocked(&flush, &g_ff_ops, 0u) ==
+	       AIUS_OPTICAL_SD_BEGIN_NONE);
 
 	/* D-S10: a transient fault mid-replay (a refill's, a flush's or an HTTP
 	 * job's) with the card present: the next refill's BEGIN is not held to
@@ -6820,14 +6844,16 @@ static void test_sd_card_loss_call_sites(void)
 	       AIUS_OPTICAL_SD_CARD_FAULT_PRESENT);
 	for (t = 11u; t < 2010u; t += 100u) {
 		assert(!aius_optical_sd_replay_begin_blocked(&flush, &g_ff_ops));
-		assert(aius_optical_sd_begin_blocked(&flush, &g_ff_ops, t));
+		assert(aius_optical_sd_begin_blocked(&flush, &g_ff_ops, t) ==
+		       AIUS_OPTICAL_SD_BEGIN_WAIT);
 	}
 	/* The refill's BEGIN remounts: the fault is over for everyone. */
 	adapter.mounted = true;
 	g_ff.dat3_remuxed = false;
 	assert(d5_observe(&flush, &adapter, 20u) == AIUS_OPTICAL_SD_CARD_KEPT);
 	assert(!flush.fault_remount &&
-	       !aius_optical_sd_begin_blocked(&flush, &g_ff_ops, 21u));
+	       aius_optical_sd_begin_blocked(&flush, &g_ff_ops, 21u) ==
+		       AIUS_OPTICAL_SD_BEGIN_NONE);
 	/* Pulled mid-replay: after the fault DAT3 reads absent: the refill's
 	 * BEGIN is blocked (the replay stops) and the hold is set. */
 	adapter.mounted = false;
@@ -6859,7 +6885,8 @@ static void test_sd_card_loss_call_sites(void)
 	assert(flush.remount_running);
 	for (t = 2011u; t < 3000u; t += 100u) { /* the step deferred */
 		assert(!aius_optical_sd_step_begin_blocked(&flush, &g_ff_ops, t));
-		assert(aius_optical_sd_begin_blocked(&flush, &g_ff_ops, t));
+		assert(aius_optical_sd_begin_blocked(&flush, &g_ff_ops, t) ==
+		       AIUS_OPTICAL_SD_BEGIN_WAIT);
 	}
 	/* Dropped (the step never ran): the next idle step frees the slot,
 	 * and a later step start is gated like any BEGIN. */
@@ -6896,7 +6923,8 @@ static void test_sd_flush_long_lapse(void)
 	g_ff.drained = false;
 	g_ff.playback = true;
 	g_ff.adapter_mounted = false;
-	assert(!aius_optical_sd_begin_blocked(&flush, &g_ff_ops, late));
+	assert(aius_optical_sd_begin_blocked(&flush, &g_ff_ops, late) ==
+	       AIUS_OPTICAL_SD_BEGIN_NONE);
 	assert(aius_optical_sd_idle_step(&flush, &g_ff_ops, late, false) ==
 	       AIUS_OPTICAL_SD_IDLE_REMOUNT);
 	/* A schedule set across the wrap waits until due, then is due. */
@@ -6908,7 +6936,8 @@ static void test_sd_flush_long_lapse(void)
 	assert(aius_optical_sd_idle_step(&flush, &g_ff_ops, 0xFFFFFC00u, false) ==
 	       AIUS_OPTICAL_SD_IDLE_REMOUNT); /* due 0xFFFFFC00 + 2000 = 976 */
 	aius_optical_sd_flush_note_probe(&flush, &g_ff_ops, false, 0xFFFFFC00u);
-	assert(aius_optical_sd_begin_blocked(&flush, &g_ff_ops, 975u));
+	assert(aius_optical_sd_begin_blocked(&flush, &g_ff_ops, 975u) ==
+	       AIUS_OPTICAL_SD_BEGIN_WAIT);
 	assert(aius_optical_sd_idle_step(&flush, &g_ff_ops, 975u, false) ==
 	       AIUS_OPTICAL_SD_IDLE_WAIT);
 	assert(aius_optical_sd_idle_step(&flush, &g_ff_ops, 976u, false) ==
@@ -6924,8 +6953,9 @@ static void test_sd_flush_long_lapse(void)
 	aius_optical_sd_flush_note_probe(&flush, &g_ff_ops, false, 1000u);
 	aius_optical_sd_flush_lapse(&flush, 3000u); /* the lifecycle's pass */
 	assert(!flush.remount_armed);
-	assert(!aius_optical_sd_begin_blocked(&flush, &g_ff_ops,
-	                                      3000u + 0x80000100u));
+	assert(aius_optical_sd_begin_blocked(&flush, &g_ff_ops,
+	                                     3000u + 0x80000100u) ==
+	       AIUS_OPTICAL_SD_BEGIN_NONE);
 	assert(aius_optical_sd_idle_step(&flush, &g_ff_ops, 3000u + 0x80000100u,
 	                                 false) == AIUS_OPTICAL_SD_IDLE_REMOUNT);
 

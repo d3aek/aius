@@ -72,6 +72,12 @@ extern "C" {
  *          as for SHED. A query is a re-consult of a held action exactly
  *          while deferred_start_present (SD_START) or
  *          deferred_dispatch_present (ROUTE) is still set.
+ *   UNAVAILABLE  an SD_START the BEGIN gate refuses because DAT3 reads no
+ *          card: it fails the start with
+ *          AIUS_HTTP_DRIVER_FAULT_SD_UNAVAILABLE, a 503 sd_unavailable with
+ *          "Retry-After: 1", no shed noted and the staging disarmed by the
+ *          hook. No platform hook returns it for a ROUTE, which treats it as
+ *          BUSY.
  *
  * sd_job is the transaction's job request (kind, incl. OTA staging); NULL for
  * ROUTE. request is the parsed request for ROUTE (route and method repeat
@@ -89,7 +95,8 @@ typedef enum {
 	AIUS_HTTP_VERDICT_ADMIT = 0,
 	AIUS_HTTP_VERDICT_SHED,
 	AIUS_HTTP_VERDICT_DEFER,
-	AIUS_HTTP_VERDICT_BUSY
+	AIUS_HTTP_VERDICT_BUSY,
+	AIUS_HTTP_VERDICT_UNAVAILABLE
 } AiusHttpAdmitVerdict;
 
 typedef struct {

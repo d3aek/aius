@@ -40,8 +40,8 @@ built); replace wholesale on the next handover.
   delivery audit and closures recorded in its body; its device runs are
   the owner's. **4j BUILT** (2026-10-11): host proof and all four images
   green, delivery audit closure PASS; its device run is the owner's, and
-  its N9 notes edit waits on the mixer session's hold. 4k and 4l READY
-  (prebuild folded 2026-10-11). 4i PLANNED and READY. 4b (acceptance umbrella)
+  its N9 notes edit waits on the mixer session's hold. **4k BUILT**
+  (2026-10-11). 4l READY (prebuild folded 2026-10-11). 4i PLANNED and READY. 4b (acceptance umbrella)
   PLANNED: it closes after 4e to 4h's device runs. The owner holds two
   gates (below).
 - **Board.** Runs `df966f17b370` (Phase 4a) in slot 1, deployed by OTA
@@ -72,8 +72,7 @@ built); replace wholesale on the next handover.
   sync that uploads the bundles) and run 2 (AC-3 page loads), then 4h's
   AC-3 and accidental-disconnect runs. An E7 verdict of B2 re-plans 4f to 4h before
   their device runs (4f's body records this).
-- **Next action.** Phase 4k, then 4l (both touch `optical_main.cpp`,
-  so serial), then 4j N9 once the mixer doc is released, then 4b's
+- **Next action.** Phase 4l, then 4j N9 once the mixer doc is released, then 4b's
   device sessions (owner), then 4i.
 - **What landed this run** (aius commits; each followed by a upstream repository
   pointer bump; foreign commits from the mixer session omitted):
@@ -107,7 +106,8 @@ built); replace wholesale on the next handover.
 | `9c9bd88` | Phase 4f BUILT: link-time admission (route and SD-start shedding, 503 audio_busy with Retry-After), live_owns_ring, time-aged bucketed cost windows, FIFO start-gate deferral with bring-up latch, render and storage-diag yields, /api/status/brief, shared web poller with 503 skip and GET timeout, capture.py 503 skips, dsp_model_pad.py, D-S7, delivery-audit fixes (F-B1, F-B2, F-S1 to F-S6) | 14 host suites (verifier run), all four images, OCRAM at every floor, delivery audit closure PASS |
 | this commit | handover: this state; 4g gains starting figures and three carried-in items | none needed |
 | `35c6585` | Phase 4h BUILT: write-behind settings flush over 4g's PSRAM store (sd-overlay), disconnect hold and remount retry, copy-before-write saves with mount restore, PSRAM upload sink, BUSY verdict and SD-writes freeze, OTA and reboot drain gate, `sd_flush` status, public `FsVolume::cacheClear`, delivery-audit and clean-room fixes (D-S4, D-N10 and CR-N2 recorded as residual risks; D-N8 deferred to 4k) | 21 host suites, vitest, ota client, shellcheck (verifier run); all four images with every post-link guard; delivery audit FAIL then four closures FAIL and a fifth PASS; clean-room HOLD then three closures HOLD and a fourth PASS |
-| this commit | Phase 4j BUILT: idle DSP apply (predicate and shared decision in `aius_dsp_runtime_config`, block stamp, noinline `dsp_idle_apply_service` producer root, millis() at the call site), tool text and CONTRIBUTING; 4k and 4l prebuild reviews folded with owner answers (4k staging stops on sd_unavailable; 4l sd_busy until counted, 409 once 16 counted) | 7 host suites (verifier run), all four images with every post-link guard and OCRAM at each floor; delivery audit FAIL (S1) then closure PASS |
+| this commit | Phase 4k BUILT: tri-state BEGIN gate (NONE, WAIT, NO_CARD), AIUS_HTTP_VERDICT_UNAVAILABLE as 503 sd_unavailable for a refused SD_START, verdict switches with no default, AIUS_HTTP_DRIVER_FAULT_SD_UNAVAILABLE, upgrade.js stop case | 8 host suites (verifier run), all four images with every post-link guard and OCRAM at each floor; delivery audit PASS |
+| `8c2c67a` | Phase 4j BUILT: idle DSP apply (predicate and shared decision in `aius_dsp_runtime_config`, block stamp, noinline `dsp_idle_apply_service` producer root, millis() at the call site), tool text and CONTRIBUTING; 4k and 4l prebuild reviews folded with owner answers (4k staging stops on sd_unavailable; 4l sd_busy until counted, 409 once 16 counted) | 7 host suites (verifier run), all four images with every post-link guard and OCRAM at each floor; delivery audit FAIL (S1) then closure PASS |
 
 - **Uncommitted tree.** Nothing of this session's. Foreign and left
   alone: `docs/plans/aius-sd-mixer-dashboard.md` and
@@ -7166,7 +7166,7 @@ stack-bound row was needed; OCRAM is unchanged at every floor.
 ```yaml
 phase: 4k
 title: A blocked SD start with no card answers sd_unavailable
-status: planned
+status: built # 2026-10-11: host proof green (8 suites, verifier run), all four optical images with every post-link guard and OCRAM at each floor, delivery audit (normal-operation scope, owner direction) PASS with nits N2 and N3 fixed; no device run needed beyond 4b's
 depends-on: phase-4h
 prebuild-review: ready # folded 2026-10-11; owner waives further closure rounds on card edge cases. NOT READY 2026-10-11 (B1, S1 to S4, N1 to N3), folded with owner answer S4
 outcome: >-
@@ -7194,7 +7194,7 @@ seams:
   - "firmware/test/runtime-target/test_runtime_target.cpp (N3): the busy key registry (keys :5493-5496, validate_unique_keys at :5509 with count 4u) gains unavailable.sd-start, count 5u"
   - "firmware/sd/www/upgrade.js and openapi.json (S4): no change. upgrade.js retries only sd_busy (:853-857) and faultName maps sd_unavailable to 'no SD card is mounted' (:303); openapi.json already documents sd_unavailable on the OTA chunk route and the SD routes (:512, :1034, :1152). Staging writes /aius/ota-staged.img to the card (aius_optical_app.cpp:2145-2178), so with no card it cannot proceed"
 targeted-proof:
-  - "host: optical-app (test_optical_app.c, on g_ff_ops; B1): the held card-pulled loop (:6780-6785) gives NO_CARD for every t; the FAULT_PRESENT loop with the card present (:6821-6824) gives WAIT; off playback and with a reused mount (:6800-6805) NONE"
+  - "host: optical-app (test_optical_app.c, on g_ff_ops; B1): the held card-pulled loop gives WAIT while its remount schedule is pending and NO_CARD once it is due, with one DAT3 read (built deviation, accepted 2026-10-11); the FAULT_PRESENT loop with the card present (:6821-6824) gives WAIT; off playback and with a reused mount (:6800-6805) NONE"
   - "host: runtime-target (S2): unavailable.sd-start, copied from busy.sd-start (:5530-5550) with the fake hook's g_admit.sd_verdict set to UNAVAILABLE, fresh and held: g_sd.primitive_calls, g_runtime.storage.diag.http_jobs and g_admit.shed_notes stay 0, and the body carries sd_unavailable, not sd_busy or audio_busy. The busy keys stay green, so BUSY still answers sd_busy"
   - "host: optical-cutover: aius_runtime_http_admit tests the freeze before the gate, maps NO_CARD to UNAVAILABLE and WAIT to BUSY, and calls sd_disarm_shed_staging on both returns (N1, N2)"
   - "host: sd-editor (test/sd-editor/upgrade.test.js; S4): a staging run whose chunk PUT answers 503 sd_unavailable stops after that one request with 'no SD card is mounted' and no retry; the sd_busy retry case stays green"
@@ -7240,6 +7240,17 @@ by its resolution.
   returns it there. The optical-app proof drops the returned card whose
   BEGIN still fails and the `card_detected` call counter; the gate
   reads DAT3 once by construction.
+
+**Built (2026-10-11).** One deviation, accepted under the owner's
+card-edge-case direction: with the mount held and a remount schedule
+pending, the gate returns WAIT without reading DAT3 (as B1 requires),
+so a pulled card answers sd_busy inside each remount window and
+sd_unavailable outside it. Both are 503 with `Retry-After`; a client
+retries the first and stops on the second. The DEFER early return in
+`dispatch_route` stays ahead of its switch because an optical-cutover
+assertion pins it (audit N1, left as is). Audit N2 (verdict doc
+comments) and N3 (a mutation swapping the NO_CARD and WAIT arms) are
+fixed.
 
 ### Phase 4l At most 16 saved presets
 

@@ -167,7 +167,9 @@ FLASHMEM AiusHttpAdmitVerdict consult(const AiusRuntimeNetworkHttp *service,
 /* Fails an outstanding SD_START with a 503: the correlated SD_FAILED result
  * the storage service would have produced. A SHED carries AUDIO_BUSY (503
  * audio_busy) and is noted; a BUSY (the SD-writes freeze) carries SD_BUSY
- * (503 sd_busy) and is not, so http_shed counts audio shedding only. */
+ * (503 sd_busy) and is not, so http_shed counts audio shedding only. BUSY
+ * also comes from the BEGIN gate's WAIT. An UNAVAILABLE (the BEGIN gate's
+ * NO_CARD) carries SD_UNAVAILABLE (503 sd_unavailable) and is not noted. */
 FLASHMEM void refuse_sd_start(AiusRuntimeNetworkHttp *service,
                               const AiusHttpAction *action,
                               AiusHttpAdmitVerdict verdict)
@@ -182,9 +184,23 @@ FLASHMEM void refuse_sd_start(AiusRuntimeNetworkHttp *service,
 	service->pending_http_event.io.result = AIUS_IO_PROGRESS;
 	service->pending_http_event.sd_kind = AIUS_HTTP_SD_FAILED;
 	service->pending_http_event.sd_fault = AIUS_SD_FAULT_MEDIA;
-	service->pending_http_event.sd_driver_fault =
-		shed ? AIUS_HTTP_DRIVER_FAULT_AUDIO_BUSY
-		     : AIUS_HTTP_DRIVER_FAULT_SD_BUSY;
+	switch (verdict) {
+	case AIUS_HTTP_VERDICT_SHED:
+		service->pending_http_event.sd_driver_fault =
+			AIUS_HTTP_DRIVER_FAULT_AUDIO_BUSY;
+		break;
+	case AIUS_HTTP_VERDICT_UNAVAILABLE:
+		service->pending_http_event.sd_driver_fault =
+			AIUS_HTTP_DRIVER_FAULT_SD_UNAVAILABLE;
+		break;
+	case AIUS_HTTP_VERDICT_BUSY:
+		service->pending_http_event.sd_driver_fault =
+			AIUS_HTTP_DRIVER_FAULT_SD_BUSY;
+		break;
+	case AIUS_HTTP_VERDICT_ADMIT:
+	case AIUS_HTTP_VERDICT_DEFER:
+		break; /* never refused */
+	}
 	service->http_event_present = true;
 	if (shed)
 		aius_runtime_http_note_shed();
@@ -196,11 +212,17 @@ FLASHMEM void apply_sd_start(AiusRuntimeNetworkHttp *service,
                              AiusHttpAdmitVerdict verdict,
                              AiusHttpAction *storage_action)
 {
-	if (verdict == AIUS_HTTP_VERDICT_SHED ||
-	    verdict == AIUS_HTTP_VERDICT_BUSY)
+	switch (verdict) {
+	case AIUS_HTTP_VERDICT_SHED:
+	case AIUS_HTTP_VERDICT_BUSY:
+	case AIUS_HTTP_VERDICT_UNAVAILABLE:
 		refuse_sd_start(service, action, verdict);
-	else
+		break;
+	case AIUS_HTTP_VERDICT_ADMIT:
+	case AIUS_HTTP_VERDICT_DEFER:
 		*storage_action = *action;
+		break;
+	}
 }
 
 FLASHMEM bool adapter_busy(const AiusRuntimeNetworkHttp *service)
@@ -210,7 +232,8 @@ FLASHMEM bool adapter_busy(const AiusRuntimeNetworkHttp *service)
 
 /* One DISPATCH, fresh or held: a SHED answers the audio_busy 503 and a BUSY
  * the sd_busy 503, both without reaching the application, and only a SHED is
- * noted; a DEFER holds the dispatch (the transaction's DISPATCH action stays
+ * noted (BUSY also comes from the BEGIN gate's WAIT); an UNAVAILABLE is an
+ * SD_START verdict and a ROUTE answers it as BUSY; a DEFER holds the dispatch (the transaction's DISPATCH action stays
  * outstanding and the next HTTP epoch asks again, without a step); an ADMIT
  * hands the request to the application. */
 FLASHMEM void dispatch_route(AiusRuntimeNetworkHttp *service,
@@ -224,8 +247,13 @@ FLASHMEM void dispatch_route(AiusRuntimeNetworkHttp *service,
 	service->deferred_dispatch_present = verdict == AIUS_HTTP_VERDICT_DEFER;
 	if (verdict == AIUS_HTTP_VERDICT_DEFER)
 		return;
-	if (verdict == AIUS_HTTP_VERDICT_SHED ||
-	    verdict == AIUS_HTTP_VERDICT_BUSY) {
+	switch (verdict) {
+	case AIUS_HTTP_VERDICT_DEFER:
+		return;
+	case AIUS_HTTP_VERDICT_SHED:
+	case AIUS_HTTP_VERDICT_BUSY:
+	case AIUS_HTTP_VERDICT_UNAVAILABLE: {
+		/* UNAVAILABLE is an SD_START verdict; a ROUTE reads it as BUSY. */
 		const bool shed = verdict == AIUS_HTTP_VERDICT_SHED;
 		AiusHttpApplicationResponse refusal;
 
@@ -240,6 +268,9 @@ FLASHMEM void dispatch_route(AiusRuntimeNetworkHttp *service,
 			aius_runtime_http_note_shed();
 		retain_application_response(service, action, &refusal);
 		return;
+	}
+	case AIUS_HTTP_VERDICT_ADMIT:
+		break;
 	}
 	response = aius_optical_app_http_dispatch(app, action->request);
 	/* A null return means an invalid dispatcher or request, which cannot be

@@ -6708,6 +6708,28 @@ def assert_sd_overlay_wiring(sources):
         assert gate in defs.get(site, ""), (
             f"{site} must consult the BEGIN gate {gate} (D-S9, D-S10, D-N9)"
         )
+    # Phase 4k (N1, N2): the freeze answers before the gate; the gate maps
+    # NO_CARD to UNAVAILABLE and WAIT to BUSY and disarms the staging.
+    admit = defs.get("aius_runtime_http_admit", "")
+    assert 0 <= admit.find("sd_freeze_active()") < admit.find("sd_begin_blocked("), (
+        "the SD-writes freeze must be tested before the BEGIN gate (N1)"
+    )
+    gate_tail = admit[admit.find("sd_begin_blocked("):]
+    gate_end = "AIUS_HTTP_VERDICT_BUSY;"
+    gate_branch = gate_tail[:gate_tail.find(gate_end) + len(gate_end)]
+    assert ("sd_disarm_shed_staging(" in gate_branch
+            and "AIUS_OPTICAL_SD_BEGIN_NO_CARD" in gate_branch
+            and "AIUS_HTTP_VERDICT_UNAVAILABLE" in gate_branch), (
+        "the BEGIN gate must map NO_CARD to UNAVAILABLE, WAIT to BUSY, and "
+        "disarm the staging on both (N2)"
+    )
+    assert re.search(
+        r"gate\s*==\s*AIUS_OPTICAL_SD_BEGIN_NO_CARD\s*\?\s*"
+        r"AIUS_HTTP_VERDICT_UNAVAILABLE\s*:\s*AIUS_HTTP_VERDICT_BUSY\s*;",
+        gate_branch), (
+        "the BEGIN gate ternary must pair NO_CARD with UNAVAILABLE and WAIT "
+        "with BUSY (N2)"
+    )
     assert "aius_optical_sd_step_begin_blocked(" in defs.get("sd_step_begin_blocked", "")
     assert "aius_optical_sd_replay_begin_blocked(" in defs.get(
         "sd_replay_begin_blocked", "")
@@ -6801,8 +6823,10 @@ def run_sd_overlay_self_test(sources):
         ("\treturn aius_sd_overlay_job_ready(&g_sd_overlay, now_ms);",
          "\treturn true;"),
         ("\taius_optical_sd_note_direct_fault(&g_sd_flush);\n", "\n"),
-        ("\tif (sd_start && sd_begin_blocked(sample.now_ms)) {",
-         "\tif (false) {"),
+        ("\t\tconst AiusOpticalSdBeginGate gate = sd_begin_blocked(sample.now_ms);",
+         "\t\tconst AiusOpticalSdBeginGate gate = AIUS_OPTICAL_SD_BEGIN_NONE;"),
+        ("? AIUS_HTTP_VERDICT_UNAVAILABLE\n\t\t\t               : AIUS_HTTP_VERDICT_BUSY;",
+         "? AIUS_HTTP_VERDICT_BUSY\n\t\t\t               : AIUS_HTTP_VERDICT_UNAVAILABLE;"),
         ("\tif (action->kind == AIUS_SD_ACTION_BEGIN && sd_replay_begin_blocked()) {",
          "\tif (false) {"),
         ("\t\tend.loss_pending = loss == AIUS_OPTICAL_SD_CARD_PENDING;\n",

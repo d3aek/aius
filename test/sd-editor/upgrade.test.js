@@ -660,6 +660,19 @@ describe('Aius SD firmware upgrade — interrupted transfers', () => {
     expect(faultOf('upload')).toBe('fault: range');
   });
 
+  it('stops after one request on 503 sd_unavailable (no card), without retrying', async () => {
+    await ready({ onChunk: (index) => (index === 2 ? jsonResponse(503, { ok: false, error: 'sd_unavailable' }) : null) });
+
+    await startRun();
+
+    expect(device.chunks).toHaveLength(3);
+    expect(steps()).toEqual([
+      ['parsed', 'ok'],
+      ['upload', 'fail'],
+    ]);
+    expect(textOf('upload')).toContain('no SD card is mounted');
+  });
+
   it('resumes the next run from the offset the device reports, re-sending nothing', async () => {
     /* The device kept everything up to the dropped chunk, so the second run
      * must start at its next_offset -- restarting at 0 would re-offer a header

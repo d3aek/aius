@@ -1528,7 +1528,7 @@ static FLASHMEM bool sd_overlay_shadows_path(const char *path)
 static FLASHMEM bool reboot_drain_complete(void);
 static FLASHMEM void sd_flush_note_probe(bool present, uint32_t now_ms);
 static FLASHMEM bool sd_freeze_active(void);
-static FLASHMEM bool sd_begin_blocked(uint32_t now_ms);
+static FLASHMEM AiusOpticalSdBeginGate sd_begin_blocked(uint32_t now_ms);
 static FLASHMEM size_t http_dsp_config_json(uint8_t *, size_t);
 static FLASHMEM size_t write_dsp_config_file(uint8_t *, size_t);
 /* The running g_config as /aius/config.json, through the serialiser beside
@@ -3531,10 +3531,17 @@ extern "C" FLASHMEM AiusHttpAdmitVerdict aius_runtime_http_admit(
 	}
 	/* Phase 4h D-S9: the BEGIN gate. During playback with no trusted mount,
 	 * an HTTP SD job that would BEGIN ahead of the D-S8 / H3 schedule or
-	 * against a DAT3 reading no card answers 503 sd_busy (BUSY). */
-	if (sd_start && sd_begin_blocked(sample.now_ms)) {
-		sd_disarm_shed_staging(query->sd_job);
-		return AIUS_HTTP_VERDICT_BUSY;
+	 * against a DAT3 reading no card is refused: 503 sd_unavailable
+	 * (UNAVAILABLE) for the no-card gate, 503 sd_busy (BUSY) for the wait.
+	 * The gate reads DAT3 at most once. */
+	if (sd_start) {
+		const AiusOpticalSdBeginGate gate = sd_begin_blocked(sample.now_ms);
+		if (gate != AIUS_OPTICAL_SD_BEGIN_NONE) {
+			sd_disarm_shed_staging(query->sd_job);
+			return gate == AIUS_OPTICAL_SD_BEGIN_NO_CARD
+			               ? AIUS_HTTP_VERDICT_UNAVAILABLE
+			               : AIUS_HTTP_VERDICT_BUSY;
+		}
 	}
 	/* Phase 4g G6, G9: an HTTP SD start that finds a fill file in flight
 	 * cancels it once and waits here until the fill has stopped, as for a
@@ -9671,7 +9678,7 @@ static FLASHMEM bool sd_flush_drained(void)
 /* D-S9: the one BEGIN gate (aius_optical_sd_begin_blocked), for the paths
  * this file starts: the lifecycle's root steps, HTTP SD_START admission and
  * the replay job's BEGIN (the flush and fill starts take it in the seam). */
-static FLASHMEM bool sd_begin_blocked(uint32_t now_ms)
+static FLASHMEM AiusOpticalSdBeginGate sd_begin_blocked(uint32_t now_ms)
 {
 	return aius_optical_sd_begin_blocked(&g_sd_flush, &g_sd_flush_ops, now_ms);
 }
