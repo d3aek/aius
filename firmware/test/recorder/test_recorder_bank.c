@@ -64,6 +64,8 @@ static void bank_drain_all(BankFixture *f)
  * capture immediately -- keeps each test's slot-cycling compact. */
 static void bank_trigger_and_freeze_active(BankFixture *f)
 {
+	/* The slot must hold audio: a trigger on an empty slot is dropped. */
+	bank_feed_block(f, 8u, 0, 0u, 0u);
 	assert(aius_recorder_bank_freeze(&f->bank) == AIUS_OK);
 	bank_feed_block(f, 8u, 0, 0u, 0u); /* acknowledges the token */
 	bank_drain_all(f);
@@ -172,6 +174,7 @@ static void test_bank_forwards_governor_trim_to_active_only(void)
 	bank_fixture_init(&f);
 	assert(aius_recorder_bank_set_config(&f.bank, AIUS_RECORDER_MASK_ALL,
 	                                     0.0f, 1u, 2u) == AIUS_OK);
+	bank_feed_block(&f, 8u, 0, 0u, 0u); /* an empty slot drops the note */
 	aius_recorder_bank_note_producer_event(
 		&f.bank, AIUS_RECORDER_TRIGGER_GOVERNOR_TRIM);
 	assert(f.bank.slots[f.bank.active].freeze_token ==
@@ -236,6 +239,7 @@ static void test_bank_thaw_in_place_does_not_advance(void)
 	 * genuinely FROZEN (not already moved on) for the operator thaw to
 	 * act on. */
 	aius_recorder_bank_read_acquire(&f.bank, 1u);
+	bank_feed_block(&f, 8u, 0, 0u, 0u);
 	assert(aius_recorder_bank_freeze(&f.bank) == AIUS_OK);
 	bank_feed_block(&f, 8u, 0, 0u, 0u);
 	bank_drain_all(&f);
@@ -263,6 +267,7 @@ static void test_bank_recycle_deferred_while_read_leased(void)
 	/* Hold a lease on slot 1 -- the slot the very first freeze would
 	 * advance into. */
 	aius_recorder_bank_read_acquire(&f.bank, 1u);
+	bank_feed_block(&f, 8u, 0, 0u, 0u);
 	assert(aius_recorder_bank_freeze(&f.bank) == AIUS_OK);
 	bank_feed_block(&f, 8u, 0, 0u, 0u);
 	assert(f.bank.slots[0].state == AIUS_RECORDER_DRAINING);
@@ -296,7 +301,9 @@ static void test_bank_recycled_slot_inherits_carrier_state(void)
 	bank_trigger_and_freeze_active(&f);
 	assert(f.bank.active == 1u);
 	/* The carrier goes away while slot 1 is active: ONE genuine falling
-	 * edge, taken by the slot that was there for it. */
+	 * edge, taken by the slot that was there for it (holding audio: an
+	 * empty slot would drop it). */
+	bank_feed_block(&f, 8u, 0, 0u, 0u);
 	aius_recorder_bank_epoch(&f.bank, false, true, 0u, 1u);
 	assert(f.bank.slots[1].freeze_token ==
 	       AIUS_RECORDER_TRIGGER_CARRIER_LOSS);
@@ -333,9 +340,52 @@ static void test_bank_advance_captures_first_epoch_carrier_edge(void)
 	bank_trigger_and_freeze_active(&f);
 	assert(f.bank.active == 1u);
 	assert(f.bank.slots[1].carrier_prev == 1u);
+	bank_feed_block(&f, 8u, 0, 0u, 0u);
 	aius_recorder_bank_epoch(&f.bank, false, true, 0u, 1u);
 	assert(f.bank.slots[1].freeze_token ==
 	       AIUS_RECORDER_TRIGGER_CARRIER_LOSS);
+}
+
+/* Phase E: switching the source off flaps the lock on the fresh, empty slot
+ * the bank advanced to. Each edge is dropped and counted; the earlier frozen
+ * capture is never recycled. */
+static void test_bank_empty_carrier_loss_never_advances(void)
+{
+	BankFixture f;
+	bank_fixture_init(&f);
+	assert(aius_recorder_bank_set_config(&f.bank, AIUS_RECORDER_MASK_ALL,
+	                                     0.0f, 1u, 0u) == AIUS_OK);
+	assert(aius_recorder_bank_empty_triggers_dropped(&f.bank) == 0u);
+	bank_trigger_and_freeze_active(&f);
+	assert(f.bank.active == 1u);
+	uint32_t generation = f.bank.slots[0].freeze_generation;
+
+	/* Three lock flaps (lock, then loss) on the empty slot 1. */
+	for (uint32_t i = 0; i < 3u; i++) {
+		aius_recorder_bank_epoch(&f.bank, true, true, 0u, 10u * i);
+		aius_recorder_bank_epoch(&f.bank, false, true, 0u, 10u * i + 1u);
+		assert(f.bank.slots[1].freeze_token == 0u);
+		bank_drain_all(&f);
+		assert(f.bank.active == 1u);
+		assert(aius_recorder_bank_empty_triggers_dropped(&f.bank) ==
+		       i + 1u);
+	}
+	assert(f.bank.slots[1].state == AIUS_RECORDER_RECORDING);
+	assert(f.bank.slots[0].state == AIUS_RECORDER_FROZEN);
+	assert(f.bank.slots[0].freeze_generation == generation);
+	assert(f.bank.slots_recycled == 0u);
+
+	/* A carrier loss on a slot holding audio still freezes, as before. */
+	bank_feed_block(&f, 8u, 0, 0u, 0u);
+	aius_recorder_bank_epoch(&f.bank, true, true, 0u, 100u);
+	aius_recorder_bank_epoch(&f.bank, false, true, 0u, 101u);
+	assert(f.bank.slots[1].freeze_token ==
+	       AIUS_RECORDER_TRIGGER_CARRIER_LOSS);
+	bank_feed_block(&f, 8u, 0, 0u, 0u);
+	bank_drain_all(&f);
+	assert(f.bank.slots[1].state == AIUS_RECORDER_FROZEN);
+	assert(f.bank.active == 2u);
+	assert(aius_recorder_bank_empty_triggers_dropped(&f.bank) == 3u);
 }
 
 /* An operator thaw recycles the same ring bytes drain()'s deferral protects,
@@ -427,6 +477,7 @@ static void test_bank_pending_config_applies_on_recycle(void)
 	                                     0.0f, 1u, 2u) == AIUS_OK);
 	assert(!aius_recorder_bank_config_pending(&f.bank));
 	/* Slot 0 into POSTROLL, then reconfigure: it keeps its own config. */
+	bank_feed_block(&f, 8u, 0, 0u, 0u);
 	assert(aius_recorder_bank_freeze(&f.bank) == AIUS_OK);
 	bank_feed_block(&f, 8u, 0, 0u, 0u);
 	assert(f.bank.slots[0].state == AIUS_RECORDER_POSTROLL);
@@ -463,6 +514,7 @@ static void test_bank_pending_config_applies_on_thaw(void)
 	/* Lease slot 1 so the freeze leaves slot 0 FROZEN and active, with the
 	 * operator thaw as its only way back. */
 	aius_recorder_bank_read_acquire(&f.bank, 1u);
+	bank_feed_block(&f, 8u, 0, 0u, 0u);
 	assert(aius_recorder_bank_freeze(&f.bank) == AIUS_OK);
 	bank_feed_block(&f, 8u, 0, 0u, 0u);
 	assert(aius_recorder_bank_set_config(&f.bank,
@@ -569,6 +621,7 @@ static void test_bank_park_reaches_every_slot(void)
 	 * and a not-yet-drained one, not just the active slot. */
 	assert(aius_recorder_bank_set_config(&f.bank, AIUS_RECORDER_MASK_ALL,
 	                                     0.0f, 1u, 2u) == AIUS_OK);
+	bank_feed_block(&f, 8u, 0, 0u, 0u);
 	assert(aius_recorder_bank_freeze(&f.bank) == AIUS_OK);
 	bank_feed_block(&f, 8u, 0, 0u, 0u); /* slot 1 -> POSTROLL (1 of 2) */
 	assert(f.bank.slots[1].state == AIUS_RECORDER_POSTROLL);
@@ -583,6 +636,7 @@ static void test_bank_park_mid_draining(void)
 	bank_fixture_init(&f);
 	assert(aius_recorder_bank_set_config(&f.bank, AIUS_RECORDER_MASK_ALL,
 	                                     0.0f, 1u, 0u) == AIUS_OK);
+	bank_feed_block(&f, 8u, 0, 0u, 0u);
 	assert(aius_recorder_bank_freeze(&f.bank) == AIUS_OK);
 	bank_feed_block(&f, 8u, 0, 0u, 0u);
 	assert(f.bank.slots[0].state == AIUS_RECORDER_DRAINING);
@@ -688,6 +742,7 @@ int main(void)
 	test_bank_recycle_deferred_while_read_leased();
 	test_bank_recycled_slot_inherits_carrier_state();
 	test_bank_advance_captures_first_epoch_carrier_edge();
+	test_bank_empty_carrier_loss_never_advances();
 	test_bank_thaw_refused_while_active_slot_leased();
 	test_bank_lease_deferral_is_bounded();
 	test_bank_lease_deferral_when_every_slot_leased();

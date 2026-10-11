@@ -99,6 +99,21 @@ static FLASHMEM void reset_capture(AiusRecorder *r)
 	r->reclaim_since_ms = 0u;
 }
 
+/* A slot with exactly zero valid frames is not worth a freeze: the trigger is
+ * dropped and counted, and the slot keeps recording, so a flap on a fresh slot
+ * never advances the bank over an earlier capture. Zero valid frames is
+ * !wrapped && frames_drained == 0 (what valid_frames is computed from) AND
+ * nothing staged: a staged block is a frame the freeze's drain will make
+ * valid, so a capture is never dropped for the drain merely lagging the
+ * producer. */
+static FLASHMEM bool trigger_dropped_empty(AiusRecorder *r)
+{
+	if (r->wrapped || r->frames_drained != 0u || r->frames_staged != 0u)
+		return false;
+	r->empty_triggers_dropped = r->empty_triggers_dropped + 1u;
+	return true;
+}
+
 FLASHMEM AiusStatus aius_recorder_init(AiusRecorder *r, uint8_t *ring,
                                        uint32_t ring_bytes, uint32_t fitted_mb,
                                        int32_t *staging,
@@ -229,10 +244,16 @@ FLASHMEM void aius_recorder_producer_block(AiusRecorder *r, const int32_t *l,
 
 	if (fired != AIUS_RECORDER_TRIGGER_NONE) {
 		if (state == AIUS_RECORDER_RECORDING) {
+			if (!trigger_dropped_empty(r)) {
 				producer_latch_trigger(r, fired, now_ms);
-			state = r->state;
-			if (state == AIUS_RECORDER_DRAINING)
-				return; /* zero post-roll: this block is out */
+				state = r->state;
+				if (state == AIUS_RECORDER_DRAINING)
+					return; /* zero post-roll: this block is out */
+			} else {
+				/* Dropped: nothing fired, so this block counts
+				 * toward the settle window as any other. */
+				fired = AIUS_RECORDER_TRIGGER_NONE;
+			}
 		} else {
 			/* Second trigger during the post-roll: first wins. */
 			r->suppressed_triggers = r->suppressed_triggers + 1u;
@@ -370,8 +391,11 @@ FLASHMEM void aius_recorder_epoch(AiusRecorder *r, bool carrier_locked,
 		 * A level would freeze instantly on the bench norm (no source)
 		 * and always during replay. */
 		if ((mask & AIUS_RECORDER_MASK_CARRIER_LOSS) != 0u &&
-		    r->carrier_prev && !carrier_locked)
-			r->freeze_token = AIUS_RECORDER_TRIGGER_CARRIER_LOSS;
+		    r->carrier_prev && !carrier_locked) {
+			if (!trigger_dropped_empty(r))
+				r->freeze_token =
+					AIUS_RECORDER_TRIGGER_CARRIER_LOSS;
+		}
 		/* Underrun fallback: the flagship producer-stall case advances
 		 * the counter while the producer commits no further block. Qualified by the
 		 * gate at BOTH ends of the delta: this epoch's (a stop closes
@@ -381,8 +405,10 @@ FLASHMEM void aius_recorder_epoch(AiusRecorder *r, bool carrier_locked,
 		else if ((mask & AIUS_RECORDER_MASK_UNDERRUN) != 0u &&
 		         gate_open && prev_gate &&
 		         r->settled_blocks >= AIUS_RECORDER_SETTLE_BLOCKS &&
-		         underruns > r->underrun_base_epoch)
-			r->freeze_token = AIUS_RECORDER_TRIGGER_UNDERRUN;
+		         underruns > r->underrun_base_epoch) {
+			if (!trigger_dropped_empty(r))
+				r->freeze_token = AIUS_RECORDER_TRIGGER_UNDERRUN;
+		}
 	}
 	r->carrier_prev = carrier_locked ? 1u : 0u;
 	r->underrun_base_epoch = underruns;
@@ -460,7 +486,7 @@ FLASHMEM AiusStatus aius_recorder_freeze(AiusRecorder *r)
 		return AIUS_INVALID_ARG;
 	uint32_t state = r->state;
 	if (state == AIUS_RECORDER_RECORDING) {
-		if (r->freeze_token == 0u)
+		if (r->freeze_token == 0u && !trigger_dropped_empty(r))
 			r->freeze_token = AIUS_RECORDER_TRIGGER_OPERATOR;
 		return AIUS_OK;
 	}
@@ -499,6 +525,8 @@ FLASHMEM void aius_recorder_note_producer_event(AiusRecorder *r,
 	    r->state != AIUS_RECORDER_RECORDING || r->freeze_token != 0u)
 		return;
 	if ((r->trigger_mask & mask) == 0u)
+		return;
+	if (trigger_dropped_empty(r))
 		return;
 	r->freeze_token = (uint32_t)which;
 }

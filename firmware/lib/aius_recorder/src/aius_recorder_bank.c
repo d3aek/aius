@@ -300,6 +300,15 @@ FLASHMEM uint32_t aius_recorder_bank_lease_skips(const AiusRecorderBank *bank)
 	return bank->lease_skips;
 }
 
+FLASHMEM uint32_t
+aius_recorder_bank_empty_triggers_dropped(const AiusRecorderBank *bank)
+{
+	uint32_t total = 0u;
+	for (uint32_t i = 0; i < AIUS_RECORDER_BANK_SLOTS; i++)
+		total += bank->slots[i].empty_triggers_dropped;
+	return total;
+}
+
 FLASHMEM bool aius_recorder_bank_config_pending(const AiusRecorderBank *bank)
 {
 	for (uint32_t i = 0; i < AIUS_RECORDER_BANK_SLOTS; i++) {

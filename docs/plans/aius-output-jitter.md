@@ -849,6 +849,11 @@ the SD-refill margin that floor exists for. Not yet observed on device.
 
 ### Phase K Replays survive dark-input lock blips
 
+**Not to be built (2026-10-11).** Replay leaves the firmware in
+[`aius-sample-rate-following.md`](aius-sample-rate-following.md) Phase 4i
+(owner decision there), which removes the defect with it; the receiver
+state it depended on is instrumented by Phase L.
+
 Found 2026-10-05 while proving Phase J. With no light at the optical input,
 the receiver sits in one of three hidden states (every clock register reads
 the same in all three, so the clock plan is not the cause). In one of them,
@@ -898,6 +903,38 @@ nothing resets the SPDIF block at runtime (`spdif_engine_reacquire()`,
 
 If the instrument shows the input toggling, the next step is a scope on pin
 15 (the ORJ-5 output, `docs/guides/proto-optical-wiring.md`) across a flip.
+
+- **Built host-only (2026-10-11; owner: anything that needs no U24 bench
+  session), not deployed.** `firmware/lib/aius_audio/src/aius_input_rx.h`,
+  stepped once per epoch by `input_fault_service` (one extra `SPDIF_SRPC`
+  read, read-only LOCK bit, no SD or blocking work) before its no-error
+  return, so a return to clean is stamped. Over one-second windows it
+  classifies the OR of the SIS error bits seen (0 clean, 1 SYMERR, 2
+  SYMERR and BITERR, 3 with LOCKLOSS, 4 any other mix) and counts the
+  share of epochs that read SRPC LOCK true. `input_diag` gains
+  `"rx_state"`, `"rx_state_ms"` (millis of the last windowed change, 0
+  until the first windowed change) and `"lock_pm"` (per mille of epochs
+  reading LOCK true, 0 to 1000; counters freeze at 4e6 epochs so the
+  product stays 32-bit). Short keys: the status body keeps 14 B of
+  headroom (16369 of 16384). Found, left: comments at
+  `firmware/src/optical_main.cpp:10780` and `:11426` still assume about
+  115 epochs a second.
+- **Delivery audit (2026-10-11): FAIL, fixed.** The first build published
+  `lock_hz` on the premise of about 115 epochs a second; the service runs
+  once per REPLAY epoch, about 6,500 a second (`aius_recorder.h:95-96`), so
+  the count tracked loop speed, and a per-epoch class (about 150 us)
+  flickered under sporadic errors. Now a share of epochs, and a
+  one-second windowed class. Closure PASS.
+- **Accepted nits (closure, 2026-10-11).** For about a second after boot,
+  before the first window completes, `rx_state` and `lock_pm` read 0, which
+  looks like clean and never-locked; a dark-at-boot receiver then shows
+  its class with `rx_state_ms` 0, as documented. The 4e6 epoch freeze has
+  no host case. The comment at `optical_main.cpp:11343` describes the
+  per-epoch input, not the windowed class.
+- **Device proof without replay.** Replay leaves the firmware in
+  sample-rate-following Phase 4i, so the device proof is a dark-input
+  interval (source off) that flips the state, read against the counter
+  onset, not a replay.
 
 ## Acceptance
 

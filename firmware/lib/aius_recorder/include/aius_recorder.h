@@ -242,7 +242,6 @@ typedef struct {
 	volatile uint32_t slot_write;    /* free-running */
 	volatile uint32_t frames_staged; /* free-running; ring pos = % ring */
 	volatile uint32_t blocks_staged;
-	volatile uint32_t wrapped;       /* sticky: frames_staged reached ring */
 	volatile uint32_t gap_count;
 	volatile uint32_t last_gap_frame;
 	/* Rate truth for the frames actually in staging/ring. Stamped by the
@@ -257,15 +256,14 @@ typedef struct {
 	 * keeps counting past the array. */
 	volatile uint32_t rate_change_frames[AIUS_RECORDER_RATE_CHANGE_MAX];
 	volatile uint32_t suppressed_triggers;
+	/* Triggers dropped because the slot held zero valid frames. Lifetime of
+	 * the slot (zeroed by init only, never by a thaw), so the bank sums it. */
+	volatile uint32_t empty_triggers_dropped;
 	volatile uint32_t postroll_remaining;
 	volatile uint32_t postroll_captured;
 	volatile uint32_t end_frame;     /* frames_staged at POSTROLL exit */
 	uint32_t overrun_base;
 	uint32_t underrun_base;
-	/* 0 after init/thaw: the producer adopts the current counter values as
-	 * baselines on its first block instead of edge-detecting against stale
-	 * ones (counters keep advancing while FROZEN). */
-	volatile uint32_t baseline_sync;
 	/* Underrun-trigger settle counter: CONSECUTIVE cleanly-staged blocks
 	 * under an open gate since the last closed->open edge (or init/thaw),
 	 * capped at AIUS_RECORDER_SETTLE_BLOCKS. The producer both increments it
@@ -289,7 +287,6 @@ typedef struct {
 
 	/* Controller <-> block producer. */
 	volatile uint32_t freeze_token;  /* AiusRecorderTrigger; 0 = none */
-	volatile uint32_t gate_open;     /* epoch-latched tx-gate decision */
 
 	/* Controller-owned (slot_read is volatile because the producer reads it for the
 	 * staging-full check). */
@@ -297,7 +294,6 @@ typedef struct {
 	uint32_t slot_read_offset;       /* frames drained of the current slot */
 	uint32_t frames_drained;         /* free-running */
 	uint32_t freeze_generation;
-	uint32_t carrier_prev;
 	uint32_t underrun_base_epoch;
 	/* Reclaim window: the producer block count last observed by the epoch
 	 * and the now_ms at which it was first seen at that value. Reclaim fires
@@ -315,6 +311,19 @@ typedef struct {
 	float gr_threshold_db;            /* as configured, for echo only */
 	volatile uint32_t gr_hold_blocks;
 	volatile uint32_t postroll_blocks;
+
+	/* 0/1 flags, packed into one word: this struct is instantiated per bank
+	 * slot in DTCM, whose _ebss ceiling is committed, so a counter added
+	 * (empty_triggers_dropped) is paid for here. Byte stores are independent
+	 * on the target, so the producer-written and epoch-written flags do not
+	 * share a read-modify-write. */
+	volatile uint8_t wrapped;        /* producer; sticky: frames_staged reached ring */
+	/* producer; 0 after init/thaw: the producer adopts the current counter
+	 * values as baselines on its first block instead of edge-detecting
+	 * against stale ones (counters keep advancing while FROZEN). */
+	volatile uint8_t baseline_sync;
+	volatile uint8_t gate_open;      /* epoch-latched tx-gate decision */
+	uint8_t carrier_prev;            /* epoch; last carrier-lock sample */
 } AiusRecorder;
 
 /* Bind the storage and arm, or refuse into ABSENT. ring_bytes == 0 is the

@@ -962,9 +962,35 @@ and nothing drained, the same test `valid_frames` is computed from,
 `aius_recorder.c:587`) does not take the freeze token; the trigger is
 counted in a new bank-header counter (`empty_triggers_dropped`) and the
 slot keeps recording. Applies to every trigger kind, not only carrier loss:
-an empty capture is never worth a slot. To decide in the prebuild review:
-whether "empty" should be a small floor (for example under one post-roll's
-worth of frames) rather than exactly zero.
+an empty capture is never worth a slot. **Empty means exactly zero valid
+frames** (owner, 2026-10-11): simplest, and no real capture is ever
+dropped; a small floor was rejected. Built host-only on 2026-10-11 (owner:
+anything that needs no U24 bench session); its OTA and device proof wait
+for the owner.
+
+- **Empty is tested as `!wrapped && frames_drained == 0 &&
+  frames_staged == 0`**, not drained alone: a freeze whose first block is
+  staged but not yet drained holds audio and must not be dropped.
+- **The counter is per slot, never reset by thaw, summed by the bank**
+  (`aius_recorder_bank_empty_triggers_dropped()`), and emitted after
+  `lease_leaks` in the bank header. An operator freeze on an empty slot
+  still answers OK and is counted.
+- **DTCM.** The 4-byte counter pushed slot-a's `_ebss` 32 B past its
+  committed ceiling; the four 0/1 slot flags (`wrapped`, `baseline_sync`,
+  `gate_open`, `carrier_prev`) are packed into `uint8_t` fields to pay for
+  it, so the ceiling did not move.
+- **Accepted residue (delivery audit N, 2026-10-11).** A producer-detected
+  trigger on the very first block after init, thaw or advance is dropped
+  even though that block would have staged; an OVERRUN edge there is lost,
+  a limiter trigger re-fires on the next block. Simplest handling kept.
+  Fixture g in `test_empty_slot_drops_every_trigger_kind` asserts nothing
+  (overruns 0); case k covers the producer drop with a real block.
+- **Delivery audit (2026-10-11): PASS with one S (the producer drop path
+  untested; case k added) and closure PASS.**
+- **Host proof.** `test_empty_slot_drops_every_trigger_kind`,
+  `test_empty_trigger_counter_survives_thaw`,
+  `test_bank_empty_carrier_loss_never_advances`; about 12 existing cases
+  now feed a block before freezing, with no assertion weakened.
 
 **Host proof (recorder suite).** A carrier-loss edge on an empty recording
 slot drops and counts, with no advance; three such edges in a row leave

@@ -1420,6 +1420,7 @@ describe("Aius OpenAPI contract", () => {
       "deferred_epochs",
       "lease_skips",
       "lease_leaks",
+      "empty_triggers_dropped",
       "config_pending",
       "newest_frozen_slot",
       "config",

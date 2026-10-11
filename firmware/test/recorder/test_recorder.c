@@ -774,6 +774,8 @@ static void test_reclaim_window_starts_fresh_after_thaw(void)
 	drain_all(&f);
 	assert(f.r.state == AIUS_RECORDER_FROZEN);
 	assert(aius_recorder_thaw(&f.r) == AIUS_OK);
+	/* A thawed slot is empty and drops the trigger, so it records first. */
+	feed_block(&f, 8u, 0, 0u, 0u);
 	/* Carrier falls on the first post-thaw epoch: token set, window starts
 	 * at 60000, not at 0. */
 	aius_recorder_epoch(&f.r, false, true, 0u, 60000u);
@@ -836,7 +838,9 @@ static void test_governor_trim_trigger(void)
 	/* No settle window and no gate qualification: unlike an underrun, the
 	 * caller has already decided this happened -- the governor's own
 	 * multi-second window IS the settling -- so the very first block after
-	 * a trim carries it. */
+	 * a trim carries it. A slot holding audio, though: see the empty-slot
+	 * cases below. */
+	feed_block(&f, 8u, 0, 0u, 0u);
 	aius_recorder_note_producer_event(&f.r,
 	                                  AIUS_RECORDER_TRIGGER_GOVERNOR_TRIM);
 	assert(f.r.freeze_token == AIUS_RECORDER_TRIGGER_GOVERNOR_TRIM);
@@ -860,6 +864,7 @@ static void test_missed_fill_trigger(void)
 	fixture_init(&f);
 	assert((AIUS_RECORDER_MASK_DEFAULT &
 	        AIUS_RECORDER_MASK_MISSED_FILL) != 0u);
+	feed_block(&f, 8u, 0, 0u, 0u);
 	aius_recorder_note_producer_event(&f.r,
 	                                  AIUS_RECORDER_TRIGGER_MISSED_FILL);
 	assert(f.r.freeze_token == AIUS_RECORDER_TRIGGER_MISSED_FILL);
@@ -908,6 +913,7 @@ static void test_governor_trim_masked_and_first_wins(void)
 	fixture_init(&g);
 	assert(aius_recorder_set_config(&g.r, AIUS_RECORDER_MASK_DEFAULT, 0.0f,
 	                                1u, 4u) == AIUS_OK);
+	feed_block(&g, 8u, 0, 0u, 0u);
 	aius_recorder_note_producer_event(&g.r,
 	                                  AIUS_RECORDER_TRIGGER_GOVERNOR_TRIM);
 	feed_block(&g, 8u, 0, 0u, 0u);
@@ -1249,11 +1255,99 @@ static void test_config_validation(void)
 	assert(f.r.postroll_blocks == AIUS_RECORDER_POSTROLL_MAX_BLOCKS);
 	assert(f.r.gr_hold_blocks == 1u);
 	/* Config refuses while a capture is in flight. */
+	feed_block(&f, 8u, 0, 0u, 0u);
 	assert(aius_recorder_freeze(&f.r) == AIUS_OK);
 	feed_block(&f, 8u, 0, 0u, 0u);
 	assert(f.r.state == AIUS_RECORDER_POSTROLL);
 	assert(aius_recorder_set_config(&f.r, AIUS_RECORDER_MASK_DEFAULT, 0.0f,
 	                                1u, 1u) == AIUS_INVALID_ARG);
+}
+
+/* Phase E: a trigger of any kind on a slot with zero valid frames takes no
+ * freeze token, is counted, and leaves the slot recording. */
+static void test_empty_slot_drops_every_trigger_kind(void)
+{
+	Fixture f;
+	fixture_init(&f);
+	assert(aius_recorder_set_config(&f.r, AIUS_RECORDER_MASK_ALL, 0.0f, 1u,
+	                                1u) == AIUS_OK);
+	/* Operator. */
+	assert(aius_recorder_freeze(&f.r) == AIUS_OK);
+	assert(f.r.freeze_token == 0u);
+	assert(f.r.empty_triggers_dropped == 1u);
+	/* Producer-posted kinds. */
+	aius_recorder_note_producer_event(&f.r,
+	                                  AIUS_RECORDER_TRIGGER_GOVERNOR_TRIM);
+	aius_recorder_note_producer_event(&f.r, AIUS_RECORDER_TRIGGER_MISSED_FILL);
+	aius_recorder_note_producer_event(&f.r, AIUS_RECORDER_TRIGGER_CRC_REJECT);
+	assert(f.r.freeze_token == 0u);
+	assert(f.r.empty_triggers_dropped == 4u);
+	/* Carrier loss edge. */
+	aius_recorder_epoch(&f.r, true, true, 0u, 0u);
+	aius_recorder_epoch(&f.r, false, true, 0u, 1u);
+	assert(f.r.freeze_token == 0u);
+	assert(f.r.empty_triggers_dropped == 5u);
+	assert(f.r.state == AIUS_RECORDER_RECORDING);
+	/* The slot keeps recording: once it holds audio the same trigger
+	 * freezes it. */
+	feed_block(&f, 8u, 0, 0u, 0u);
+	assert(f.r.state == AIUS_RECORDER_RECORDING);
+	assert(aius_recorder_freeze(&f.r) == AIUS_OK);
+	assert(f.r.freeze_token == AIUS_RECORDER_TRIGGER_OPERATOR);
+	assert(f.r.empty_triggers_dropped == 5u);
+	feed_block(&f, 8u, 0, 0u, 0u); /* one-block post-roll ends here */
+	assert(f.r.state == AIUS_RECORDER_DRAINING);
+	assert(f.r.trigger == AIUS_RECORDER_TRIGGER_OPERATOR);
+
+	/* Producer-detected overrun on an empty slot: the block still stages. */
+	Fixture g;
+	fixture_init(&g);
+	feed_block(&g, 8u, 0, 0u, 0u);
+	assert(g.r.empty_triggers_dropped == 0u);
+	Fixture h;
+	fixture_init(&h);
+	aius_recorder_epoch(&h.r, true, true, 0u, 0u);
+	feed_block(&h, 0u, 0, 0u, 0u); /* zero-frame block: still empty */
+	feed_block(&h, 0u, 0, 1u, 0u);
+	assert(h.r.state == AIUS_RECORDER_RECORDING);
+	assert(h.r.empty_triggers_dropped == 1u);
+	assert(h.r.frames_staged == 0u);
+
+	/* Producer path with a real block: gate open, empty slot, overrun edge
+	 * on an 8-frame block. The trigger is dropped, the block stages, and it
+	 * counts as clean toward the settle window (fired reset to NONE). A
+	 * zero-frame block first syncs the baselines without staging. */
+	Fixture k;
+	fixture_init(&k);
+	assert(aius_recorder_set_config(&k.r, AIUS_RECORDER_MASK_ALL, 0.0f, 1u,
+	                                1u) == AIUS_OK);
+	aius_recorder_epoch(&k.r, false, true, 0u, 0u);
+	feed_block(&k, 0u, 0, 0u, 0u);
+	feed_block(&k, 8u, 0, 1u, 0u);
+	assert(k.r.frames_staged == 8u);
+	assert(k.r.settled_blocks == 1u);
+	assert(k.r.empty_triggers_dropped == 1u);
+	assert(k.r.state == AIUS_RECORDER_RECORDING);
+}
+
+/* The counter outlives a thaw: it is the slot's lifetime, not the capture's. */
+static void test_empty_trigger_counter_survives_thaw(void)
+{
+	Fixture f;
+	fixture_init(&f);
+	assert(aius_recorder_set_config(&f.r, AIUS_RECORDER_MASK_ALL, 0.0f, 1u,
+	                                0u) == AIUS_OK);
+	assert(aius_recorder_freeze(&f.r) == AIUS_OK);
+	assert(f.r.empty_triggers_dropped == 1u);
+	feed_block(&f, 8u, 0, 0u, 0u);
+	assert(aius_recorder_freeze(&f.r) == AIUS_OK);
+	feed_block(&f, 8u, 0, 0u, 0u);
+	drain_all(&f);
+	assert(f.r.state == AIUS_RECORDER_FROZEN);
+	assert(aius_recorder_thaw(&f.r) == AIUS_OK);
+	assert(f.r.empty_triggers_dropped == 1u);
+	assert(aius_recorder_freeze(&f.r) == AIUS_OK); /* empty again */
+	assert(f.r.empty_triggers_dropped == 2u);
 }
 
 int main(void)
@@ -1293,5 +1387,7 @@ int main(void)
 	test_rate_resets_on_thaw();
 	test_rate_change_fiducials();
 	test_config_validation();
+	test_empty_slot_drops_every_trigger_kind();
+	test_empty_trigger_counter_survives_thaw();
 	return 0;
 }

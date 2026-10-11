@@ -14,6 +14,7 @@
  * by a delta (the input-liveness suite's lesson). */
 
 #include "aius_input_dark.h"
+#include "aius_input_rx.h"
 
 #include <assert.h>
 #include <stddef.h>
@@ -76,6 +77,17 @@ static void locked_gate_open(AiusInputDarkSample *cursor)
 {
 	locked_gate_armed(cursor);
 	cursor->gate_open = 1u;
+}
+
+/* One one-second window of n >= 2 epochs starting at `start`: the last lands
+ * exactly at start + 1000 and closes it; the first `trues` read LOCK true. */
+static void rx_window(AiusInputRx *rx, uint32_t start, uint32_t n,
+                      uint32_t trues)
+{
+	uint32_t i;
+	for (i = 0u; i < n; i++)
+		aius_input_rx_step(rx, start + (i * 1000u) / (n - 1u), 0, 0, 0,
+		                   (uint8_t)(i < trues));
 }
 
 /* Advance the cursor: time and committed blocks by delta only. */
@@ -546,6 +558,121 @@ int main(void)
 		assert(aius_input_dark_interval(&state, 0u)->start_ms == 9u);
 		assert(aius_input_dark_interval(&state, 0u)->duration_ms == 6000u);
 		assert(aius_input_dark_interval(&state, 0u)->entry.gate == 0u);
+	}
+
+	/* Phase L (aius-output-jitter): the dark-input receiver state classifier,
+	 * its change stamp, and the SRPC LOCK true-reads-per-second count. */
+	{
+		AiusInputRx rx;
+		uint32_t t;
+
+		assert(aius_input_rx_classify(0, 0, 0) == AIUS_INPUT_RX_CLEAN);
+		assert(aius_input_rx_classify(1, 0, 0) == AIUS_INPUT_RX_SYMERR);
+		assert(aius_input_rx_classify(1, 1, 0) == AIUS_INPUT_RX_SYMERR_BITERR);
+		assert(aius_input_rx_classify(1, 1, 1) ==
+		       AIUS_INPUT_RX_SYMERR_BITERR_LOCKLOSS);
+		assert(aius_input_rx_classify(0, 1, 0) == AIUS_INPUT_RX_OTHER);
+		assert(aius_input_rx_classify(0, 0, 1) == AIUS_INPUT_RX_OTHER);
+		assert(aius_input_rx_classify(1, 0, 1) == AIUS_INPUT_RX_OTHER);
+		assert(aius_input_rx_classify(0, 1, 1) == AIUS_INPUT_RX_OTHER);
+
+		/* Nothing publishes until a window closes; the first completed
+		 * window adopts its class (OR over the window) without a stamp. */
+		aius_input_rx_reset(&rx);
+		aius_input_rx_step(&rx, 5000u, 1, 0, 0, 1);
+		aius_input_rx_step(&rx, 5500u, 0, 0, 0, 1);
+		assert(rx.rx_state == AIUS_INPUT_RX_CLEAN);
+		assert(rx.lock_permille == 0u);
+		aius_input_rx_step(&rx, 6000u, 0, 0, 0, 1);
+		assert(rx.rx_state == AIUS_INPUT_RX_SYMERR);
+		assert(rx.state_since_ms == 0u);
+
+		/* Class is the OR over the window: SYMERR in one epoch and BITERR in
+		 * another is SYMERR_BITERR, stamped at the window close only. */
+		aius_input_rx_step(&rx, 6100u, 1, 0, 0, 1);
+		aius_input_rx_step(&rx, 6500u, 0, 1, 0, 1);
+		aius_input_rx_step(&rx, 6999u, 0, 0, 0, 1);
+		assert(rx.rx_state == AIUS_INPUT_RX_SYMERR);
+		assert(rx.state_since_ms == 0u);
+		aius_input_rx_step(&rx, 7000u, 0, 0, 0, 1);
+		assert(rx.rx_state == AIUS_INPUT_RX_SYMERR_BITERR);
+		assert(rx.state_since_ms == 7000u);
+
+		/* Another window of the same class does not move the stamp. */
+		aius_input_rx_step(&rx, 7500u, 1, 1, 0, 1);
+		aius_input_rx_step(&rx, 8000u, 1, 0, 0, 1);
+		assert(rx.rx_state == AIUS_INPUT_RX_SYMERR_BITERR);
+		assert(rx.state_since_ms == 7000u);
+
+		/* Each windowed change stamps at its close. */
+		aius_input_rx_step(&rx, 8500u, 1, 1, 1, 1);
+		aius_input_rx_step(&rx, 9000u, 0, 0, 0, 1);
+		assert(rx.rx_state == AIUS_INPUT_RX_SYMERR_BITERR_LOCKLOSS);
+		assert(rx.state_since_ms == 9000u);
+		aius_input_rx_step(&rx, 9500u, 0, 0, 0, 1);
+		aius_input_rx_step(&rx, 10000u, 0, 0, 0, 1);
+		assert(rx.rx_state == AIUS_INPUT_RX_CLEAN);
+		assert(rx.state_since_ms == 10000u);
+
+		/* A sporadic single-epoch error per window does not flicker the
+		 * class: SYMERR every window, so no stamp after adoption. */
+		aius_input_rx_reset(&rx);
+		for (t = 0u; t <= 5000u; t += 100u)
+			aius_input_rx_step(&rx, 20000u + t,
+			                   (uint8_t)((t % 1000u) == 300u), 0, 0, 1);
+		assert(rx.rx_state == AIUS_INPUT_RX_SYMERR);
+		assert(rx.state_since_ms == 0u);
+
+		/* Permille is a ratio: full, half and zero lock read 1000, 500 and 0
+		 * whatever the epoch count of the window (10, 100 and 6500). */
+		{
+			static const uint32_t counts[] = { 10u, 100u, 6500u };
+			uint32_t c;
+			for (c = 0u; c < 3u; c++) {
+				const uint32_t n = counts[c];
+				aius_input_rx_reset(&rx);
+				rx_window(&rx, 7000u, n, n);
+				assert(rx.lock_permille == 1000u);
+				aius_input_rx_reset(&rx);
+				rx_window(&rx, 7000u, n, n / 2u);
+				assert(rx.lock_permille == 500u);
+				aius_input_rx_reset(&rx);
+				rx_window(&rx, 7000u, n, 0u);
+				assert(rx.lock_permille == 0u);
+			}
+		}
+
+		/* An open window publishes nothing. */
+		aius_input_rx_reset(&rx);
+		aius_input_rx_step(&rx, 100u, 0, 0, 0, 1);
+		aius_input_rx_step(&rx, 1099u, 0, 0, 0, 1);
+		assert(rx.lock_permille == 0u);
+
+		/* A stalled window (2 epochs, 2 s apart) reports its own ratio, not
+		 * a rate. */
+		aius_input_rx_reset(&rx);
+		aius_input_rx_step(&rx, 100u, 0, 0, 0, 1);
+		aius_input_rx_step(&rx, 2100u, 0, 0, 0, 0);
+		assert(rx.lock_permille == 500u);
+
+		/* Wrap-correct across the 32-bit millis() boundary, window and
+		 * stamp both. */
+		aius_input_rx_reset(&rx);
+		aius_input_rx_step(&rx, 0xFFFFFFF0u, 0, 0, 0, 1);
+		aius_input_rx_step(&rx, 0xFFFFFFF0u + 999u, 0, 0, 0, 1);
+		assert(rx.lock_permille == 0u);
+		aius_input_rx_step(&rx, 0xFFFFFFF0u + 1000u, 0, 0, 0, 1);
+		assert(rx.lock_permille == 1000u);
+		aius_input_rx_step(&rx, 0xFFFFFFF0u + 1500u, 1, 0, 0, 1);
+		aius_input_rx_step(&rx, 0xFFFFFFF0u + 2000u, 0, 0, 0, 1);
+		assert(rx.rx_state == AIUS_INPUT_RX_SYMERR);
+		assert(rx.state_since_ms == 0xFFFFFFF0u + 2000u);
+
+		/* Lock never read true publishes zero. */
+		aius_input_rx_reset(&rx);
+		for (t = 0u; t <= 2000u; t += 10u)
+			aius_input_rx_step(&rx, t, 1, 0, 0, 0);
+		assert(rx.lock_permille == 0u);
 	}
 
 	puts("Aius input dark-interval test (phase ladder, stuck states, watermark)");

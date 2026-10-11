@@ -250,6 +250,12 @@ uint32_t aius_recorder_bank_deferred_epochs(const AiusRecorderBank *bank);
 uint32_t aius_recorder_bank_lease_skips(const AiusRecorderBank *bank);
 bool aius_recorder_bank_config_pending(const AiusRecorderBank *bank);
 
+/* Triggers (every kind) dropped because the recording slot held zero valid
+ * frames: no freeze, no advance, the slot kept recording. Sum over the slots'
+ * lifetime counters, so a recycle never loses a count. */
+uint32_t
+aius_recorder_bank_empty_triggers_dropped(const AiusRecorderBank *bank);
+
 /* Epoch, cold: install trigger config on every slot (so a slot not yet
  * activated already carries it). postroll_blocks is additionally clamped to
  * the slot's own capacity in AIUS_RECORDER_BANK_BLOCK_FRAMES-sized blocks,

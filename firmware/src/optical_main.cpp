@@ -134,6 +134,7 @@ extern "C" const uint8_t _flashimagelen;
 #include "../lib/aius_audio/src/aius_tx_fill_sensor.h"
 #include "../lib/aius_audio/src/aius_underrun_episodes.h"
 #include "../lib/aius_audio/src/aius_input_dark.h"
+#include "../lib/aius_audio/src/aius_input_rx.h"
 #include "aius_event_ring.h"
 #include "aius_boot_teensy.h"
 #include "aius_cdc_teensy.h"
@@ -2131,6 +2132,7 @@ static uint32_t g_enqueue_last_us;      /* 0 = no accepted block since reset */
 static volatile uint32_t g_update_gap_max_us; /* ISR-written watermark */
 static volatile uint32_t g_update_last_us;    /* 0 = first call */
 static AiusInputDark g_input_dark;            /* .bss; epoch-owned */
+static AiusInputRx g_input_rx;                /* .bss; epoch-owned (Phase L) */
 
 /* The boot-lottery padding-sweep knob: the degraded mode's per-boot odds are
  * a function of the image's exact layout, so hunting a reproducing layout of
@@ -4586,7 +4588,21 @@ static FLASHMEM bool http_input_diag_json(char *output, size_t capacity,
 			(unsigned)interval->exit.gate))
 			return false;
 	}
-	return status_append(output, capacity, length, "]}");
+	/* Phase L receiver-state instrument (aius_input_rx.h): the OR-class of
+	 * SYMERR/BITERR/LOCKLOSS over the last completed second, the millis() of
+	 * its last change, and the SRPC LOCK true-read permille (0..1000) of that
+	 * second. Short keys and narrow locals keep the status body inside its
+	 * bound. */
+	static const char format_rx[] PROGMEM =
+		"],\"rx_state\":%u,\"rx_state_ms\":%lu,\"lock_pm\":%u";
+	const uint8_t rx_state = g_input_rx.rx_state;
+	const uint16_t lock_pm = g_input_rx.lock_permille;
+	if (!status_append(output, capacity, length, format_rx,
+	                   (unsigned)rx_state,
+	                   (unsigned long)g_input_rx.state_since_ms,
+	                   (unsigned)lock_pm))
+		return false;
+	return status_append(output, capacity, length, "}");
 }
 
 /* The previous boot's retained forensics, HTTP-readable (they were CDC-only
@@ -8552,7 +8568,8 @@ static FLASHMEM size_t app_write_recorder(void *, uint8_t *body,
 		"\"chunk_max_bytes\":%lu,\"active_slot\":%lu,"
 		"\"slot_count\":%u,\"slots_recycled\":%lu,"
 		"\"deferred_epochs\":%lu,\"lease_skips\":%lu,"
-		"\"lease_leaks\":%lu,\"config_pending\":%s,",
+		"\"lease_leaks\":%lu,\"empty_triggers_dropped\":%lu,"
+		"\"config_pending\":%s,",
 		(unsigned long)active.fitted_mb,
 		(unsigned)AIUS_RECORDER_FRAME_BYTES,
 		(unsigned long)g_boot_ledger.boot_generation,
@@ -8563,6 +8580,8 @@ static FLASHMEM size_t app_write_recorder(void *, uint8_t *body,
 		(unsigned long)aius_recorder_bank_deferred_epochs(&g_recorder_bank),
 		(unsigned long)aius_recorder_bank_lease_skips(&g_recorder_bank),
 		(unsigned long)g_runtime.app.recorder_lease_leaks,
+		(unsigned long)aius_recorder_bank_empty_triggers_dropped(
+			&g_recorder_bank),
 		aius_recorder_bank_config_pending(&g_recorder_bank) ? "true"
 		                                                    : "false"))
 		return 0;
@@ -11321,6 +11340,15 @@ static FLASHMEM void input_fault_service(uint32_t now_ms)
 		sis & (SPDIF_SIS_BITERR | SPDIF_SIS_SYMERR |
 		       SPDIF_SIS_LOCKLOSS | SPDIF_SIS_RXFIFOUNOV |
 		       SPDIF_SIS_RXFIFORESYN);
+	/* Phase L receiver-state instrument: classify this window's SYMERR /
+	 * BITERR / LOCKLOSS and count the SRPC LOCK true read, before the
+	 * no-error early return so a return to CLEAN is stamped. Epoch-owned,
+	 * memory only; one extra volatile read. */
+	aius_input_rx_step(&g_input_rx, now_ms,
+	                   (errors & SPDIF_SIS_SYMERR) ? 1u : 0u,
+	                   (errors & SPDIF_SIS_BITERR) ? 1u : 0u,
+	                   (errors & SPDIF_SIS_LOCKLOSS) ? 1u : 0u,
+	                   (SPDIF_SRPC & SPDIF_SRPC_LOCK) ? 1u : 0u);
 	if (errors == 0u)
 		return;
 	if (errors & SPDIF_SIS_BITERR)

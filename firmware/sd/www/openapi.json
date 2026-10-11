@@ -1922,6 +1922,7 @@
           "deferred_epochs",
           "lease_skips",
           "lease_leaks",
+          "empty_triggers_dropped",
           "config_pending",
           "newest_frozen_slot",
           "config",
@@ -1960,6 +1961,11 @@
             "type": "integer",
             "minimum": 0,
             "description": "Data reads that found the PREVIOUS read's lease still held and dropped it themselves. Counted by the HTTP dispatcher, not the bank; it should stay 0 forever, so a nonzero value names a terminal that bypasses the response completion hook."
+          },
+          "empty_triggers_dropped": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Triggers of any kind dropped because the recording slot held zero valid frames: no freeze, no advance, the slot kept recording, so earlier frozen captures survive a source power-off."
           },
           "config_pending": {
             "type": "boolean",
@@ -3429,7 +3435,10 @@
           "dark_open_entry_gate",
           "dark_interval_count",
           "dark_phases",
-          "dark_intervals"
+          "dark_intervals",
+          "rx_state",
+          "rx_state_ms",
+          "lock_pm"
         ],
         "properties": {
           "sis_biterr_events": {
@@ -3574,6 +3583,22 @@
             "maxItems": 8,
             "items": { "$ref": "#/components/schemas/InputDarkInterval" },
             "description": "The newest recorded dark intervals, oldest first, each with the ladder phase, pipeline class, tracker acceptance and physical gate at entry and at exit. A fixed ring of 8; dark_interval_count says how many it has overwritten."
+          },
+          "rx_state": {
+            "type": "integer",
+            "enum": [0, 1, 2, 3, 4],
+            "description": "The receiver's dark-input error class over the last completed one-second window: the class of the OR of the SIS error bits input_fault_service() latched in that window, not of any single epoch (aius-output-jitter Phase L): 0 clean, 1 SYMERR only, 2 SYMERR and BITERR, 3 SYMERR, BITERR and LOCKLOSS, 4 any other combination. Observe-only."
+          },
+          "rx_state_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "millis() of the last windowed rx_state change; 0 when it has not changed since the first completed window. Correlate with sis_last_error_ms and the counter onset to catch a flip."
+          },
+          "lock_pm": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000,
+            "description": "Permille of epochs that read the SPDIF_SRPC LOCK bit true in the last completed one-second window: true reads * 1000 / epochs in the window. A ratio, so independent of the epoch rate; 1000 is steady lock, and a steady carrier with a lower figure means the lock flickers between epochs."
           }
         }
       },
