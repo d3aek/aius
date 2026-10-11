@@ -22,11 +22,9 @@ with bonded tabs. `index.html` stays as the classic editor.
 - **Posture**: checkpoint (owner, 2026-10-07): surface each decision and
   human-review gate as it arises.
 - **Status**: Phases 1, 1a to 1f, 2 and 4 shipped. Phase 3 (logo) is
-  deferred by the owner. Phase 5 is the owner's own manual step. Phase 6
-  (swap the files, owner 2026-10-11) and Phase 7 (other pages follow the
-  mixer style) are in progress; the card sync follows the owner's preview
-  check. The mixer files are on the card as `mixer.html` since the
-  2026-10-11 full sync, unlinked.
+  deferred by the owner. Phase 5 is the owner's own manual step. Phases 6
+  (the mixer is `index.html`, the classic editor `classic.html`) and 7
+  (every page in the bench style) shipped to the card on 2026-10-11.
 - **What landed** (all pushed):
 
   | Commit | Contents | Proof |
@@ -48,11 +46,8 @@ with bonded tabs. `index.html` stays as the classic editor.
   - `src/apps/preview/content/aius-logos/`: eight raster explorations, the
     gallery `index.html` and `_tools/generate_logos.py`; the round 1 and 2
     SVGs in `svg/`, and the review pages `round-1.html` and `round-2.html`.
-- **Next action**: the owner's preview check of all five pages
-  (`https://apps.example.net/apps/preview/aius-mixer/index.html`,
-  `status.html`, `upgrade.html`, `classic.html`, `replays.html`), then one
-  card sync and the delete of the stale `mixer.html` and `mixer.html.gz`;
-  that closes Phases 6 and 7.
+- **Next action**: none queued. Phase 3 (logo) stays deferred by the
+  owner; Phase 5 (limiter) is the owner's manual step.
 
 ## Constraints
 
@@ -540,7 +535,7 @@ by 5.3 dB. `limiter.enabled` was already true at -1 dBFS, 0.5 ms attack,
 - Runs only on the owner's word (see Constraints). It is an apply at a block
   boundary, not a card sync, but it still changes live audio.
 
-### Phase 6: Deploy to the board
+### Phase 6: Deploy to the board ✓ SHIPPED 2026-10-11
 
 Settled by the owner, 2026-10-07: deploy only "when I tell you to". The
 default-page question is decided at that time.
@@ -585,7 +580,12 @@ unit: implementer
   `index.html` (mixer) and `classic.html`. Found: `aius_recovery_smoke.py`
   `EDITOR_RESOURCES` (:141) and `aius_http_runner.py` (:193) know only
   `index.html`; Phase 7 adds `classic.html` to both.
-- **Deploy rides Phase 7.** The card sync waits until Phase 7's restyle is
+- **On the card (2026-10-11, owner "sync it now", board idle with no
+  carrier).** A full `aius-sd-sync.sh` run put 28 files with no failure;
+  `DELETE /sd/www/mixer.html` and `mixer.html.gz` answered 200 and both
+  now GET 404. The card's `index`, `status`, `upgrade`, `classic` and
+  `replays` bundles equal fresh `www_bundle.py` output byte for byte.
+- **Deploy rode Phase 7.** The card sync waits until Phase 7's restyle is
   committed and the owner has seen the preview; then one sync carries both,
   and the stale `mixer.html` and `mixer.html.gz` are deleted.
 - Card traffic during playback costs a short dropout (a 12-file sync once
@@ -598,7 +598,7 @@ firmware/tools/aius-sd-sync.sh --device http://192.0.2.66 \
   --file mixer.html --file mixer.css --file mixer.js
 ```
 
-### Phase 7: The other SD pages follow the mixer style
+### Phase 7: The other SD pages follow the mixer style ✓ SHIPPED 2026-10-11
 
 ```yaml
 outcome: >-

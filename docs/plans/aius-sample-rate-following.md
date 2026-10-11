@@ -50,8 +50,9 @@ built); replace wholesale on the next handover.
   listening session), board idle at the time (no carrier, no replay,
   `sd_flush.drained`); 153 chunks staged with no retries, healthy-boot
   self-commit (`trial_budget` 0, `rollback_observed` false). No
-  rehearsal ran. The other slot (2) holds `e619980d3d42`. The card's
-  `openapi.json` predates step 1a's description fix until the next sync.
+  rehearsal ran. The other slot (2) holds `e619980d3d42`. The card was
+  fully synced the same day (mixer plan Phases 6 and 7), `openapi.json`
+  included.
   `df966f17b370` (Phase 4a) is in neither slot now but stays the owner's
   **fail-safe rollback candidate** (2026-10-07): tag
   `fw-rollback-df966f17b370`, signed container and USB `recovery.hex` in
