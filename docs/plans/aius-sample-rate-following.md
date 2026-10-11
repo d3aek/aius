@@ -40,7 +40,7 @@ built); replace wholesale on the next handover.
   delivery audit and closures recorded in its body; its device runs are
   the owner's. **4j BUILT** (2026-10-11): host proof and all four images
   green, delivery audit closure PASS; its device run is the owner's, and
-  its N9 notes edit waits on the mixer session's hold. **4k BUILT**
+  its N9 notes edit is done. **4k BUILT**
   (2026-10-11). **4l BUILT** (2026-10-11). **4m BUILT** (2026-10-11,
   the mixer plan's Phase 1e). 4i PLANNED and READY. 4b (acceptance umbrella)
   PLANNED: it closes after 4e to 4h's device runs. The owner holds two
@@ -73,8 +73,7 @@ built); replace wholesale on the next handover.
   sync that uploads the bundles) and run 2 (AC-3 page loads), then 4h's
   AC-3 and accidental-disconnect runs. An E7 verdict of B2 re-plans 4f to 4h before
   their device runs (4f's body records this).
-- **Next action.** 4j N9 and 4m's mixer-doc flip once the mixer doc is
-  released, then 4b's
+- **Next action.** 4b's
   device sessions (owner), then 4i.
 - **What landed this run** (aius commits; each followed by a upstream repository
   pointer bump; foreign commits from the mixer session omitted):
@@ -7043,7 +7042,7 @@ followed by its resolution.
 ```yaml
 phase: 4j
 title: A DSP save applies with no audio flowing
-status: built # 2026-10-11: host proof green (7 suites, verifier run), all four optical images with every post-link guard and OCRAM at each floor, delivery audit FAIL (S1 epoch clock) then closure PASS; the device run is the owner's (no OTA until the owner's go-ahead); one notes seam (N9) waits on another session's hold
+status: built # 2026-10-11: host proof green (7 suites, verifier run), all four optical images with every post-link guard and OCRAM at each floor, delivery audit FAIL (S1 epoch clock) then closure PASS; the device run is the owner's (no OTA until the owner's go-ahead); the N9 notes seam is done
 depends-on: phase-4h
 prebuild-review: ready # closure round 2 READY 2026-10-10, nits N1 to N3 folded. Closure NOT READY 2026-10-10 (S-new1, S-new2, N-new1, N-new2), folded. Before it: NOT READY 2026-10-10 (B1, S1 to S4, N1 to N3), folded with owner answer
 outcome: >-
@@ -7162,13 +7161,10 @@ stack-bound row was needed; OCRAM is unchanged at every floor.
   generation step outside every guard), each with a failing mutation.
 - **N5 to N8.** Stale single-arm comments in `optical_main.cpp` and
   `aius_dsp_set.py`'s docstring name both arms.
-- **N9 (open).** `docs/plans/aius-sd-mixer-dashboard.md` is held by the
-  mixer session (path-ownership hook), so its notes seam is not edited.
-  Once released, rewrite :461 ("with no carrier the GET shows
-  `config_pending: true`") and :523-528 ("applies only inside
-  `enqueue()`") to the wording at
-  `firmware/tools/dsp_config/aius_dsp_set.py:15-17`. Do it before 4i,
-  which rewrites the same apply story.
+- **N9 (resolved 2026-10-11).** The mixer doc's Phase 4 wire-shape note
+  and Phase 5 proof now state the idle apply as worded in
+  `firmware/tools/dsp_config/aius_dsp_set.py`: the next audio block or,
+  with none for 100 ms, one service epoch, carrier or not.
 
 ### Phase 4k A blocked SD start with no card answers sd_unavailable
 
@@ -7430,8 +7426,7 @@ status: built # 2026-10-11
   moved 37.5 px on a -3 dB trim step (12.5 px/dB).
 - **Accepted residue.** The trim field allows down to -60 dB, so a deep
   trim draws the curve below the +-12 plot.
-- **Mixer doc.** Its Phase 1e status flip waits on the mixer session's
-  hold of that file, like 4j N9.
+- **Mixer doc.** Its Phase 1e is marked shipped (2026-10-11).
 
 ### Phase 4c `test.sh` runs every `--suite` given ✓ SHIPPED 2026-10-06
 

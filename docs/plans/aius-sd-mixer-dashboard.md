@@ -21,9 +21,8 @@ with bonded tabs. `index.html` stays as the classic editor.
 
 - **Posture**: checkpoint (owner, 2026-10-07): surface each decision and
   human-review gate as it arises.
-- **Status**: Phases 1, 1a to 1d, 1f, 2 and 4 shipped; the owner's phone
-  check of the preview is open. Phase 1e is BLOCKED until the
-  sample-rate-following session releases `dsp-editor.js`. Phase 3 (logo) is
+- **Status**: Phases 1, 1a to 1f, 2 and 4 shipped; the owner's phone
+  check of the preview is open. Phase 3 (logo) is
   deferred by the owner. Phase 5 is the owner's own manual step. Phase 6
   (deploy) is BLOCKED on the owner's word. Nothing from this plan is on the
   board.
@@ -36,6 +35,7 @@ with bonded tabs. `index.html` stays as the classic editor.
   | aius `63b7ff8` | owner answers recorded, answered questions removed, state rewritten | `the repo tooling doc-index --validate-only` |
   | aius `6186506` | `firmware/sd/www/fonts/` (Fontsource 5.3.0 woff2, Latin, 135 KB, plus OFL texts), `@font-face` in `mixer.css`, `THIRD-PARTY.md` entries | vitest 6 files, 387 tests; Chromium probe of the preview: both `document.fonts.check` true, 0 off-origin requests |
   | aius, Phases 1a and 4 | `firmware/tools/dsp_config/aius_dsp_set.py` with its test, fixture and `test.sh` wiring; SD page docs (`CONTRIBUTING.md`, `dsp-editor.js` banner, `docs/reference/user-interface.md`, `CLAUDE.md` through `the release-promotion step`, `THIRD-PARTY.md`); register entry for the float-drift defect | `test.sh --environment native --suite dsp-config` green (26 setter tests); live `--dry-run` printed only `features.limiter: false -> true`; vitest 6 files, 387 tests; doc-index clean |
+  | aius `27bc275` | Phase 1e via sample-rate-following Phase 4m: bypass note, EQ curve and handles at the trim offset | sd-editor vitest 6 files, 432 tests; Chromium probe, -3 dB trim moved the curve 37.5 px |
 
 - **Uncommitted tree state**: nothing of this plan's in this submodule. Two transient
   folders sit on the the host application preview mount, gitignored by design
@@ -47,9 +47,7 @@ with bonded tabs. `index.html` stays as the classic editor.
   - `src/apps/preview/content/aius-logos/`: eight raster explorations, the
     gallery `index.html` and `_tools/generate_logos.py`; the round 1 and 2
     SVGs in `svg/`, and the review pages `round-1.html` and `round-2.html`.
-- **Next action**: Phase 1e once `hook-admin ownership list` no longer
-  shows `firmware/sd/www/dsp-editor.js` held by another session. Phase 6
-  on the owner's word.
+- **Next action**: Phase 6 on the owner's word.
 
 ## Constraints
 
@@ -304,7 +302,7 @@ targeted-proof: vitest (root git_modules/aius) green; Chromium probes trim-note-
   - At 390 px the action bar stays at 150 px and the card top stays at
     2541 across the bypass.
 
-### Phase 1e: Bypass note truth and trim on the EQ curve
+### Phase 1e: Bypass note truth and trim on the EQ curve ✓ SHIPPED
 
 Owner, 2026-10-07:
 
@@ -327,10 +325,11 @@ seams: [firmware/sd/www/dsp-editor.js, test/sd-editor/dsp-editor.test.js]
 targeted-proof: dsp-editor.test.js cases for the new note text and for a curve point shifting by exactly the trim dB; Chromium probe of the mixer preview showing the curve move on a trim step; vitest green
 ```
 
-- **Blocked:** `dsp-editor.js` and its test belong to the
-  sample-rate-following session (path-ownership write gate). Start once
-  that session commits and releases them; check with `hook-admin
-  ownership list`.
+- **Shipped:** built by the sample-rate-following session as its Phase 4m,
+  aius `27bc275`; owner approved 2026-10-11. EQ handles also ride the trim
+  offset (`handleOffset`); with `input_eq` off there is no offset. The "+-24"
+  comment at `dsp-editor.js` was correct (plot +-12 against firmware +-24)
+  and was kept. Residue: a trim down to -60 dB draws below the +-12 plot.
 
 ### Phase 1f: BYPASSED pill ✓ SHIPPED
 
@@ -457,9 +456,11 @@ tool `dsp_characterize.py` stays read-only.
   (`firmware/lib/aius_dsp_config/src/aius_dsp_config.c:1022`). Stale answers
   `409 stale_generation`, invalid `400`, busy or no card `503`
   (`firmware/src/aius_optical_app.cpp:1336-1360`). A 200 means the SD commit
-  landed; `config_generation` advances only at the audio block-boundary
-  apply, so with no carrier the GET shows `config_pending: true` and the old
-  generation.
+  landed; `config_generation` advances only when the save applies, at the
+  next audio block or, with none reaching the DSP for 100 ms, within one
+  service epoch, carrier or not. Until then the GET shows
+  `config_pending: true` and the old generation; `config_pending` turns false
+  once the apply lands.
 - Shipped after three adversarial review rounds and a clean-room pass, both
   CLEAR:
   - It refuses when the GET already shows `config_pending: true`.
@@ -506,8 +507,7 @@ by 5.3 dB. `limiter.enabled` was already true at -1 dBFS, 0.5 ms attack,
   (R4). Accepted as is: R2, a no-op `--set` plus a transport fault reports
   "landed", which is harmless. The suite has 30 setter tests.
 - **Check before the run:** aius `9c9bd88` (sample-rate-following Phase 4f)
-  makes HTTP best-effort during playback, and this phase needs playback for
-  the save to apply. Before the run, read 4f's contract in
+  makes HTTP best-effort during playback. Before the run, read 4f's contract in
   [`aius-sample-rate-following.md`](aius-sample-rate-following.md) for what
   a `PUT /api/dsp/config` and the `--wait` GETs get during playback (a
   delayed answer, `503`, or a dropped connection). Confirm the setter's
@@ -520,12 +520,13 @@ by 5.3 dB. `limiter.enabled` was already true at -1 dBFS, 0.5 ms attack,
   field equal to the pre-change read, numbers within a relative 1e-12
   (owner, 2026-10-07: `matrix.lfe_gain_linear` moves one ulp, known decoder
   drift).
-  The save applies only inside `enqueue()` when an audio block arrives
-  (`firmware/src/optical_main.cpp:2045-2065`), so the proof needs a carrier
-  or a replay running; `--wait` only watches for it. With no carrier (the
-  board read `carrier: 0` on 2026-10-07) the run exits 3 with the save
-  staged on the card, and the limiter turns on at the next carrier or replay
-  start. A re-run while staged is refused (exit 2), so a retry is safe.
+  The save applies at the next audio block or, with none reaching the DSP for
+  100 ms, within one service epoch, so no carrier is needed; `--wait` only
+  watches for it. The run exits 0 once `config_pending` is false and the
+  applied config matches. It exits 3 only if the apply has not landed within
+  `--wait` (the save stays staged on the card and applies later) or the board
+  never answered (rebooted: the save loads at boot). A re-run while staged is
+  refused (exit 2), so a retry is safe.
 - Command, from the repository root: `python3
   firmware/tools/dsp_config/aius_dsp_set.py --device
   http://192.0.2.66 --auth-file .secrets/aius-sd-auth --set
