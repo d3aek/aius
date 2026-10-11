@@ -2,6 +2,7 @@
 
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static unsigned int failures;
@@ -464,6 +465,45 @@ static void body_bound(const char *body, AiusDspConfigErrorCode expected,
 	                       const char *label)
 {
 	expect_error(body, expected, label);
+}
+
+/* A valid body with the two top-level uint32 fields substituted. */
+static void check_u32_fields(const char *rate, const char *base,
+                             AiusDspConfigErrorCode expected, const char *label)
+{
+	char body[1024];
+	snprintf(body, sizeof(body),
+		"{\"source\":\"sd\",\"config_generation\":0,\"sample_rate_hz\":%s,"
+		"\"features\":{\"input_eq\":true,\"matrix\":true,\"output_eq\":true,"
+		"\"limiter\":true,\"meters\":true},"
+		"\"input_channels\":{\"fl\":{\"gain_db\":0,\"eq\":[]},"
+		"\"fr\":{\"gain_db\":0,\"eq\":[]},\"fc\":{\"gain_db\":0,\"eq\":[]},"
+		"\"lfe\":{\"gain_db\":0,\"eq\":[]},\"sl\":{\"gain_db\":0,\"eq\":[]},"
+		"\"sr\":{\"gain_db\":0,\"eq\":[]}},\"output_eq\":[],"
+		"\"matrix\":{\"center_gain_linear\":0,\"surround_gain_linear\":0,"
+		"\"lfe_gain_linear\":0,\"lfe_crossover_hz\":120,"
+		"\"headroom_linear\":1,\"clipfree\":false},"
+		"\"limiter\":{\"enabled\":false,\"threshold_dbfs\":0,\"attack_ms\":1,"
+		"\"release_ms\":100,\"lookahead_ms\":0},\"base_generation\":%s}",
+		rate, base);
+	expect_error(body, expected, label);
+}
+
+/* Huge doubles must be refused before the uint32 cast (UB otherwise). */
+static void test_uint32_field_bounds(void)
+{
+	check_u32_fields("1e300", "0", AIUS_DSP_CONFIG_ERR_OUT_OF_RANGE,
+	                 "sample_rate_hz 1e300");
+	check_u32_fields("0.01e310", "0", AIUS_DSP_CONFIG_ERR_OUT_OF_RANGE,
+	                 "sample_rate_hz 0.01e310");
+	check_u32_fields("4294967296", "0", AIUS_DSP_CONFIG_ERR_OUT_OF_RANGE,
+	                 "sample_rate_hz 2^32");
+	check_u32_fields("48000", "1e300", AIUS_DSP_CONFIG_ERR_OUT_OF_RANGE,
+	                 "base_generation 1e300");
+	check_u32_fields("48000", "0.01e310", AIUS_DSP_CONFIG_ERR_OUT_OF_RANGE,
+	                 "base_generation 0.01e310");
+	check_u32_fields("48000", "4294967296", AIUS_DSP_CONFIG_ERR_OUT_OF_RANGE,
+	                 "base_generation 2^32");
 }
 
 static void test_bounds(void)
@@ -1247,8 +1287,198 @@ static void test_duplicate_keys(void)
 		AIUS_DSP_CONFIG_ERR_DUPLICATE_KEY, "duplicate matrix key");
 }
 
+/* ---- Number decode: correctly rounded, round-trip stable ------------------
+ * The decoder is static, so drive it through matrix.center_gain_linear
+ * (bounds [0, 4]) with VALID_BODY's own text swapped for the number under test.
+ * The oracle is the host strtod(), which is correctly rounded. */
+static AiusDspConfigErrorCode parse_center(const char *number, double *out)
+{
+	static const char KEY[] = "\"center_gain_linear\":0.7071067811865475,";
+	static char body[2048];
+	const char *at = strstr(VALID_BODY, KEY);
+	if (at == NULL)
+		return AIUS_DSP_CONFIG_ERR_MALFORMED_JSON;
+	size_t head = (size_t)(at - VALID_BODY) + strlen("\"center_gain_linear\":");
+	int n = snprintf(body, sizeof(body), "%.*s%s%s", (int)head, VALID_BODY,
+	                 number, at + strlen(KEY) - 1);
+	if (n <= 0 || (size_t)n >= sizeof(body))
+		return AIUS_DSP_CONFIG_ERR_MALFORMED_JSON;
+	AiusDspModel m;
+	memset(&m, 0xa5, sizeof(m));
+	AiusDspConfigErrorCode error = parse(body, &m);
+	if (error == AIUS_DSP_CONFIG_OK)
+		*out = m.matrix.center_gain_linear;
+	return error;
+}
+
+static int same_bits(double a, double b)
+{
+	return memcmp(&a, &b, sizeof(a)) == 0;
+}
+
+static void expect_decodes_like_strtod(const char *text)
+{
+	double got = 0.0;
+	AiusDspConfigErrorCode error = parse_center(text, &got);
+	double want = strtod(text, NULL);
+	check(error == AIUS_DSP_CONFIG_OK, "decode '%s': error %d", text, (int)error);
+	if (error == AIUS_DSP_CONFIG_OK)
+		check(same_bits(got, want), "decode '%s': got %.17g want %.17g", text,
+		      got, want);
+}
+
+static uint64_t lcg_state = 0x9e3779b97f4a7c15ull;
+static uint64_t lcg_next(void)
+{
+	lcg_state = lcg_state * 6364136223846793005ull + 1442695040888963407ull;
+	return lcg_state ^ (lcg_state >> 29);
+}
+
+static void test_number_decode_vectors(void)
+{
+	static const char *const TEXTS[] = {
+		/* The register's live and typed drift cases. */
+		"0.3162277660168385", "0.31622776601683855", "0.03", "0.1", "0.3",
+		"0.30000000000000004", "0.7071067811865475", "0.7071067811865476",
+		/* 16- and 17-digit mantissas. */
+		"1.234567890123456", "1.2345678901234567", "3.1415926535897931",
+		"0.12345678901234567", "0.9999999999999999", "0.99999999999999989",
+		"0.99999999999999994", "2.7182818284590452", "9007199254740993e-16",
+		"9007199254740992e-16", "12345678901234567e-16", "1234567890123456e-15",
+		/* Exponent forms: e, E, signed. */
+		"3.162277660168385e-1", "3.162277660168385E-1", "3162277660168385e-16",
+		"3162277660168385E-16", "0.3162277660168385e0", "0.3162277660168385e+0",
+		"31.62277660168385e-2", "0.03e+1", "3E-2", "3e-2", "1e-1", "1E-1",
+		"0.5e+0", "5e-1", "5E-1", "0.0005e3", "400e-2", "4e0", "0.04E2",
+		/* Exact ties (round to even) and either side of them. */
+		"1.00000000000000011102230246251565404236316680908203125",
+		"1.00000000000000011102230246251565404236316680908203124",
+		"1.00000000000000011102230246251565404236316680908203126",
+		"0.99999999999999994448884876874217297881841659545898437",
+		"0.999999999999999944488848768742172978818416595458984375",
+		"0.99999999999999994448884876874217297881841659545898438",
+		/* Float boundaries: subnormals, smallest normals, the upper bound. */
+		"5e-324", "4.9406564584124654e-324", "2.4703282292062327e-324",
+		"2.4703282292062328e-324", "2.4703282292062329e-324", "1e-323",
+		"2.2250738585072009e-308", "2.2250738585072011e-308",
+		"2.2250738585072014e-308", "2.2250738585072019e-308",
+		"1e-320", "1e-400", "0e0", "0", "0.0", "-0", "-0.0",
+		"4", "4.0", "3.9999999999999996", "4.0000000000000001",
+		"4.0000000000000004", "0.4e1", "40e-1",
+		/* Long mantissas (kept digits beyond 19, sticky). */
+		"0.1234567890123456789012345678901234567890123456789012345",
+		"3.1415926535897932384626433832795028841971693993751058209",
+		"0.00000000000000000000000000000000000000000001234567890123",
+		"1234567890123456789012345678901234567890123456789e-49",
+	};
+	for (size_t i = 0; i < sizeof(TEXTS) / sizeof(TEXTS[0]); i++)
+		expect_decodes_like_strtod(TEXTS[i]);
+
+	/* Just above the bound is still refused, the bound itself accepted. */
+	double v = 0.0;
+	check(parse_center("4.000000000000001", &v) == AIUS_DSP_CONFIG_ERR_OUT_OF_RANGE,
+	      "decode: 4.000000000000001 must be out of range");
+	check(parse_center("4.0000000000000004", &v) == AIUS_DSP_CONFIG_OK && v == 4.0,
+	      "decode: 4.0000000000000004 rounds to 4");
+}
+
+static void test_number_decode_roundtrip(void)
+{
+	/* Every float the live model carries (fixtures/dsp_config_live_*.json) and
+	 * the VALID_BODY set, through the serialiser's %.17g and back. */
+	static const double LIVE[] = {
+		0.35000000000000031, 0.85500000000000065, 0.3162277660168385,
+		0.31622776601683855, 0.7071067811865475, 0.5, 2.0, 0.9, 1.5, 3.5, 0.03,
+		0.1, 1.0, 0.0, 3.9999999999999996,
+	};
+	char text[64];
+	for (size_t i = 0; i < sizeof(LIVE) / sizeof(LIVE[0]); i++) {
+		snprintf(text, sizeof(text), "%.17g", LIVE[i]);
+		double got = -1.0;
+		check(parse_center(text, &got) == AIUS_DSP_CONFIG_OK &&
+		          same_bits(got, LIVE[i]),
+		      "roundtrip %%.17g '%s' drifted (got %.17g)", text, got);
+	}
+
+	/* A spread: random doubles over many binades, %.17g must be bit-stable and
+	 * the shorter %.15g / %.16g forms must match strtod. */
+	for (int i = 0; i < 20000; i++) {
+		uint64_t r = lcg_next();
+		double base = (double)(r >> 11) / 9007199254740992.0; /* [0,1) */
+		int shift = (int)(lcg_next() % 60u);
+		double value = base * 4.0;
+		for (int s = 0; s < shift % 40; s++)
+			value *= 0.5;
+		if (i % 7 == 0)
+			value = base * 4.0;
+		if (value > 4.0)
+			value = 4.0;
+		snprintf(text, sizeof(text), "%.17g", value);
+		double got = -1.0;
+		AiusDspConfigErrorCode error = parse_center(text, &got);
+		check(error == AIUS_DSP_CONFIG_OK && same_bits(got, value),
+		      "roundtrip '%s': got %.17g", text, got);
+		snprintf(text, sizeof(text), "%.16g", value);
+		expect_decodes_like_strtod(text);
+		snprintf(text, sizeof(text), "%.15e", value);
+		expect_decodes_like_strtod(text);
+	}
+
+	/* Random digit strings (1..40 digits) at decimal exponents down to the
+	 * subnormals, against strtod. */
+	for (int i = 0; i < 20000; i++) {
+		char digits[48];
+		int count = 1 + (int)(lcg_next() % 40u);
+		digits[0] = (char)('1' + lcg_next() % 9u);
+		for (int d = 1; d < count; d++)
+			digits[d] = (char)('0' + lcg_next() % 10u);
+		digits[count] = '\0';
+		int exponent = -1 - (int)(lcg_next() % 344u);
+		snprintf(text, sizeof(text), "%.1s.%se%d", digits,
+		         count > 1 ? digits + 1 : "0", exponent);
+		expect_decodes_like_strtod(text);
+	}
+}
+
+static void test_number_decode_refusals(void)
+{
+	double v = 0.0;
+	/* Out of range / non-finite stay refused. */
+	check(parse_center("1e999", &v) == AIUS_DSP_CONFIG_ERR_OUT_OF_RANGE, "1e999");
+	check(parse_center("1.8e308", &v) == AIUS_DSP_CONFIG_ERR_OUT_OF_RANGE, "1.8e308");
+	check(parse_center("-1", &v) == AIUS_DSP_CONFIG_ERR_OUT_OF_RANGE, "-1");
+	check(parse_center("0e999", &v) == AIUS_DSP_CONFIG_ERR_OUT_OF_RANGE, "0e999");
+	check(parse_center("0.0E+309", &v) == AIUS_DSP_CONFIG_ERR_OUT_OF_RANGE, "0E+309");
+	check(parse_center("5", &v) == AIUS_DSP_CONFIG_ERR_OUT_OF_RANGE, "5");
+	check(parse_center("1e-999", &v) == AIUS_DSP_CONFIG_OK && v == 0.0,
+	      "1e-999 underflows to 0");
+	check(parse_center("0e308", &v) == AIUS_DSP_CONFIG_OK && v == 0.0, "0e308");
+	/* Length cap: 63 bytes accepted, 64 refused. */
+	char text[96];
+	memset(text, '0', sizeof(text));
+	text[0] = '0';
+	text[1] = '.';
+	text[62] = '1';
+	text[63] = '\0';
+	check(parse_center(text, &v) == AIUS_DSP_CONFIG_OK, "63-byte number");
+	text[63] = '1';
+	text[64] = '\0';
+	check(parse_center(text, &v) == AIUS_DSP_CONFIG_ERR_OUT_OF_RANGE,
+	      "64-byte number must be out of range");
+	/* Grammar and type refusals. */
+	static const char *const BAD[] = { "01", "1.", ".5", "+1", "1e", "1e+",
+		"-", "--1", "1.5.2", "0x10", "NaN", "Infinity", "1_0", "\"1\"",
+		"true", "null", "[1]" };
+	for (size_t i = 0; i < sizeof(BAD) / sizeof(BAD[0]); i++)
+		check(parse_center(BAD[i], &v) != AIUS_DSP_CONFIG_OK,
+		      "'%s' must be refused", BAD[i]);
+}
+
 int main(void)
 {
+	test_number_decode_vectors();
+	test_number_decode_roundtrip();
+	test_number_decode_refusals();
 	test_valid_roundtrip();
 	test_argument_and_size_errors();
 	test_malformed();
@@ -1256,6 +1486,7 @@ int main(void)
 	test_response_only_keys();
 	test_missing_keys();
 	test_bounds();
+	test_uint32_field_bounds();
 	test_lfe_crossover();
 	test_layout_aware();
 	test_surround_delay_ms();

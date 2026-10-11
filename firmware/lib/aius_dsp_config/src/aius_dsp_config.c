@@ -18,6 +18,11 @@
 #ifndef FLASHMEM
 #define FLASHMEM
 #endif
+/* PROGMEM keeps the decoder's const tables in flash: plain .rodata is copied
+ * into DTCM .data by the linker script, and slot-a _ebss is at its ceiling. */
+#ifndef PROGMEM
+#define PROGMEM
+#endif
 
 /* Longest schema key is "surround_gain_linear" (20). 32 leaves headroom and
  * matches the aius_config sibling. A "source" value longer than the buffer is
@@ -125,54 +130,270 @@ static FLASHMEM int is_number_start(uint8_t ch)
 	return ch == '-' || (ch >= '0' && ch <= '9');
 }
 
+/* Correctly rounded (round-to-nearest-even) decimal -> double, so the GET's own
+ * %.17g text decodes bit-identical and any typed value lands on the nearest
+ * double. Deliberately NOT strtod(): newlib's strtod/dtoa machinery costs
+ * several KB of ITCM this audio-critical firmware cannot spare. Instead:
+ *   - fast path (Clinger): mantissa <= 2^53 and |power of ten| <= 22 are both
+ *     exact doubles, so one multiply or divide is the single correct rounding;
+ *   - slow path (after Go's strconv decimal): shift an exact decimal digit
+ *     array by powers of two until it is a 53-bit integer, then round. It lives
+ *     in FLASHMEM and uses a stack array, no heap and no libm. */
+#define DECODE_DIGITS_MAX 800
+#define DECODE_SHIFT_PAD 9 /* a left shift by <= 27 adds at most 9 digits */
+
+typedef struct {
+	uint8_t d[DECODE_DIGITS_MAX + DECODE_SHIFT_PAD];
+	int nd;
+	int dp; /* value = 0.d[0]d[1]... * 10^dp */
+	int trunc; /* nonzero digits were dropped beyond DECODE_DIGITS_MAX */
+} DecodeDecimal;
+
+static FLASHMEM void decode_trim(DecodeDecimal *a)
+{
+	while (a->nd > 0 && a->d[a->nd - 1] == 0)
+		a->nd--;
+	if (a->nd == 0)
+		a->dp = 0;
+}
+
+/* Multiply by 2^k (k <= 27). */
+static FLASHMEM void decode_left_shift(DecodeDecimal *a, unsigned k)
+{
+	int total = a->nd + DECODE_SHIFT_PAD;
+	uint64_t carry = 0;
+	for (int p = total - 1; p >= 0; p--) {
+		uint64_t n = carry;
+		if (p >= DECODE_SHIFT_PAD)
+			n += (uint64_t)a->d[p - DECODE_SHIFT_PAD] << k;
+		a->d[p] = (uint8_t)(n % 10u);
+		carry = n / 10u;
+	}
+	int s = 0;
+	while (s < total && a->d[s] == 0)
+		s++;
+	memmove(a->d, a->d + s, (size_t)(total - s));
+	a->nd = total - s;
+	a->dp += DECODE_SHIFT_PAD - s;
+	if (a->nd > DECODE_DIGITS_MAX) {
+		for (int i = DECODE_DIGITS_MAX; i < a->nd; i++)
+			if (a->d[i] != 0)
+				a->trunc = 1;
+		a->nd = DECODE_DIGITS_MAX;
+	}
+	decode_trim(a);
+}
+
+/* Divide by 2^k (k <= 27). */
+static FLASHMEM void decode_right_shift(DecodeDecimal *a, unsigned k)
+{
+	int r = 0, w = 0;
+	uint64_t n = 0;
+	const uint64_t mask = ((uint64_t)1 << k) - 1u;
+	while ((n >> k) == 0) {
+		if (r >= a->nd) {
+			if (n == 0) {
+				a->nd = 0;
+				a->dp = 0;
+				return;
+			}
+			while ((n >> k) == 0) {
+				n *= 10u;
+				r++;
+			}
+			break;
+		}
+		n = n * 10u + a->d[r];
+		r++;
+	}
+	a->dp -= r - 1;
+	for (; r < a->nd; r++) {
+		uint8_t digit = (uint8_t)(n >> k);
+		n &= mask;
+		a->d[w++] = digit;
+		n = n * 10u + a->d[r];
+	}
+	while (n > 0) {
+		uint8_t digit = (uint8_t)(n >> k);
+		n &= mask;
+		if (w < DECODE_DIGITS_MAX)
+			a->d[w++] = digit;
+		else if (digit != 0)
+			a->trunc = 1;
+		n *= 10u;
+	}
+	a->nd = w;
+	decode_trim(a);
+}
+
+static FLASHMEM void decode_shift(DecodeDecimal *a, int k)
+{
+	while (k > 27) {
+		decode_left_shift(a, 27u);
+		k -= 27;
+	}
+	while (k < -27) {
+		decode_right_shift(a, 27u);
+		k += 27;
+	}
+	if (k > 0)
+		decode_left_shift(a, (unsigned)k);
+	else if (k < 0)
+		decode_right_shift(a, (unsigned)-k);
+}
+
+static FLASHMEM double decode_pack(int negative, uint64_t bits)
+{
+	bits |= (uint64_t)(negative != 0) << 63;
+	double value;
+	memcpy(&value, &bits, sizeof(value));
+	return value;
+}
+
+static FLASHMEM double decode_slow(DecodeDecimal *a, int negative)
+{
+	static const uint8_t POW_TAB[] PROGMEM = { 1, 3, 6, 9, 13, 16, 19, 23, 26 };
+	const int pow_count = (int)(sizeof(POW_TAB) / sizeof(POW_TAB[0]));
+	if (a->nd == 0)
+		return decode_pack(negative, 0u);
+	if (a->dp > 310)
+		return decode_pack(negative, 0x7ff0000000000000ull); /* inf */
+	if (a->dp < -330)
+		return decode_pack(negative, 0u);
+
+	int exp2 = 0;
+	while (a->dp > 0) {
+		int n = a->dp >= pow_count ? 27 : POW_TAB[a->dp];
+		decode_shift(a, -n);
+		exp2 += n;
+	}
+	while (a->dp < 0 || (a->dp == 0 && a->nd > 0 && a->d[0] < 5)) {
+		int n = -a->dp >= pow_count ? 27 : POW_TAB[-a->dp];
+		decode_shift(a, n);
+		exp2 -= n;
+	}
+	/* Now 0.5 <= a < 1; make it 1 <= x < 2. */
+	exp2--;
+	if (exp2 < -1022) {
+		int n = -1022 - exp2;
+		decode_shift(a, -n);
+		exp2 += n;
+	}
+	if (exp2 + 1023 >= 2047)
+		return decode_pack(negative, 0x7ff0000000000000ull);
+
+	decode_shift(a, 53);
+	uint64_t mant = 0;
+	int i = 0;
+	for (; i < a->dp && i < a->nd; i++)
+		mant = mant * 10u + a->d[i];
+	for (; i < a->dp; i++)
+		mant *= 10u;
+	int round_up = 0;
+	if (a->dp >= 0 && a->dp < a->nd) {
+		if (a->d[a->dp] == 5 && a->dp + 1 == a->nd)
+			round_up = a->trunc || (a->dp > 0 && (a->d[a->dp - 1] & 1u));
+		else
+			round_up = a->d[a->dp] >= 5;
+	}
+	if (round_up)
+		mant++;
+	if (mant == ((uint64_t)1 << 53)) {
+		mant >>= 1;
+		exp2++;
+		if (exp2 + 1023 >= 2047)
+			return decode_pack(negative, 0x7ff0000000000000ull);
+	}
+	if ((mant & ((uint64_t)1 << 52)) == 0)
+		exp2 = -1023; /* denormal (or zero): biased exponent 0 */
+	uint64_t bits = (mant & (((uint64_t)1 << 52) - 1u)) |
+	                ((uint64_t)(exp2 + 1023) << 52);
+	return decode_pack(negative, bits);
+}
+
 /* Convert an already grammar-validated JSON number's [start, end) byte range
- * (per aius_json_scan_number) into a double via plain digit accumulation.
- * Deliberately NOT strtod(): pulling in newlib's general strtod/dtoa machinery
- * costs several KB of ITCM that this audio-critical firmware cannot spare, for a
- * bounded-config parser that only ever sees short, simple decimal numbers
- * (frequencies, gains, dB values, linear coefficients). Not bit-exact with
- * strtod() for pathological inputs (very long digit runs, denormals); well
- * within double precision for every value this schema's bounds allow. */
+ * (per aius_json_scan_number, so at most NUMBER_BUFFER_MAX - 1 bytes) into the
+ * nearest double. A zero mantissa with an explicit exponent above 308 yields
+ * NaN, as the old digit-scaling decoder did (0 * inf), so that input stays
+ * refused as out of range. */
 static FLASHMEM double decode_scanned_number(const AiusJsonCursor *parser,
 	                                            size_t start, size_t end)
 {
+	static const double POW10[] PROGMEM = {
+		1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11,
+		1e12, 1e13, 1e14, 1e15, 1e16, 1e17, 1e18, 1e19, 1e20, 1e21, 1e22
+	};
+	DecodeDecimal dec;
 	size_t i = start;
 	int negative = 0;
 	if (parser->data[i] == '-') {
 		negative = 1;
 		i++;
 	}
-	double mantissa = 0.0;
-	while (i < end && parser->data[i] >= '0' && parser->data[i] <= '9') {
-		mantissa = mantissa * 10.0 + (double)(parser->data[i] - '0');
-		i++;
-	}
-	if (i < end && parser->data[i] == '.') {
-		i++;
-		double scale = 0.1;
-		while (i < end && parser->data[i] >= '0' && parser->data[i] <= '9') {
-			mantissa += (double)(parser->data[i] - '0') * scale;
-			scale *= 0.1;
-			i++;
+	dec.nd = 0;
+	dec.dp = 0;
+	dec.trunc = 0;
+	int saw_dot = 0;
+	int total_digits = 0; /* digits kept, including interior and trailing zeros */
+	uint64_t fast_mant = 0;
+	for (; i < end; i++) {
+		uint8_t c = parser->data[i];
+		if (c == '.') {
+			saw_dot = 1;
+			dec.dp = dec.nd;
+			continue;
 		}
+		if (c < '0' || c > '9')
+			break;
+		if (c == '0' && dec.nd == 0) {
+			dec.dp--; /* leading zero */
+			continue;
+		}
+		if (dec.nd < DECODE_DIGITS_MAX)
+			dec.d[dec.nd++] = (uint8_t)(c - '0');
+		else if (c != '0')
+			dec.trunc = 1;
+		if (total_digits < 19)
+			fast_mant = fast_mant * 10u + (uint64_t)(c - '0');
+		total_digits++;
 	}
+	if (!saw_dot)
+		dec.dp = dec.nd;
+
 	int exponent = 0;
-	int exponent_negative = 0;
 	if (i < end && (parser->data[i] == 'e' || parser->data[i] == 'E')) {
+		int exponent_negative = 0;
 		i++;
 		if (i < end && (parser->data[i] == '+' || parser->data[i] == '-')) {
 			exponent_negative = parser->data[i] == '-';
 			i++;
 		}
 		while (i < end && parser->data[i] >= '0' && parser->data[i] <= '9') {
-			exponent = exponent * 10 + (parser->data[i] - '0');
+			if (exponent < 10000)
+				exponent = exponent * 10 + (parser->data[i] - '0');
 			i++;
 		}
+		if (exponent_negative)
+			exponent = -exponent;
 	}
-	double value = negative ? -mantissa : mantissa;
-	if (exponent != 0)
-		value *= pow(10.0, exponent_negative ? -exponent : exponent);
-	return value;
+
+	if (dec.nd == 0) {
+		if (exponent > 308)
+			return (double)NAN;
+		return decode_pack(negative, 0u);
+	}
+	dec.dp += exponent;
+
+	/* Clinger fast path; fast_mant holds every digit only when <= 19 kept. */
+	int e10 = dec.dp - total_digits;
+	if (total_digits <= 19 && fast_mant <= ((uint64_t)1 << 53) &&
+	    e10 >= -22 && e10 <= 22) {
+		double value = (double)fast_mant;
+		value = e10 < 0 ? value / POW10[-e10] : value * POW10[e10];
+		return negative ? -value : value;
+	}
+	decode_trim(&dec);
+	return decode_slow(&dec, negative);
 }
 
 /* Extract a finite JSON number as a double. A well-formed number whose text is
@@ -933,7 +1154,8 @@ static FLASHMEM AiusDspConfigErrorCode parse_top_value(AiusJsonCursor *parser,
 		AiusDspConfigErrorCode error = take_number(parser, &rate);
 		if (error != AIUS_DSP_CONFIG_OK)
 			return error;
-		if (rate <= 0.0 || floor(rate) != rate)
+		/* Bounded before the cast: a double above UINT32_MAX is UB to cast. */
+		if (rate <= 0.0 || rate > 4294967295.0 || floor(rate) != rate)
 			return AIUS_DSP_CONFIG_ERR_OUT_OF_RANGE;
 		model->sample_rate_hz = (uint32_t)rate;
 		return AIUS_DSP_CONFIG_OK;
@@ -962,6 +1184,8 @@ static FLASHMEM AiusDspConfigErrorCode parse_top_value(AiusJsonCursor *parser,
 			take_non_negative_integer(parser, &base);
 		if (error != AIUS_DSP_CONFIG_OK)
 			return error;
+		if (base > 4294967295.0)
+			return AIUS_DSP_CONFIG_ERR_OUT_OF_RANGE;
 		model->base_generation = (uint32_t)base;
 		return AIUS_DSP_CONFIG_OK;
 	}

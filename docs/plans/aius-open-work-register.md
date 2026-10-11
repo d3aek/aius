@@ -371,7 +371,10 @@ ends left open:
   replay after 3 to 7 s, and a later stop request overwrites the `carrier`
   stop reason with `request`. Fix planned as
   [`aius-output-jitter.md`](aius-output-jitter.md) Phase K; the hidden
-  receiver state is instrumented in Phase L.
+  receiver state is instrumented in Phase L (built host-only 2026-10-11).
+  Phase K is not worth building: replay leaves the firmware in
+  [`aius-sample-rate-following.md`](aius-sample-rate-following.md) Phase
+  4i, which retires this defect with it.
 
 - **OPEN: a DSP-config save drifts floats by a few ulps (filed
   2026-10-07).** The PUT number decoder is not correctly rounded
@@ -391,7 +394,23 @@ ends left open:
   on 16- and 17-digit mantissas and exponent forms, then an OTA. It fixes
   drift from then on; it does not restore values already moved. Found by
   the [`aius-sd-mixer-dashboard.md`](aius-sd-mixer-dashboard.md) Phase 4
-  review.
+  review. **Fixed in code 2026-10-11, not yet on the board:** an exact
+  decimal decode in FLASHMEM (a fast path for mantissas up to 2^53 with a
+  power of ten up to 22, otherwise an exact decimal shift with
+  round-to-nearest-even; no `strtod`, no libm), proven bit-identical for
+  `%.17g` round-trips of every fixture float and 20k random doubles, and
+  against host `strtod` for 20k random strings, and by the delivery audit
+  for 5.1 million strings against glibc `strtod` with no mismatch. One
+  refusal moved: `0.01e310` now decodes to a finite 1e308 instead of
+  overflowing, so the two integer fields that cast a decoded double
+  (`TOP_SAMPLE_RATE`, `base_generation`) now refuse anything above
+  `UINT32_MAX`, which also closes the old undefined cast of `1e300`;
+  `0e999` keeps its out-of-range refusal. The decoder's power tables sit in
+  flash, not DTCM (this freed no `_ebss` headroom: `_VectorsRam` is pinned
+  after `.data`, so the bytes became padding). Delivery audit PASS with
+  nits fixed, closure PASS. Closes at the
+  OTA that carries it; `aius_dsp_set.py`'s 1e-12 `--wait` tolerance can
+  tighten after that.
 
 - **FIXED 2026-10-05: the TX governor trimmed a clean replay from its
   768-frame floor to the live 128-frame target.** Fixed by
@@ -425,7 +444,9 @@ ends left open:
   around the owner's call-out were lost). Workaround: pull before switch-off.
   Fix planned as
   [`aius-recorder-rolling-buffer.md`](aius-recorder-rolling-buffer.md)
-  Phase E.
+  Phase E; **built host-only 2026-10-11** (a trigger on a slot with no
+  audio is dropped and counted in `empty_triggers_dropped`), not yet on
+  the board.
 
 - ~~**OPEN — `optical-app` suite is red at HEAD on its `test_bitstream_ui.py`
   arm (seen 2026-09-07, both Phase H and Phase I runs).**~~ **FIXED
