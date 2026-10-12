@@ -1406,8 +1406,7 @@ bool aius_optical_settings_reput(const AiusHttpTransaction *http,
                                  const uint8_t **bytes, uint32_t *length);
 
 /* GET /api/dsp/config and /aius/dsp.json (write_dsp_config): the model
- * serialised with its header. `headroom_linear` is the served pad (with
- * clipfree, the computed one). */
+ * serialised with its header. */
 typedef struct {
 	const char *source;         /* "sd" or "default" (dsp_source_name) */
 	bool config_pending;        /* the model is the staged one */
@@ -1416,7 +1415,6 @@ typedef struct {
 	                               GET document omits it */
 	uint32_t config_generation;
 	uint32_t staged_generation;
-	double headroom_linear;
 } AiusOpticalDspConfigHeader;
 
 #ifdef AIUS_DSP_CONFIG_H

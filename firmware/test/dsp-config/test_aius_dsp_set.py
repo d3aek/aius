@@ -255,15 +255,34 @@ class DspSetTest(unittest.TestCase):
                        after=[applied(2, False, source="sd")])
         self.assertEqual(code, 0)
 
-    def test_clipfree_applied_headroom_is_skipped(self):
+    def test_clipfree_applied_headroom_is_compared(self):
         live = with_state(1, False)
         live["matrix"]["clipfree"] = True
         done = applied(2, False)
         done["matrix"]["clipfree"] = True
-        done["matrix"]["headroom_linear"] = 0.71
+        done["matrix"]["headroom_linear"] = 0.71  # differs from the stored pad
+        code, *_ = run(["features.limiter=true"], wait=30, live=live, after=[done])
+        self.assertEqual(code, 1)
+        done["matrix"]["headroom_linear"] = live["matrix"]["headroom_linear"]
         code, *_ = run(["features.limiter=true"], wait=30, live=live, after=[done])
         self.assertEqual(code, 0)
-        done["matrix"]["clipfree"] = False  # computed headroom no longer excused
+
+    def test_pre_4t_board_serving_resolved_clipfree_headroom_is_tolerated(self):
+        live = with_state(1, False)
+        live["matrix"]["clipfree"] = True
+        done = applied(2, False)
+        m = done["matrix"]
+        m["clipfree"] = True
+        denom = (1.0 + m["center_gain_linear"] + m["surround_gain_linear"]
+                 + abs(m["lfe_gain_linear"]))
+        resolved = 1.0 if denom <= 1.0 else 1.0 / denom
+        self.assertNotAlmostEqual(resolved, live["matrix"]["headroom_linear"])
+        m["headroom_linear"] = resolved
+        code, *_ = run(["features.limiter=true"], wait=30, live=live, after=[done])
+        self.assertEqual(code, 0)
+        # Not tolerated when clipfree is off in the applied config.
+        m["clipfree"] = False
+        live["matrix"]["clipfree"] = False
         code, *_ = run(["features.limiter=true"], wait=30, live=live, after=[done])
         self.assertEqual(code, 1)
 

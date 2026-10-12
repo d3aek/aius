@@ -1402,7 +1402,7 @@
             "exclusiveMinimum": true,
             "minimum": 0,
             "maximum": 1,
-            "description": "Resolved linear output headroom."
+            "description": "The stored pad. With clipfree true the DSP ignores it and applies the clip-free headroom it computes from the matrix gains."
           },
           "clipfree": { "type": "boolean", "description": "Whether the clip-free headroom policy is selected." },
           "layout_aware": {

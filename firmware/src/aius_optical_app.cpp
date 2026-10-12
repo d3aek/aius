@@ -2761,7 +2761,7 @@ FLASHMEM size_t aius_optical_dsp_config_write(
 	                     model->matrix.surround_gain_linear,
 	                     model->matrix.lfe_gain_linear,
 	                     model->matrix.lfe_crossover_hz,
-	                     header->headroom_linear,
+	                     model->matrix.headroom_linear,
 	                     model->matrix.clipfree ? "true" : "false",
 	                     model->matrix.layout_aware ? "true" : "false",
 	                     model->matrix.surround_delay_ms))

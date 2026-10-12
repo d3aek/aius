@@ -831,7 +831,6 @@ MODEL_WIRE_KEYS = (
 # `base_generation` are wire/concurrency fields, not signal-processing choices.
 MODEL_SEMANTIC_KEYS = MODEL_WIRE_KEYS[2:]
 MODEL_ALL_KEYS = MODEL_WIRE_KEYS + ("base_generation",)
-DERIVED_HEADROOM = "derived-by-clipfree"
 BYPASS_ARTIFACT_NAMES = frozenset({
     "sd_dsp_config",
     "bypass_effective_dsp_config",
@@ -940,18 +939,10 @@ def canonical_model(model: dict) -> dict:
 
 
 def comparable_model(model: dict) -> dict:
-    """The canonical model minus the fields the device derives, not echoes.
-
-    `GET /api/dsp/config` serializes the RESOLVED matrix headroom
-    (`optical_main.cpp` http_dsp_config_json), so a `clipfree` model's stored
-    `headroom_linear` is not observable in the effective response. Comparing it
-    would reject a faithful card file, so this form marks it derived on both
-    sides instead. With `clipfree` false the two forms are identical.
-    """
-    comparable = canonical_model(model)
-    if comparable["matrix"].get("clipfree") is True:
-        comparable["matrix"]["headroom_linear"] = DERIVED_HEADROOM
-    return comparable
+    """Kept as the `comparable_sha256` key's name; it now equals
+    `canonical_model`. `GET /api/dsp/config` echoes the stored matrix
+    `headroom_linear` whether or not `clipfree` is on, so nothing is masked."""
+    return canonical_model(model)
 
 
 def _hash_model(model: dict) -> str:

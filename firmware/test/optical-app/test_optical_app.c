@@ -5990,7 +5990,6 @@ static void test_dsp_config_round_trip(void)
 	header.source = "sd";
 	header.config_generation = 42u; /* advanced by the Apply */
 	header.staged_generation = 7u;
-	header.headroom_linear = running.matrix.headroom_linear;
 	/* The GET document serves the new generation and model, and has no
 	 * base_generation: the load's parser refuses it, which is why the Q2
 	 * re-put writes the file form. */
@@ -6029,6 +6028,28 @@ static void test_dsp_config_round_trip(void)
 	                                       sizeof(body) - 1u);
 	body[length] = '\0';
 	assert(strstr((const char *)body, "\"source\":\"default\"") != NULL);
+}
+
+/* Phase 4t: a config stored clipfree true with headroom 0.5 GETs 0.5. The
+ * writer emits the stored model pad (not the resolved clip-free one). */
+static void test_dsp_config_serves_stored_headroom_under_clipfree(void)
+{
+	AiusDspModel model;
+	AiusOpticalDspConfigHeader header;
+	static uint8_t body[4096];
+	size_t length;
+
+	aius_dsp_model_set_defaults(&model);
+	model.matrix.clipfree = 1u;
+	model.matrix.headroom_linear = 0.5;
+	memset(&header, 0, sizeof(header));
+	header.source = "sd";
+	length = aius_optical_dsp_config_write(&model, &header, body,
+	                                       sizeof(body) - 1u);
+	assert(length > 0u);
+	body[length] = '\0';
+	assert(strstr((const char *)body, "\"headroom_linear\":0.5,") != NULL);
+	assert(strstr((const char *)body, "\"clipfree\":true") != NULL);
 }
 
 /* Delivery audit: D-S1 (a write error is not a card-gone), D-S2 (a
@@ -6649,6 +6670,7 @@ int main(void)
 	RUN_TEST(test_sd_card_loss_call_sites);
 	RUN_TEST(test_sd_flush_audit_fixes);
 	RUN_TEST(test_dsp_config_round_trip);
+	RUN_TEST(test_dsp_config_serves_stored_headroom_under_clipfree);
 	RUN_TEST(test_card_ops_and_reput);
 	RUN_TEST(test_sd_service_gate);
 	RUN_TEST(test_sd_flush_put_stops_fill);

@@ -7699,7 +7699,11 @@ unit: implementer
   `presets/`, absolute paths and `..` (exit 2), so it can never remove
   user presets. Proof: www-bundle 35 (6 new), shellcheck clean
   (verifier). **Next slice:** delete `classic.html` and re-point its
-  tests, after 4s lands (shared `mixer.test.js`).
+  tests (4s has landed). Fold in 4t's clean-room nit 3:
+  `test/sd-editor/openapi.test.js:1054` asserts, under a comment, that
+  the clip-free PUT example's `headroom_linear` is the resolved value.
+  Reword the comment and make the assertion check the example is
+  in (0, 1], since the value is a stored pad ignored under clip-free.
 
 ### Phase 4s The matrix overshoot warning returns when clip-free headroom goes off ✓ SHIPPED 2026-10-12
 
@@ -7767,6 +7771,34 @@ unit: implementer
   value, and the DSP ignores `headroom_linear` while clip-free is on, so
   serving the stored value changes nothing the DSP does. The OTA is the
   owner's word, batched with the next card sync.
+- **Built (host proof green; device proof at the owner's OTA).**
+  `AiusOpticalDspConfigHeader.headroom_linear` is gone, and
+  `aius_optical_dsp_config_write` emits the model's stored value
+  (`firmware/src/aius_optical_app.cpp:2764`). GET and the `/aius/dsp.json`
+  file form therefore serve the same stored pad, and the file-form
+  re-put no longer overwrites it with the resolved value.
+  - Host cases: an optical-app case driving only the model (it fails if
+    the writer reverts), and a dsp runtime case showing the DSP applies
+    the clip-free value.
+  - `aius_dsp_set.py` and `bench.py` now compare headroom.
+    `aius_dsp_set.py` tolerates a pre-4t board serving the resolved
+    value (the same double arithmetic as `aius_dsp.c:284`, served at
+    `%.17g`, tolerance 1e-9).
+  - `openapi.json` and `docs/plans/aius-dsp-config-api.md` are reworded.
+  - Review: the first round FAILED on proof (the case set the value
+    itself), plus a stale doc and the pre-4t false-fail; all were fixed,
+    then confirmed and given a clean-room review.
+  - Proof: optical-app, dsp, dsp-config 32+5, latency-runner 119,
+    sd-editor 416 and registry green. All four images meet their OCRAM
+    floors exactly (264,768 / 264,768 / 264,736 / 264,736 B) with the
+    retired-symbols guard passing.
+- **Open after the OTA:** remove `aius_dsp_set.py`'s pre-4t tolerance
+  (`firmware/tools/dsp_config/aius_dsp_set.py:202`) and its test. On a
+  post-4t board it can mask a lost typed headroom: a card overwritten
+  with the resolved value by a pre-4t re-put, a transport-failed PUT,
+  and a re-GET that matches through the tolerance (clean-room nit 2).
+  Accepted: `bench.py` has no such tolerance. On a pre-4t board it
+  aborts in `prepare()` before any mutation, so it fails safe.
 
 ### Phase 4c `test.sh` runs every `--suite` given ✓ SHIPPED 2026-10-06
 

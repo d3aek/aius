@@ -233,6 +233,15 @@ static int test_feature_bypasses_and_clipfree_resolution(void)
 	CHECK(runtime.downmix.headroom ==
 	      aius_downmix_clipfree_headroom(&runtime.downmix));
 
+	/* Phase 4t: a stored headroom of 0.5 is served as stored, but the DSP
+	 * still applies the resolved clip-free value. */
+	model.matrix.headroom_linear = 0.5;
+	CHECK(aius_dsp_runtime_config_apply(
+		&runtime, &model, 48000u, NULL) == AIUS_OK);
+	CHECK(runtime.downmix.headroom ==
+	      aius_downmix_clipfree_headroom(&runtime.downmix));
+	CHECK(runtime.downmix.headroom != 0.5);
+
 	model.features.input_eq = 0u;
 	model.features.matrix = 0u;
 	model.features.output_eq = 0u;

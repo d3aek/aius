@@ -1127,9 +1127,8 @@ if ever wanted, are SD config files loaded via the editor, not firmware arrays.
 - The build and runtime validators reject out-of-range values, non-finite
   numbers, and unknown input-channel/limiter keys; the config is capped at 12,288
   JSON bytes.
-- `headroom_linear` is the resolved runtime value. `clipfree` indicates the config
-  selected the DSP clip-free headroom policy; the response does not expose the
-  build-time string sentinel. For the default downmix coefficients clip-free
+- `headroom_linear` is the stored pad (a number in (0, 1], also at build time);
+  the DSP applies the clip-free value instead when `clipfree` is true. For the default downmix coefficients clip-free
   resolves to `1 / (1 + 0.7071067811865475 + 0.7071067811865475 +
   abs(lfe_gain_linear))`; unity otherwise.
 - `center_gain_linear` is the shared FC-to-L/R coefficient (raises dialogue; zero
@@ -1371,7 +1370,8 @@ Two page-level modelling decisions worth keeping: the EQ type select carries a
 page-level `none` (section omitted from `eq[]`) alongside the real firmware
 `bypass` type, because the wire model has no "absent" type; and with `clipfree`
 checked the headroom input goes read-only and displays the resolved
-`1 / (1 + centre + surround + |lfe|)`, which is what gets sent.
+`1 / (1 + centre + surround + |lfe|)`; it sends the typed headroom when that is
+in (0, 1], else the resolved value.
 
 ~~**Remaining:** the target asset smoke — the page loading and driving the real
 device — folds into B6. The meter path is proven against authored-to-contract

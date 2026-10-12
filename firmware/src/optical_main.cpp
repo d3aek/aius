@@ -3520,17 +3520,11 @@ static FLASHMEM size_t dsp_config_json(uint8_t *body, size_t capacity,
 	AiusOpticalDspConfigHeader header;
 	if (capacity > AIUS_OPTICAL_MODEL_MAX_JSON_BYTES)
 		capacity = AIUS_OPTICAL_MODEL_MAX_JSON_BYTES;
-	AiusDownmixConfig resolved = aius_downmix_config_default();
-	resolved.center = cfg.matrix.center_gain_linear;
-	resolved.surround = cfg.matrix.surround_gain_linear;
-	resolved.lfe = cfg.matrix.lfe_gain_linear;
 	header.source = dsp_source_name(origin);
 	header.config_pending = apply_pending;
 	header.file_form = file_form;
 	header.config_generation = g_config_generation;
 	header.staged_generation = g_staged_generation;
-	header.headroom_linear = cfg.matrix.clipfree ?
-		aius_downmix_clipfree_headroom(&resolved) : cfg.matrix.headroom_linear;
 	return aius_optical_dsp_config_write(&cfg, &header, body, capacity);
 }
 

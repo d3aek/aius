@@ -1447,23 +1447,23 @@ class DspBypassSessionTests(unittest.TestCase):
             self.assertEqual(device.puts, [])
             self.assertFalse(session.mutation_possible)
 
-    def test_card_match_tolerates_the_device_derived_clipfree_headroom(self):
+    def test_card_match_compares_the_stored_clipfree_headroom(self):
         clipfree = json.loads(json.dumps(PRODUCTION_MODEL))
         clipfree["matrix"]["clipfree"] = True
         clipfree["matrix"]["headroom_linear"] = 0.5
         published = json.loads(json.dumps(clipfree))
-        # GET /api/dsp/config serializes the RESOLVED headroom, so the stored
-        # value is not observable while clipfree is on.
-        published["matrix"]["headroom_linear"] = 0.2928932188134524
+        # GET /api/dsp/config serves the stored headroom under clipfree.
         device = FakeDspDevice(published, sd_body=card_bytes(clipfree))
         with tempfile.TemporaryDirectory() as directory:
             session = self.session(device, directory)
             session.prepare()
 
-            self.assertNotEqual(
-                BENCH.model_hash(clipfree), BENCH.model_hash(published)
-            )
             self.assertEqual(
+                BENCH.comparable_hash(clipfree),
+                BENCH.comparable_hash(published),
+            )
+            published["matrix"]["headroom_linear"] = 0.2928932188134524
+            self.assertNotEqual(
                 BENCH.comparable_hash(clipfree),
                 BENCH.comparable_hash(published),
             )
