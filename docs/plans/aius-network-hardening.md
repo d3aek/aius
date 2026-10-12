@@ -3995,7 +3995,8 @@ typedef enum {
     AIUS_HTTP_FAULT_RESPONSE_CAPACITY,
     AIUS_HTTP_FAULT_ACTION_ID_EXHAUSTED,
     AIUS_HTTP_FAULT_TRANSPORT,
-    AIUS_HTTP_FAULT_SD
+    AIUS_HTTP_FAULT_SD,
+    AIUS_HTTP_FAULT_IDLE_CLOSE  /* request expiry with no request byte */
 } AiusHttpFault;
 
 typedef struct {
@@ -4440,11 +4441,15 @@ Event and time precedence is exact:
 5. only a remaining `NONE` or `WOULD_BLOCK` at equality selects timeout.
 
 Use `(int32_t)(now_ms - deadline_ms) >= 0`; every interval is below
-`INT32_MAX`. Request expiry selects `REQUEST_TIMEOUT`; response-write expiry
+`INT32_MAX`. Request expiry with a partial request selects `REQUEST_TIMEOUT`;
+request expiry with no request byte selects `IDLE_CLOSE`, closes with no reply
+and is counted nowhere (aius-sample-rate-following Phase 4n, owner
+2026-10-12); response-write expiry
 selects `RESPONSE_TIMEOUT`; upload expiry selects `UPLOAD_TIMEOUT`; download
 expiry selects `DOWNLOAD_TIMEOUT`; and other SD-job expiry selects
 `SD_TIMEOUT`. Any active SD job is cancelled through the drain protocol.
-Request timeout formats the fixed 408 response. Response, upload, download,
+Request timeout (partial request only) formats the fixed 408 response; an idle
+close sends none. Response, upload, download,
 and SD-control timeouts send no new response and retain `last_status = 0`
 unless transmission had already selected a status.
 
@@ -6628,11 +6633,15 @@ bounded transaction, not a resurrected `service_http`:
   `last_fault` per accepted connection, which is what makes the transition
   well-defined and at most one per connection.
 - `http_client_drops` — transport losses counted per occurrence at the seam's
-  own IO observation (`FAULT` on any transport action, `CLOSED` mid-read or
-  mid-write), **not** via the `TRANSPORT` fault transition, which first-fault
-  latching would undercount on a listener that faults repeatedly; plus one per
-  connection first-faulting with a request/response/upload/download timeout —
-  the modern spelling of the legacy 150 ms idle / upload-stall drop.
+  own IO observation (`FAULT` on any transport action, `CLOSED` mid-read after
+  at least one request byte or mid-write), **not** via the `TRANSPORT` fault
+  transition, which first-fault latching would undercount on a listener that
+  faults repeatedly; plus one per connection first-faulting with a
+  request (partial request)/response/upload/download timeout, the modern
+  spelling of the legacy upload-stall drop. An idle connection is counted
+  nowhere: a request expiry with no request byte (`IDLE_CLOSE`, no reply) and a
+  peer close before any request byte (aius-sample-rate-following Phase 4n,
+  owner 2026-10-12).
 - `http_service_overruns` — the composition root times the HTTP checkpoint
   (`platform_checkpoint()` stamps after the HTTP commit, measures on the UDP
   checkpoint's arrival; the scheduler calls the hook immediately before each

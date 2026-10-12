@@ -435,11 +435,10 @@ static void test_request_quota_timeout_and_wrap(void)
 	assert(action.length == AIUS_HTTP_RX_QUOTA);
 	action = call_step(&fixture, 150,
 	                   io_result(&action, AIUS_IO_WOULD_BLOCK, 0, 0));
-	assert(action.kind == AIUS_HTTP_ACTION_WRITE);
-	assert(fixture.transaction.last_fault == AIUS_HTTP_FAULT_REQUEST_TIMEOUT);
-	assert(fixture.transaction.last_status == 408);
-	assert(contains_bytes(action.data, action.length, "request_timeout"));
-	action = finish_all_writes(&fixture, action);
+	/* No request byte: silent close, no 408 WRITE, dedicated fault. */
+	assert(action.kind == AIUS_HTTP_ACTION_CLOSE);
+	assert(fixture.transaction.last_fault == AIUS_HTTP_FAULT_IDLE_CLOSE);
+	assert(fixture.transaction.last_status == 0);
 	finish_close(&fixture, action);
 
 	init_fixture_at(&fixture, sizeof(fixture.request), sizeof(fixture.response),
@@ -450,8 +449,31 @@ static void test_request_quota_timeout_and_wrap(void)
 	                   io_result(&action, AIUS_IO_WOULD_BLOCK, 0, 0));
 	assert(action.kind == AIUS_HTTP_ACTION_READ);
 	action = call_step(&fixture, 99, no_event());
+	assert(action.kind == AIUS_HTTP_ACTION_CLOSE);
+	assert(fixture.transaction.last_fault == AIUS_HTTP_FAULT_IDLE_CLOSE);
+}
+
+static void test_partial_request_timeout_answers_408(void)
+{
+	Fixture fixture;
+	init_fixture(&fixture);
+	AiusHttpAction action = accept_client(&fixture);
+	memcpy(action.read_buffer, "GET /api", 8);
+	action = call_step(&fixture, 10, io_result(&action, AIUS_IO_PROGRESS, 8, 0));
+	assert(action.kind == AIUS_HTTP_ACTION_READ);
+	assert(fixture.transaction.request_length == 8u);
+	/* Progress re-arms the 150 ms deadline: 10 + 150. */
+	action = call_step(&fixture, 159,
+	                   io_result(&action, AIUS_IO_WOULD_BLOCK, 0, 0));
+	assert(action.kind == AIUS_HTTP_ACTION_READ);
+	action = call_step(&fixture, 160,
+	                   io_result(&action, AIUS_IO_WOULD_BLOCK, 0, 0));
 	assert(action.kind == AIUS_HTTP_ACTION_WRITE);
 	assert(fixture.transaction.last_fault == AIUS_HTTP_FAULT_REQUEST_TIMEOUT);
+	assert(fixture.transaction.last_status == 408);
+	assert(contains_bytes(action.data, action.length, "request_timeout"));
+	action = finish_all_writes(&fixture, action);
+	finish_close(&fixture, action);
 }
 
 static void test_dispatch_response_partial_write_close_restart(void)
@@ -3930,8 +3952,10 @@ static AiusHttpAction select_fixed_response(
 			fixture, "GET /missing HTTP/1.0\r\n\r\n");
 	case FIXED_REQUEST_TIMEOUT: {
 		AiusHttpAction read = accept_client(fixture);
-		(void)read;
-		return call_step(fixture, 150, no_event());
+		memcpy(read.read_buffer, "GET /api", 8);
+		read = call_step(fixture, 10,
+		                 io_result(&read, AIUS_IO_PROGRESS, 8, 0));
+		return call_step(fixture, 160, no_event());
 	}
 	case FIXED_REQUEST_TOO_LARGE: {
 		AiusHttpAction read = accept_client(fixture);
@@ -5385,6 +5409,7 @@ int main(void)
 		  test_invalid_initialization_and_null_action },
 		{ "accept.validation-restart", test_accept_validation_and_restart },
 		{ "receive.quota-timeout-wrap", test_request_quota_timeout_and_wrap },
+		{ "receive.partial-timeout-408", test_partial_request_timeout_answers_408 },
 		{ "dispatch.partial-close-restart",
 		  test_dispatch_response_partial_write_close_restart },
 		{ "dispatch.idle-only-after-write-and-close",
@@ -5458,7 +5483,7 @@ int main(void)
 		{ "recorder.data-slot-parses-through-dispatch",
 		  test_recorder_data_slot_parses_through_dispatch },
 	};
-	assert(ARRAY_LENGTH(registry) == 48);
+	assert(ARRAY_LENGTH(registry) == 49);
 	for (size_t i = 0; i < ARRAY_LENGTH(registry); ++i) {
 		assert(registry[i].key[0] != '\0');
 		for (size_t j = 0; j < i; ++j)

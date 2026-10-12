@@ -2460,16 +2460,20 @@ static void test_http_counters(void)
 	now_ms = 1u;
 	bring_online(&now_ms);
 	/* A client that connects and never sends: the request deadline is the
-	 * modern spelling of the legacy 150 ms idle drop. */
+	 * idle close: no reply, counted nowhere (a browser spare socket). */
 	g_net.client_pending = true;
 	for (unsigned i = 0; i < 10u; ++i) {
 		CHECK(run_epoch(now_ms));
 		now_ms += 40u;
 	}
-	CHECK(sink_contains("request_timeout"));
+	CHECK(!sink_contains("request_timeout"));
+	CHECK(g_runtime.network_http.http.last_fault == AIUS_HTTP_FAULT_IDLE_CLOSE);
+	CHECK(g_runtime.network_http.http.state == AIUS_HTTP_TX_IDLE);
+	CHECK(g_net.close_calls >= 1u);
+	CHECK(g_net.tx_length == 0u);
 	CHECK(g_runtime.network_http.http_requests == 0u);
 	CHECK(g_runtime.network_http.http_rejections == 0u);
-	CHECK(g_runtime.network_http.http_client_drops == 1u);
+	CHECK(g_runtime.network_http.http_client_drops == 0u);
 
 	current_key = "counters.drop-transport";
 	reset_world(false);
@@ -2490,6 +2494,22 @@ static void test_http_counters(void)
 	now_ms = 1u;
 	bring_online(&now_ms);
 	g_net.client_pending = true;
+	g_net.read_closed_once = 1u;
+	drive_epochs(&now_ms, 10u);
+	/* No request byte yet: a browser closing its spare socket counts nowhere. */
+	CHECK(g_runtime.network_http.http_client_drops == 0u);
+	CHECK(g_runtime.network_http.http_requests == 0u);
+	CHECK(g_runtime.network_http.http_rejections == 0u);
+
+	current_key = "counters.drop-peer-close-partial";
+	reset_world(false);
+	now_ms = 1u;
+	bring_online(&now_ms);
+	g_net.client_pending = true;
+	g_net.rx = (const uint8_t *)"GET /api/sta";
+	g_net.rx_length = strlen("GET /api/sta");
+	g_net.rx_offset = 0u;
+	drive_epochs(&now_ms, 3u);
 	g_net.read_closed_once = 1u;
 	drive_epochs(&now_ms, 10u);
 	CHECK(g_runtime.network_http.http_client_drops == 1u);

@@ -42,7 +42,10 @@ built); replace wholesale on the next handover.
   green, delivery audit closure PASS; its device run is the owner's, and
   its N9 notes edit is done. **4k BUILT**
   (2026-10-11). **4l BUILT** (2026-10-11). **4m BUILT** (2026-10-11,
-  the mixer plan's Phase 1e). 4i PLANNED and READY. 4b (acceptance umbrella)
+  the mixer plan's Phase 1e). **4n BUILT** (2026-10-12): host proof and
+  all four images green, review closure PASS; its Firefox device check is
+  the owner's. 4o (network-transport fails at HEAD) PLANNED. 4i PLANNED, re-planned 2026-10-12 to the no-bench-run ruling (not
+  re-reviewed). 4b (acceptance umbrella)
   PLANNED: it closes after 4e to 4h's device runs. The owner holds two
   gates (below).
 - **Board.** Runs `ce1159286fd2` in slot 2: 4e to 4m, 4i step 1a, plus
@@ -52,8 +55,7 @@ built); replace wholesale on the next handover.
   with no retries, healthy-boot self-commit (`trial_budget` 0,
   `rollback_observed` false); first reading `rx_state` 1, `lock_pm` 0 on
   the dark input. No rehearsal ran. The other slot (1) holds
-  `f58232711d06`. 4i's baseline and ported measure runs need only to share
-  one image, so they run on `ce1159286fd2` (it carries step 1a). The card was
+  `f58232711d06`. 4i's archive runs on `ce1159286fd2` (it carries step 1a). The card was
   fully synced the same day (mixer plan Phases 6 and 7), `openapi.json`
   included.
   `df966f17b370` (Phase 4a) is in neither slot now but stays the owner's
@@ -83,13 +85,11 @@ built); replace wholesale on the next handover.
   sync that uploads the bundles) and run 2 (AC-3 page loads), then 4h's
   AC-3 and accidental-disconnect runs. An E7 verdict of B2 re-plans 4f to 4h before
   their device runs (4f's body records this).
-- **Next action (handover 2026-10-12, session 3d69495b).** A fresh
-  session runs, in order: (1) **4n**, the reported 408 `request_timeout`
-  bug (contract and diagnosis in its block); (2) **4i re-planned** per its
-  "No bench run" paragraph (owner: remove replay, port host-only): rewrite
-  its void bench proof and `coordination` line, then `replay_retire.py
-  archive`, commit the captures, `delete-captures`, the measure port, the
-  four removal units. 4b's device sessions stay the owner's and no longer
+- **Next action (2026-10-12).** 4n is built and 4i's contract is
+  rewritten to the no-bench-run ruling. Next, in order: (1) **4i** step 1,
+  `replay_retire.py archive` (GETs only), commit the captures, then
+  `delete-captures` on the owner's word; the measure port; the four
+  removal units; (2) **4o**, independent of 4i. 4b's device sessions stay the owner's and no longer
   gate 4i's removal (owner, 2026-10-12). Every OTA and device check waits
   for the owner's word; card reads and the archive's GETs do not.
 - **What landed this run** (aius commits; each followed by a upstream repository
@@ -6683,8 +6683,8 @@ followed by its resolution.
 phase: 4i
 title: Replay leaves the firmware, the web UI and the bench tools
 status: planned
-depends-on: phase-4b, phase-4h, phase-4j
-prebuild-review: ready # closure round 3 READY 2026-10-10, nits N1 to N3 folded. Closure round 2 NOT READY 2026-10-10, no blocker (S11 reopened, S1 to S3, N1, N2), folded. Closure NOT READY 2026-10-10 (S11 open, S1 to S3 new, N1 to N5), folded with owner answer. Before it: NOT READY 2026-10-10 (B1, B2, S1 to S11, nits) and the owner's Q1 to Q4, folded the same day
+depends-on: phase-4h, phase-4j # phase-4b dropped (owner, 2026-10-12): 4b's device sessions stay the owner's and no longer gate the removal, which needs no bench result
+prebuild-review: ready # re-planned 2026-10-12 to the owner's no-bench-run ruling, not re-reviewed. Closure round 3 READY 2026-10-10, nits N1 to N3 folded. Closure round 2 NOT READY 2026-10-10, no blocker (S11 reopened, S1 to S3, N1, N2), folded. Closure NOT READY 2026-10-10 (S11 open, S1 to S3 new, N1 to N5), folded with owner answer. Before it: NOT READY 2026-10-10 (B1, B2, S1 to S11, nits) and the owner's Q1 to Q4, folded the same day
 outcome: >-
   The optical images carry no replay: no replay library, ring, refill
   job, source, clock plan, routes, page, status fields or build flags,
@@ -6694,7 +6694,9 @@ outcome: >-
   other replay DMAMEM leave OCRAM; 4g's fill_busy gate, its fill pause
   and the three tool retries go. /api/measure loopback runs from a U24
   aplay stimulus with its request and response shape unchanged, proven
-  on the bench before anything is removed. Every complete card capture
+  by the measure-vectors host suite before anything is removed; its
+  bench comparison is deferred owner bench work, not a gate (owner,
+  2026-10-12: no bench run). Every complete card capture
   (/aius/replays/*.iec) is archived to the repo as LFS before it is
   deleted from the card; in-flight .part files are deleted with their
   names and sizes in the archive manifest. The replays page's Live processing card moves
@@ -6705,9 +6707,9 @@ outcome: >-
   hosts survive under a renamed service checkpoint.
 unit: component-behind-interface
 seams:
-  - "firmware/tools/measure_vectors (step 1, before any removal; S1, S2): measure_run.py plays its vectors through the U24 with aplay, as dsp_matrix_round.py does (aplay -D hw:U24XL,0, AIUS_ALSA_DEVICE override), instead of PUT /sd/replays/<id> and /api/replays/start. Arming, for the measure run and isr_cost alike: set amixer -c 0 cset numid=5 110,110 and read it back, start one continuous aplay stream fed the vector's PCM repeated (one render long enough to outlast the run, never an aplay re-run per loop, since a restart gap or carrier blip fails the criterion or trips the capture's overrun latch; round 2 S3), wait until /api/status shows tx_gate.open true and clock.state tracking, then POST /api/measure/start; the render stops when the run ends or fails. The upload and replay commands and the fill_busy retry go; measure_vectors.py and README follow, and vectors/manifest.txt:7, which still says pcm440_full needs a config that opens the limiter beyond the shipped headroom, is corrected to README.md:31-32's account that it engages the limiter at the shipped config (round 3 N3). From this step on the /api/measure request ({\"id\": ...}) and response (vector_id included) are frozen, so the firmware rename below changes no wire key"
-  - "firmware/tools/replay_retire.py (new, step 1; owner Q2, closure S2 and N3): --device, --auth-file, three subcommands. archive: GET /api/replays, failing on truncated:true (the listing, http_replay_list_json in optical_main.cpp, stops at AIUS_OPTICAL_APP_INDEX_SCAN_MAX, 128 raw reads, aius_optical_app.h:93, and also returns .part rows); then GET /sd/replays/<id> for each complete <id>.iec row only (the route builds <id>.iec, aius_optical_app.cpp:1478-1486, so a .part cannot be fetched) into docs/reference/datasheets.mdAIUS-REPLAY-CAPTURES/<id>.iec (LFS by .gitattributes:9), each checked against the listing's size; every call retries 503 sd_busy (openapi.json:737, aius_optical_app.cpp:1531). The manifest records id, bytes and sha256 per capture, the name and listed size of every .part row, and the board's build_revision; no card date, since neither the listing nor the download carries one. delete-captures: DELETE /api/replays {\"id\": ...} for each .iec id whose archived file is committed and whose sha256 matches; then a fresh listing, which fails on truncated:true like archive's (an .iec past the scan cap would be invisible; round 3 N2), and only if it shows no .iec row left does it DELETE each .part id in the committed manifest, since the firmware delete removes <id>.iec whenever one exists, so a .part pass beside a skipped X.iec (sha mismatch) would delete the unarchived capture; otherwise it exits nonzero naming the remaining .iec ids (round 2 S1; no API change). Run while the replay routes still exist, ending with a listing that must be empty. delete-www (after removal and a sync): DELETE /sd/www/replays.html, replays.js, replays.css and replays.html.gz; after 4h each answers 200 at accept and flushes later, so it then polls /api/status until sd_flush.drained reads true (nothing dirty, flushing or tombstoned, openapi.json:2243; closure N5, round 2 N2). The parent records the captures' provenance in aius-replay-manager.md and deletes the tool only after delete-www has drained"
-  - "firmware/src/optical_main.cpp, app_replay_delete (step 1, before the archive run; closure S2): today it removes only /aius/replays/<id>.iec (:7219-7225), although openapi.json:766 already promises a .part delete. It removes <id>.part when no <id>.iec exists, under the same sd_busy gate and direct_card_settle. It is step 1a, its own commit and checkpoint (step-1a-checkpoint below, round 2 S2), and ships by OTA before the baseline run. That OTA waits on the owner's go-ahead like every OTA (owner gate 1, round 2 N1). It is not the first 4h image: 4i depends on 4b, 4h and 4j, and 4b's device runs already carry 4h; 4j reaches the board in its own device proof, and since 4b does not depend on 4j, step 1a may be the first image carrying both (round 3 N1). Chosen over the alternatives: after removal the ordinary SD file route deletes only under www/, and a boot-time sweep would be new firmware outliving replay"
+  - "firmware/tools/measure_vectors (step 1, before any removal; S1, S2): measure_run.py plays its vectors through the U24 with aplay, as dsp_matrix_round.py does (aplay -D hw:U24XL,0, AIUS_ALSA_DEVICE override), instead of PUT /sd/replays/<id> and /api/replays/start. Arming, for the measure run and isr_cost alike: set amixer -c 0 cset numid=5 110,110 and read it back, start one continuous aplay stream fed the vector's PCM repeated (one render long enough to outlast the run, never an aplay re-run per loop, since a restart gap or carrier blip fails the criterion or trips the capture's overrun latch; round 2 S3), wait until /api/status shows tx_gate.open true and clock.state tracking, then POST /api/measure/start; the render stops when the run ends or fails. The upload and replay commands and the fill_busy retry go; measure_vectors.py and README follow, and vectors/manifest.txt:7, which still says pcm440_full needs a config that opens the limiter beyond the shipped headroom, is corrected to README.md:31-32's account that it engages the limiter at the shipped config (round 3 N3). From this step on the /api/measure request ({\"id\": ...}) and response (vector_id included) are frozen, so the firmware rename below changes no wire key. measure_run.py also gains --baseline FILE for the deferred owner bench comparison (body; not this phase's gate, and no baseline-replay.json is produced). Arguments per vector from vectors/manifest.txt: pcm440_m6 440 440; pcm440_full 440 440; pcm440_660_split 440 660; pcm_fr_multitone 440 440 with probes 40 100 440 1000 4000 10000 16000 (seven, under AIUS_MEASURE_PROBES_MAX 8). pcm440_full runs at the shipped model in both runs (GET /api/dsp/config source default, same config_generation), where it engages the limiter (measure_vectors/README.md:31-32). A --baseline run passes when, for every vector, the session retires with fail_reason none, each channel's thd_n_db, snr_db and thd_db sits within 1.0 dB of the baseline's (a figure at its floor, openapi.json's floors object, in both runs counts as equal), each pcm_fr_multitone probes_dbfs entry within 0.1 dB of the baseline's, and isr_cost prints PASS under its existing ISR_GATE_CYCLES gate (measure_run.py:36)"
+  - "firmware/tools/replay_retire.py (new, step 1; owner Q2, closure S2 and N3): --device, --auth-file, three subcommands. archive: GET /api/replays, failing on truncated:true (the listing, http_replay_list_json in optical_main.cpp, stops at AIUS_OPTICAL_APP_INDEX_SCAN_MAX, 128 raw reads, aius_optical_app.h:93, and also returns .part rows); then GET /sd/replays/<id> for each complete <id>.iec row only (the route builds <id>.iec, aius_optical_app.cpp:1478-1486, so a .part cannot be fetched) into docs/reference/datasheets.mdAIUS-REPLAY-CAPTURES/<id>.iec (LFS by .gitattributes:9), each checked against the listing's size; every call retries 503 sd_busy (openapi.json:737, aius_optical_app.cpp:1531). The manifest records id, bytes and sha256 per capture, the name and listed size of every .part row, and the board's build_revision; no card date, since neither the listing nor the download carries one. delete-captures: DELETE /api/replays {\"id\": ...} for each .iec id whose archived file is committed and whose sha256 matches; then a fresh listing, which fails on truncated:true like archive's (an .iec past the scan cap would be invisible; round 3 N2), and only if it shows no .iec row left does it DELETE each .part id in the committed manifest, since the firmware delete removes <id>.iec whenever one exists, so a .part pass beside a skipped X.iec (sha mismatch) would delete the unarchived capture; otherwise it exits nonzero naming the remaining .iec ids (round 2 S1; no API change). Run while the replay routes still exist, ending with a listing that must be empty. archive is GETs only and runs on the idle board with no owner word; delete-captures deletes card files, so it runs only on the owner's word at that step. delete-www (after removal and a sync): DELETE /sd/www/replays.html, replays.js, replays.css and replays.html.gz; after 4h each answers 200 at accept and flushes later, so it then polls /api/status until sd_flush.drained reads true (nothing dirty, flushing or tombstoned, openapi.json:2243; closure N5, round 2 N2). The parent records the captures' provenance in aius-replay-manager.md and deletes the tool only after delete-www has drained"
+  - "firmware/src/optical_main.cpp, app_replay_delete (step 1, before the archive run; closure S2): today it removes only /aius/replays/<id>.iec (:7219-7225), although openapi.json:766 already promises a .part delete. It removes <id>.part when no <id>.iec exists, under the same sd_busy gate and direct_card_settle. It is step 1a, its own commit and checkpoint (step-1a-checkpoint below, round 2 S2), and ships by OTA before the archive run (deployed as f58232711d06, 2026-10-11). That OTA waits on the owner's go-ahead like every OTA (owner gate 1, round 2 N1). It is not the first 4h image: 4b's device runs already carry 4h; 4j reaches the board in its own device proof, and since 4b does not depend on 4j, step 1a may be the first image carrying both (round 3 N1). Chosen over the alternatives: after removal the ordinary SD file route deletes only under www/, and a boot-time sweep would be new firmware outliving replay"
   - "firmware/lib/aius_replay: deleted. aius_tx_gate.h moves to firmware/lib/aius_audio/src (S11): its real includers are optical_main.cpp:46 and test_tx_gate.c:7 (aius_input_liveness.h only names it in a comment), and the two include it differently (closure S11, round 2). optical_main.cpp writes #include \"../lib/aius_audio/src/aius_tx_gate.h\", as it does for the other aius_audio src headers (:126-135), because aius_audio is lib_ignore'd (platformio.ini:155) and only -Ilib/aius_audio/include is on the image's path (:370), so a plain include breaks the image build. test_tx_gate.c keeps the plain #include \"aius_tx_gate.h\": test.sh passes -I$fw_root/lib/aius_audio/src to other suites (:554, :879), so the tx-gate arm's -I$fw_root/lib/aius_replay/include (:859) becomes that -I, and the aius_replay -I at :817 goes; a ../lib/... include there would resolve to firmware/test/lib and not compile. Today it reaches aius_codec.h and aius_pipeline.h through aius_replay.h, so it or its includers add those directly. Its AiusReplaySource argument and replay source state go"
   - "firmware/src/optical_main.cpp (432 replay references): replay_refill_service, replay_source_service, replay_clock_service, replay_job_advance, g_replay_* (g_replay_service with its ring, g_replay_job, g_replay_transfer, g_replay_diag), the replay ops and status replay fields go, with 4g's fill_busy gate in app_replay_start and web_cache_replay_playing (:9034, used at :9057), g_audio_ingress_source and the held dispatch for /api/replays. platform_replay (:10401-10442) becomes platform_service and keeps, in today's order, admission_sd_window_sample, sd_lifecycle_service (:9177, the 4g fill walk within it), dsp_idle_apply_service (landed by 4j before sample_rate_service; closure S1), sample_rate_service, tx_gate_service, input_fault_service, input_dark_service and the recorder drain. Clock (owner Q3, S7): clock.master stays in the status object as the constant input for client compatibility; clock.state loses replay (:4065-4066); the replay clock reconciler and the master shims go, and setup() pins the input as master once, explicitly. http_home_page.cpp:25 loses the Replay manager link"
   - "firmware/lib/aius_boot, firmware/lib/aius_runtime, firmware/src/aius_runtime_teensy.cpp and .h: AIUS_BOOT_CHECKPOINT_REPLAY becomes AIUS_BOOT_CHECKPOINT_SERVICE with id 7 and its budget row unchanged, so checkpoint_walltime_us[7] keeps its index (status is index-only); ops.replay and aius_runtime_teensy.h:89 platform.replay become service; the aius_runtime.c:42-49 budget comment follows; checkpoint labels live only in docs/reference/usb-control-protocol.md:149 and firmware/tools/net/aius_recovery_smoke.py:123, which read service"
@@ -6726,9 +6728,9 @@ targeted-proof:
   - "host: stack-bound and producer-isolation: the HTTP replay chains and replay roots leave the tables, which record the new worst figures"
   - "host: memory (S6): all four optical envs (teensy41-optical, -slot-a, -slot-b, -fault) link; OCRAM free, ITCM free, _ebss and _VectorsRam re-recorded; the measured OCRAM gain (the ring in g_replay_service, plus g_replay_job, g_replay_transfer and g_replay_diag) recorded; this phase's commit moves every floor to its own link"
   - "host: sd-editor (replays.test.js deleted, its drawWaveform case (:687) moved to status.test.js with the Live processing card; a new case that every page's stylesheet links resolve to a file in firmware/sd/www; openapi, status, dsp-editor, mixer and upgrade tests without replay), www-bundle, measure-vectors (arming order, mixer set and read back, looped render, no /api/replays call), rate-gate-capture, rate-runner, recovery-runner, iec-fixtures (the moved generate.sh output passes validate.py and the IEC61937 parser oracle), registry: every remaining suite green; all four optical images build"
-  - "device (owner, U24 bench, step 1, before removal; closure S3, round 2 S3 and N1): after the step-1a OTA, the baseline is a replay-driven run with today's tool on that same image, before measure-port lands: measure_run.py's measure session JSON for each corpus vector and its isr_cost output, saved as firmware/tools/measure_vectors/baseline-replay.json with the board's build_revision. The ported run uses the same image, so the comparison isolates the stimulus transport; a baseline from an earlier image would also fold in whatever changed between the two images. Arguments per vector from vectors/manifest.txt: pcm440_m6 440 440; pcm440_full 440 440; pcm440_660_split 440 660; pcm_fr_multitone 440 440 with probes 40 100 440 1000 4000 10000 16000 (seven, under AIUS_MEASURE_PROBES_MAX 8). pcm440_full runs at the shipped model in both runs (GET /api/dsp/config source default, same config_generation), where it engages the limiter (measure_vectors/README.md:31-32). The ported measure_run.py gains --baseline FILE and passes when, for every vector, the session retires with fail_reason none, each channel's thd_n_db, snr_db and thd_db sits within 1.0 dB of the baseline's (a figure at its floor, openapi.json's floors object, in both runs counts as equal), each pcm_fr_multitone probes_dbfs entry within 0.1 dB of the baseline's, and isr_cost prints PASS under its existing ISR_GATE_CYCLES gate (measure_run.py:36). Then replay_retire.py archive pulls every complete capture, the parent commits them with the manifest, and delete-captures ends with an empty /aius/replays listing, .part files included"
+  - "device (step 1, before removal, installed board idle, no bench run; owner, 2026-10-12): replay_retire.py archive over HTTP (GETs only; needs no owner word) pulls every complete capture from an image carrying step 1a; the parent commits the captures with the manifest; then, on the owner's word at that step (a destructive card operation), delete-captures ends with an empty /aius/replays listing, .part files included. No baseline-replay.json and no ported bench run: measure-port's proof is the measure-vectors host suite above"
   - "device (owner, after removal): source off, then AC-3 playing: /api/replays answers 404, no page links replays, every page styled, the Live processing card live on status.html, underrun_episode_count delta 0 across a page-load round, checkpoint_walltime_us[7] recorded against REPLAY's 1,060 us; then replay_retire.py delete-www, done when sd_flush.drained reads true and GET of each deleted page answers 404"
-fan-out: # S3 order: measure-port first, committed and bench-proven by the owner; then firmware-removal, web-ui-removal, tools-and-tests and docs concurrently, with the handoffs named per unit
+fan-out: # S3 order: measure-port first (archive, delete-captures on the owner's word, the measure_run.py port proven host-only; no bench run, owner 2026-10-12); then firmware-removal, web-ui-removal, tools-and-tests and docs concurrently, with the handoffs named per unit
   - name: measure-port
     owned-paths:
       - firmware/tools/measure_vectors/**
@@ -6737,7 +6739,7 @@ fan-out: # S3 order: measure-port first, committed and bench-proven by the owner
       - docs/reference/datasheets.mdAIUS-REPLAY-CAPTURES/**
       - firmware/src/optical_main.cpp # app_replay_delete only, step 1a (closure S2); it builds the four optical envs for step-1a-checkpoint and the owner's OTA
       - firmware/test/optical-cutover/** # step 1a's case only
-    handoff: step 1a commits and is OTA'd first; the owner's baseline-replay.json run on that image precedes the measure_run.py port (closure S3, round 2 N1)
+    handoff: step 1a and replay_retire.py are committed and step 1a OTA'd (done); it reports archive's captures and manifest for the parent's commit, then delete-captures runs on the owner's word; the measure_run.py port is proven by measure-vectors alone, with no baseline-replay.json and no bench run (owner, 2026-10-12)
   - name: firmware-removal
     owned-paths:
       - firmware/lib/**
@@ -6817,7 +6819,7 @@ commit-checkpoint:
   green: [measure-vectors, tx-gate, optical-app, optical-cutover, runtime-target, clock, clock-target, http, tx-governor, stack-bound, producer-isolation, sd, sd-target, web-cache, boot, runtime, json, ota, recorder, input-liveness, input-dark, pipeline, audio-ingress, tx-fill-sensor, dts, status-body-bound, itcm-placement, memory, sd-editor, www-bundle, rate-gate-capture, rate-runner, recovery-runner, ac3-vectors, iec-fixtures, registry]
   buildable: [teensy41-optical, teensy41-optical-slot-a, teensy41-optical-slot-b, teensy41-optical-fault]
   parent-commit: "refactor(aius): retire replay (Phase 4i)"
-  coordination: "step 1a commits first (step-1a-checkpoint) and waits on the owner's OTA go-ahead (owner gate 1); the owner OTAs it and runs the baseline; measure-port then commits alone ('feat(aius): measure_run.py drives a U24 aplay stimulus; replay_retire.py archives card captures (Phase 4i step 1)'), the archived captures and manifest follow in their own commit, and removal waits for the owner's bench proof and delete-captures; the four removal units then run on disjoint paths with the handoffs above, firmware-removal alone building the optical envs; the parent edits this plan and promotes CLAUDE.md"
+  coordination: "step 1a (step-1a-checkpoint, OTA'd on owner gate 1) and replay_retire.py are committed; replay_retire.py archive runs over HTTP on the idle board (GETs only, no owner word), the archived captures and manifest land in their own commit, and delete-captures runs on the owner's word; measure-port's measure_run.py port commits alone once measure-vectors is green ('feat(aius): measure_run.py drives a U24 aplay stimulus (Phase 4i step 1)'), with no bench run (owner, 2026-10-12); removal waits for that commit and delete-captures' empty listing; the four removal units then run on disjoint paths with the handoffs above, firmware-removal alone building the optical envs; the parent edits this plan and promotes CLAUDE.md"
 step-1a-checkpoint: # round 2 S2: app_replay_delete's .part removal, before measure-port
   targeted-proof: "host: optical-cutover: app_replay_delete removes <id>.iec when it exists and otherwise <id>.part, both inside its one ProducerSdWindow and settled by direct_card_settle, with the replay-active refusal unchanged; device: delete-captures' empty listing (step 1)"
   green: [optical-cutover, optical-app, stack-bound, producer-isolation, itcm-placement, memory]
@@ -6825,8 +6827,8 @@ step-1a-checkpoint: # round 2 S2: app_replay_delete's .part removal, before meas
   parent-commit: "feat(aius): a replay delete removes an in-flight .part (Phase 4i step 1a)"
 ```
 
-**Order: land idle apply, port the stimulus, archive the captures,
-then remove.** `/api/measure` loopback is replay's one routine use and
+**Order: land idle apply, archive the captures, port the stimulus
+host-only, then remove.** `/api/measure` loopback is replay's one routine use and
 has no committed U24 variant, and the card captures can be pulled only
 while the replay routes exist. Phase 4j (a dependency) lands first, so
 a carrier-less save no longer waits for an audio block that only a
@@ -6836,11 +6838,12 @@ carrier or a replay could supply.
    checkpoint. **Owner gate 1:** its OTA waits on the owner's go-ahead,
    as every OTA does; it may be the first image carrying both 4b and 4j
    (4b's device runs already carry 4h). On that image
-   the owner saves the replay-driven baseline (`baseline-replay.json`);
-   measure-port is committed alone; the owner runs the measure bench
-   against the baseline on the same image, then `replay_retire.py
-   archive`; the parent commits the captures and manifest; the owner
-   runs `delete-captures`.
+   `replay_retire.py archive` runs over HTTP (GETs only, board idle; no
+   owner word needed); the parent commits the captures and manifest;
+   `delete-captures` runs only on the owner's word at that step, since
+   it deletes card files. measure-port commits alone, proven by the
+   measure-vectors host suite; no bench run and no
+   `baseline-replay.json`.
 2. firmware-removal, web-ui-removal, tools-and-tests and docs, with the
    handoffs in the fan-out (S3).
 3. The parent rewrites this plan's replay text and 4h's replay
@@ -6854,14 +6857,12 @@ carrier or a replay could supply.
 **Step 1 builds ahead of 4b (owner, 2026-10-11).** Step 1a and
 `replay_retire.py` are built and host-proven before 4b's device runs,
 with no OTA: neither depends on a device result. `replay_retire.py`
-commits on its own, ahead of measure-port, since the baseline run uses
-today's `measure_run.py` and not this tool. The measure_run.py port
-still waits for the owner's baseline, and step 1a's OTA for owner
-gate 1.
+commits on its own, ahead of measure-port. Step 1a's OTA waited for
+owner gate 1.
 
 - **Step 1a built (2026-10-11); deployed the same day** as
-  `f58232711d06` by OTA on the owner's go-ahead. The baseline run on
-  that image (owner, U24 bench) is next. `app_replay_delete`
+  `f58232711d06` by OTA on the owner's go-ahead. The archive run is
+  next (no baseline run; owner, 2026-10-12). `app_replay_delete`
   builds the `.iec` path and, inside its one `ProducerSdWindow`, falls
   back to `<id>.part` only when no `.iec` exists, then runs the existing
   exists, remove and `direct_card_settle` once. A card error on the
@@ -6880,27 +6881,18 @@ gate 1.
   stay in LFS under `docs/reference/datasheets.mdAIUS-REPLAY-CAPTURES/`), and the
   closure's N5 (git missing is an `error:` line) and N6
   (`GIT_OPTIONAL_LOCKS=0`). Not yet run against the board: its first use
-  is the owner's archive run after the baseline.
+  is the archive run.
 
 **No bench run (owner, 2026-10-12): remove replay, port host-only.** The
-replay-driven baseline and the ported bench comparison are dropped from
-this phase; the rest of the order stands. Re-plan before dispatch:
+replay-driven baseline and the ported bench comparison left this phase;
+the contract and order above carry the ruling. The same day the owner
+ruled that 4b's device sessions no longer gate the removal.
 
-1. `replay_retire.py archive` over HTTP (reads only; board idle), the
-   parent commits the captures and manifest, then `delete-captures`
-   (owner-approved removal of replay, 2026-10-12).
-2. measure-port: `measure_run.py` drives the U24 aplay stimulus, proven by
-   the measure-vectors host suite only (arming order, mixer set and read
-   back, looped render, no `/api/replays` call); `--baseline FILE` stays
-   so the bench comparison can run whenever the owner next sits at the
-   bench, against a baseline taken then. `baseline-replay.json` is not
-   produced.
-3. The four removal units, then the post-removal device check (owner,
-   source off then AC-3, no U24) and `delete-www`.
-
-The "device (owner, U24 bench, step 1, before removal)" targeted-proof
-item is void; the next session rewrites it and the `coordination` line
-to match before dispatching.
+**Deferred owner bench work (not a gate on this phase).** The ported
+`measure_run.py --baseline FILE` comparison (pass rule in the
+measure_vectors seam) runs at the owner's next bench relocation,
+batched with every other pending bench item per the aius CLAUDE.md
+(§A bench run is a last resort), against a baseline taken then.
 
 **What must survive.**
 
@@ -6988,6 +6980,8 @@ scratch and promotes it.
   source exists; the host eac3 suite is the only guard.
 - The archived captures can no longer be played on the board; they
   stay as evidence and host fixtures only.
+- The U24 measure port is proven host-only until the deferred bench
+  comparison runs.
 
 **Phase L's dark-state flip uses U24 de-auth toggles (owner,
 2026-10-10).** Re-point `docs/plans/aius-output-jitter.md` Phase L's
@@ -7075,7 +7069,8 @@ followed by its resolution.
   step 1, shipped by OTA before the archive run.
 - **S3.** "The tool's tolerance" had no criterion. Resolved: a saved
   replay-driven baseline, `--baseline` within 1.0 dB per figure, and
-  `isr_cost`'s existing gate.
+  `isr_cost`'s existing gate. Superseded 2026-10-12 (no bench run): the
+  criterion stays for the deferred bench comparison.
 - **N1 to N5.** The ID bound's home, openapi's other replay mentions,
   the unsourced card date dropped and `sd_busy` retried, the two label
   handoffs, and the `sd_flush` drain before the tool's deletion: folded
@@ -7097,7 +7092,8 @@ followed by its resolution.
   from `manifest.txt`, `probes_dbfs` compared for the multitone, and
   `pcm440_full` at the shipped model.
 - **N1.** Resolved: owner gate 1 on the step-1a OTA, and the baseline
-  and ported run both on that image.
+  and ported run both on that image (superseded 2026-10-12: no bench
+  run).
 - **N2.** Resolved: `delete-www` waits on `sd_flush.drained`.
 
 **Closure review round 3 (2026-10-10): READY.** Its nits, folded:
@@ -7510,14 +7506,15 @@ outcome: >-
   socket instead of reading a waiting 408 request_timeout. A partly
   received request still answers 408.
 seams:
-  - "firmware/lib/aius_http/src/aius_http_transaction.c timeout_transaction (:1292-1300): RECEIVE with request_length 0 closes silently; a new AIUS_HTTP_FAULT for the idle close"
-  - "firmware/src/aius_runtime_network_http.cpp:498-503: the idle close is counted apart from http_client_drops, or the drop counter documents it"
-  - "firmware/sd/www/openapi.json if a status counter is added (status body headroom is 14 B)"
+  - "firmware/lib/aius_http/src/aius_http_transaction.c timeout_transaction: RECEIVE with request_length 0 closes silently under AIUS_HTTP_FAULT_IDLE_CLOSE"
+  - "firmware/src/aius_runtime_network_http.cpp fault switch: the idle close is excluded from http_client_drops and counted nowhere"
+  - "firmware/src/aius_runtime_network_http.cpp retain_io: a CLOSED READ in RECEIVE with request_length 0 is not counted (review F5)"
 targeted-proof: >-
   host: http transaction suite, accept then no bytes then deadline gives
   CLOSE with no WRITE, a partial request still gives 408; all four images
   build. device (owner, no U24): Firefox loads of upgrade.html show no
-  page-visible 408 where they showed 3/3 before.
+  page-visible 408 where they showed 3/3 before; the same loads record
+  the http_rejections delta per Firefox load (the side finding below).
 unit: implementer
 ```
 
@@ -7535,13 +7532,57 @@ unit: implementer
   or from the third poller failure in a row (`sd-shared.js:110`,
   `:151-156`). Most cold loads also show one 1 s connect stall (a
   dropped SYN retransmitted).
+- **Decision (owner, 2026-10-12): the idle close is not counted.** It is
+  normal browser behaviour, so it stays out of `http_client_drops` and
+  gets no status field; the new fault code names it in code only. No
+  wire or `openapi.json` change, and the 14 B status headroom is kept.
+- **Built 2026-10-12; the device check is the owner's.** Host proof:
+  http, runtime-target, runtime, optical-app, status-body-bound,
+  registry, stack-bound (17), producer-isolation (26 + 7) green; all four
+  optical images plus the chooser and `recovery.hex` built with every
+  post-link guard, OCRAM unchanged at each floor. Adversarial review
+  PASS with F1 to F5 (F1 positive close checks, F2
+  `aius-network-hardening.md` brought in line, F3 comment, F4 residual
+  risk below, F5 owner decision below); closure PASS.
+- **Decision (owner, 2026-10-12, review F5): a spare the browser closes
+  first is not counted either.** A CLOSED read in RECEIVE with no request
+  byte stays out of `http_client_drops`; a close after any request byte
+  counts as before.
+- **Residual risk (review F4).** Request bytes that reach FNET's buffer
+  after the READ that returned WOULD_BLOCK but before the deadline step
+  are dropped by the FIN close (NativeEthernet lingers 4 s, so FNET closes
+  gracefully). A GET is retried by the browser; a PUT or POST is not and
+  the page sees an error. The old code gave a 408 in the same race.
 - **Not chosen (yet):** a page-side retry of a GET once on 408
   (`sd-shared.js:47-80`) hides the symptom but keeps the slot cost;
   inlining the fonts adds about 136 KB per page and loses their cache; a
   larger backlog trades SYN stalls for queued head-of-line waits. Revisit
   only if 4n's device check still shows 408s.
-- **Side finding, not investigated:** `http_rejections` rose by 1 on
-  every Firefox load and not in Chromium or WebKit.
+- **Side finding, read in 4n's device check:** `http_rejections` rose by
+  1 on every Firefox load and not in Chromium or WebKit. The idle close
+  does not touch it (review), so a delta that persists after 4n is new
+  work placed after 4n.
+
+### Phase 4o The network-transport suite passes at HEAD
+
+```yaml
+outcome: >-
+  firmware/scripts/test.sh --environment native --suite network-transport
+  passes on a clean tree; today it fails at
+  firmware/test/network-transport/test_vendor_source.py:297, which expects
+  lib_deps == ["symlink://vendor/NativeEthernet"] from platformio.ini.
+seams:
+  - "firmware/test/network-transport/test_vendor_source.py:297 or the platformio.ini env it reads: whichever drifted from the vendored-NativeEthernet decision is brought back in line"
+targeted-proof: >-
+  network-transport suite green; all four optical images build with every
+  post-link guard if platformio.ini changes.
+unit: implementer
+```
+
+- **Found 2026-10-12** by 4n's verifier: the failure is at HEAD (4n
+  touches neither `firmware/platformio.ini`, `firmware/vendor/**` nor the
+  suite). First step: diagnose which side drifted and when (`git log` on
+  both), then fix the drifted side.
 
 ### Phase 4c `test.sh` runs every `--suite` given ✓ SHIPPED 2026-10-06
 

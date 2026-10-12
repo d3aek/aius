@@ -1295,6 +1295,12 @@ static FLASHMEM void timeout_transaction(AiusHttpTransaction *transaction)
 	    transaction->outstanding_action != AIUS_HTTP_ACTION_CLOSE)
 		clear_outstanding(transaction);
 	if (transaction->state == AIUS_HTTP_TX_RECEIVE) {
+		if (transaction->request_length == 0u) {
+			/* Idle spare connection: close silently, no 408. */
+			record_fault(transaction, AIUS_HTTP_FAULT_IDLE_CLOSE);
+			request_cleanup(transaction);
+			return;
+		}
 		select_fixed(transaction, 408u, request_timeout_body,
 		             sizeof(request_timeout_body),
 		             AIUS_HTTP_FAULT_REQUEST_TIMEOUT);

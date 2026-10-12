@@ -63,8 +63,17 @@ FLASHMEM void http_init(AiusRuntimeNetworkHttp *service, uint32_t now_ms)
 FLASHMEM void retain_io(AiusRuntimeNetworkHttp *service,
                         const AiusHttpAction *action, AiusIoEvent io)
 {
+	/* A peer close before any request byte is a browser closing its spare
+	 * socket: counted nowhere (aius-sample-rate-following Phase 4n, owner
+	 * 2026-10-12). */
+	const bool idle_peer_close =
+		io.result == AIUS_IO_CLOSED &&
+		action->kind == AIUS_HTTP_ACTION_READ &&
+		service->http.state == AIUS_HTTP_TX_RECEIVE &&
+		service->http.request_length == 0u;
+
 	if (io.result == AIUS_IO_FAULT ||
-	    (io.result == AIUS_IO_CLOSED &&
+	    (io.result == AIUS_IO_CLOSED && !idle_peer_close &&
 	     (action->kind == AIUS_HTTP_ACTION_READ ||
 	      action->kind == AIUS_HTTP_ACTION_WRITE)))
 		service->http_client_drops++;
@@ -485,8 +494,10 @@ FLASHMEM bool aius_runtime_http_service(
 	/* A changed last_fault is a connection's first fault, recorded inside
 	 * this step (reset_client() clears it per accepted connection, so each
 	 * connection contributes at most one transition). Fixed 4xx refusals
-	 * are rejections; expired deadlines are the modern spelling of the
-	 * legacy idle/stall client drop. TRANSPORT is deliberately absent --
+	 * are rejections; expired deadlines after a request byte (or in a later
+	 * phase) are the modern spelling of the legacy stall client drop. An
+	 * idle request deadline (no byte) is IDLE_CLOSE and counts nowhere.
+	 * TRANSPORT is deliberately absent --
 	 * transport losses are counted per occurrence in retain_io(), and
 	 * counting the transition too would double-count the same loss. */
 	if (service->http.last_fault != fault_before) {
@@ -500,6 +511,9 @@ FLASHMEM bool aius_runtime_http_service(
 		case AIUS_HTTP_FAULT_UPLOAD_TIMEOUT:
 		case AIUS_HTTP_FAULT_DOWNLOAD_TIMEOUT:
 			service->http_client_drops++;
+			break;
+		case AIUS_HTTP_FAULT_IDLE_CLOSE:
+			/* Normal browser spare socket: counted nowhere. */
 			break;
 		default:
 			break;
