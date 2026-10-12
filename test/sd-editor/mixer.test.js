@@ -209,6 +209,173 @@ describe('mixer faders', () => {
     expect(el('mixer-verdict').dataset.tone).toBe('ok');
   });
 
+  it('restore the typed headroom, and the overshoot warning, when clip-free goes off', async () => {
+    expect(el('mixer-verdict').dataset.tone).toBe('warn');
+    el('matrix-clipfree').click();
+    await settle();
+    expect(el('mixer-verdict').dataset.tone).toBe('ok');
+    el('matrix-clipfree').click();
+    await settle();
+    expect(fieldOf('matrix.clipfree').checked).toBe(false);
+    expect(fieldOf('matrix.headroom_linear').value).toBe('0.5');
+    expect(fieldOf('matrix.headroom_linear').disabled).toBe(false);
+    expect(el('mixer-verdict').dataset.tone).toBe('warn');
+    expect(el('dirty-state').hidden).toBe(true);
+  });
+
+  it('send the typed headroom on Apply while clip-free is on, then restore it on off', async () => {
+    const base = globalThis.fetch;
+    const puts = [];
+    globalThis.fetch = vi.fn(async (url, init = {}) => {
+      if (url === '/api/dsp/config' && init.method === 'PUT') {
+        puts.push(JSON.parse(init.body));
+        return jsonResponse(200, { ok: true });
+      }
+      return base(url, init);
+    });
+    el('token').value = '0123456789abcdef';
+    el('token').dispatchEvent(new Event('input'));
+    el('matrix-clipfree').click();
+    await settle();
+    el('apply').click();
+    await settle();
+    expect(puts).toHaveLength(1);
+    expect(puts[0].matrix.clipfree).toBe(true);
+    expect(puts[0].matrix.headroom_linear).toBe(0.5);
+    el('matrix-clipfree').click();
+    await settle();
+    expect(fieldOf('matrix.headroom_linear').value).toBe('0.5');
+    expect(el('mixer-verdict').dataset.tone).toBe('warn');
+  });
+
+  it('bring the inline error back when an out-of-range headroom is restored', async () => {
+    await type('matrix.headroom_linear', '7');
+    expect(el('e:matrix.headroom_linear').textContent).not.toBe('');
+    el('matrix-clipfree').click();
+    await settle();
+    expect(el('e:matrix.headroom_linear').textContent).toBe('');
+    el('matrix-clipfree').click();
+    await settle();
+    expect(fieldOf('matrix.headroom_linear').value).toBe('7');
+    expect(el('e:matrix.headroom_linear').textContent).not.toBe('');
+  });
+
+  it('send the resolved headroom on Apply when the stashed one is out of range', async () => {
+    const base = globalThis.fetch;
+    const puts = [];
+    globalThis.fetch = vi.fn(async (url, init = {}) => {
+      if (url === '/api/dsp/config' && init.method === 'PUT') {
+        puts.push(JSON.parse(init.body));
+        return jsonResponse(200, { ok: true });
+      }
+      return base(url, init);
+    });
+    el('token').value = '0123456789abcdef';
+    el('token').dispatchEvent(new Event('input'));
+    await type('matrix.headroom_linear', '7');
+    el('matrix-clipfree').click();
+    await settle();
+    el('apply').click();
+    await settle();
+    expect(puts).toHaveLength(1);
+    expect(puts[0].matrix.headroom_linear).toBeGreaterThan(0);
+    expect(puts[0].matrix.headroom_linear).toBeLessThanOrEqual(1);
+    expect(puts[0].matrix.headroom_linear).not.toBe(7);
+    el('matrix-clipfree').click();
+    await settle();
+    expect(fieldOf('matrix.headroom_linear').value).toBe('7');
+    expect(el('e:matrix.headroom_linear').textContent).not.toBe('');
+  });
+
+  it('restore the pre-on headroom after the gains changed while clip-free was on', async () => {
+    el('matrix-clipfree').click();
+    await settle();
+    await slide('c', 1000);
+    await type('matrix.lfe_gain_linear', '1');
+    expect(fieldOf('matrix.headroom_linear').value).not.toBe('0.36624');
+    el('matrix-clipfree').click();
+    await settle();
+    expect(fieldOf('matrix.headroom_linear').value).toBe('0.5');
+  });
+
+  it('adopt a loaded preset headroom as the stash while clip-free stays on', async () => {
+    const base = fixture('dsp-config-default.json');
+    const preset = {
+      features: base.features,
+      input_channels: base.input_channels,
+      output_eq: base.output_eq,
+      matrix: { ...base.matrix, clipfree: true, headroom_linear: 0.8 },
+      limiter: base.limiter,
+    };
+    await boot(base, { night: preset });
+    el('matrix-clipfree').click();
+    await settle();
+    /* the form is dirty, so loading asks to discard the edit first */
+    const confirm = window.confirm;
+    window.confirm = () => true;
+    el('mixer-presets').querySelector('[data-preset="night"]').click();
+    await settle(60);
+    window.confirm = confirm;
+    expect(el('preset-origin').textContent).toContain('night');
+    expect(fieldOf('matrix.clipfree').checked).toBe(true);
+    const nativeFetch = globalThis.fetch;
+    const puts = [];
+    globalThis.fetch = vi.fn(async (url, init = {}) => {
+      if (url === '/api/dsp/config' && init.method === 'PUT') {
+        puts.push(JSON.parse(init.body));
+        return jsonResponse(200, { ok: true });
+      }
+      return nativeFetch(url, init);
+    });
+    el('token').value = '0123456789abcdef';
+    el('token').dispatchEvent(new Event('input'));
+    el('apply').click();
+    await settle();
+    expect(puts).toHaveLength(1);
+    expect(puts[0].matrix.headroom_linear).toBe(0.8);
+    el('matrix-clipfree').click();
+    await settle();
+    expect(fieldOf('matrix.headroom_linear').value).toBe('0.8');
+  });
+
+  it('restore the typed headroom when clip-free is toggled through the form checkbox', async () => {
+    const box = fieldOf('matrix.clipfree');
+    for (const checked of [true, false]) {
+      box.checked = checked;
+      box.dispatchEvent(new Event('input'));
+      box.dispatchEvent(new Event('change'));
+      await settle();
+    }
+    expect(fieldOf('matrix.headroom_linear').value).toBe('0.5');
+    expect(el('mixer-verdict').dataset.tone).toBe('warn');
+  });
+
+  it('keep the resolved headroom on off when the document carried none', async () => {
+    const config = fixture('dsp-config-default.json');
+    config.matrix.clipfree = true;
+    delete config.matrix.headroom_linear;
+    await boot(config);
+    const resolved = fieldOf('matrix.headroom_linear').value;
+    expect(resolved).not.toBe('');
+    el('matrix-clipfree').click();
+    await settle();
+    expect(fieldOf('matrix.clipfree').checked).toBe(false);
+    expect(fieldOf('matrix.headroom_linear').value).toBe(resolved);
+  });
+
+  it('restore the stored headroom when the page loaded with clip-free already on', async () => {
+    const config = fixture('dsp-config-default.json');
+    config.matrix.clipfree = true;
+    config.matrix.headroom_linear = 0.6;
+    await boot(config);
+    expect(fieldOf('matrix.headroom_linear').value).toBe('0.36624');
+    el('matrix-clipfree').click();
+    await settle();
+    expect(fieldOf('matrix.headroom_linear').value).toBe('0.6');
+    expect(el('mixer-verdict').dataset.tone).toBe('warn');
+    expect(el('dirty-state').hidden).toBe(false);
+  });
+
   it('open the exact values when a matrix field goes out of range', async () => {
     expect(el('mixer-exact').open).toBe(false);
     await type('matrix.center_gain_linear', '9');

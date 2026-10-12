@@ -1073,6 +1073,12 @@
 
   const setNumberField = (path, value) => setNumberValue(field(path), value);
 
+  /* The headroom the user had before clip-free overwrote it with the resolved
+   * value, and the last clip-free state refreshDerived() saw (null = a fresh
+   * render, so the loaded document's headroom is the one to stash). */
+  let stashedHeadroom = null;
+  let clipfreeSeen = null;
+
   function render(model) {
     for (const [key] of FEATURES) field(`features.${key}`).checked = Boolean(readPath(model, `features.${key}`));
 
@@ -1098,6 +1104,8 @@
           value === undefined && descriptor.absentDefault !== undefined ? descriptor.absentDefault : value,
         );
     }
+    clipfreeSeen = null;
+    stashedHeadroom = null;
     refreshDerived();
     validateAll();
   }
@@ -1157,6 +1165,14 @@
     const clipfree = field('matrix.clipfree').checked;
     const headroom = field('matrix.headroom_linear');
     headroom.disabled = clipfree;
+    if (clipfree && clipfreeSeen !== true) {
+      const typed = numberOf('matrix.headroom_linear', NaN);
+      stashedHeadroom = Number.isFinite(typed) ? typed : null;
+    } else if (!clipfree && clipfreeSeen === true && stashedHeadroom !== null) {
+      setNumberValue(headroom, stashedHeadroom);
+    }
+    const changedPolicy = clipfreeSeen !== null && clipfreeSeen !== clipfree;
+    clipfreeSeen = clipfree;
     if (clipfree) {
       const denominator =
         1 +
@@ -1165,6 +1181,9 @@
         Math.abs(numberOf('matrix.lfe_gain_linear', 0));
       setNumberValue(headroom, denominator <= 1 ? 1 : 1 / denominator);
     }
+    /* The policy flip changes whether the field is checked at all (a disabled
+     * input is skipped), so its inline error follows the flip. */
+    if (changedPolicy) validateField(headroom);
     for (const descriptor of MATRIX_FIELDS) {
       if (descriptor.note !== 'db') continue;
       const db = linearToDb(numberOf(descriptor.path, NaN));
@@ -1246,7 +1265,12 @@
          * from the GET, so a key missing HERE is a 400 on every save, which is
          * exactly what happened between the LFE fold-in landing and this line. */
         lfe_crossover_hz: numberOf('matrix.lfe_crossover_hz', 120),
-        headroom_linear: numberOf('matrix.headroom_linear', 1),
+        /* With clip-free on the DSP ignores this key and resolves its own, so
+         * the typed value rides along (when there is one) and survives a save. */
+        headroom_linear:
+          field('matrix.clipfree').checked && stashedHeadroom !== null && stashedHeadroom > 0 && stashedHeadroom <= 1
+            ? stashedHeadroom
+            : numberOf('matrix.headroom_linear', 1),
         clipfree: field('matrix.clipfree').checked,
         /* Optional to the validator (absent reads true) and sent anyway: this
          * body is the whole matrix, and omitting the box's own state would make

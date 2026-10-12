@@ -7701,7 +7701,7 @@ unit: implementer
   (verifier). **Next slice:** delete `classic.html` and re-point its
   tests, after 4s lands (shared `mixer.test.js`).
 
-### Phase 4s The matrix overshoot warning returns when clip-free headroom goes off
+### Phase 4s The matrix overshoot warning returns when clip-free headroom goes off ✓ SHIPPED 2026-10-12
 
 ```yaml
 outcome: the matrix warning ("A worst-case in-phase sum overshoots by +3.0 dB; the limiter catches it.") is recomputed on every clip-free headroom toggle, so it hides when headroom is on and reappears when it goes back off
@@ -7731,6 +7731,42 @@ unit: implementer
   `test/sd-editor/mixer.test.js` beside "show the headroom the clip-free
   policy resolves" (`:202`): verdict tone `warn`, click on gives `ok`,
   click off gives headroom `0.5` and tone `warn`.
+- **Shipped.** `refreshDerived()` stashes the typed headroom on a
+  transition to clip-free on (or on the first run after `render()`,
+  which reads the loaded document's value). It restores the stash with
+  `setNumberValue` on a transition to off, then re-validates the field.
+  `render()` resets the stash. While clip-free is on, `collectModel`
+  PUTs the stash when it is in (0, 1], the range the firmware parser
+  accepts (`aius_dsp_config.c:943`), and otherwise the resolved value.
+  The DSP ignores `headroom_linear` under clip-free
+  (`aius_dsp_runtime_config.c:98`). Ten `mixer.test.js` cases cover
+  this, including a preset load inside one boot (the `render()` reset)
+  and the form-checkbox toggle path. A blank headroom is not restored:
+  it was never a valid value. Review: three rounds (2 should, 1
+  blocker, all fixed), then a clean-room PASS whose two test gaps were
+  added. Proof: sd-editor 416. **Residual, closed by
+  4t:** GET serves the resolved headroom under clip-free, so Apply plus
+  reload still loses the typed value until 4t's OTA.
+
+### Phase 4t GET /api/dsp/config serves the stored headroom under clip-free
+
+```yaml
+outcome: GET /api/dsp/config reports the headroom_linear the client stored, whether clip-free is on or off, so a page reloaded after Apply with clip-free on restores the typed headroom when clip-free goes off; the DSP still runs the resolved clip-free headroom
+seams:
+  - "firmware/src/optical_main.cpp:3532-3533 (the GET serializer): serve the stored headroom_linear, not aius_downmix_clipfree_headroom, when clipfree is on"
+  - "every other reader of the served value (openapi.json DspMatrix.headroom_linear description, firmware tools, the status body if it echoes it): follow; the web UI already computes the clip-free value itself"
+  - "host tests: the GET of a config stored with clipfree true and headroom 0.5 serves 0.5; aius_dsp_runtime_config still applies the resolved value (aius_dsp_runtime_config.c:98-103)"
+  - "test/sd-editor openapi case if the description changes (keep its one-'replay' rule)"
+targeted-proof: the host cases above green; the commit-checkpoint suites the change reaches; all four images build at their floors; device (owner OTA): headroom 0.5, clip-free on, Apply, reload, clip-free off shows 0.5 and the overshoot warning
+unit: implementer
+```
+
+- **Owner, 2026-10-12: fix it in firmware and OTA.** The 4s review found
+  that Apply plus reload still loses the typed headroom, because the GET
+  serves the resolved value under clip-free. 4s already PUTs the typed
+  value, and the DSP ignores `headroom_linear` while clip-free is on, so
+  serving the stored value changes nothing the DSP does. The OTA is the
+  owner's word, batched with the next card sync.
 
 ### Phase 4c `test.sh` runs every `--suite` given ✓ SHIPPED 2026-10-06
 
