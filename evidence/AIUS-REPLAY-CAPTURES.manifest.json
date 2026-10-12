@@ -1,0 +1,31 @@
+{
+  "build_revision": "ce1159286fd2+teensy41-optical-slot-a",
+  "captures": [
+    {
+      "id": "channel_id_51",
+      "bytes": 5761024,
+      "sha256": "2a28c32d15a5f1165b0e0fcbe6cc51a4b1c73adc945db82432ca5c4bcafb1400"
+    },
+    {
+      "id": "channel_impulse_51",
+      "bytes": 5761024,
+      "sha256": "79e8e1be2744b0eae269dbe20fbbf513bebfd393f4653c3d83fd6c2d6674ee7a"
+    },
+    {
+      "id": "cinematic_program_51",
+      "bytes": 5761024,
+      "sha256": "ee3a31a1e94f1f255161380a37f709b5d4742f64e4365a50c6a9ada07079d32c"
+    },
+    {
+      "id": "channel_id_51_ac3",
+      "bytes": 196608,
+      "sha256": "949b3013f244b6a9d956211c514abd214d8c02baca0866ef4e21601fb3bcf309"
+    },
+    {
+      "id": "eac3_id51_3s",
+      "bytes": 2285568,
+      "sha256": "c9f6b33e54b31ae72735ab11bbfb9dac34891c864340b588132357545731e02a"
+    }
+  ],
+  "parts": []
+}
