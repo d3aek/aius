@@ -3,8 +3,8 @@
  * OWNS: the whole /sd/www/status.html page -- one GET /api/status per second
  * rendered into five cards (audio path, configuration, network, storage,
  * board), the input source derived from the carrier, the signal-flow line that
- * says whether anything is reaching the output, and the Live processing card
- * (GET /api/meters every 250 ms into the shared waveform canvas).
+ * says whether anything is reaching the output. It polls /api/status only;
+ * the meters live in the DSP editor.
  *
  * The board card's forensic rows -- A/B slot, previous boot, crash record,
  * dark-window stamp, stall witness -- are each optional in TWO different ways
@@ -31,10 +31,9 @@
 
   const $ = (id) => document.getElementById(id);
   const shared = window.aiusSdShared;
-  const { setPill, request, describe, formatBytes, formatUs, formatDb, drawWaveform } = shared;
+  const { setPill, request, describe, formatBytes, formatUs } = shared;
 
   const STATUS_POLL_MS = 1000; /* the status JSON is an epoch-latched snapshot */
-  const METER_POLL_MS = 250; /* faster than the status tick so the envelope moves */
 
   /* Numeric vocabularies mirrored from the firmware the way dsp-editor.js
    * mirrors AIUS_DSP_MODEL_MAX_JSON_BYTES: the wire carries the raw number and
@@ -532,55 +531,12 @@
     setCardStatus('poll', `Input source: ${inputSource(status)}. Snapshot at epoch ${Number(status.loop_epoch) || 0}.`);
   }
 
-  /* ---- live processing ---------------------------------------------------- */
-
-  /* GET /api/meters wire shape, settled in docs/plans/aius-dsp-config-api.md
-     §Meters endpoint: waveform points are per-mille integers 0..1000 of full
-     scale (non-negative magnitudes, capped at 128 points, drawn mirrored about
-     the centre line by the shared renderer), output peak/rms are [L, R]
-     arrays, levels are dBFS floored at -120, and sequence 0 means "never
-     published". */
-  const meterPair = (values) => {
-    const pair = Array.isArray(values) ? values : [];
-    return `${formatDb(pair[0])} / ${formatDb(pair[1])}`;
-  };
-
-  function markMetersUnreachable(result) {
-    setPill($('meter-state'), 'unreachable');
-    $('meter-summary').textContent = `No meter snapshot -- ${describe(result)}.`;
-    drawWaveform($('waveform'), []);
-  }
-
-  function renderMeters(result) {
-    const meters = result.body;
-    const published = Number(meters.sequence) > 0;
-    drawWaveform($('waveform'), published ? meters.waveform : []);
-    if (!published) {
-      setPill($('meter-state'), 'no data');
-      $('meter-summary').textContent = 'No meter snapshot published yet.';
-      return;
-    }
-    setPill($('meter-state'), 'live');
-    const output = meters.output || {};
-    $('meter-summary').textContent = `Output peak ${meterPair(output.peak_dbfs)} dBFS · RMS ${meterPair(
-      output.rms_dbfs,
-    )} dBFS · latency ${formatUs(Number(meters.estimated_latency_us))}`;
-  }
-
   shared.createPoller({
     fetch: () => request('/api/status', { headers: { Accept: 'application/json' } }),
     cadenceMs: STATUS_POLL_MS,
     immediate: true,
     onAnswer: renderAnswer,
     onUnreachable: renderUnreachable,
-    onError: cardSink('poll'),
-  });
-  shared.createPoller({
-    fetch: () => request('/api/meters', { headers: { Accept: 'application/json' } }),
-    cadenceMs: METER_POLL_MS,
-    immediate: true,
-    onAnswer: renderMeters,
-    onUnreachable: markMetersUnreachable,
     onError: cardSink('poll'),
   });
 })();

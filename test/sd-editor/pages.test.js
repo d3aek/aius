@@ -47,13 +47,6 @@ describe('SD pages share one chrome', () => {
     }
   });
 
-  it('carries the Live processing card on status.html', () => {
-    const doc = parse('status.html');
-    expect(doc.querySelector('canvas#waveform')).not.toBeNull();
-    expect(doc.querySelector('#meter-state')).not.toBeNull();
-    expect(doc.querySelector('#meter-summary')).not.toBeNull();
-  });
-
   it.each(PAGES)('%s carries the same four nav links, its own marked current', (page) => {
     const doc = parse(page);
     const links = Array.from(doc.querySelectorAll('header.bench-nav a:not(.logo)'));

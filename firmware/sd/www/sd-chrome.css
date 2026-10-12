@@ -126,8 +126,6 @@ h2 { font-size: 1rem; }
 .status-grid div { background: var(--aius-surface-recessed); border-radius: 6px; padding: 11px; }
 .status-grid span, .status-grid strong { display: block; }
 .status-grid span, .hint, .muted { color: var(--aius-text-muted); font-size: .78rem; }
-/* The Live processing waveform canvas on status.html (drawn by sd-shared.js). */
-.live-canvas { width: 100%; height: auto; background: var(--aius-surface-canvas); border-radius: 5px; }
 .status-grid strong { margin-top: 7px; overflow: hidden; text-overflow: ellipsis; }
 .controls { flex-wrap: wrap; justify-content: flex-start; margin-top: 12px; }
 .controls label { display: grid; gap: 6px; color: var(--aius-text-secondary); font-size: .78rem; }

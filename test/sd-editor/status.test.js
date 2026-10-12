@@ -20,8 +20,8 @@
  * answers itself (carrier -> optical carrier, else none), the unreachable
  * degradation -- a poll failure must dim every grid and say so, never leave a
  * confident-looking snapshot on screen (2026-07-27 UX report finding P4) --
- * and the Live processing card (GET /api/meters into the shared waveform
- * canvas), with drawWaveform itself.
+ * and that the page polls /api/status alone (the Live processing card and its
+ * /api/meters poll were removed in Phase 4p).
  */
 
 import { readFileSync } from 'node:fs';
@@ -174,19 +174,9 @@ let device;
 const rejections = [];
 const trackRejection = (reason) => rejections.push(reason);
 
-/* GET /api/meters as the firmware serializes it: per-mille waveform points,
- * [L, R] output levels in dBFS and sequence > 0 once a snapshot is published. */
-const METERS = {
-  sequence: 7,
-  waveform: [0, 250, 500, 1000],
-  output: { peak_dbfs: [-6, -9.5], rms_dbfs: [-18, -20.5] },
-  estimated_latency_us: 2900,
-};
-
 function createDevice(options = {}) {
   const stub = {
     status: 'status' in options ? options.status : SNAPSHOT,
-    meters: 'meters' in options ? options.meters : METERS,
     calls: [],
   };
   globalThis.fetch = vi.fn(async (url, init = {}) => {
@@ -194,19 +184,12 @@ function createDevice(options = {}) {
     if (url === '/api/status') {
       return stub.status ? jsonResponse(200, stub.status) : jsonResponse(500, { ok: false, error: 'unavailable' });
     }
-    if (url === '/api/meters') {
-      return stub.meters ? jsonResponse(200, stub.meters) : jsonResponse(500, { ok: false, error: 'unavailable' });
-    }
     return jsonResponse(404, { ok: false, error: 'not_found' });
   });
   return stub;
 }
 
-/* The 250 ms meters poll runs beside the 1 s status poll; the polling tests
- * below replace fetch for /api/status alone and keep meters answering. */
 const statusCalls = () => device.calls.filter((call) => call.url === '/api/status');
-const withMeters = (handler) => (url, init) =>
-  url === '/api/meters' ? Promise.resolve(jsonResponse(200, METERS)) : handler(url, init);
 
 async function boot(options) {
   device = createDevice(options);
@@ -674,12 +657,10 @@ describe('Aius SD device status — polling', () => {
   it('treats a 503 as a silent skip: last values and pills stay, and Retry-After sets the next poll', async () => {
     device = await boot();
     let retryAfter = '30';
-    globalThis.fetch = vi.fn(
-      withMeters(async (url) => {
-        device.calls.push({ url, method: 'GET', headers: {} });
-        return { ...jsonResponse(503, { ok: false, error: 'audio_busy' }), headers: { get: () => retryAfter } };
-      }),
-    );
+    globalThis.fetch = vi.fn(async (url) => {
+      device.calls.push({ url, method: 'GET', headers: {} });
+      return { ...jsonResponse(503, { ok: false, error: 'audio_busy' }), headers: { get: () => retryAfter } };
+    });
     const before = statusCalls().length;
     await vi.advanceTimersByTimeAsync(1000);
     expect(statusCalls().length).toBe(before + 1);
@@ -703,7 +684,7 @@ describe('Aius SD device status — polling', () => {
   it('never overlaps polls: the next request waits for the previous answer', async () => {
     device = await boot();
     const waiting = [];
-    globalThis.fetch = vi.fn(withMeters(() => new Promise((resolve) => waiting.push(resolve))));
+    globalThis.fetch = vi.fn(() => new Promise((resolve) => waiting.push(resolve)));
     await vi.advanceTimersByTimeAsync(3500); /* inside the 4 s request timeout */
     expect(waiting).toHaveLength(1);
     waiting[0](jsonResponse(200, SNAPSHOT));
@@ -715,12 +696,10 @@ describe('Aius SD device status — polling', () => {
   it('aborts a hung poll after the request timeout, counts it, and schedules the next', async () => {
     device = await boot();
     const signals = [];
-    globalThis.fetch = vi.fn(
-      withMeters((url, init = {}) => {
-        signals.push(init.signal);
-        return new Promise(() => {});
-      }),
-    );
+    globalThis.fetch = vi.fn((url, init = {}) => {
+      signals.push(init.signal);
+      return new Promise(() => {});
+    });
     for (let round = 1; round <= 2; round++) {
       await vi.advanceTimersByTimeAsync(1000 + 4000);
       expect(signals).toHaveLength(round);
@@ -746,83 +725,18 @@ describe('Aius SD device status — polling', () => {
   });
 });
 
-/* A canvas whose 2d context records every path call, so drawWaveform's output
- * is asserted without a rasteriser (happy-dom has none). */
-function recordingCanvas({ clientWidth = 480, clientHeight = 90 } = {}) {
-  const calls = [];
-  const record = (name) => (...args) => calls.push([name, ...args]);
-  const context = {
-    clearRect: record('clearRect'),
-    beginPath: record('beginPath'),
-    moveTo: record('moveTo'),
-    lineTo: record('lineTo'),
-    closePath: record('closePath'),
-    stroke: record('stroke'),
-    fill: record('fill'),
-  };
-  const canvas = { width: 960, height: 180, clientWidth, clientHeight, dataset: {}, getContext: () => context };
-  return { canvas, calls };
-}
-
-describe('Aius SD device status — Live processing', () => {
-  it('draws the published envelope and reads the output levels into the summary', async () => {
+describe('Aius SD device status — one poller', () => {
+  it('requests only /api/status, never /api/meters, and has no Live processing card', async () => {
     await boot();
-
-    expect(text('meter-state')).toBe('live');
-    expect(text('meter-summary')).toBe('Output peak -6.0 / -9.5 dBFS · RMS -18.0 / -20.5 dBFS · latency 2.9 ms');
-    expect(device.calls.some((call) => call.url === '/api/meters')).toBe(true);
-  });
-
-  it('says no snapshot is published yet while sequence is 0', async () => {
-    await boot({ meters: { ...METERS, sequence: 0 } });
-
-    expect(text('meter-state')).toBe('no data');
-    expect(text('meter-summary')).toBe('No meter snapshot published yet.');
-  });
-
-  it('marks the card unreachable after three failed polls and keeps the status card live', async () => {
-    device = await boot({ meters: null });
-    await vi.advanceTimersByTimeAsync(1000);
+    await vi.advanceTimersByTimeAsync(5000);
     await settle();
 
-    expect(text('meter-state')).toBe('unreachable');
-    expect(text('meter-summary')).toContain('No meter snapshot');
-    for (const pill of PILLS) expect(text(pill)).toBe('live');
-  });
-
-  it('polls /api/meters faster than the status tick, as a public read', async () => {
-    await boot();
-    const meterCalls = () => device.calls.filter((call) => call.url === '/api/meters');
-    const before = meterCalls().length;
-
-    await vi.advanceTimersByTimeAsync(1000);
-
-    expect(meterCalls().length).toBe(before + 4);
-    for (const call of meterCalls()) expect(call.headers['X-Aius-SD-Auth']).toBeUndefined();
-  });
-
-  it('drawWaveform always draws the centre line, and mirrors the per-mille envelope about it', async () => {
-    await boot();
-    const { drawWaveform } = window.aiusSdShared;
-
-    const idle = recordingCanvas();
-    drawWaveform(idle.canvas, []);
-    expect(idle.calls.filter(([name]) => name === 'moveTo')).toEqual([['moveTo', 0, 45]]);
-    expect(idle.calls.filter(([name]) => name === 'fill')).toHaveLength(0);
-
-    const live = recordingCanvas({ clientWidth: 960, clientHeight: 180 });
-    drawWaveform(live.canvas, [0, 500, 1000]);
-    const lines = live.calls.filter(([name]) => name === 'lineTo');
-    /* centre line, then the upper edge at x = 0, 480, 960, then the mirrored
-       lower edge back from full scale. */
-    expect(lines[0]).toEqual(['lineTo', 960, 90]);
-    expect(lines.slice(1).map(([, x, y]) => [x, y])).toEqual([
-      [480, 45],
-      [960, 0],
-      [960, 180],
-      [480, 135],
-      [0, 90],
-    ]);
-    expect(live.calls.filter(([name]) => name === 'fill')).toHaveLength(1);
+    expect(device.calls.length).toBeGreaterThan(0);
+    for (const call of device.calls) expect(call.url).toBe('/api/status');
+    expect(el('waveform')).toBeNull();
+    expect(el('meter-state')).toBeNull();
+    expect(el('meter-summary')).toBeNull();
+    expect(bodyMarkup).not.toContain('Live processing');
+    expect(bodyMarkup).not.toContain('/api/meters');
   });
 });

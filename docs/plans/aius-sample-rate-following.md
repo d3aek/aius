@@ -27,192 +27,144 @@ buffer and no intermediate DSP quantisation.
 
 ## Current state
 
-Handover 2026-10-07 (orchestration run, session 170d7fc3: 4e and 4f
-built); replace wholesale on the next handover.
+Handover 2026-10-12 (orchestration run, session c36bf526: 4n, 4o, 4i and
+4p built; handed over before the OTA); replace wholesale on the next
+handover.
 
-- **Status.** Phases 1, 2, 3 DONE; 4a, 4c, 4d DONE. Phase 4 BUILT (gate 7
-  at fill-write cadence on the U24 bench is its last proof, owner
-  needed). **4e BUILT** (`21c8f52`), **4f BUILT** (`9c9bd88`) and **4g
-  BUILT** (2026-10-10): host suites green, optical images with every
-  post-link guard and OCRAM at each env's floor, delivery audits and
-  closures passed; their device runs are the owner's and none has run.
-  **4h BUILT** (2026-10-11): host proof and all four images green,
-  delivery audit and closures recorded in its body; its device runs are
-  the owner's. **4j BUILT** (2026-10-11): host proof and all four images
-  green, delivery audit closure PASS; its device run is the owner's, and
-  its N9 notes edit is done. **4k BUILT**
-  (2026-10-11). **4l BUILT** (2026-10-11). **4m BUILT** (2026-10-11,
-  the mixer plan's Phase 1e). **4n BUILT** (2026-10-12): host proof and
-  all four images green, review closure PASS; its Firefox device check is
-  the owner's. **4o DONE** (2026-10-12, a stale test assertion). **4i BUILT** (2026-10-12): replay removed from
-  firmware, web UI, tools and docs; captures archived (`165814b`) and
-  deleted from the card; 36 suites and all four images green, delivery
-  audit fixes folded; its post-removal device check, `delete-www` and the
-  card sync are the owner's. **4p** (Live processing card on status.html)
-  waits on the owner's decision. 4b (acceptance umbrella)
-  PLANNED: it closes after 4e to 4h's device runs. The owner holds two
-  gates (below).
-- **Board.** Runs `ce1159286fd2` in slot 2: 4e to 4m, 4i step 1a, plus
-  the DSP decoder fix, recorder-rolling-buffer Phase E and output-jitter
-  Phase L. Deployed by OTA 2026-10-11 on the owner's word ("ota"), board
-  idle at the time (no carrier, `sd_flush.drained`); 154 chunks staged
-  with no retries, healthy-boot self-commit (`trial_budget` 0,
-  `rollback_observed` false); first reading `rx_state` 1, `lock_pm` 0 on
-  the dark input. No rehearsal ran. The other slot (1) holds
-  `f58232711d06`. 4i's archive runs on `ce1159286fd2` (it carries step 1a). The card was
-  fully synced the same day (mixer plan Phases 6 and 7), `openapi.json`
-  included.
-  `df966f17b370` (Phase 4a) is in neither slot now but stays the owner's
-  **fail-safe rollback candidate** (2026-10-07): tag
+- **Status.** Phases 1, 2, 3 DONE; 4a, 4c, 4d, 4o, 4p DONE. BUILT, with
+  their device proof the owner's and not yet run: Phase 4 (gate 7 at
+  fill-write cadence on the U24 bench), 4e, 4f, 4g, 4h, 4j, 4k, 4l, 4m,
+  **4n** (Firefox `upgrade.html` loads show no 408) and **4i** (replay
+  retired; post-removal device check and `delete-www`). 4b (acceptance
+  umbrella) PLANNED: it closes after 4e to 4h's device runs and no longer
+  gates 4i (owner, 2026-10-12).
+- **Board.** Runs `ce1159286fd2` in slot 2 (4e to 4m, 4i step 1a, the
+  DSP decoder fix, recorder Phase E, output-jitter Phase L); slot 1 holds
+  `f58232711d06`. Both still carry replay; the next OTA is the first
+  image without it. The card holds no replay captures (`delete-captures`
+  2026-10-12, listing empty) but still holds the old www pages,
+  `replays.html`, `replays.js`, `replays.css` and `replays.html.gz`
+  included, until the next sync and `delete-www`. `df966f17b370` stays
+  the owner's **fail-safe rollback candidate**: tag
   `fw-rollback-df966f17b370`, signed container and USB `recovery.hex` in
-  LFS with steps in `firmware/releases/df966f17b370/README.md`.
-- **Implementation started** (owner "start", 2026-10-07), 4e first.
-  **No OTA deploy until the owner's go-ahead** (owner, 2026-10-07):
-  another bench round may be needed first, not on 2026-10-07. Builds,
-  signing and host suites proceed; staging, rehearsal and activation
-  wait.
-- **Orchestration posture: checkpoint** (owner, 2026-10-10; was
-  autonomous from 2026-10-06): surface each decision point and
-  human-review gate as it arises and wait for the owner; give each call
-  its own line, never a packed digest. Every device session (OTAs and
-  source-off checks included) and anything destructive goes to the owner
-  (ruling 2026-10-07). **Card edge cases are not owner questions**
-  (owner, 2026-10-11): pick the simplest sensible handling that keeps
-  normal saves, staging and playback working, record it in the phase,
-  and run no further review rounds on states the owner calls
-  never-happen.
-- **Owner gates (not questions).** (1) No OTA deploy, stage, rehearsal
-  or activation until the owner's go-ahead; another bench round may come
-  first. (2) Every device session is the owner's: 4e runs 1 and 2 (run 1
-  ends with an OTA stage and rehearsal) and its E7 verdict, then 4f's
-  source-off and AC-3 runs, then 4g's run 1 (source off, after a full
-  sync that uploads the bundles) and run 2 (AC-3 page loads), then 4h's
-  AC-3 and accidental-disconnect runs. An E7 verdict of B2 re-plans 4f to 4h before
-  their device runs (4f's body records this).
-- **Next action (2026-10-12).** 4n, 4o and 4i are built. Next: (1)
-  **4p**, the owner's decision on the Live processing card after viewing
-  it on the board's old replays page; (2) the owner's word for an OTA of
-  a 4n-plus-4i image, then a card sync (it carries 4i's pages, so it
-  waits on 4p), the 4i post-removal device check and `delete-www`, and
-  4n's Firefox check. 4b's device sessions stay the owner's and no longer
-  gate 4i's removal (owner, 2026-10-12). Every OTA and device check waits
-  for the owner's word; card reads and the archive's GETs do not.
-- **What landed this run** (aius commits; each followed by a upstream repository
-  pointer bump; foreign commits from the mixer session omitted):
+  LFS, steps in `firmware/releases/df966f17b370/README.md`.
+- **Orchestration posture: checkpoint** (owner, 2026-10-10): surface each
+  decision point and human-review gate as it arises and wait for the
+  owner; one line per call. Every device session (OTAs and source-off
+  checks included) and anything destructive goes to the owner. **Card
+  edge cases are not owner questions** (owner, 2026-10-11): pick the
+  simplest sensible handling, record it in the phase. Card reads and
+  GETs need no owner word.
+- **Owner gates (not questions).** (1) No OTA stage, rehearsal or
+  activation without the owner's word. (2) Every device session is the
+  owner's: the 4e, 4f, 4g and 4h runs listed in 4b, 4n's Firefox check,
+  4i's post-removal check. A bench run is a last resort, batched, never
+  mixed with listening (aius CLAUDE.md).
+- **Next action: the OTA, on the owner's word.** In order:
+  1. Rebuild at a clean HEAD (the images in `firmware/.pio` were built
+     from the uncommitted 4i tree, so their stamp is stale): confirm
+     `the repo tooling git -C git_modules/aius status --short` is empty, run
+     `firmware/scripts/build_ab.sh`, and read every post-link guard (OCRAM
+     floors 264,768 / 264,736 B; the retired-symbols guard).
+  2. Read `/api/status` `ab` (expect `ledger_valid true`, `booted_slot`
+     2), state the cost (staging during playback costs dropouts; prefer
+     the source off), sign the canonical slot-a image WITHOUT `--slot`
+     with the home key and `--build-revision` = the 12-char HEAD, and
+     `aius_ota_flash.py --activate` it (aius CLAUDE.md §Device access).
+  3. After the healthy-boot self-commit, the owner's card sync
+     (`aius-sd-sync.sh --token-file .secrets/aius-sd-auth`): it uploads
+     4i's and 4p's pages and `openapi.json`.
+  4. 4i's post-removal device check (its targeted-proof "device (owner,
+     after removal)" item), recording `checkpoint_walltime_us[7]` against
+     REPLAY's 1,060 us; then `replay_retire.py delete-www`, done when
+     `sd_flush.drained` reads true and each deleted page answers 404.
+  5. 4n's Firefox check (no page-visible 408; note the `http_rejections`
+     delta per load, per 4n's side-finding bullet).
+- **What landed this run** (aius commits, each followed by a upstream repository
+  pointer bump):
 
 | Commit | Contents | Proof |
 | --- | --- | --- |
-| `0cca005` | Phase 4a delivery-audit fixes (F3/R3 pending-open pad, N5 to N11, R4, R7, R9; bench tools R1, R2, R6, R10 to R15) | 10 firmware suites, both images, tool tests 93/71/119; delivery review FAIL, closure PASS, clean-room PASS |
-| `a2c4e8c` | Phase 4c `test.sh` runs every `--suite` | registry, multi-suite exit codes, shellcheck |
-| `df966f1` | owner confirms R2, R3, R13 | none needed |
-| `bdfa916`, `961ac4c` | deploy record `df966f17b370`; reducer splits on pending pad; short device session | reducer `--self-test` ok; OTA self-commit |
-| `5d7c05d`, `3ce0129` | aius CLAUDE.md: auth-file tools, recorder keys, glitch stamps; Phase 4d fill counters and signing form | promote diff matched B1 |
-| `46456cf` | full device session; 4b widened (owner: audio hot path always has priority; OTA excluded) | device evidence 2026-10-07 |
-| `a974465` to `a480243` | 4b B2 design, prebuild round 1, three investigations (network/SD, write path, SdFat DMA), owner decisions | read-only reviews |
-| `9d62deb` | rollback candidate images and README, `*.ota` LFS, tag `fw-rollback-df966f17b370` | sha256 checked against the deploy record |
-| `bdf9629` | re-plan: 4b umbrella, phases 4e to 4h | yaml fields checked by the author |
-| `ef2c57f` | prebuild round 2 folded into 4b, 4e to 4h and Phase 5; 4e interrogate step | none |
-| `6601355` | 4b and 4e to 4h contracts revised against round 2; Phase 5 gains E5 to E9, F5, F6, G6, G7, H7 to H10 | none |
-| `881f57a` | prebuild round 3 (NOT READY) folded and resolved; Phase 5 gains G3, E10, E11, F7, F8 and nine corrections | reviewer citations checked against source by the reviser |
-| `17e0474` | prebuild round 4 (closure; 4f READY) folded and resolved; Phase 5 gains E12, F9, F10, G9, H12, H13 | reviser checked citations against source |
-| `e54ee82` | prebuild round 5 (closure, no blocker; 4f, 4g READY) written in: R4-N1 to N3, R5-S1 to S3; Phase 5 gains E13 | reviser checked citations against source |
-| `6e4eff8` | clean-room round (HOLD, CR-B1 to B3, CR-S1 to S12) folded; Phase 5 gains E14, F11 to F13, G10, H14, H15 and four corrections | edited yaml blocks parse; citations checked by the reviser |
-| `15edf92` | clean-room closure (HOLD, CR2-B1 E-AC-3 log compiled out, CR2-S1 FAT check from the job's own BEGIN) folded; E14, H14 amended | all yaml blocks parse; citations checked by the reviser |
-| `9c12136` | clean-room round 3 (HOLD, CR3-B1 to B4, CR3-S1 to S5) folded; isolation walk rewritten as W1 to W8; Phase 5 gains E15, F14, H16; E3, H4 corrected | prototype walk over the Oct 6 optical ELF: no forbidden symbol reached with declared targets; yaml parses |
-| `6c327f4` | round 3 closure (HOLD, CR4-B1 to B3, CR4-S1 to S4) folded; W5 (2) forward, per-row counts, relocation-based address-taken, chain stack bound; Phase 5 gains E16, E17, H17; H16 corrected | per-row prototype walk (`walk_cr4.py`): 447 nodes, 74 sites, 39 leaf pairs; yaml parses |
-| `e520fc4` | second closure READY (4b, 4e to 4h); CR5-S1 to S4 folded (dependency-file wording, libc row 77 nodes and 12 sites in 7 functions, SHF_ALLOC relocations, FAT serial stored at mount); `prebuild-review: ready` | yaml parses; figures from `walk7.txt`, `walk8.txt` |
-| `a0dcb55` | owner answers Phase 5: confirmed (E2 deferred), H4/H10/H14 overturned; 4h rewritten as copy-before-write (journal, RECOVER, unlink patch, FAT-only gate removed); confirmations recorded per phase; Phase 5 deleted | yaml parses; citations checked by the reviser |
-| `4d8c36c` | focused 4h review (NOT READY, FR-B1, FR-S1 to S13) folded: safe-copy ordering, in-place overwrite with sector 0 last, 3N+17 primitives (89, 90 epochs for dsp.json); owner scopes the rename-gap fix to settings files | 4h yaml parses; parser trailing-byte rejection checked in source |
-| `368cecb` | 4h closure READY; FR2-S1 to S3 folded (put keeps the safe copy; 0.78 s; first-save fault over-count accepted); all of 4b, 4e to 4h READY | reviewer walked every cut in both orders and both probes against SdFat source |
-| `d6f4f58` | owner "start"; no OTA deploy without the owner's go-ahead | none |
-| `21c8f52` | Phase 4e BUILT: vendored SdFat and SD (DMA, card-wait hook, DTCM bounce), producer-yield library, adapter fault split and mode route, windows and yield points, per-env OCRAM floors, producer-isolation and stack-bound suites, delivery-audit fixes (D-B1 MPU trap, D-S1 to D-S4) | 22 host suites (verifier run), all four images and every post-link guard, delivery audit closure PASS |
-| `9c9bd88` | Phase 4f BUILT: link-time admission (route and SD-start shedding, 503 audio_busy with Retry-After), live_owns_ring, time-aged bucketed cost windows, FIFO start-gate deferral with bring-up latch, render and storage-diag yields, /api/status/brief, shared web poller with 503 skip and GET timeout, capture.py 503 skips, dsp_model_pad.py, D-S7, delivery-audit fixes (F-B1, F-B2, F-S1 to F-S6) | 14 host suites (verifier run), all four images, OCRAM at every floor, delivery audit closure PASS |
-| this commit | handover: this state; 4g gains starting figures and three carried-in items | none needed |
-| `35c6585` | Phase 4h BUILT: write-behind settings flush over 4g's PSRAM store (sd-overlay), disconnect hold and remount retry, copy-before-write saves with mount restore, PSRAM upload sink, BUSY verdict and SD-writes freeze, OTA and reboot drain gate, `sd_flush` status, public `FsVolume::cacheClear`, delivery-audit and clean-room fixes (D-S4, D-N10 and CR-N2 recorded as residual risks; D-N8 deferred to 4k) | 21 host suites, vitest, ota client, shellcheck (verifier run); all four images with every post-link guard; delivery audit FAIL then four closures FAIL and a fifth PASS; clean-room HOLD then three closures HOLD and a fourth PASS |
-| this commit | OTA of `ce1159286fd2` (DSP decoder, recorder Phase E, output-jitter Phase L) recorded | `/api/status`: build `ce1159286fd2`, slot 2, `trial_budget` 0, `rollback_observed` false |
-| `1d9e542` | OTA of `f58232711d06` (4i step 1a) recorded | `/api/status`: build `f58232711d06`, slot 1, `trial_budget` 0, `rollback_observed` false |
-| `f582327` | Phase 4i step 1: `firmware/tools/replay_retire.py` (archive, delete-captures, delete-www; `--auth-file`; committed-and-unchanged check before any delete) | measure-vectors 23 (20 new, fake device and temporary git repos); delivery audit FAIL (B1, S1, N1 to N4) then closure PASS (N5, N6 folded) |
-| `603bc08` | Phase 4i step 1a: a replay delete removes `<id>.iec` when it exists, else `<id>.part` (one window, settled); openapi and two comments count at most three primitives | optical-cutover (new admission case, five self-test mutations), optical-app, stack-bound, producer-isolation, itcm-placement, memory, sd-editor; all four images, OCRAM unchanged; delivery audit: no firmware defect |
-| `8c2221d` | OTA of `e619980d3d42` recorded; `aius-sd-sync.sh` sends subdirectory paths literally (the firmware refuses `%2F`, so `www/fonts/` never uploaded) | www-bundle tests 28 (one new), shellcheck |
-| `27bc275` | Phase 4m BUILT (mixer plan Phase 1e, owner-approved): "EQ and trim bypassed" note, EQ curve and handles at each member's trim offset on both SD pages | sd-editor vitest 6 files, 432 tests (verifier run); Chromium probe of the mixer preview |
-| `d1ab0f4` | Phase 4l BUILT: 16-preset cap at accept (409 preset_limit, sd_busy until the walk completes), one-pass count, editor message and leading-dot rule, openapi 409; 4h cap text rewritten | 8 host suites (verifier rerun), all four images with every post-link guard and OCRAM at each floor; delivery audit FAIL (B1, S1, S2) then closure PASS |
-| `baa8e2c` | Phase 4k BUILT: tri-state BEGIN gate (NONE, WAIT, NO_CARD), AIUS_HTTP_VERDICT_UNAVAILABLE as 503 sd_unavailable for a refused SD_START, verdict switches with no default, AIUS_HTTP_DRIVER_FAULT_SD_UNAVAILABLE, upgrade.js stop case | 8 host suites (verifier run), all four images with every post-link guard and OCRAM at each floor; delivery audit PASS |
-| `8c2c67a` | Phase 4j BUILT: idle DSP apply (predicate and shared decision in `aius_dsp_runtime_config`, block stamp, noinline `dsp_idle_apply_service` producer root, millis() at the call site), tool text and CONTRIBUTING; 4k and 4l prebuild reviews folded with owner answers (4k staging stops on sd_unavailable; 4l sd_busy until counted, 409 once 16 counted) | 7 host suites (verifier run), all four images with every post-link guard and OCRAM at each floor; delivery audit FAIL (S1) then closure PASS |
+| `897cc1a` | Phase 4n: an idle connection (no request byte by 150 ms) closes with no reply under AIUS_HTTP_FAULT_IDLE_CLOSE, counted nowhere, nor a spare the browser closes first; partial request still 408; network-hardening doc; 4i re-planned to the no-bench ruling; 4o planned | http, runtime-target, runtime, optical-app, status-body-bound, registry, stack-bound, producer-isolation; all four images at their floors; review PASS F1 to F5, closure PASS |
+| `165814b` | 4i step 1: 5 replay captures (19,765,248 B) archived to LFS with manifest | `replay_retire.py archive` exit 0, LFS attribute checked |
+| `01e86a1` | Phase 4o: network-transport expects the vendored SdFat and SD in lib_deps (stale since 4e) | network-transport, registry |
+| `23a4c89` | 4i measure-port: `measure_run.py` drives a U24 aplay stimulus; `--baseline` pass rule for a future owner bench session | measure-vectors 34, registry (verifier) |
+| `606a64b` | Phase 4i: replay retired from firmware, web UI, tools, docs and aius CLAUDE.md (promoted); OCRAM +132,992 B per env, floors moved; retired-symbols post-link guard | 36 commit-checkpoint suites (verifier); all four images; delivery audit FAIL, fixes, closure PASS |
+| this commit | Phase 4p: status.html drops the Live processing card (owner); this handover | sd-editor 405, www-bundle, optical-app, registry (verifier) |
 
 - **Uncommitted tree.** Nothing of this session's.
 - **Hook item.** `stop-guard.action-reverify` is item 11 of
   `src/tools/hook/docs/plans/hook-daemon-feature-backlog.md` (owner:
   plan, do not dispatch).
-- **Evidence in scratch** (reaped about 2026-10-14): full session
-  `.scratch/63e414f8-e0a8-416d-8629-cda946de784a/session-4a-full/`, the
-  underrun capture `underrun-0811/`, the B2 disassembly `optical.dis`;
-  and the prototype isolation walks behind 4e W1 to W8
-  (`walk_cr3.py`, `walk_declared.py`, `walk_sdroots.py`, `walk_scc.py`,
-  disassembly `opt.dis`) in
-  `.scratch/170d7fc3-409e-4126-8b10-6d8f8a95620b/`, with the 4e and 4f
-  worker handoff notes (`4e-handoff.md`, `4f-handoff.md`,
-  `4f-audit-findings.md`), build logs and verifier logs; everything
-  durable from them is in 4e and 4f's bodies.
-  Everything durable is in Phase 4 §Device evidence and Phase 4b.
 - **Editor diagnostics.** clangd reports missing `Arduino.h` and library
   headers under `firmware/`: an editor include-path gap only;
   `firmware/scripts/test.sh` and the PlatformIO builds are the truth.
 - **Traps.**
   - A firmware change that no host suite runs (boot, `setup()`, linker
-    layout) can pass every suite and still fail the board: 4e's stack
-    paint wrote the core's MPU trap at `_ebss` and would have boot-looped
-    (4e §Memory). Read the delivery audit's ELF-level checks, not just
-    suite results.
+    layout) can pass every suite and still fail the board. 4i changed
+    `setup()` (the input is pinned master once) and the clock path; read
+    the first `/api/status` after the OTA for `clock.master` "input" and
+    a live `clock.state` once the source is on.
+  - A dirty-tree build stamps the previous commit: commit, rebuild,
+    deploy. Every `build.sh` run deletes `.pio/build/aius-ab/` and
+    `aius-chooser/`; run `build_ab.sh` last.
   - Rebuilding images overwrites `firmware/.pio/build/*`; the
-    producer-isolation and stack-bound real-ELF cases read whatever was
-    last built, so never rebuild while an agent is reading those ELFs.
-  - The path-ownership hook can hold a file another session wrote even
-    when it is clean against HEAD (`test/sd-editor/mixer.test.js` was held
-    by session 74c6ef4f until released); retry after the owner finishes,
-    never write around it.
-  - A verifier quoting "Ran 25 tests" for producer-isolation is only the
-    fixture half; the arm runs `test_real_elf.py` too (7 more). Read the
-    log's every "Ran N" line before trusting a count.
+    producer-isolation, stack-bound, memory and itcm-placement real-ELF
+    cases read whatever was last built, so never rebuild while an agent
+    reads those ELFs.
+  - The stop hook's unreaped-background-job gate can list jobs that have
+    already exited (several did this run); check with `pgrep -af` and
+    read the job's output file before acting on it.
+  - `git commit --pathspec-from-file` is hook-denied; pass literal paths
+    (directories work for deleted trees). A raw `git status`/`git diff`
+    on the working tree is hook-denied; use `the repo tooling git -C
+    git_modules/aius status --short`.
+  - `test/sd-editor/openapi.test.js` allows exactly one "replay" match in
+    `openapi.json`; reword new text ("retired in Phase 4i") rather than
+    loosen it.
   - `firmware/scripts/test.sh` needs `--environment native`; several
-    `--suite` flags now each run (4c). Python tool tests run with
-    `python3 -m unittest` (pytest is absent); `unittest discover` on
-    `firmware/test/rate-runner` also picks up `test_recorder_pull.py`.
-  - A raw `git status`/`git diff` on the working tree is hook-denied; use
-    `the repo tooling git -C git_modules/aius status --short`.
-  - "Unpolled" is only unpolled if no browser has the web UI open: the
-    editor polls meters about 2.6/s and status 1/s. Check
-    `http_requests` per poll before trusting a quiet segment.
+    `--suite` flags each run. Python tool tests run with `python3 -m
+    unittest` (pytest is absent). A verifier's suite total can miscount:
+    read the per-suite list against the 4i commit-checkpoint green list.
+  - The SD token never goes on a command line nor through `$(cat …)`;
+    use the tools' `--auth-file` / `--token-file`.
+  - Polling `/api/status` is not neutral: a render delays the AC-3
+    producer. "Unpolled" is only unpolled if no browser has the web UI
+    open.
+  - The host clock is UTC; the owner speaks UK local time (BST in
+    October).
+  - `CLAUDE.md` is protected: change it only via
+    `the release-promotion step`.
+  - The path-ownership hook can hold a file another session wrote even
+    when it is clean against HEAD; retry after the owner finishes, never
+    write around it.
   - A poller job longer than about 25 min is killed with its background
-    job; launch the next segment immediately on the completion notice.
+    job; launch the next segment immediately on the completion notice. A
+    streaming follow (`tail -f`) is hook-denied; a Monitor over a
+    poller's change log uses a `wc -l` polling loop.
   - A sub-agent's leftover Monitor keeps re-delivering its report; ask it
     to stop its own monitor rather than killing it.
-  - The host clock is UTC; the owner speaks UK local time (BST in
-    October). Map board `millis()` stamps to wall time from one bracketed
-    `/api/status` read (`dark_open_start_ms + dark_open_ms` is "now" while
-    the carrier is down).
-  - Switching the source off freezes zero-frame `carrier_loss` captures that
-    evict real ones. Pull with `aius-recorder-pull.py --auth-file
+  - Map board `millis()` stamps to wall time from one bracketed
+    `/api/status` read (`dark_open_start_ms + dark_open_ms` is "now"
+    while the carrier is down).
+  - Switching the source off freezes zero-frame `carrier_loss` captures
+    that evict real ones. Pull with `aius-recorder-pull.py --auth-file
     .secrets/aius-sd-auth` before switch-off; `--slot 99` writes the bank
-    header (`--header-json`) and exits without pulling audio.
-  - The SD token never goes on a command line, nor through `$(cat …)` (the
-    bash guard denies command substitution); use the tools' `--auth-file`.
-  - A streaming follow (`tail -f`) is hook-denied; a Monitor over the
-    poller's change log uses a `wc -l` polling loop.
+    header and exits without pulling audio.
   - `clock.trim_updates` 0 through a whole session is expected inside the
-    500 mHz deadband, not a dead tracker; that is the defect Phase 4 fixes.
-  - The recorder taps the stream before the TX ring, so a capture does not
-    contain a TX underrun's gap, only the programme around it.
-  - `CLAUDE.md` is protected: change it only via `the maintainer
-    promote` (4b's ship step does).
-  - Polling `/api/status` is not neutral: a render delays the AC-3
-    producer and can trigger the underrun being measured. Note each poll
-    instant against `underrun_episodes[].start_ms` when reading a capture.
+    500 mHz deadband, not a dead tracker.
+  - The recorder taps the stream before the TX ring, so a capture does
+    not contain a TX underrun's gap, only the programme around it.
   - A fill window that contains an underrun blends pre- and post-step
     minima (+8.5 instead of +127). Read the step across the next window.
   - An AV-chain wake or CEC hypothesis does not apply: the owner confirms
     no HDMI-CEC link and no optical carrier when idle. Dark-input lock
-    blips are on-board; their relock and capture effects are output-jitter
-    Phase L's.
+    blips are on-board; their relock and capture effects are
+    output-jitter Phase L's, and each now adds 2 to `source_changes`.
+- **Evidence in scratch** (reaped about 2026-10-19):
+  `.scratch/c36bf526-06d7-4bff-948c-ea31ba675a0a/` holds this run's
+  suite logs and the optical-cutover handoff; everything durable is in
+  4n, 4i and 4p's bodies.
 
 ## Why this plan was rebased
 
@@ -6725,7 +6677,7 @@ targeted-proof:
   - "host: memory (S6): all four optical envs (teensy41-optical, -slot-a, -slot-b, -fault) link; OCRAM free, ITCM free, _ebss and _VectorsRam re-recorded; the measured OCRAM gain (the ring in g_replay_service, plus g_replay_job, g_replay_transfer and g_replay_diag) recorded; this phase's commit moves every floor to its own link"
   - "host: sd-editor (replays.test.js deleted, its drawWaveform case (:687) moved to status.test.js with the Live processing card; a new case that every page's stylesheet links resolve to a file in firmware/sd/www; openapi, status, dsp-editor, mixer and upgrade tests without replay), www-bundle, measure-vectors (arming order, mixer set and read back, looped render, no /api/replays call), rate-gate-capture, rate-runner, recovery-runner, iec-fixtures (the moved generate.sh output passes validate.py and the IEC61937 parser oracle), registry: every remaining suite green; all four optical images build"
   - "device (step 1, before removal, installed board idle, no bench run; owner, 2026-10-12): replay_retire.py archive over HTTP (GETs only; needs no owner word) pulls every complete capture from an image carrying step 1a; the parent commits the captures with the manifest; then, on the owner's word at that step (a destructive card operation), delete-captures ends with an empty /aius/replays listing, .part files included. No baseline-replay.json and no ported bench run: measure-port's proof is the measure-vectors host suite above"
-  - "device (owner, after removal): source off, then AC-3 playing: /api/replays answers 404, no page links replays, every page styled, the Live processing card live on status.html, underrun_episode_count delta 0 across a page-load round, checkpoint_walltime_us[7] recorded against REPLAY's 1,060 us; then replay_retire.py delete-www, done when sd_flush.drained reads true and GET of each deleted page answers 404"
+  - "device (owner, after removal): source off, then AC-3 playing: /api/replays answers 404, no page links replays, every page styled, status.html without the Live processing card (Phase 4p), underrun_episode_count delta 0 across a page-load round, checkpoint_walltime_us[7] recorded against REPLAY's 1,060 us; then replay_retire.py delete-www, done when sd_flush.drained reads true and GET of each deleted page answers 404"
 fan-out: # S3 order: measure-port first (archive, delete-captures on the owner's word, the measure_run.py port proven host-only; no bench run, owner 2026-10-12); then firmware-removal, web-ui-removal, tools-and-tests and docs concurrently, with the handoffs named per unit
   - name: measure-port
     owned-paths:
@@ -7041,7 +6993,8 @@ dark-input state flips; no new firmware.
 
 **Owner answers (2026-10-10).**
 
-- **Q1: move the Live processing card to `status.html`.** It is the
+- **Q1: move the Live processing card to `status.html`** (superseded
+  2026-10-12: the owner removes the card, Phase 4p). It is the
   one replays-page panel that serves live input (seams, sd-editor
   case).
 - **Q2: delete the card's replay files, keep the captures in the
@@ -7637,29 +7590,30 @@ unit: implementer
   three in the ini's order; `platformio.ini` is unchanged, so no image
   rebuild. Proof: network-transport and registry green.
 
-### Phase 4p Interrogate the user: the Live processing card on status.html
+### Phase 4p status.html drops the Live processing card ✓ SHIPPED 2026-10-12
 
 ```yaml
-outcome: the owner decides whether status.html keeps the Live processing card (waveform and meters) and how it polls; the answer is built and its tests ported
+outcome: status.html carries no Live processing card, no waveform and no /api/meters poll, so the page left open while listening makes 1 request/s; /api/meters stays for the DSP editor
 seams:
-  - "firmware/sd/www/status.html, status.js, sd-shared.js drawWaveform, test/sd-editor/status.test.js"
-targeted-proof: sd-editor green with the chosen behaviour; if the card stays, audit S3's cases ported (128-point cap, backing-store fit and DPR clamp at 3, -120 dBFS as -inf, meters 503 as a silent skip, #waveform path drawn after boot)
+  - "firmware/sd/www/status.html, status.js: the card, its meters poller and render code go"
+  - "firmware/sd/www/sd-shared.js drawWaveform, sd-chrome.css .live-canvas: go if nothing else uses them"
+  - "test/sd-editor/status.test.js and pages.test.js: the card's cases go; a case that status.html polls only /api/status"
+  - "firmware/test/optical-app/test_bitstream_ui.py: re-pointed off the card's ids (or retired if it only covered the card)"
+  - "docs/reference/user-interface.md and any 4i note that says the card moved to status.html"
+targeted-proof: sd-editor and www-bundle green; optical-app green; a status.html case proves one poller (/api/status) and no /api/meters request
 unit: implementer
 ```
 
-- **Question:** keep the Live processing card on status.html, and if so
-  how should it poll `/api/meters`?
-- **Options:** only while the card is expanded and the tab visible
-  (status.html stays at 1 request/s by default); 1 Hz always (2
-  requests/s); keep 250 ms (5 requests/s while open, needs a device proof
-  of zero underrun delta with the page open through AC-3 playback);
-  remove the card and `drawWaveform` (`/api/meters` stays: the DSP
-  editor polls it).
-- **Recommendation:** only while expanded, since status.html is the page
-  left open while listening and polling costs the audio producer.
-- **Owner, 2026-10-12:** wants to view the card first (it is visible
-  today on the board's old replays page) before deciding.
-- **Blocks:** the card sync that carries 4i's pages to the board.
+- **Owner, 2026-10-12: remove the card.** It came from the replays page
+  (4i Q1 moved it to status.html); with replay gone the owner drops it
+  rather than pay its 250 ms meters poll on the page left open while
+  listening. Supersedes 4i's Q1 for the card and closes audit S1 and S3.
+- **Shipped.** The card, its meters poller, `drawWaveform` and
+  `.live-canvas` are gone (no other users); status.html polls only
+  `/api/status`, proven by a new status.test.js case;
+  `test_bitstream_ui.py` now requires status.html's `audio-state` and
+  `format` ids. Proof: sd-editor (405), www-bundle, optical-app,
+  registry green. It reaches the board with the next card sync (owner).
 
 ### Phase 4c `test.sh` runs every `--suite` given ✓ SHIPPED 2026-10-06
 

@@ -34,7 +34,7 @@ the deployed board at `http://192.0.2.66`, driven by a real 5.1 source; see
   `<page>.js`, no modules, no bundler, no build step, and none of the repo's
   `mr-*` UI kit: the device cannot reach a host application's module mounts.
   `sd-shared.js` owns the status pills, the never-throw `fetch` wrapper, the
-  number formatters, the waveform renderer and token storage.
+  number formatters and token storage.
 - The assets themselves are replaced over `PUT /sd/www/{path}` and removed with
   `DELETE /sd/www/{path}`, so the interface is updated without reflashing.
 - **Reads are public; control routes are auth-gated.** Every mutating request
@@ -141,9 +141,10 @@ Reads `GET /api/status` at 1 Hz. Writes nothing.
 Non-obvious:
 
 - **The input source is the page's own derivation, not a device field.** The
-  page derives it as carrier → *optical carrier*, else *none*. The Live
-  processing card (meter envelope and output levels, fed by `GET /api/meters`)
-  lives on this page.
+  page derives it as carrier → *optical carrier*, else *none*.
+- **The page polls `/api/status` only.** It carries no meters card and makes no
+  `/api/meters` request, so leaving it open while listening costs one request
+  per second. The meters live in the DSP editor.
 - **The configuration card is two unrelated files, and saying so is the point.**
   The first two rows are `/aius/dsp.json` — the model the DSP editor writes,
   plus `model_origin`, which is the only field that separates an editor apply
