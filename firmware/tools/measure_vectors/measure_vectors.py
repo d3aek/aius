@@ -6,7 +6,7 @@ The item 3 stimulus (docs/plans/aius-dsp-config-api.md, "Item 3 design"): bare
 AIUS_PIPELINE_PCM and passes the samples through bit-exactly at 24-bit scale.
 The DTS vectors cannot support the figures (the dca encode carries a -78.7 dB
 floor of its own and loops with a phase seam); these are the seam-free
-replacement, generated loop-coherent so the replayed stream is a continuous
+replacement, generated loop-coherent so the looped stream is a continuous
 tone with no discontinuity anywhere -- which is what makes any 8192-sample
 capture window seam-free by construction.
 
@@ -27,8 +27,8 @@ subcommand, which the `measure` suite runs):
      a multiple of 4 Hz (= 48,000 / 12,000).
 
 File format: interleaved L,R int16 little-endian words at 48 kHz -- exactly
-what PUT /sd/replays/<id> stores and the replay service feeds the S/PDIF
-transmit path. Levels are dBFS re the 16-bit full scale (amplitude 32768
+what measure_run.py feeds `aplay -D hw:U24XL,0 -f S16_LE -r 48000 -c 2`
+(repeated, one continuous stream) into the U24 and the optical receiver. Levels are dBFS re the 16-bit full scale (amplitude 32768
 convention); the pipeline's left-align shift preserves them at 24-bit scale
 to within 0.0003 dB.
 
@@ -68,9 +68,8 @@ VECTORS = {
     ),
     "pcm440_full": (
         {"l": [(440, 32767.0)], "r": [(440, 32767.0)]},
-        "the limiter-hot vector -- pair with a config that opens the limiter "
-        "(shipped headroom 0.5 alone leaves the tap at -6 dBFS, below the "
-        "-1 dBFS threshold)",
+        "the limiter-hot vector -- engages the limiter at the shipped config "
+        "(PCM pass-through sums nothing, so no downmix headroom pad applies)",
     ),
     "pcm440_660_split": (
         {"l": _M6, "r": [(660, 8192.0)]},

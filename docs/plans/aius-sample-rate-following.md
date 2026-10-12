@@ -6884,7 +6884,22 @@ owner gate 1.
 - **Archive run (2026-10-12), committed `165814b`.** Board idle (no
   carrier, gate shut), build `ce1159286fd2`: 5 complete captures,
   19,765,248 bytes, in LFS with the manifest; no `.part` rows.
-  `delete-captures` is next and waits for the owner's word.
+  `delete-captures` ran on the owner's word the same day (board idle):
+  the five `.iec` files deleted, `/api/replays` answers `files: []`,
+  `truncated: false`.
+- **measure-port built (2026-10-12).** `measure_run.py` arms the U24
+  (mixer set and read back), holds one looped `aplay` render, waits for
+  the gate and `tracking`, then starts the session; `suite [--baseline
+  FILE]` and `measure <id> --baseline FILE` apply the pass rule. Settled
+  by the parent: the baseline file is a JSON map `{vector_id: GET
+  /api/measure session}`; "at its floor" means `thd_n_db <=
+  floors.thd_n_db`, `snr_db >= floors.snr_db`, `thd_db <=
+  floors.thd_dbc`, and the two runs' `floors` objects must be identical.
+  Handed to the removal units: web-ui-removal owns `openapi.json`'s
+  "16-bit replay stimulus" wording (about :286 and :1819); the docs unit
+  greps `docs/reference/signal-path.md` and
+  `docs/plans/aius-dsp-config-api.md` for `measure_run.py upload` and
+  `replay` and rewrites them to the U24 stimulus.
 
 **No bench run (owner, 2026-10-12): remove replay, port host-only.** The
 replay-driven baseline and the ported bench comparison left this phase;
