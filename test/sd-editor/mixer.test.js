@@ -163,6 +163,16 @@ describe('mixer faders', () => {
     expect(el('mixer-exact').contains(fieldOf('matrix.lfe_crossover_hz'))).toBe(true);
   });
 
+  it('render no hint text on any matrix row', () => {
+    const rows = Array.from(el('mixer-faders').querySelectorAll('.fader'));
+    expect(rows).toHaveLength(4);
+    expect(el('mixer-faders').querySelector('.fader__hint')).toBeNull();
+    for (const row of rows) {
+      expect(row.querySelectorAll('span')).toHaveLength(2);
+      expect(row.textContent).not.toMatch(/dialogue|fronts, fixed|surrounds|sub\b/i);
+    }
+  });
+
   it('write the editor field and stage an unapplied edit', async () => {
     await slide('c', 1000);
     expect(fieldOf('matrix.center_gain_linear').value).toBe('4');

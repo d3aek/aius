@@ -15,7 +15,8 @@ import { describe, expect, it } from 'vitest';
 const here = dirname(fileURLToPath(import.meta.url));
 const www = resolve(here, '../../firmware/sd/www');
 const PAGES = readdirSync(www).filter((name) => name.endsWith('.html')).sort();
-const NAV = ['index.html', 'status.html', 'upgrade.html', 'classic.html'];
+const PAGE_FILES = ['index.html', 'status.html', 'upgrade.html', 'classic.html'];
+const NAV = ['index.html', 'status.html', 'upgrade.html'];
 
 /* A <template> parses inertly: happy-dom fetches nothing for its links. */
 const parse = (page) => {
@@ -27,7 +28,14 @@ const sheetsOf = (doc) => Array.from(doc.querySelectorAll('link[rel~="stylesheet
 
 describe('SD pages share one chrome', () => {
   it('finds the four pages', () => {
-    expect(PAGES).toEqual([...NAV].sort());
+    expect(PAGES).toEqual([...PAGE_FILES].sort());
+  });
+
+  it('no served page links classic.html', () => {
+    for (const page of PAGES) {
+      const hrefs = Array.from(parse(page).querySelectorAll('a[href]'), (anchor) => anchor.getAttribute('href'));
+      expect(hrefs.filter((href) => /classic\.html/.test(href)), `${page} links classic.html`).toEqual([]);
+    }
   });
 
   it.each(PAGES)('%s links stylesheets that exist on the card, sd-chrome.css first', (page) => {
@@ -47,11 +55,11 @@ describe('SD pages share one chrome', () => {
     }
   });
 
-  it.each(PAGES)('%s carries the same four nav links, its own marked current', (page) => {
+  it.each(PAGES)('%s carries the same three nav links, its own marked current when linked', (page) => {
     const doc = parse(page);
     const links = Array.from(doc.querySelectorAll('header.bench-nav a:not(.logo)'));
     expect(links.map((anchor) => anchor.getAttribute('href'))).toEqual(NAV);
     const current = links.filter((anchor) => anchor.getAttribute('aria-current') === 'page');
-    expect(current.map((anchor) => anchor.getAttribute('href'))).toEqual([page]);
+    expect(current.map((anchor) => anchor.getAttribute('href'))).toEqual(NAV.includes(page) ? [page] : []);
   });
 });

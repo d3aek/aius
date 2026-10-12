@@ -31,13 +31,13 @@ Handover 2026-10-12 (orchestration run, session c36bf526: 4n, 4o, 4i and
 4p built; handed over before the OTA); replace wholesale on the next
 handover.
 
-- **Status.** Phases 1, 2, 3 DONE; 4a, 4c, 4d, 4o, 4p DONE. BUILT, with
-  their device proof the owner's and not yet run: Phase 4 (gate 7 at
-  fill-write cadence on the U24 bench), 4e, 4f, 4g, 4h, 4j, 4k, 4l, 4m,
-  **4n** (Firefox `upgrade.html` loads show no 408) and **4i** (replay
-  retired; post-removal device check and `delete-www`). 4b (acceptance
-  umbrella) PLANNED: it closes after 4e to 4h's device runs and no longer
-  gates 4i (owner, 2026-10-12).
+- **Status.** Phases 1, 2, 3 DONE; 4a, 4c, 4d, 4n, 4o, 4p, 4q DONE.
+  BUILT, with their device proof the owner's and not yet run: Phase 4
+  (gate 7 at fill-write cadence on the U24 bench), 4e, 4f, 4g, 4h, 4j,
+  4k, 4l, 4m and **4i** (only the page-load underrun round with AC-3
+  playing remains). PLANNED: 4s (headroom restore, next), then 4r
+  (delete `classic.html`). 4b (acceptance umbrella) closes after 4e to
+  4h's device runs and no longer gates 4i (owner, 2026-10-12).
 - **Board.** Runs `4540da30e5b6` in slot 1 (OTA 2026-10-12, source off:
   the first image without replay, 4i and 4p included; self-committed,
   `ab.active_slot` 1, `trial_budget` 0, `rollback_observed` false;
@@ -61,17 +61,18 @@ handover.
   owner's: the 4e, 4f, 4g and 4h runs listed in 4b, 4n's Firefox check,
   4i's post-removal check. A bench run is a last resort, batched, never
   mixed with listening (aius CLAUDE.md).
-- **Next action: two owner checks.** The OTA, card sync, `delete-www`
-  and every source-off 4i item are done (4i's body). The auto-mode
-  classifier refuses an agent running the sync or `delete-www`; the
-  owner runs them with `!` (sync needs `--device http://192.0.2.66
-  --www firmware/sd/www`).
-  1. 4n's Firefox check of `http://192.0.2.66/sd/www/upgrade.html` (no
-     page-visible 408; note the `http_rejections` delta per load, per
-     4n's side-finding bullet).
+- **Next action: Phase 4q, then one owner check.** The OTA, card sync,
+  `delete-www`, every source-off 4i item and 4n's Firefox check are done.
+  The auto-mode classifier refuses an agent running the sync or
+  `delete-www`; the owner runs them with `!` (sync needs `--device
+  http://192.0.2.66 --www firmware/sd/www`).
+  1. Phase 4q (classic links and matrix hints), then the owner's card
+     sync of its pages.
   2. 4i's last device item, at the next listening session with AC-3
      playing: `underrun_episode_count` delta 0 across a page-load round
-     (load each page once while a 1 Hz poll runs). No bench run.
+     (load each page once while a 1 Hz poll runs), recording the
+     `http_rejections` delta per `upgrade.html` load for 4n. No bench
+     run.
 - **What landed this run** (aius commits, each followed by a upstream repository
   pointer bump):
 
@@ -7525,7 +7526,7 @@ status: built # 2026-10-11
   trim draws the curve below the +-12 plot.
 - **Mixer doc.** Its Phase 1e is marked shipped (2026-10-11).
 
-### Phase 4n An idle browser connection gets no 408
+### Phase 4n An idle browser connection gets no 408 ✓ SHIPPED 2026-10-12
 
 ```yaml
 outcome: >-
@@ -7592,6 +7593,11 @@ unit: implementer
   does not touch it (review), so a delta that persists after 4n is new
   work placed after 4n.
 
+- **Device proof, 2026-10-12: PASS.** Firefox `upgrade.html` loads on
+  `4540da30e5b6` show no page-visible 408 (owner); the per-load
+  `http_rejections` delta was not captured; it is taken in 4i's
+  page-load round at the next listening session (State block).
+
 ### Phase 4o The network-transport suite passes at HEAD ✓ SHIPPED 2026-10-12
 
 ```yaml
@@ -7640,6 +7646,82 @@ unit: implementer
   `test_bitstream_ui.py` now requires status.html's `audio-state` and
   `format` ids. Proof: sd-editor (405), www-bundle, optical-app,
   registry green. It reaches the board with the next card sync (owner).
+
+### Phase 4q No page links the classic editor; matrix sliders lose their hints ✓ SHIPPED 2026-10-12
+
+```yaml
+outcome: no SD page's nav links classic.html, and the mixer's matrix slider rows show no secondary hint text ('dialogue', 'fronts, fixed', ...); classic.html itself stays on the card and in the tree pending the owner's call
+seams:
+  - "firmware/sd/www/index.html, status.html, upgrade.html, classic.html: the bench-nav 'Classic editor' link goes"
+  - "firmware/sd/www/mixer.js matrix row table (:91 on): the hint field and its rendering go; any CSS rule only the hint used goes"
+  - "test/sd-editor/pages.test.js NAV and any mixer.test.js hint case: follow the change; a case that no page links classic.html"
+  - "docs/reference/user-interface.md where it names the nav link or the hints"
+targeted-proof: sd-editor and www-bundle green; optical-app green (test_bitstream_ui.py reads classic.html); a pages.test.js case proves no page links classic.html and a mixer.test.js case proves no matrix row renders a hint
+unit: implementer
+```
+
+- **Owner, 2026-10-12: the classic editor is retired; remove the
+  links.** The matrix sliders need no secondary labels (owner, same
+  day). Deleting `classic.html` itself: owner, same day, delete it
+  too; that is Phase 4r, after this one (same files).
+- **Shipped.** The nav link is gone from all four pages, and with it
+  every `.bench-nav__alt` rule in `sd-chrome.css`. The matrix rows lose
+  their `hint` fields, the hint span and `.fader__hint` in `mixer.css`.
+  `pages.test.js` splits `PAGE_FILES` (four) from `NAV` (three) and adds
+  "no served page links classic.html". `mixer.test.js` adds "render no
+  hint text on any matrix row". `user-interface.md` needed no edit.
+  Proof: sd-editor 407, www-bundle 29 and optical-app green (verifier).
+  The change reaches the board with the next card sync (owner).
+
+### Phase 4r classic.html is deleted from the tree and the card
+
+```yaml
+outcome: classic.html (and any asset only it used) is gone from firmware/sd/www and from the board's card; the DSP editor behaviour it hosted is tested through index.html; aius-sd-sync.sh can delete named card files so the owner removes it with one command
+seams:
+  - "firmware/sd/www/classic.html deleted; dsp-editor.css deleted only if no remaining page links it; dsp-editor.js stays (index.html uses it); comments naming classic.html reworded"
+  - "test/sd-editor/dsp-editor.test.js fixture and mixer.test.js id-parity case re-pointed at index.html or retired where they only compared the two pages; pages.test.js NAV"
+  - "firmware/test/optical-app/test_bitstream_ui.py (reads sd/www/classic.html) and firmware/test/www-bundle/test_www_bundle.py (page list, classic fixtures) follow"
+  - "firmware/tools/aius-sd-sync.sh: a repeatable --delete RELATIVE that sends the card DELETE replay_retire.py delete-www uses, page and .html.gz bundle together, then waits for sd_flush.drained; www-bundle cases for it"
+  - "docs/reference/user-interface.md and any doc naming the classic editor as live"
+targeted-proof: sd-editor, www-bundle and optical-app green; a www-bundle case proves --delete sends DELETE for the page and its bundle; device (owner): the delete command, then GET /sd/www/classic.html and classic.html.gz answer 404 and sd_flush.drained reads true
+unit: implementer
+```
+
+- **Owner, 2026-10-12: delete the page.** The classic editor is retired;
+  index.html carries every id it did (the `mixer.test.js` parity case),
+  so its DSP editor coverage moves there. The card delete is the
+  owner's command (the classifier refuses an agent's card writes).
+
+### Phase 4s The matrix overshoot warning returns when clip-free headroom goes off
+
+```yaml
+outcome: the matrix warning ("A worst-case in-phase sum overshoots by +3.0 dB; the limiter catches it.") is recomputed on every clip-free headroom toggle, so it hides when headroom is on and reappears when it goes back off
+seams:
+  - "the web UI code that renders the matrix overshoot warning and handles the clip-free headroom toggle (firmware/sd/www/mixer.js or dsp-editor.js; located by the 4s diagnosis)"
+  - "test/sd-editor: a regression case toggling headroom on then off and asserting the warning text is back"
+targeted-proof: the regression case fails before the fix and passes after; sd-editor green; reviewer audit (reported bug)
+unit: implementer
+```
+
+- **Owner report, 2026-10-12.** Toggling clip-free headroom on clears
+  the warning; toggling it off does not bring it back. Runs after 4q
+  (same files), before 4r.
+- **Diagnosis (read-only, 2026-10-12): the warning is right, the
+  headroom is lost.** `renderVerdict()` (`firmware/sd/www/mixer.js:229`)
+  recomputes on the off-toggle. But `refreshDerived()`
+  (`firmware/sd/www/dsp-editor.js:1155`) overwrites
+  `matrix.headroom_linear` with the resolved `1/(1+c+s+|lfe|)` when
+  clip-free goes on and has no branch restoring the typed value when it
+  goes off. So after off, headroom stays at the resolved value, the sum
+  is clip-safe, and the verdict reads "Clip-safe".
+- **Decision: clip-free off restores the headroom the user had.** The
+  value is stashed when the policy goes off to on, and restored with
+  `setNumberValue` on to off. When the page loads with clip-free already
+  on, the stash is the loaded document's `headroom_linear`. If the
+  document carries none, off leaves the resolved value. Regression case in
+  `test/sd-editor/mixer.test.js` beside "show the headroom the clip-free
+  policy resolves" (`:202`): verdict tone `warn`, click on gives `ok`,
+  click off gives headroom `0.5` and tone `warn`.
 
 ### Phase 4c `test.sh` runs every `--suite` given ✓ SHIPPED 2026-10-06
 

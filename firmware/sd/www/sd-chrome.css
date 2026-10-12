@@ -178,22 +178,17 @@ input:focus-visible, select:focus-visible { border-color: var(--aius-accent-info
 /* ---- nav: the same five links on every page ------------------------------------------ */
 .bench-nav { position: relative; z-index: 2; display: flex; align-items: center; gap: 22px; min-height: 44px; margin: 0; padding: 0 var(--bench-gutter); border-bottom: 1px solid var(--aius-border-strong); }
 .bench-nav__links { display: flex; gap: 20px; margin: 0; padding: 0; border: 0; flex-wrap: wrap; }
-.bench-nav__links a,
-.bench-nav__alt { padding: 0; border: 0; border-radius: 0; background: none; font: 500 11px var(--bench-f-mono); text-transform: uppercase; letter-spacing: .06em; color: var(--aius-text-secondary); text-decoration: none; }
+.bench-nav__links a { padding: 0; border: 0; border-radius: 0; background: none; font: 500 11px var(--bench-f-mono); text-transform: uppercase; letter-spacing: .06em; color: var(--aius-text-secondary); text-decoration: none; }
 .bench-nav__links a { display: inline-flex; align-items: center; transition: background 120ms ease, border-color 120ms ease, color 120ms ease; }
-.bench-nav__links a:hover,
-.bench-nav__alt:hover { background: none; color: var(--aius-accent-warning); }
-.bench-nav__links a[aria-current="page"],
-.bench-nav__alt[aria-current="page"] { background: none; color: var(--aius-accent-warning); font-weight: 600; }
-.bench-nav__alt { margin-left: auto; }
+.bench-nav__links a:hover { background: none; color: var(--aius-accent-warning); }
+.bench-nav__links a[aria-current="page"] { background: none; color: var(--aius-accent-warning); font-weight: 600; }
 @media (max-width: 760px) { .bench-nav__links { display: none; } }
 /* The pages without a dashboard keep their links on a phone: the strip wraps
    to its own row under the logo instead of hiding. */
 @media (max-width: 760px) {
   .bench-nav--wrap { flex-wrap: wrap; row-gap: 4px; padding-block: 8px; }
   .bench-nav--wrap .bench-nav__links { display: flex; order: 3; flex-basis: 100%; gap: 4px 16px; }
-  .bench-nav--wrap .bench-nav__links a,
-  .bench-nav--wrap .bench-nav__alt { display: inline-flex; align-items: center; min-height: 32px; }
+  .bench-nav--wrap .bench-nav__links a { display: inline-flex; align-items: center; min-height: 32px; }
 }
 
 .logo { display: inline-flex; align-items: center; gap: 9px; text-decoration: none; color: var(--aius-text-primary); }
@@ -361,8 +356,7 @@ body.bench::before {
 }
 
 @media (forced-colors: active) {
-  .bench-nav__links a[aria-current="page"],
-  .bench-nav__alt[aria-current="page"] { color: Highlight; }
+  .bench-nav__links a[aria-current="page"] { color: Highlight; }
   a:focus-visible, button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid Highlight; }
   .bench-page button:focus-visible,
   .bench-page input:focus-visible { outline: 3px solid Highlight; }

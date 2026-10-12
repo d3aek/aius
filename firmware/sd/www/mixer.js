@@ -88,10 +88,10 @@
    * disabled reference. Crossover, surround delay and headroom are set-and-
    * forget values, so they live in the exact values, not on a fader. */
   const FADERS = [
-    { key: 'c', name: 'C', hint: 'dialogue', label: 'Centre gain', path: 'matrix.center_gain_linear', scale: GAIN_SCALE },
-    { key: 'f', name: 'F', hint: 'fronts, fixed', label: 'Front gain (fixed at 1.0)', fixed: 1, scale: GAIN_SCALE },
-    { key: 's', name: 'S', hint: 'surrounds', label: 'Surround gain', path: 'matrix.surround_gain_linear', scale: GAIN_SCALE },
-    { key: 'lfe', name: 'LFE', hint: 'sub', label: 'LFE gain', path: 'matrix.lfe_gain_linear', scale: GAIN_SCALE },
+    { key: 'c', name: 'C',label: 'Centre gain', path: 'matrix.center_gain_linear', scale: GAIN_SCALE },
+    { key: 'f', name: 'F',label: 'Front gain (fixed at 1.0)', fixed: 1, scale: GAIN_SCALE },
+    { key: 's', name: 'S',label: 'Surround gain', path: 'matrix.surround_gain_linear', scale: GAIN_SCALE },
+    { key: 'lfe', name: 'LFE',label: 'LFE gain', path: 'matrix.lfe_gain_linear', scale: GAIN_SCALE },
   ];
 
   /* What a field holds right now, or NaN while it is blank or mid-typing. */
@@ -125,10 +125,7 @@
     value.htmlFor = range.id;
     const sub = document.createElement('span');
     sub.className = 'fader__sub';
-    const hint = document.createElement('span');
-    hint.className = 'fader__hint';
-    hint.textContent = descriptor.hint;
-    holder.append(name, range, value, sub, hint);
+    holder.append(name, range, value, sub);
 
     if (descriptor.fixed !== undefined) {
       range.disabled = true;
