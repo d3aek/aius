@@ -38,12 +38,14 @@ handover.
   AC-3 playing remains) and **4t** (GET serves the stored headroom; needs
   the OTA). 4b (acceptance umbrella) closes after 4e to 4h's device
   runs and no longer gates 4i (owner, 2026-10-12).
-- **Board.** Runs `4540da30e5b6` in slot 1 (OTA 2026-10-12, source off:
-  the first image without replay, 4i and 4p included; self-committed,
-  `ab.active_slot` 1, `trial_budget` 0, `rollback_observed` false;
-  `clock.master` "input"). Slot 2 holds `ce1159286fd2`, with replay. The
-  build met the slot-a OCRAM floor exactly (264,736 B free) and passed
-  the retired-symbols guard. The card holds no replay captures and no
+- **Board.** Runs `57977135e472` in slot 2 (second OTA 2026-10-12,
+  source off: 4q to 4t; self-committed, `ab.active_slot` 2,
+  `trial_budget` 0, `rollback_observed` false; `clock.master` "input").
+  Slot 1 holds `4540da30e5b6` (first replay-free image). Slot-a OCRAM
+  free 264,736 B, exactly the floor; retired-symbols guard passed. The
+  card still serves 4p's pages and `classic.html` until the owner's sync
+  and `--delete` (the classifier refused them even with the owner's
+  authorization, "Remote Shell Writes"). The card holds no replay captures and no
   replay pages: synced and `delete-www` run 2026-10-12 (4i's body).
   `df966f17b370` stays
   the owner's **fail-safe rollback candidate**: tag
@@ -64,9 +66,7 @@ handover.
 - **Next action: the OTA and card sync for 4q to 4t, on the owner's
   word.** The auto-mode classifier refuses an agent running card writes
   (sync, `delete-www`, `--delete`); the owner runs them with `!`.
-  1. An agent rebuilds at a clean HEAD (`build_ab.sh` last, guards
-     read), reads `ab`, signs without `--slot`, and on the owner's word
-     activates. Then, after the self-commit, the owner runs
+  1. Done: OTA of `57977135e472`. The owner runs
      `aius-sd-sync.sh --device http://192.0.2.66 --www
      firmware/sd/www --token-file .secrets/aius-sd-auth`,
      then the same script with `--delete classic.html` and no `--www`.
@@ -140,6 +140,10 @@ handover.
     job; launch the next segment immediately on the completion notice. A
     streaming follow (`tail -f`) is hook-denied; a Monitor over a
     poller's change log uses a `wc -l` polling loop.
+  - A wait loop of `pgrep -f <pattern>` matches its own command line, so
+    it never sees the job exit (two sub-agents left such loops on
+    2026-10-12, one unbounded). Wait on the job's completion notice, or
+    use a pattern trick (`build_ab[.]sh`) that cannot match itself.
   - A sub-agent's leftover Monitor keeps re-delivering its report; ask it
     to stop its own monitor rather than killing it.
   - Map board `millis()` stamps to wall time from one bracketed
