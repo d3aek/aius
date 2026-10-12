@@ -63,14 +63,18 @@ handover.
   owner's: the 4e, 4f, 4g and 4h runs listed in 4b, 4n's Firefox check,
   4i's post-removal check. A bench run is a last resort, batched, never
   mixed with listening (aius CLAUDE.md).
-- **Next action: the card sync, on the owner's word.** The OTA (steps 1
-  and 2) is done. In order:
+- **Next action: the card sync and `delete-www`, run by the owner.** The
+  OTA (steps 1 and 2) is done, and the first listening session on it
+  is recorded in 4i's body. The auto-mode classifier refused an agent
+  doing steps 3 and 4 (2026-10-12); the owner runs the commands with
+  `!`. In order:
   3. The owner's card sync
      (`aius-sd-sync.sh --token-file .secrets/aius-sd-auth`): it uploads
      4i's and 4p's pages and `openapi.json`.
   4. 4i's post-removal device check (its targeted-proof "device (owner,
-     after removal)" item), recording `checkpoint_walltime_us[7]` against
-     REPLAY's 1,060 us; then `replay_retire.py delete-www`, done when
+     after removal)" item; the checkpoint figure is already recorded as
+     86 us per epoch, since the walltime vector is a lifetime max); then
+     `replay_retire.py delete-www`, done when
      `sd_flush.drained` reads true and each deleted page answers 404.
   5. 4n's Firefox check (no page-visible 408; note the `http_rejections`
      delta per load, per 4n's side-finding bullet).
@@ -6868,6 +6872,28 @@ owner gate 1.
   brief 228 / 512 B. The dispatch indirect-site row went from 73 to 57.
   `checkpoint_walltime_us[7]` against REPLAY's 1,060 us is measured at
   the owner's device check.
+- **First listening session on `4540da30e5b6` (2026-10-12, 12:16 to
+  13:04 BST, AC-3 48 kHz, 1 Hz `aius_status_poll.py`).** Zero
+  `tx_underrun_frames`, zero underrun episodes, zero missed fills, zero
+  trims (inside the deadband); `clock.master` "input". Three
+  tracking-to-unsupported drops in the first 40 s while the source
+  settled from PCM to AC-3, then steady. One `crc_reject` (12:17:50
+  BST); its recorder capture (slot 3) and the switch-off `carrier_loss`
+  capture (slot 0) were pulled to scratch. 46 of about 2,900 polls shed
+  with 503 (4f, by design).
+- **`checkpoint_walltime_us[7]` is a lifetime maximum, so it cannot
+  answer the 1,060 us comparison.** It is written only in
+  `platform_checkpoint()` (`firmware/src/optical_main.cpp:10442`) and
+  reset only by reboot. It read 18,152 us from the first sample, before
+  the source came on, and never moved: a boot-time peak, plausibly a
+  nested producer pass or a boot card event charged to SERVICE (the
+  stamp precedes the ledger commit and yield point,
+  `optical_main.cpp:10446` to `:10468`). REPLAY's 1,060 us was the same
+  statistic on a different checkpoint body, not a like-for-like
+  baseline. The steady-state figure is `checkpoint_cumulative_ms[7]`
+  over `loop_epoch`: **86 us per epoch** across 4.6 M epochs of
+  playback (the largest of the eleven; the others 11 to 49 us). This
+  replaces the max comparison in the device item.
 - **Delivery audit (2026-10-12): FAIL** (B1 plan and CLAUDE.md, S1
   meters poll, S2 held-dispatch handler counts, S3 waveform test
   coverage, N1 to N5). S2 and N1 to N4 fixed; S1 and S3 move to Phase
