@@ -43,10 +43,10 @@ handover.
   `trial_budget` 0, `rollback_observed` false; `clock.master` "input").
   Slot 1 holds `4540da30e5b6` (first replay-free image). Slot-a OCRAM
   free 264,736 B, exactly the floor; retired-symbols guard passed. The
-  card still serves 4p's pages and `classic.html` until the owner's sync
-  and `--delete` (the classifier refused them even with the owner's
-  authorization, "Remote Shell Writes"). The card holds no replay captures and no
-  replay pages: synced and `delete-www` run 2026-10-12 (4i's body).
+  card serves 4q to 4t's pages (sync of 22 files and `--delete
+  classic.html` 2026-10-12; `classic.html` and `.gz` answer 404, the
+  served `index.html` is byte-identical to source) and holds no replay
+  captures or pages.
   `df966f17b370` stays
   the owner's **fail-safe rollback candidate**: tag
   `fw-rollback-df966f17b370`, signed container and USB `recovery.hex` in
@@ -63,17 +63,15 @@ handover.
   owner's: the 4e, 4f, 4g and 4h runs listed in 4b, 4n's Firefox check,
   4i's post-removal check. A bench run is a last resort, batched, never
   mixed with listening (aius CLAUDE.md).
-- **Next action: the OTA and card sync for 4q to 4t, on the owner's
-  word.** The auto-mode classifier refuses an agent running card writes
-  (sync, `delete-www`, `--delete`); the owner runs them with `!`.
-  1. Done: OTA of `57977135e472`. The owner runs
-     `aius-sd-sync.sh --device http://192.0.2.66 --www
-     firmware/sd/www --token-file .secrets/aius-sd-auth`,
-     then the same script with `--delete classic.html` and no `--www`.
-  2. 4t's device proof: headroom 0.5, clip-free on, Apply, reload,
+- **Next action: 4t's device proof (owner).** Card writes (sync,
+  `delete-www`, `--delete`) are refused by the auto-mode classifier
+  ("Remote Shell Writes", even with the owner's authorization). They
+  run when the owner switches the session to manual approval, or by
+  the owner with `!`.
+  1. 4t's device proof: headroom 0.5, clip-free on, Apply, reload,
      clip-free off shows 0.5 and the overshoot warning. Then remove
      `aius_dsp_set.py`'s pre-4t tolerance (4t's "Open after the OTA").
-  3. 4i's last device item, at the next listening session with AC-3
+  2. 4i's last device item, at the next listening session with AC-3
      playing: `underrun_episode_count` delta 0 across a page-load round
      (load each page once while a 1 Hz poll runs), recording the
      `http_rejections` delta per `upgrade.html` load for 4n. No bench
