@@ -1,20 +1,25 @@
 #!/usr/bin/env bash
 # Uploads a web tree to the Aius device over HTTP PUT, one file at a time.
 #
-# ADDITIVE ONLY -- this must never delete, prune, or mirror. User data lives
-# inside the served tree (/sd/www/presets/<name>.json, the DSP editor's named
-# presets), so any future provisioning tool that removes files not present in
-# the source tree would destroy it. Keep every card-provisioning path additive,
-# or exclude presets/ explicitly before adding a destructive mode.
+# ADDITIVE except for the explicit, named --delete RELATIVE. Sync never prunes
+# or mirrors: user data lives inside the served tree
+# (/sd/www/presets/<name>.json, the DSP editor's named presets), so nothing
+# here removes a file merely absent from the source tree, and --delete refuses
+# presets/ paths.
 set -euo pipefail
 
 usage() {
-    printf '%s\n' "Usage: $0 --device URL --www DIRECTORY (--token TOKEN | --token-file PATH) [--file RELATIVE]..."
+    printf '%s\n' "Usage: $0 --device URL [--www DIRECTORY] (--token TOKEN | --token-file PATH) [--file RELATIVE]... [--delete RELATIVE]..."
     printf '%s\n' "Uploads a web tree to the Aius device over HTTP PUT."
     printf '%s\n' "--file uploads only the named file, given relative to --www (repeatable);"
     printf '%s\n' "without it every file under --www is uploaded."
     printf '%s\n' "Each page also uploads its <page>.html.gz bundle (www_bundle.py), beside the"
     printf '%s\n' "unmodified sources. A 503 is retried per Retry-After for up to 15 s per file."
+    printf '%s\n' "--delete RELATIVE (repeatable, relative to the card's www root) sends DELETE"
+    printf '%s\n' "/sd/www/RELATIVE, and for an .html page also its .html.gz bundle; a 404 counts"
+    printf '%s\n' "as already gone. Deletes run after any uploads, then the script waits for"
+    printf '%s\n' "/api/status sd_flush.drained. --delete without --file uploads nothing, and"
+    printf '%s\n' "--www may then be omitted (--www is required otherwise)."
     printf '%s\n' "The token may also come from AIUS_SD_AUTH. --token-file is the form an"
     printf '%s\n' "agent session uses: the token never appears on a command line."
 }
@@ -23,6 +28,7 @@ device_url=''
 www_dir=''
 auth_token="${AIUS_SD_AUTH:-}"
 selected_files=()
+delete_files=()
 
 while (($# > 0)); do
     case "$1" in
@@ -54,6 +60,11 @@ while (($# > 0)); do
             selected_files+=("$2")
             shift 2
             ;;
+        --delete)
+            (($# >= 2)) || { usage >&2; exit 2; }
+            delete_files+=("$2")
+            shift 2
+            ;;
         -h|--help)
             usage
             exit 0
@@ -65,12 +76,20 @@ while (($# > 0)); do
     esac
 done
 
-[[ -n "$device_url" && -n "$www_dir" && -n "$auth_token" ]] || {
+delete_only=0
+if ((${#delete_files[@]} > 0 && ${#selected_files[@]} == 0)); then
+    delete_only=1
+fi
+[[ -n "$device_url" && -n "$auth_token" ]] || {
+    usage >&2
+    exit 2
+}
+((delete_only)) || [[ -n "$www_dir" ]] || {
     usage >&2
     exit 2
 }
 command -v curl >/dev/null || { printf '%s\n' 'curl is required' >&2; exit 127; }
-[[ -d "$www_dir" ]] || { printf 'web directory not found: %s\n' "$www_dir" >&2; exit 1; }
+((delete_only)) || [[ -d "$www_dir" ]] || { printf 'web directory not found: %s\n' "$www_dir" >&2; exit 1; }
 
 if [[ ${#auth_token} -ne 16 ]]; then
     printf '%s\n' 'token must contain exactly 16 hexadecimal characters' >&2
@@ -155,6 +174,91 @@ upload_file() {
     done
 }
 
+# Explicit card delete: 2xx or 404 (already gone) succeed; a 503 follows the
+# same Retry-After budget as upload_file.
+delete_file() {
+    local relative=$1
+    case "$relative" in
+        (''|*\?*|*\#*|*%*|*\\*|/*|*/../*|../*|*/./*|./*|presets|presets/*)
+            printf 'unsupported web path: %s\n' "$relative" >&2
+            exit 2
+            ;;
+    esac
+    printf 'DELETE /sd/www/%s\n' "$relative"
+    local attempt=0 waited=0 code retry_after
+    local headers="$work_dir/headers" body="$work_dir/body"
+    while true; do
+        : > "$headers"
+        : > "$body"
+        code=$(curl --silent --show-error \
+            --request DELETE \
+            --header "X-Aius-SD-Auth: $auth_token" \
+            --dump-header "$headers" --output "$body" \
+            --write-out '%{http_code}' \
+            "$device_url/sd/www/$relative") || code=000
+        if [[ "$code" == 2?? ]]; then
+            return 0
+        fi
+        if [[ "$code" == 404 ]]; then
+            printf '  404, already gone: %s\n' "$relative"
+            return 0
+        fi
+        if [[ "$code" == 503 ]]; then
+            retry_after=$(sed -n 's/^[Rr]etry-[Aa]fter:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$headers" | head -n 1)
+            retry_after=${retry_after:-1}
+            if ((waited + retry_after > retry_budget)); then
+                cat "$body" >&2
+                printf 'delete failed, device busy (503) for %ss: %s\n' "$waited" "$relative" >&2
+                exit 1
+            fi
+            printf '  503, retry in %ss for %s\n' "$retry_after" "$relative" >&2
+            sleep "$retry_after"
+            waited=$((waited + retry_after))
+            continue
+        fi
+        attempt=$((attempt + 1))
+        if ((attempt >= 4)); then
+            cat "$body" >&2
+            printf 'delete failed after 4 attempts (http %s): %s\n' "$code" "$relative" >&2
+            exit 1
+        fi
+        printf '  retry %d/3 for %s\n' "$attempt" "$relative" >&2
+        sleep 1
+    done
+}
+
+# Polls /api/status until sd_flush.drained is true (60 s bound), as
+# replay_retire.py delete-www does.
+wait_drained() {
+    local waited=0 body="$work_dir/status"
+    while true; do
+        : > "$body"
+        curl --silent --show-error --output "$body" "$device_url/api/status" || true
+        if tr -d '[:space:]' < "$body" | grep -q '"sd_flush":{[^}]*"drained":true'; then
+            printf '%s\n' 'sd_flush drained'
+            return 0
+        fi
+        if ((waited >= 60)); then
+            printf '%s\n' 'sd_flush.drained still false after 60 s' >&2
+            exit 1
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+}
+
+run_deletes() {
+    local relative
+    for relative in "${delete_files[@]}"; do
+        relative=${relative#./}
+        delete_file "$relative"
+        if [[ "$relative" == *.html ]]; then
+            delete_file "$relative.gz"
+        fi
+    done
+    wait_drained
+}
+
 # Bundle step (Phase 4g G1): <page>.html.gz is built into a scratch directory
 # and uploaded beside the unmodified sources.
 bundle_pages() {
@@ -164,6 +268,12 @@ bundle_pages() {
         exit 1
     }
 }
+
+if ((delete_only)); then
+    # --delete without --file uploads nothing, never the whole tree.
+    run_deletes
+    exit 0
+fi
 
 if ((${#selected_files[@]} > 0)); then
     for relative in "${selected_files[@]}"; do
@@ -211,6 +321,9 @@ if ((${#selected_files[@]} > 0)); then
             upload_file "$work_dir/bundles/$page.gz" "$page.gz"
         fi
     done
+    if ((${#delete_files[@]} > 0)); then
+        run_deletes
+    fi
     exit 0
 fi
 

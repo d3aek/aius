@@ -301,6 +301,55 @@ class SyncTests(unittest.TestCase):
         self.assertEqual(self.sleep_values(), [])
         self.assertEqual(len(self.uploads()), 1)
 
+    def requests(self):
+        path = Path(str(self.log) + ".methods")
+        return path.read_text().splitlines() if path.exists() else []
+
+    def run_delete_only(self, plan, *extra):
+        """--delete without --www or --file."""
+        self.plan.write_text("\n".join(plan) + "\n")
+        env = dict(os.environ)
+        env.update(
+            PATH=f"{self.bin}{os.pathsep}{env['PATH']}",
+            STUB_PLAN=str(self.plan), STUB_LOG=str(self.log),
+            STUB_SLEEPS=str(self.sleeps), STUB_COUNT=str(self.tmp / "count"),
+        )
+        return subprocess.run(
+            [str(SYNC), "--device", "http://stub", "--token", TOKEN, *extra],
+            env=env, capture_output=True, text=True, timeout=60,
+        )
+
+    def test_delete_page_sends_delete_for_page_and_its_bundle(self):
+        result = self.run_delete_only(["200"], "--delete", "classic.html")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.requests(), ["DELETE http://stub/sd/www/classic.html",
+                                           "DELETE http://stub/sd/www/classic.html.gz"])
+        self.assertTrue(Path(str(self.log) + ".status").exists())
+
+    def test_delete_non_page_sends_one_delete(self):
+        result = self.run_delete_only(["200"], "--delete", "other.txt")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.requests(), ["DELETE http://stub/sd/www/other.txt"])
+
+    def test_delete_404_is_already_gone(self):
+        result = self.run_delete_only(["404"], "--delete", "classic.html")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(self.requests()), 2)
+
+    def test_delete_other_failure_fails(self):
+        result = self.run_delete_only(["500"], "--delete", "other.txt")
+        self.assertEqual(result.returncode, 1)
+
+    def test_delete_without_file_uploads_nothing(self):
+        result = self.run_sync(["200"], "--delete", "other.txt")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.requests(), ["DELETE http://stub/sd/www/other.txt"])
+
+    def test_delete_refuses_presets(self):
+        result = self.run_delete_only(["200"], "--delete", "presets/a.json")
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(self.requests(), [])
+
     def test_bundle_failure_stops_before_any_upload(self):
         (self.www / "upgrade.js").unlink()
         result = self.run_sync(["200"])
@@ -310,16 +359,25 @@ class SyncTests(unittest.TestCase):
 
 CURL_STUB = r"""#!/usr/bin/env bash
 # Stub curl: logs the URL, answers from STUB_PLAN (last line repeats).
-hdr=''; out=''; url=''
+hdr=''; out=''; url=''; method=''
 while (($# > 0)); do
     case "$1" in
         --dump-header) hdr=$2; shift 2 ;;
         --output) out=$2; shift 2 ;;
-        --write-out|--request|--header|--upload-file) shift 2 ;;
+        --request) method=$2; shift 2 ;;
+        --write-out|--header|--upload-file) shift 2 ;;
         --*) shift ;;
         *) url=$1; shift ;;
     esac
 done
+if [[ "$url" == */api/status ]]; then
+    # The drained poll: logged apart, never consumes the plan.
+    printf '%s\n' "$url" >> "$STUB_LOG.status"
+    [[ -z "$out" ]] || printf '{"sd_flush": {"drained": true}}' > "$out"
+    printf '200'
+    exit 0
+fi
+printf '%s %s\n' "${method:-GET}" "$url" >> "$STUB_LOG.methods"
 n=0
 [[ -f "$STUB_COUNT" ]] && n=$(<"$STUB_COUNT")
 n=$((n + 1))

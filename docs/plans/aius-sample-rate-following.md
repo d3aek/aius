@@ -7691,6 +7691,15 @@ unit: implementer
   index.html carries every id it did (the `mixer.test.js` parity case),
   so its DSP editor coverage moves there. The card delete is the
   owner's command (the classifier refuses an agent's card writes).
+- **Slice 1 shipped: `aius-sd-sync.sh --delete`.** It is repeatable and
+  sends `DELETE /sd/www/<RELATIVE>` (the route `replay_retire.py`
+  uses). A page also deletes its `.html.gz`. A 404 counts as already
+  gone. When no `--file` is given it uploads nothing, and `--www` may be
+  omitted. After the deletes it waits for `sd_flush.drained`. It refuses
+  `presets/`, absolute paths and `..` (exit 2), so it can never remove
+  user presets. Proof: www-bundle 35 (6 new), shellcheck clean
+  (verifier). **Next slice:** delete `classic.html` and re-point its
+  tests, after 4s lands (shared `mixer.test.js`).
 
 ### Phase 4s The matrix overshoot warning returns when clip-free headroom goes off
 
