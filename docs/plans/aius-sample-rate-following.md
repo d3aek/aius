@@ -83,10 +83,15 @@ built); replace wholesale on the next handover.
   sync that uploads the bundles) and run 2 (AC-3 page loads), then 4h's
   AC-3 and accidental-disconnect runs. An E7 verdict of B2 re-plans 4f to 4h before
   their device runs (4f's body records this).
-- **Next action.** 4b's device sessions (owner) and 4i's baseline run
-  (owner, U24 bench, on `ce1159286fd2`), then `replay_retire.py
-  archive`. 4i step 1a is deployed and `replay_retire.py` is built and
-  host-proven (2026-10-11, ahead of 4b on the owner's word).
+- **Next action (handover 2026-10-12, session 3d69495b).** A fresh
+  session runs, in order: (1) **4n**, the reported 408 `request_timeout`
+  bug (contract and diagnosis in its block); (2) **4i re-planned** per its
+  "No bench run" paragraph (owner: remove replay, port host-only): rewrite
+  its void bench proof and `coordination` line, then `replay_retire.py
+  archive`, commit the captures, `delete-captures`, the measure port, the
+  four removal units. 4b's device sessions stay the owner's and no longer
+  gate 4i's removal (owner, 2026-10-12). Every OTA and device check waits
+  for the owner's word; card reads and the archive's GETs do not.
 - **What landed this run** (aius commits; each followed by a upstream repository
   pointer bump; foreign commits from the mixer session omitted):
 
@@ -6877,6 +6882,26 @@ gate 1.
   (`GIT_OPTIONAL_LOCKS=0`). Not yet run against the board: its first use
   is the owner's archive run after the baseline.
 
+**No bench run (owner, 2026-10-12): remove replay, port host-only.** The
+replay-driven baseline and the ported bench comparison are dropped from
+this phase; the rest of the order stands. Re-plan before dispatch:
+
+1. `replay_retire.py archive` over HTTP (reads only; board idle), the
+   parent commits the captures and manifest, then `delete-captures`
+   (owner-approved removal of replay, 2026-10-12).
+2. measure-port: `measure_run.py` drives the U24 aplay stimulus, proven by
+   the measure-vectors host suite only (arming order, mixer set and read
+   back, looped render, no `/api/replays` call); `--baseline FILE` stays
+   so the bench comparison can run whenever the owner next sits at the
+   bench, against a baseline taken then. `baseline-replay.json` is not
+   produced.
+3. The four removal units, then the post-removal device check (owner,
+   source off then AC-3, no U24) and `delete-www`.
+
+The "device (owner, U24 bench, step 1, before removal)" targeted-proof
+item is void; the next session rewrites it and the `coordination` line
+to match before dispatching.
+
 **What must survive.**
 
 - `aius_tx_gate.h`, moved to `firmware/lib/aius_audio/src`, included by
@@ -7474,6 +7499,49 @@ status: built # 2026-10-11
 - **Accepted residue.** The trim field allows down to -60 dB, so a deep
   trim draws the curve below the +-12 plot.
 - **Mixer doc.** Its Phase 1e is marked shipped (2026-10-11).
+
+### Phase 4n An idle browser connection gets no 408
+
+```yaml
+outcome: >-
+  A connection the board accepts that sends no request byte before the
+  150 ms RECEIVE deadline is closed with no reply, under its own fault
+  code, so a browser retries the request it later sends on that spare
+  socket instead of reading a waiting 408 request_timeout. A partly
+  received request still answers 408.
+seams:
+  - "firmware/lib/aius_http/src/aius_http_transaction.c timeout_transaction (:1292-1300): RECEIVE with request_length 0 closes silently; a new AIUS_HTTP_FAULT for the idle close"
+  - "firmware/src/aius_runtime_network_http.cpp:498-503: the idle close is counted apart from http_client_drops, or the drop counter documents it"
+  - "firmware/sd/www/openapi.json if a status counter is added (status body headroom is 14 B)"
+targeted-proof: >-
+  host: http transaction suite, accept then no bytes then deadline gives
+  CLOSE with no WRITE, a partial request still gives 408; all four images
+  build. device (owner, no U24): Firefox loads of upgrade.html show no
+  page-visible 408 where they showed 3/3 before.
+unit: implementer
+```
+
+- **Diagnosis (2026-10-12, read-only against the board, idle).** The
+  RECEIVE deadline is 150 ms from accept (`aius_http_transaction.c:24`,
+  armed at `:553` via `:1321-1323`, expiry `:1805-1811`), one client is
+  served at a time (`aius_network_teensy.cpp:407-419`), the listener
+  backlog is 1 and FNET drops further SYNs silently, and every reply is
+  HTTP/1.0 with `Connection: close`. A cold page load bursts 5 to 8
+  requests (4 fonts since the restyle), so browsers leave spare
+  connections that the board accepts and 408s after 150 ms. Chromium
+  hides it; Firefox sent the next `/api/ota` poll on the dead spare and
+  read the 408 (3 of 3 upgrade.html loads). Pages render the text only on
+  a first-load fetch (`dsp-editor.js:1553-1556`, `:1872`, `replays.js:126`)
+  or from the third poller failure in a row (`sd-shared.js:110`,
+  `:151-156`). Most cold loads also show one 1 s connect stall (a
+  dropped SYN retransmitted).
+- **Not chosen (yet):** a page-side retry of a GET once on 408
+  (`sd-shared.js:47-80`) hides the symptom but keeps the slot cost;
+  inlining the fonts adds about 136 KB per page and loses their cache; a
+  larger backlog trades SYN stalls for queued head-of-line waits. Revisit
+  only if 4n's device check still shows 408s.
+- **Side finding, not investigated:** `http_rejections` rose by 1 on
+  every Firefox load and not in Chromium or WebKit.
 
 ### Phase 4c `test.sh` runs every `--suite` given ✓ SHIPPED 2026-10-06
 
