@@ -43,11 +43,9 @@ handover.
   `ab.active_slot` 1, `trial_budget` 0, `rollback_observed` false;
   `clock.master` "input"). Slot 2 holds `ce1159286fd2`, with replay. The
   build met the slot-a OCRAM floor exactly (264,736 B free) and passed
-  the retired-symbols guard. The card holds no replay captures
-  (`delete-captures` 2026-10-12, listing empty) but still holds the old
-  www pages,
-  `replays.html`, `replays.js`, `replays.css` and `replays.html.gz`
-  included, until the next sync and `delete-www`. `df966f17b370` stays
+  the retired-symbols guard. The card holds no replay captures and no
+  replay pages: synced and `delete-www` run 2026-10-12 (4i's body).
+  `df966f17b370` stays
   the owner's **fail-safe rollback candidate**: tag
   `fw-rollback-df966f17b370`, signed container and USB `recovery.hex` in
   LFS, steps in `firmware/releases/df966f17b370/README.md`.
@@ -63,21 +61,17 @@ handover.
   owner's: the 4e, 4f, 4g and 4h runs listed in 4b, 4n's Firefox check,
   4i's post-removal check. A bench run is a last resort, batched, never
   mixed with listening (aius CLAUDE.md).
-- **Next action: the card sync and `delete-www`, run by the owner.** The
-  OTA (steps 1 and 2) is done, and the first listening session on it
-  is recorded in 4i's body. The auto-mode classifier refused an agent
-  doing steps 3 and 4 (2026-10-12); the owner runs the commands with
-  `!`. In order:
-  3. The owner's card sync
-     (`aius-sd-sync.sh --token-file .secrets/aius-sd-auth`): it uploads
-     4i's and 4p's pages and `openapi.json`.
-  4. 4i's post-removal device check (its targeted-proof "device (owner,
-     after removal)" item; the checkpoint figure is already recorded as
-     86 us per epoch, since the walltime vector is a lifetime max); then
-     `replay_retire.py delete-www`, done when
-     `sd_flush.drained` reads true and each deleted page answers 404.
-  5. 4n's Firefox check (no page-visible 408; note the `http_rejections`
-     delta per load, per 4n's side-finding bullet).
+- **Next action: two owner checks.** The OTA, card sync, `delete-www`
+  and every source-off 4i item are done (4i's body). The auto-mode
+  classifier refuses an agent running the sync or `delete-www`; the
+  owner runs them with `!` (sync needs `--device http://192.0.2.66
+  --www firmware/sd/www`).
+  1. 4n's Firefox check of `http://192.0.2.66/sd/www/upgrade.html` (no
+     page-visible 408; note the `http_rejections` delta per load, per
+     4n's side-finding bullet).
+  2. 4i's last device item, at the next listening session with AC-3
+     playing: `underrun_episode_count` delta 0 across a page-load round
+     (load each page once while a 1 Hz poll runs). No bench run.
 - **What landed this run** (aius commits, each followed by a upstream repository
   pointer bump):
 
@@ -6894,6 +6888,18 @@ owner gate 1.
   over `loop_epoch`: **86 us per epoch** across 4.6 M epochs of
   playback (the largest of the eleven; the others 11 to 49 us). This
   replaces the max comparison in the device item.
+- **Post-removal device check, source off (2026-10-12): PASS, one item
+  open.** Card sync uploaded 24 files, all `ok`. `/api/replays` answers
+  404; served `index.html`, `status.html`, `upgrade.html` and
+  `classic.html` carry no replay text (pages serve under `/sd/www/`);
+  `status.html` has no Live processing card and is byte-identical to
+  source (`classic.html` keeps its own Live processing section, as
+  committed; 4p was `status.html` only); `sd-chrome.css` serves
+  `text/css`. `delete-www` removed `replays.html`, `replays.js`,
+  `replays.css` and `replays.html.gz`; each answers 404, and
+  `sd_flush.drained` true, `failures` 0. **Open:** the
+  `underrun_episode_count` delta across a page-load round with AC-3
+  playing, at the next listening session (State block, next action 2).
 - **Delivery audit (2026-10-12): FAIL** (B1 plan and CLAUDE.md, S1
   meters poll, S2 held-dispatch handler counts, S3 waveform test
   coverage, N1 to N5). S2 and N1 to N4 fixed; S1 and S3 move to Phase
