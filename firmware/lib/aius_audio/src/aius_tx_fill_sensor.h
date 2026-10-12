@@ -122,7 +122,7 @@ aius_tx_fill_sensor_init(AiusTxFillSensor *s)
 	s->snap.fill_window_exclusions = 0u;
 }
 
-/* Gate close, governor trim, carrier loss, replay block: empty the window and
+/* Gate close, governor trim, carrier loss: empty the window and
  * serve null until the next valid window. Lifetime counters survive. */
 AIUS_TX_FILL_SENSOR_COLD static inline void
 aius_tx_fill_sensor_reset(AiusTxFillSensor *s)
@@ -149,12 +149,12 @@ aius_tx_fill_sensor_reset_keep_latches(AiusTxFillSensor *s)
 }
 
 /* Convenience for the tap: resets and returns 1 when the sensor must not
- * sample this block (gate closed, carrier lost, replay block). */
+ * sample this block (gate closed, carrier lost). */
 AIUS_TX_FILL_SENSOR_COLD static inline int
 aius_tx_fill_sensor_hold(AiusTxFillSensor *s, int gate_open,
-                         int carrier_present, int replay_block)
+                         int carrier_present)
 {
-	if (gate_open && carrier_present && !replay_block)
+	if (gate_open && carrier_present)
 		return 0;
 	aius_tx_fill_sensor_reset(s);
 	return 1;

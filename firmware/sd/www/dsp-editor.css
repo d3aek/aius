@@ -236,7 +236,6 @@ code{color:var(--aius-accent-info)}
    about the signal path, with their own vocabulary. */
 .flow-end{padding:3px 9px;border:1px solid var(--aius-border-strong);border-radius:999px;font-size:.72rem;color:var(--aius-text-muted)}
 .flow-end[data-state="carrier"],.flow-end[data-state="open"]{border-color:var(--aius-accent-primary);color:var(--aius-accent-primary)}
-.flow-end[data-state="replay"]{border-color:var(--aius-accent-info);color:var(--aius-accent-info)}
 .flow-end[data-state="dark"],.flow-end[data-state="none"]{border-color:var(--aius-border-control);color:var(--aius-text-muted)}
 .flow-end[data-state="unreachable"]{border-color:var(--aius-accent-danger);color:var(--aius-text-danger)}
 

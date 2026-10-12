@@ -17,7 +17,7 @@ extern "C" {
 #define AIUS_HTTP_MAX_REQUEST 13312u
 #define AIUS_HTTP_MAX_HEADERS 512u
 #define AIUS_HTTP_MAX_SD_AUTH 16u /* fixed-format SD auth token width */
-#define AIUS_HTTP_MAX_REPLAY_ID 48u
+#define AIUS_HTTP_MAX_VECTOR_ID 48u /* /api/measure vector id bound */
 #define AIUS_HTTP_MAX_BODY 12288u
 #define AIUS_HTTP_MAX_RESPONSE 8192u
 #define AIUS_HTTP_CONTENT_TYPE_STORAGE 64u
@@ -43,13 +43,6 @@ typedef enum {
 	AIUS_HTTP_ROUTE_SD_FILE,
 	AIUS_HTTP_ROUTE_DSP_CONFIG,
 	AIUS_HTTP_ROUTE_METERS,
-	AIUS_HTTP_ROUTE_REPLAYS,
-	AIUS_HTTP_ROUTE_REPLAYS_STATUS,
-	AIUS_HTTP_ROUTE_REPLAYS_START,
-	AIUS_HTTP_ROUTE_REPLAYS_STOP,
-	/* Deleting a replay is DELETE /api/replays, i.e. AIUS_HTTP_ROUTE_REPLAYS
-	 * with AIUS_HTTP_DELETE -- there is no separate delete path to parse. */
-	AIUS_HTTP_ROUTE_SD_REPLAY,
 	/* The measurement loopback (item 3): GET /api/measure is the public read
 	 * (state machine + figures), POST /api/measure/start the auth-gated arm. */
 	AIUS_HTTP_ROUTE_MEASURE,
@@ -150,9 +143,6 @@ typedef struct {
 	bool body_complete;
 	const uint8_t *resource;
 	size_t resource_length;
-	/* Replay ID for /sd/replays/<id>, pointing into the parsed request bytes. */
-	const uint8_t *replay_id;
-	size_t replay_id_length;
 	/* Optional exact-header value, pointing into the parsed request bytes. */
 	const uint8_t *sd_auth;
 	size_t sd_auth_length;

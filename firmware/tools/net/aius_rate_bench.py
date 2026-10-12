@@ -34,13 +34,12 @@ SUPPORTED_RATES = (32000, 44100, 48000)
 # records `attempts` == 2 and anything above that is a transport retry.
 SAMPLE_REQUESTS = 2
 
-# Every phase label `stable_phase_labels` can emit, and the historic
+# Every phase label `stable_phase_labels` can emit, and the default
 # transitions sequence. The sequence a run actually drove is an analysis
-# option (`expected_phases`): the stimulus decides whether the loss->replay
-# leg was played, and asserting a phase the stimulus never drove fails the
-# gate for the bench's own assumption rather than for the board.
-TRANSITION_PHASE_LABELS = ("32000", "44100", "48000", "replay")
-DEFAULT_TRANSITION_PHASES = ("48000", "44100", "48000", "replay")
+# option (`expected_phases`): asserting a phase the stimulus never drove
+# fails the gate for the bench's own assumption rather than for the board.
+TRANSITION_PHASE_LABELS = ("32000", "44100", "48000")
+DEFAULT_TRANSITION_PHASES = ("48000", "44100", "48000")
 
 SCENARIOS = {
     "48k-10m": {"duration": 600.0, "minimum": 600.0, "settle": 30.0},
@@ -298,7 +297,7 @@ def validate_status(status):
         raise BenchError("clock.master has an unknown value")
     if clock["state"] not in (
             "tracking", "acquiring", "refused", "unsupported", "unlocked",
-            "replay", "fault"):
+            "fault"):
         raise BenchError("clock.state has an unknown value")
     for field in AUDIO_FIELDS:
         require_uint(status["audio_diag"][field], f"audio_diag.{field}")
@@ -458,13 +457,6 @@ def stable_phase_labels(samples, minimum_samples, max_follow_error_millihz):
             if rate_sample_ok(status, rate, max_follow_error_millihz):
                 label = str(rate)
                 break
-        if (clock["state"] == "replay" and clock["master"] == "output" and
-                not clock["carrier_locked"] and
-                clock["nominal_rate_hz"] == 48000 and
-                clock["stream_rate_hz"] == 48000 and
-                clock["output_rate_millihz"] == 48000000 and
-                bool(status["tx_gate"]["open"])):
-            label = "replay"
         raw.append(label)
 
     labels = []
@@ -486,19 +478,14 @@ def stable_phase_labels(samples, minimum_samples, max_follow_error_millihz):
 
 
 def live_transition_positions(labels):
-    """Positions in `labels` reached by a live rate change.
-
-    A transition is live when BOTH of its bounding phases are numeric rates:
-    the board followed a carrier from one rate to another. A transition into
-    `replay` is not -- the carrier went away -- and neither is one out of it.
-    Everything the transitions scenario attributes to a live rate change
-    (dark unsupported episodes, per-window rate_changes, the rate-change
-    event list) is derived from this, so a run that drove no replay leg is
-    judged on the transitions it actually drove."""
+    """Positions in `labels` reached by a live rate change: the board
+    followed a carrier from one rate to another. Everything the transitions
+    scenario attributes to a live rate change (dark unsupported episodes,
+    per-window rate_changes, the rate-change event list) is derived from
+    this."""
     return [
         position for position in range(1, len(labels))
-        if labels[position] != labels[position - 1] and
-        labels[position] != "replay" and labels[position - 1] != "replay"
+        if labels[position] != labels[position - 1]
     ]
 
 
@@ -511,8 +498,6 @@ def expected_phases_error(labels):
            for label in labels):
         return (f"expected_phases labels must be drawn from "
                 f"{list(TRANSITION_PHASE_LABELS)}, got {list(labels)}")
-    if any(label == "replay" for label in labels[:-1]):
-        return "expected_phases may name replay only as the final phase"
     if not live_transition_positions(labels):
         return ("expected_phases must contain at least one live rate "
                 "transition (two adjacent differing numeric rates)")
@@ -611,11 +596,7 @@ def check_transition_dark_effects(samples, events, labels, indexes, failures,
         (indexes[index - 1][1], indexes[index][0])
         for index in range(1, len(indexes))
     ]
-    # A window is live iff both phases bounding it are numeric rates. This
-    # used to be `transition_windows[:-1]`, which assumed the last window
-    # always led into `replay`; on a stimulus that drives no replay leg that
-    # drops the final live rate window and reports its dark unsupported
-    # episode as unattributed (plan defect F13).
+    # A window is live iff both phases bounding it are numeric rates.
     live_positions = set(live_transition_positions(labels))
     live_windows = [
         window for position, window in enumerate(transition_windows, start=1)
@@ -988,9 +969,9 @@ def analyze_samples(samples, events, scenario, options=None, external=None):
         labels, indexes = stable_phase_labels(
             samples, minimum_samples, follow_bound)
         metrics["observed_phase_sequence"] = labels
-        # The sequence the stimulus declared it drove, not a fixed one: an
-        # aplay-driven run without the loss->replay leg plays three phases,
-        # and asserting a fourth fails the gate for a phase nobody played.
+        # The sequence the stimulus declared it drove, not a fixed one:
+        # asserting a phase nobody played fails the gate for the bench's own
+        # assumption rather than for the board.
         expected = options.get("expected_phases")
         if expected is None:
             expected = list(DEFAULT_TRANSITION_PHASES)
@@ -1085,7 +1066,7 @@ def analyze_samples(samples, events, scenario, options=None, external=None):
             metrics["final_replay_output_blocks_delta"] = progress
             if progress == 0:
                 add_failure(failures, "transition-no-progress",
-                            "output did not resume during the final replay phase")
+                            "output did not resume during the final phase")
 
     elif scenario == "waveform":
         stable = check_live_rate(samples, 48000, settle_s, follow_bound,
@@ -1442,9 +1423,7 @@ def add_analysis_arguments(parser):
     parser.add_argument(
         "--expected-phases",
         help="transitions: comma-separated phase sequence the stimulus "
-             "drives, from 32000/44100/48000/replay (default "
-             "48000,44100,48000,replay; drop the replay leg when it is not "
-             "driven)")
+             "drives, from 32000/44100/48000 (default 48000,44100,48000)")
     parser.add_argument("--max-follow-error-millihz", type=int)
     parser.add_argument("--expect-build")
     parser.add_argument("--external-observation")

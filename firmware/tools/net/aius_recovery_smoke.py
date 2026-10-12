@@ -120,7 +120,7 @@ USB_SAMPLE_INTERVAL_S = 0.05
 SD_JOB_DONE = 15
 INJECTABLE_CHECKPOINTS = tuple(range(0, 10))
 CHECKPOINT_NAMES = ("RESET_CAPTURE", "USB_RX", "USB_TX", "METRICS", "NETWORK",
-                    "HTTP", "UDP", "REPLAY", "SD", "AUDIO",
+                    "HTTP", "UDP", "SERVICE", "SD", "AUDIO",
                     "EPOCH_COMPLETE")
 
 # SRC_SRSR bits, mirroring aius_boot_teensy_reset_kind() in

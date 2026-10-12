@@ -189,6 +189,33 @@ class LdfGateTests(unittest.TestCase):
             self.verify(expected=("known_cold", "aius_recorder"))
         self.assertIn("aius_recorder", str(caught.exception))
 
+    def test_a_link_carrying_the_retired_replay_library_fails(self) -> None:
+        """Phase 4i: aius_replay left every optical env; a link that still
+        carries it fails even when its objects are cold."""
+        self.assertNotIn("aius_replay", VERIFY.EXPECTED_LDF_LIBS)
+        self.assertNotIn("aius_replay", VERIFY.ITCM_ALLOWED_LDF_LIBS)
+        paths = self.PATHS + ("lib333/aius_replay/aius_replay.c.o",)
+        with self.assertRaisesRegex(
+            VERIFY.VerificationError, r"retired LDF libraries are in the link"
+        ) as caught:
+            self.verify(paths=paths)
+        self.assertIn("aius_replay", str(caught.exception))
+
+    def test_a_symbol_naming_replay_fails(self) -> None:
+        text = (
+            "Symbol table '.symtab' contains 3 entries:\n"
+            "   Num:    Value  Size Type    Bind   Vis      Ndx Name\n"
+            "     1: 60001000    40 FUNC    LOCAL  DEFAULT    2 setup\n"
+            "     2: 20200000   128 OBJECT  LOCAL  DEFAULT    5 g_replay_service\n"
+        )
+        names = VERIFY.parse_symbol_names(text)
+        self.assertEqual(names, ["setup", "g_replay_service"])
+        with self.assertRaisesRegex(
+            VERIFY.VerificationError, r"g_replay_service"
+        ):
+            VERIFY.verify_no_retired_symbols(names)
+        self.assertEqual(VERIFY.verify_no_retired_symbols(["setup"]), 1)
+
     def test_non_library_objects_are_not_gated(self) -> None:
         """An ITCM-emitting object outside the LDF shape is the cold-object and
         hot-object checks' subject; this gate must not double-judge it."""

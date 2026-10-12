@@ -50,7 +50,7 @@ extern "C" {
  * substitution only while the gate is open, so an advance observed at a
  * gate-CLOSED step is the tail of the drain a stop or relock just caused -- the
  * same transient the flight recorder deliberately refuses to trigger on
- * (aius_recorder.c, the replay-stop row). Counting it would put a fake glitch
+ * (aius_recorder.c, the stop row). Counting it would put a fake glitch
  * at the end of every session. The episode it closes is recorded with
  * `gate_open` 0, which is the reader's flag that its extent was TRUNCATED by
  * the close rather than ended by the stream recovering.

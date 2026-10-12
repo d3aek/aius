@@ -21,8 +21,7 @@ extern "C" {
 
 typedef enum {
 	AIUS_CLOCK_SOURCE_NONE = 0,
-	AIUS_CLOCK_SOURCE_LIVE = 1,
-	AIUS_CLOCK_SOURCE_REPLAY = 2
+	AIUS_CLOCK_SOURCE_LIVE = 1
 } AiusClockSourceState;
 
 typedef struct {

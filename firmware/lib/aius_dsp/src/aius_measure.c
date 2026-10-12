@@ -3,7 +3,7 @@
 #include <math.h>
 #include <string.h>
 
-/* Cold code -> FLASH, hot code -> ITCM, the same split aius_replay.c documents.
+/* Cold code -> FLASH, hot code -> ITCM, the split the other DSP sources use.
  *
  * The ONLY function here that runs per committed block is
  * aius_measure_producer_block

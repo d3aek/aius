@@ -1,4 +1,4 @@
-/* Parser-backed oracle for generated AC-3 replay periods.
+/* Parser-backed oracle for generated AC-3 fixture periods.
  *
  * The Python validator proves the complete fixed IEC layout. This independent
  * native oracle sends every generated word through the production parser and
@@ -149,7 +149,7 @@ done:
 int main(int argc, char **argv)
 {
 	if (argc != 3) {
-		fprintf(stderr, "usage: test_replay_samples RAW.ac3 STREAM_ac3.iec\n");
+		fprintf(stderr, "usage: test_iec_fixtures RAW.ac3 STREAM_ac3.iec\n");
 		return 2;
 	}
 	return validate(argv[1], argv[2]);

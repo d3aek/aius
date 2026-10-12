@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Mutation tests for the generated AC-3 replay-stream validator."""
+"""Mutation tests for the generated AC-3 fixture-stream validator."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from types import ModuleType
 
 
 def load_validator(path: Path) -> ModuleType:
-    spec = importlib.util.spec_from_file_location("replay_samples_validate", path)
+    spec = importlib.util.spec_from_file_location("iec_fixtures_validate", path)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"cannot load validator: {path}")
     module = importlib.util.module_from_spec(spec)

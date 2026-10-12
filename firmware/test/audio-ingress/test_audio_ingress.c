@@ -112,10 +112,8 @@ static void test_generation_flush_and_clear(void)
 	publish(&ingress, 1u);
 	aius_audio_ingress_record_gap(
 		&ingress, AIUS_AUDIO_INGRESS_GAP_MISSING_LIVE);
-	aius_audio_ingress_record_gap(
-		&ingress, AIUS_AUDIO_INGRESS_GAP_SHORT_REPLAY);
 	aius_audio_ingress_record_source_change(&ingress);
-	CHECK(aius_audio_ingress_generation(&ingress) == 3u,
+	CHECK(aius_audio_ingress_generation(&ingress) == 2u,
 	      "every gap/source transition advances generation");
 	CHECK(aius_audio_ingress_source_generation(&ingress) == 1u,
 	      "source transition advances independent generation");
@@ -147,10 +145,10 @@ static void test_generation_flush_and_clear(void)
 
 	publish(&ingress, 30u);
 	aius_audio_ingress_record_gap(
-		&ingress, AIUS_AUDIO_INGRESS_GAP_SHORT_REPLAY);
+		&ingress, AIUS_AUDIO_INGRESS_GAP_MISSING_LIVE);
 	aius_audio_ingress_get_diag(&ingress, &diag);
 	CHECK(diag.high_water_words == 512u && diag.dropped_chunks == 1u &&
-	          diag.dropped_by_cause[AIUS_AUDIO_INGRESS_GAP_SHORT_REPLAY] == 1u,
+	          diag.dropped_by_cause[AIUS_AUDIO_INGRESS_GAP_MISSING_LIVE] == 1u,
 	      "post-clear publish belongs to new interval");
 }
 

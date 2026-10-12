@@ -1,5 +1,5 @@
-/* Shared behaviours for the SD-served pages (index.html, classic.html, replays.html,
- * status.html).
+/* Shared behaviours for the SD-served pages (index.html, classic.html, status.html,
+ * upgrade.html).
  *
  * OWNS: the pill setter (text + data-state stamp, one vocabulary), the
  * never-throw fetch discipline, the number formatters, SD-auth token storage,
@@ -231,7 +231,7 @@
   /* The one waveform renderer (UX consolidation row 6): centre line ALWAYS
    * drawn so an idle canvas reads as an instrument at zero rather than a
    * dead element, mirrored per-mille envelope when points arrive. It owns its
-   * backing fit because the replay page has no other canvas manager. */
+   * backing fit because the status page has no other canvas manager. */
   function drawWaveform(canvas, points) {
     const dpr = Math.max(1, Math.min(3, Number(window.devicePixelRatio) || 1));
     const cssWidth = canvas.clientWidth;

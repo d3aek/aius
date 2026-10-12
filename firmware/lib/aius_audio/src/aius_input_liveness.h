@@ -55,12 +55,11 @@ extern "C" {
  * watermark, never a silence to be recovered from.
  *
  * ACCEPTED RESIDUE (do not "fix" without reopening the contract): a committed
- * block is production whatever produced it, so a replay committing blocks while
- * the input carrier is dark reads as PRODUCING and opens no NO_CARRIER
+ * block is production whatever produced it, so any source committing blocks
+ * while the input carrier is dark reads as PRODUCING and opens no NO_CARRIER
  * interval. That is the honest answer to the question this rule asks -- audio
- * IS reaching the sink -- and it means input-carrier darkness is deliberately
- * invisible for the duration of a replay. The transmit gate makes the same
- * judgement for the same reason (aius_tx_gate.h).
+ * IS reaching the sink. The transmit gate makes the same judgement for the
+ * same reason (aius_tx_gate.h).
  *
  * PHASE 1 IS OBSERVE-ONLY. The rule classifies and times; it recommends
  * nothing and no caller acts on it yet. It returns the closed interval's class

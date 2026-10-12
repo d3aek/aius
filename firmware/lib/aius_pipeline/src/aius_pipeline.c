@@ -969,7 +969,7 @@ static void cleanup_pending(AiusPipeline *p)
  * MALFORMED asserts the source emitted corrupt data, and a cut burst is not
  * corrupt, it is truncated -- the word aius_pipeline_finish already uses for a
  * burst the input ended inside. So a genuinely corrupt burst (the parser's own
- * MALFORMED) and a burst a carrier return or replay stop cut short stay
+ * MALFORMED) and a burst a carrier return or source stop cut short stay
  * distinguishable on the wire, and the cut no longer reads as a board fault.
  * `last_status` is left to aius_pipeline_reset's documented clear, so the
  * operator-owned latch keeps its existing semantics exactly.

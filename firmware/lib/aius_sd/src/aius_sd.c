@@ -73,9 +73,9 @@ static FLASHMEM uint32_t crc32_update(uint32_t crc, const uint8_t *data,
 #define AIUS_SD_COPY_HEAD 0x04u
 #define AIUS_SD_COPY_READBACK_MISMATCH 0x08u
 
-/* Copy-before-write fits AiusSdJob's pre-4h padding: OCRAM holds two jobs
- * (the storage service's and the replay's) against a fixed floor, so the job
- * may not grow on the target ABI (short enums, 8-byte uint64 alignment). */
+/* Copy-before-write fits AiusSdJob's pre-4h padding: OCRAM holds the storage
+ * service's job against a fixed floor, so the job may not grow on the target
+ * ABI (short enums, 8-byte uint64 alignment). */
 #if defined(__arm__)
 typedef char aius_sd_job_size_pinned[sizeof(AiusSdJob) == 696u ? 1 : -1];
 typedef char aius_sd_result_size_pinned[sizeof(AiusSdResult) == 40u ? 1 : -1];
@@ -200,7 +200,6 @@ static FLASHMEM void finish_success(AiusSdJob *job)
 	case AIUS_SD_JOB_CONFIG_LOAD:
 	case AIUS_SD_JOB_UPLOAD:
 	case AIUS_SD_JOB_DOWNLOAD:
-	case AIUS_SD_JOB_REPLAY_REFILL:
 	case AIUS_SD_JOB_CACHE_FILL:
 		job->result.kind = AIUS_SD_RESULT_BYTES;
 		job->result.transferred_bytes =
@@ -401,15 +400,6 @@ static FLASHMEM AiusSdFault validate_request(const AiusSdJob *job,
 			return AIUS_SD_FAULT_PATH;
 		break;
 
-	case AIUS_SD_JOB_REPLAY_REFILL:
-		if (request->total == 0u || request->publish ||
-		    request->content_type != NULL || request->temp_path != NULL ||
-		    request->backup_path != NULL)
-			return AIUS_SD_FAULT_INVALID_REQUEST;
-		if (!copy_canonical_path(request->target_path, target))
-			return AIUS_SD_FAULT_PATH;
-		break;
-
 	case AIUS_SD_JOB_UPLOAD:
 		switch (request->install_mode) {
 		case AIUS_SD_INSTALL_REPLACE:
@@ -485,6 +475,11 @@ static FLASHMEM AiusSdFault validate_request(const AiusSdJob *job,
 			return AIUS_SD_FAULT_INVALID_REQUEST;
 		}
 		break;
+
+	default:
+		/* Kind 6 (REPLAY_REFILL) is retired and any other value is
+		 * outside the enum. */
+		return AIUS_SD_FAULT_INVALID_REQUEST;
 	}
 
 	return AIUS_SD_FAULT_NONE;
@@ -1334,7 +1329,6 @@ static FLASHMEM void select_after_begin(AiusSdJob *job)
 		set_phase(job, AIUS_SD_PHASE_MKDIR, AIUS_SD_MKDIR);
 		break;
 	case AIUS_SD_JOB_DOWNLOAD:
-	case AIUS_SD_JOB_REPLAY_REFILL:
 	case AIUS_SD_JOB_CACHE_FILL:
 		set_phase(job, AIUS_SD_PHASE_DOWNLOAD_OPEN, AIUS_SD_OPEN);
 		break;
@@ -1720,12 +1714,7 @@ static FLASHMEM void handle_size_event(AiusSdJob *job, uint64_t size)
 			record_fault(job, AIUS_SD_FAULT_RANGE, 0u);
 			break;
 		}
-		if (job->kind == AIUS_SD_JOB_REPLAY_REFILL) {
-			uint64_t available = size - job->initial_offset;
-			uint64_t selected =
-				job->total < available ? job->total : available;
-			job->end_offset = job->initial_offset + selected;
-		} else if (job->total == 0u) {
+		if (job->total == 0u) {
 			job->end_offset = size;
 		} else if (job->end_offset > size) {
 			record_fault(job, AIUS_SD_FAULT_RANGE, 0u);

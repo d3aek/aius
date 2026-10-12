@@ -139,14 +139,6 @@ static FLASHMEM AiusHttpRoute route_for(const uint8_t *path, size_t length,
 		return AIUS_HTTP_ROUTE_METERS;
 	if (token_equals(path, length, "/api/status/brief"))
 		return AIUS_HTTP_ROUTE_STATUS_BRIEF;
-	if (token_equals(path, length, "/api/replays"))
-		return AIUS_HTTP_ROUTE_REPLAYS;
-	if (token_equals(path, length, "/api/replays/status"))
-		return AIUS_HTTP_ROUTE_REPLAYS_STATUS;
-	if (token_equals(path, length, "/api/replays/start"))
-		return AIUS_HTTP_ROUTE_REPLAYS_START;
-	if (token_equals(path, length, "/api/replays/stop"))
-		return AIUS_HTTP_ROUTE_REPLAYS_STOP;
 	if (token_equals(path, length, "/api/measure"))
 		return AIUS_HTTP_ROUTE_MEASURE;
 	if (token_equals(path, length, "/api/measure/start"))
@@ -233,12 +225,6 @@ static FLASHMEM AiusHttpRoute route_for(const uint8_t *path, size_t length,
 		return AIUS_HTTP_ROUTE_SD_STATUS;
 	if (token_equals(path, length, "/api/sd/mode"))
 		return AIUS_HTTP_ROUTE_SD_MODE;
-	if (has_prefix(path, length, "/sd/replays/") &&
-	    length > strlen("/sd/replays/")) {
-		request->replay_id = path + strlen("/sd/replays/");
-		request->replay_id_length = length - strlen("/sd/replays/");
-		return AIUS_HTTP_ROUTE_SD_REPLAY;
-	}
 	if (has_prefix(path, length, "/sd/") && length > strlen("/sd/")) {
 		request->resource = path + strlen("/sd/");
 		request->resource_length = length - strlen("/sd/");
@@ -520,8 +506,7 @@ FLASHMEM bool aius_http_if_none_match(const AiusHttpRequest *request, const char
 static FLASHMEM int is_streamed_request(const AiusHttpRequest *request)
 {
 	return request->method == AIUS_HTTP_PUT &&
-	       (request->route == AIUS_HTTP_ROUTE_SD_FILE ||
-	        request->route == AIUS_HTTP_ROUTE_SD_REPLAY);
+	       request->route == AIUS_HTTP_ROUTE_SD_FILE;
 }
 
 FLASHMEM AiusHttpResult aius_http_parse(const uint8_t *data, size_t length,
@@ -600,9 +585,7 @@ FLASHMEM AiusHttpResult aius_http_parse(const uint8_t *data, size_t length,
 		return AIUS_HTTP_ERR_METHOD;
 	if ((request->method == AIUS_HTTP_PUT || request->method == AIUS_HTTP_DELETE) &&
 	    request->route != AIUS_HTTP_ROUTE_SD_FILE &&
-	    request->route != AIUS_HTTP_ROUTE_SD_REPLAY &&
 	    request->route != AIUS_HTTP_ROUTE_CONFIG_PUBLIC &&
-	    request->route != AIUS_HTTP_ROUTE_REPLAYS &&
 	    request->route != AIUS_HTTP_ROUTE_DSP_CONFIG &&
 	    request->route != AIUS_HTTP_ROUTE_RECORDER_CONFIG &&
 	    request->route != AIUS_HTTP_ROUTE_OTA_IMAGE)
@@ -615,12 +598,6 @@ FLASHMEM AiusHttpResult aius_http_parse(const uint8_t *data, size_t length,
 		return AIUS_HTTP_ERR_METHOD;
 	/* Read-only meter snapshot; the serializer lands with Phase 14b. */
 	if (request->route == AIUS_HTTP_ROUTE_METERS && request->method != AIUS_HTTP_GET)
-		return AIUS_HTTP_ERR_METHOD;
-	if (request->route == AIUS_HTTP_ROUTE_REPLAYS_STATUS && request->method != AIUS_HTTP_GET)
-		return AIUS_HTTP_ERR_METHOD;
-	if (request->route == AIUS_HTTP_ROUTE_REPLAYS_START && request->method != AIUS_HTTP_POST)
-		return AIUS_HTTP_ERR_METHOD;
-	if (request->route == AIUS_HTTP_ROUTE_REPLAYS_STOP && request->method != AIUS_HTTP_POST)
 		return AIUS_HTTP_ERR_METHOD;
 	if (request->route == AIUS_HTTP_ROUTE_MEASURE && request->method != AIUS_HTTP_GET)
 		return AIUS_HTTP_ERR_METHOD;
@@ -657,9 +634,6 @@ FLASHMEM AiusHttpResult aius_http_parse(const uint8_t *data, size_t length,
 	     request->route == AIUS_HTTP_ROUTE_OTA_REHEARSE_FAULT) &&
 	    request->method != AIUS_HTTP_POST)
 		return AIUS_HTTP_ERR_METHOD;
-	if (request->route == AIUS_HTTP_ROUTE_REPLAYS &&
-	    request->method != AIUS_HTTP_GET && request->method != AIUS_HTTP_DELETE)
-		return AIUS_HTTP_ERR_METHOD;
 	if (request->route == AIUS_HTTP_ROUTE_SD_STATUS && request->method != AIUS_HTTP_GET)
 		return AIUS_HTTP_ERR_METHOD;
 	if (request->route == AIUS_HTTP_ROUTE_SD_MODE && request->method != AIUS_HTTP_POST)
@@ -673,21 +647,6 @@ FLASHMEM AiusHttpResult aius_http_parse(const uint8_t *data, size_t length,
 	if (request->route == AIUS_HTTP_ROUTE_SD_FILE &&
 	    (request->resource_length == 0 || request->resource_length > 96))
 		return AIUS_HTTP_ERR_ROUTE;
-	if (request->route == AIUS_HTTP_ROUTE_SD_REPLAY) {
-		if (request->replay_id_length == 0 || request->replay_id_length > AIUS_HTTP_MAX_REPLAY_ID)
-			return AIUS_HTTP_ERR_ROUTE;
-		for (size_t i = 0; i < request->replay_id_length; i++) {
-			uint8_t ch = request->replay_id[i];
-			if (!((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
-			      (ch >= '0' && ch <= '9') || ch == '_' || ch == '-'))
-				return AIUS_HTTP_ERR_ROUTE;
-		}
-		if (request->method == AIUS_HTTP_PUT && request->body_complete &&
-		    !request->has_content_range)
-			return AIUS_HTTP_ERR_BODY;
-		if (request->method != AIUS_HTTP_GET && request->method != AIUS_HTTP_PUT)
-			return AIUS_HTTP_ERR_METHOD;
-	}
 	if (is_streamed_request(request)) {
 		if (!request->has_content_length)
 			return AIUS_HTTP_ERR_BODY;

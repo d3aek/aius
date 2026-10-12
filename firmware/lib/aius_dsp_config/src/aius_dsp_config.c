@@ -112,7 +112,7 @@ FLASHMEM void aius_dsp_model_set_defaults(AiusDspModel *model)
 
 /* The JSON cursor primitives -- at-end, peek, skip-whitespace, consume, string,
  * literal, number, skip-value -- live in lib/aius_json and are shared with
- * lib/aius_config and the replay body reader in src/aius_optical_app.cpp. What
+ * lib/aius_config and the measure body reader in src/aius_optical_app.cpp. What
  * stays here is this schema: its key sets, required-key masks, numeric bounds,
  * the double conversion, and this library's error vocabulary.
  *

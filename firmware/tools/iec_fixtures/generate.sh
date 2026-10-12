@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Generate the synthetic 5.1 replay sample pack (WAV + raw DTS/AC-3 + IEC 61937).
+# Generate the synthetic 5.1 IEC fixture pack (WAV + raw DTS/AC-3 + IEC 61937).
 #
 # Usage:
-#   tools/replay_samples/generate.sh                 # 30 s pack into ./generated
-#   OUT=/path DURATION=60 tools/replay_samples/generate.sh
+#   tools/iec_fixtures/generate.sh                 # 30 s pack into ./generated
+#   OUT=/path DURATION=60 tools/iec_fixtures/generate.sh
 #
 # Env:
 #   FFMPEG    ffmpeg binary       (default: ffmpeg)
@@ -23,7 +23,7 @@
 # ../../../docs/plans/aius-network-hardening.md: the decoded capture showed FR's
 # tone in the left output and read as a decoder channel permutation. The decoder
 # was correct; the material was rotated before it was ever encoded. Regenerate
-# and re-upload any pack produced before 2026-07-28.
+# any pack produced before 2026-07-28.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -59,11 +59,9 @@ encode() {
 		"$out/${name}_ac3.iec"
 	# E-AC-3 (E-AC-3 plan phase 4): 384k 5.1 matches the committed
 	# tools/eac3_vectors corpus. FFmpeg's spdif muxer emits the type-21
-	# IEC framing (12,288-word burst period) natively. NOTE the replay
-	# seam drains 96,000 words/s against that period's 4x-rate link
-	# framing, so on the box this replays at ~1/4 real time: a structural
-	# decode proof (codec_pc 21, counters, cycle cost), never gapless
-	# playback -- the plan's Phase-4 acceptance note records this.
+	# IEC framing (12,288-word burst period) natively. The burst rides a
+	# 4x-rate link, so a 48 kHz word-clock playback is ~1/4 real time:
+	# structural decode proof only, never gapless playback.
 	"$ffmpeg" -hide_banner -loglevel error -y \
 		-i "$out/$name.wav" -map 0:a -ar "$sr" -c:a eac3 -b:a 384k \
 		"$out/$name.eac3"

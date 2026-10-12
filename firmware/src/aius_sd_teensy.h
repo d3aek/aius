@@ -52,9 +52,8 @@ typedef struct {
 	 *
 	 * `driver_faults` counts the card saying no; `protocol_faults` above
 	 * counts this adapter refusing to ask it. `last_protocol_action` names
-	 * the refused action, so a refusal raised against a job this service
-	 * never sees -- the replay refill job shares this adapter -- is still
-	 * attributable. */
+	 * the refused action, so a refusal stays attributable to the action that
+	 * raised it. */
 	uint32_t mounts;
 	/* BEGINs answered from the cached mount, i.e. card transactions NOT
 	 * performed. Beside `mounts` so the pair reads as a hit/miss ratio: a

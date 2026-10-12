@@ -275,7 +275,7 @@ typedef struct {
 	 * AIUS_RECORDER_SETTLE_BLOCKS - 1 blocks EARLY -- a spurious trigger, the
 	 * very thing this window exists to prevent, though still never a corrupt
 	 * transition. Accepted because on this firmware both writers run from
-	 * main-loop checkpoints (the AUDIO tap and the epoch/replay checkpoint),
+	 * main-loop checkpoints (the AUDIO tap and the epoch/service checkpoint),
 	 * never an interrupt, so the interleaving is theoretical. */
 	volatile uint32_t settled_blocks;
 	uint32_t gr_hold_count;

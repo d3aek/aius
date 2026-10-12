@@ -23,7 +23,7 @@ FLASHMEM bool platform_complete(const AiusRuntimeTeensyPlatformOps *platform)
 {
 	return platform != nullptr && platform->reset_capture != nullptr &&
 	       platform->metrics != nullptr && platform->udp != nullptr &&
-	       platform->replay != nullptr && platform->audio != nullptr &&
+	       platform->service != nullptr && platform->audio != nullptr &&
 	       platform->checkpoint != nullptr &&
 	       platform->feed_watchdog != nullptr;
 }
@@ -132,8 +132,8 @@ FLASHMEM bool runtime_service(void *context, const AiusRuntimeBudget *budget)
 	case AIUS_BOOT_CHECKPOINT_UDP:
 		return runtime->platform.udp(runtime->platform.context, budget,
 		                             runtime->epoch_now_ms);
-	case AIUS_BOOT_CHECKPOINT_REPLAY:
-		return runtime->platform.replay(runtime->platform.context,
+	case AIUS_BOOT_CHECKPOINT_SERVICE:
+		return runtime->platform.service(runtime->platform.context,
 		                                budget,
 		                                runtime->epoch_now_ms);
 	case AIUS_BOOT_CHECKPOINT_AUDIO:

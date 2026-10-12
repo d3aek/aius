@@ -851,8 +851,13 @@ the SD-refill margin that floor exists for. Not yet observed on device.
 
 **Not to be built (2026-10-11).** Replay leaves the firmware in
 [`aius-sample-rate-following.md`](aius-sample-rate-following.md) Phase 4i
-(owner decision there), which removes the defect with it; the receiver
-state it depended on is instrumented by Phase L.
+(owner decision there), which closes this phase's replay part (the replay
+stop debounce and stop-reason latch) with it. The remainder survives without
+replay: dark-input lock blips still fire `tx_gate_service`'s relock
+`request_audio_reset()` (`firmware/src/optical_main.cpp:10310-10316`) and the
+recorder's carrier-loss edge (`firmware/lib/aius_recorder/src/aius_recorder.c:372`).
+That remainder moves into Phase L's scope, with the receiver state it
+depends on.
 
 Found 2026-10-05 while proving Phase J. With no light at the optical input,
 the receiver sits in one of three hidden states (every clock register reads
@@ -896,7 +901,8 @@ nothing resets the SPDIF block at runtime (`spdif_engine_reacquire()`,
   reads per second, so a flip can be caught and correlated without a scope.
 - seams: `input_fault_service` (`:8968-8987`) and `input_diag` in the status
   JSON and `firmware/sd/www/openapi.json`.
-- targeted-proof: host case for the state classifier; device: one replay
+- targeted-proof: host case for the state classifier; device: a U24 de-auth
+  toggle (`firmware/tools/rate_gate_capture/u24_carrier.py`, no replay start)
   that flips the state shows the stamp within one epoch of the counter
   onset.
 - unit: parent-only
@@ -932,9 +938,9 @@ If the instrument shows the input toggling, the next step is a scope on pin
   no host case. The comment at `optical_main.cpp:11343` describes the
   per-epoch input, not the windowed class.
 - **Device proof without replay.** Replay leaves the firmware in
-  sample-rate-following Phase 4i, so the device proof is a dark-input
-  interval (source off) that flips the state, read against the counter
-  onset, not a replay.
+  sample-rate-following Phase 4i, so the device proof flips the state with
+  U24 de-auth toggles only (`firmware/tools/rate_gate_capture/u24_carrier.py`),
+  read against the counter onset, never a replay start.
 
 ## Acceptance
 

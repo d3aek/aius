@@ -225,6 +225,12 @@ evidence) is blocked on a real DD+ source on the bench; Phases 1–4 are done.**
    and the owner UNBLOCKED the four-hour gates (`6950202b7`; the
    register entry's standing-state note). Phase 5 is now blocked only
    on a real DD+ source.
+   **Replay retired 2026-10-12:** the replay-based structural decode above
+   (PASSED 2026-08-02) is history; replay and `eac3_acceptance.py` left the
+   firmware and tools in
+   [`aius-sample-rate-following.md`](aius-sample-rate-following.md) Phase 4i,
+   so no on-board stimulus exists until a real DD+ source does (step 5). The
+   host eac3 suite is the only guard.
 5. **Live DD+ evidence** — a real DD+ source (TV configured to pass DD+,
    or the incoming bench interface if it can emit it); the four-hour and
    by-ear mission gates extend to type 21. Blocked on hardware until

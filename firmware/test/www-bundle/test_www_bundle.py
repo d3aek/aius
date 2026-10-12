@@ -21,7 +21,7 @@ TOKEN = "0123456789abcdef"
 
 
 def make_tree(root, overrides=None):
-    """A minimal www tree with all five pages; overrides maps name -> text."""
+    """A minimal www tree with all four pages; overrides maps name -> text."""
     files = {}
     for page in www_bundle.PAGES:
         stem = page[:-5]
@@ -51,15 +51,16 @@ class BundleTests(unittest.TestCase):
     def read_gz(self, page):
         return gzip.decompress((self.out / (page + ".gz")).read_bytes()).decode("utf-8")
 
-    def test_all_five_pages_bundled_including_mixer(self):
+    def test_all_four_pages_bundled_including_mixer(self):
         make_tree(self.www)
         www_bundle.build(self.www, self.out)
         names = sorted(p.name for p in self.out.iterdir())
         self.assertEqual(
             names,
             sorted(p + ".gz" for p in
-                   ("index.html", "status.html", "replays.html", "upgrade.html", "classic.html")),
+                   ("index.html", "status.html", "upgrade.html", "classic.html")),
         )
+        self.assertNotIn("replays.html", www_bundle.PAGES)
 
     def test_deterministic_output(self):
         make_tree(self.www)
@@ -160,7 +161,7 @@ class BundleTests(unittest.TestCase):
             text = self.read_gz(page)
             self.assertNotIn('rel="stylesheet"', text)
             self.assertNotRegex(text, r'<script[^>]*\bsrc=')
-        self.assertEqual(len(list(self.out.glob("*.html.gz"))), 5)
+        self.assertEqual(len(list(self.out.glob("*.html.gz"))), 4)
 
     def test_real_tree_every_page_inlines_the_shared_chrome(self):
         # Every stylesheet link of every real page resolves (a missing one
@@ -172,8 +173,8 @@ class BundleTests(unittest.TestCase):
             pairs[page] = [asset for asset in assets if asset.endswith(".css")]
         for page, sheets in pairs.items():
             self.assertEqual(sheets[:1], ["sd-chrome.css"], page)
-        users = sorted(page for page, sheets in pairs.items() if "replays.css" in sheets)
-        self.assertEqual(users, ["replays.html"])
+        self.assertFalse(any("replays" in sheet for sheets in pairs.values() for sheet in sheets))
+        self.assertFalse(list(REAL_WWW.glob("replays.*")))
 
 
 class SyncTests(unittest.TestCase):

@@ -21,9 +21,9 @@
  * FFT and band-mapping helpers went with it; `git show b4a3914ce^` has them if a
  * future device ever publishes a window again.
  *
- * DOES NOT OWN: the replay manager (replays.js), the device status page
+ * DOES NOT OWN: the device status page
  * (status.js), the shared chrome behaviours (sd-shared.js -- pills, fetch
- * discipline, formatters, token storage and replay waveform renderer; consumed
+ * discipline, formatters, token storage and the waveform renderer; consumed
  * here, never mutated), and anything the firmware decides -- the device is the
  * authority on what a valid config is. The bounds here mirror
  * lib/aius_dsp_config (and scripts/build_config.py) so a mistake is caught
@@ -32,7 +32,7 @@
  * This file is served off the Teensy's SD card. It is deliberately a plain
  * classic script with no imports, no build step, and no shared UI kit -- the
  * device cannot reach a host application's module mounts. Same constraint as
- * replays.js; keep the SD pages looking like one product.
+ * status.js; keep the SD pages looking like one product.
  */
 (() => {
   'use strict';
@@ -1908,7 +1908,7 @@
     if (result.token === 'preset_limit') return PRESET_LIMIT_MESSAGE;
     if (result.token === 'sd_busy') return SD_STORE_FULL;
     if (result.token === 'sd_upload') {
-      return 'the SD volume is busy (replay or upload in flight) or refused the path; retry when the card is idle';
+      return 'the SD volume is busy (an upload or fill in flight) or refused the path; retry when the card is idle';
     }
     if (result.token === 'sd_capacity') return 'the card is full';
     if (result.token === 'sd_auth') return 'the SD auth token was rejected';
@@ -2357,7 +2357,6 @@
     }
     const gate = status.tx_gate && typeof status.tx_gate === 'object' ? status.tx_gate : {};
     if (status.carrier) setFlowEnd('input-source', 'carrier', carrierText(status));
-    else if (gate.replay_running) setFlowEnd('input-source', 'replay', 'input: replay');
     else setFlowEnd('input-source', 'none', 'input: none');
     if (gate.open) setFlowEnd('tx-gate', 'open', 'output: gate open');
     else setFlowEnd('tx-gate', 'dark', 'output: gate dark');

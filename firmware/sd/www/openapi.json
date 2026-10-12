@@ -29,7 +29,7 @@
     "/api/status/brief": {
       "get": {
         "operationId": "getStatusBrief",
-        "description": "Compact status for the editor's flow ends (Phase 4f F3): exactly carrier, state, sample_rate, pipeline_diag.codec_pc, tx_gate.open, tx_gate.replay_running and the five sd_flush keys the editor's pending-versus-saved indicator reads (dirty, held, failures, last_fault, drained), under the full body's names and nesting and from the same sources. Under 512 bytes. GET only; POST answers 405.",
+        "description": "Compact status for the editor's flow ends (Phase 4f F3): exactly carrier, state, sample_rate, pipeline_diag.codec_pc, tx_gate.open and the five sd_flush keys the editor's pending-versus-saved indicator reads (dirty, held, failures, last_fault, drained), under the full body's names and nesting and from the same sources. Under 512 bytes. GET only; POST answers 405.",
         "responses": {
           "200": {
             "description": "Compact status snapshot",
@@ -43,7 +43,7 @@
                       "state": 4,
                       "sample_rate": 48000,
                       "pipeline_diag": { "codec_pc": 1 },
-                      "tx_gate": { "open": 1, "replay_running": 0 },
+                      "tx_gate": { "open": 1 },
                       "sd_flush": { "dirty": 0, "held": false, "failures": 0, "last_fault": "", "drained": true }
                     }
                   }
@@ -283,7 +283,7 @@
         "description": "Read-only view of the measurement loopback session: the capture state machine, the analysis figures once published, and the stimulus floors beside them. The capture is a software tap at the S/PDIF transmit producer - the words the DSP commits to the ring are the words on the wire - so stimulus and capture share one sample grid and the figures are immune to physical clock error by construction (the clock/content ratio surface stays with the physical loop). Reads memory only.",
         "responses": {
           "200": {
-            "description": "The session. `figures` is null until an analysis pass completes; `fail_reason` is \"none\" outside the failed state. The floors are properties of the 16-bit replay stimulus, not of the analysis: THD+N and SNR bottom out near -96 dB, Goertzel harmonic THD stays usable to about -95 dBc, and the -140 dB inter-stage claim is host-proven only - no 16-bit transport can verify it on-device. SNR's harmonic exclusion additionally inherits the harmonic estimate's leakage-limited accuracy (about -90 dB of the subtracted harmonic).",
+            "description": "The session. `figures` is null until an analysis pass completes; `fail_reason` is \"none\" outside the failed state. The floors are properties of the 16-bit U24 render stimulus, not of the analysis: THD+N and SNR bottom out near -96 dB, Goertzel harmonic THD stays usable to about -95 dBc, and the -140 dB inter-stage claim is host-proven only - no 16-bit transport can verify it on-device. SNR's harmonic exclusion additionally inherits the harmonic estimate's leakage-limited accuracy (about -90 dB of the subtracted harmonic).",
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/Measure" },
@@ -350,7 +350,7 @@
     "/api/measure/start": {
       "post": {
         "operationId": "startMeasure",
-        "description": "Arms a capture against a replay vector. Mutating, so it joins the control-route gate: the request needs the X-Aius-SD-Auth token. The natural order is arm first, then POST /api/replays/start - an armed capture tolerates 10 s without audio blocks before the epoch side times it out (2 s once capturing, and a cancelled capture is reclaimed after 1 s more). The capture latches the config generation and the overrun counter at arm and retires to failed if either moves: a config splice or a dropped block inside the window is exactly the seam artifact the loop-coherent stimulus exists to avoid.",
+        "description": "Arms a capture against a measurement vector, whose stimulus the host plays through the U24 (aplay). Mutating, so it joins the control-route gate: the request needs the X-Aius-SD-Auth token. The tool starts one continuous render, waits for tx_gate.open and clock.state tracking, then arms - an armed capture tolerates 10 s without audio blocks before the epoch side times it out (2 s once capturing, and a cancelled capture is reclaimed after 1 s more). The capture latches the config generation and the overrun counter at arm and retires to failed if either moves: a config splice or a dropped block inside the window is exactly the seam artifact the loop-coherent stimulus exists to avoid.",
         "parameters": [{ "$ref": "#/components/parameters/SdAuth" }],
         "requestBody": {
           "required": true,
@@ -475,7 +475,7 @@
     "/api/ota/image": {
       "put": {
         "operationId": "putOtaImage",
-        "description": "One self-contained container chunk, the APPEND_PART protocol the replay upload uses: Content-Range says where the bytes belong in the FILE (a 256-byte header at offset 0 then the payload from 256), the body carries them whole (at most AIUS_OTA_MAX_CHUNK_BYTES = 4096), and the answer states the next file offset, so a dropped connection costs one chunk. The first chunk must carry the whole 256-byte header.",
+        "description": "One self-contained container chunk, the APPEND_PART protocol: Content-Range says where the bytes belong in the FILE (a 256-byte header at offset 0 then the payload from 256), the body carries them whole (at most AIUS_OTA_MAX_CHUNK_BYTES = 4096), and the answer states the next file offset, so a dropped connection costs one chunk. The first chunk must carry the whole 256-byte header.",
         "parameters": [
           { "$ref": "#/components/parameters/SdAuth" },
           {
@@ -505,7 +505,7 @@
             "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
           },
           "409": {
-            "description": "ota_range carries next_offset (resume there, exactly as the replay upload teaches); ota_disarmed / ota_state / ota_digest / ota_signature otherwise.",
+            "description": "ota_range carries next_offset (resume there); ota_disarmed / ota_state / ota_digest / ota_signature otherwise.",
             "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OtaChunkAck" } } }
           },
           "503": {
@@ -748,197 +748,6 @@
         }
       }
     },
-    "/api/replays": {
-      "get": {
-        "operationId": "listReplays",
-        "description": "Bounded listing of /aius/replays on the card: at most AIUS_OPTICAL_APP_INDEX_SCAN_MAX raw reads per request, refused with 503 sd_busy while any SD job owns the volume, and honest when it stops early - either bound (scan cap or response buffer) reports truncated:true with the rows already written intact. Public route (no token). A board without a card answers 200 with the error body shape (pre-cutover behaviour: missing media is reported in-body, not as a failed request).",
-        "responses": {
-          "200": {
-            "description": "The listing, or the in-body sd_unavailable error shape.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "oneOf": [{ "$ref": "#/components/schemas/ReplayList" }, { "$ref": "#/components/schemas/Error" }]
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "sd_busy: an SD job (refill, upload, download, probe) owns the volume; retry. audio_busy: shed while live input owns the transmit ring and the route's admission cost exceeds the ring margin (Phase 4f admission); carries Retry-After: 1; retry.",
-            "headers": { "Retry-After": { "$ref": "#/components/headers/RetryAfter" } },
-            "content": {
-              "application/json": {
-                "schema": { "$ref": "#/components/schemas/Error" },
-                "examples": {
-                  "sd_busy": { "value": { "ok": false, "error": "sd_busy" } },
-                  "audio_busy": { "value": { "ok": false, "error": "audio_busy" } }
-                }
-              }
-            }
-          }
-        }
-      },
-      "delete": {
-        "operationId": "deleteReplay",
-        "description": "Deletes one replay vector by id: <id>.iec when it exists, otherwise <id>.part, never both (a .part beside an .iec is left). The body parser is strict - duplicate or unknown keys refuse. At most three card primitives (two existence checks, one remove), gated on the volume like the listing.",
-        "parameters": [{ "$ref": "#/components/parameters/SdAuth" }],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": false,
-                "required": ["id"],
-                "properties": {
-                  "id": { "type": "string", "description": "Replay id (filename stem under /aius/replays)." }
-                }
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Deleted.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["ok", "deleted"],
-                  "properties": { "ok": { "type": "boolean", "enum": [true] }, "deleted": { "type": "string" } }
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "replay_body: malformed or over-length body.",
-            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
-          },
-          "401": { "$ref": "#/components/responses/Error" },
-          "404": {
-            "description": "replay_not_found.",
-            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
-          },
-          "409": {
-            "description": "replay_active: the selected vector is playing; stop it first.",
-            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
-          },
-          "503": {
-            "description": "sd_busy: an SD job owns the volume; retry.",
-            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
-          }
-        }
-      }
-    },
-    "/api/replays/start": {
-      "post": {
-        "operationId": "startReplay",
-        "description": "Selects a complete .iec vector and starts replay; GET /api/replays/status reports the progression prebuffering -> playing. Refused while a live carrier owns the audio path (its own 409 token, replay_carrier_present, which clears when the carrier goes away rather than when the request changes).",
-        "parameters": [{ "$ref": "#/components/parameters/SdAuth" }],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": false,
-                "required": ["id"],
-                "properties": {
-                  "id": {
-                    "type": "string",
-                    "description": "Replay id (filename stem under /aius/replays, .iec required)."
-                  },
-                  "loop": { "type": "boolean", "description": "Restart at EOF instead of stopping; default false." }
-                }
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Selected; prebuffering.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["ok", "state", "id"],
-                  "properties": {
-                    "ok": { "type": "boolean", "enum": [true] },
-                    "state": { "type": "string", "enum": ["prebuffering"] },
-                    "id": { "type": "string" }
-                  }
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "replay_body: malformed body, or no card mounted.",
-            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
-          },
-          "401": { "$ref": "#/components/responses/Error" },
-          "404": {
-            "description": "replay_not_found.",
-            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
-          },
-          "409": {
-            "description": "replay_carrier_present (live input owns the path) or replay_start (already active / start refused).",
-            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
-          },
-          "503": {
-            "description": "fill_busy: the web-cache fill walk is incomplete (GET /api/status www_cache.present true and www_cache.fill_complete false); no replay starts until it completes, since a replay during the walk loses the card at every file boundary (Phase 4g). Never on a fitment without the cache. Carries Retry-After; retry.",
-            "headers": { "Retry-After": { "$ref": "#/components/headers/RetryAfter" } },
-            "content": {
-              "application/json": {
-                "schema": { "$ref": "#/components/schemas/Error" },
-                "examples": {
-                  "fill_busy": { "value": { "ok": false, "error": "fill_busy" } }
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/replays/stop": {
-      "post": {
-        "operationId": "stopReplay",
-        "description": "Stops the running replay (idempotent). The clock hands back to the input; with no carrier the board returns to its boot-idle digital silence, counted in the transmit ring's underruns.",
-        "parameters": [{ "$ref": "#/components/parameters/SdAuth" }],
-        "responses": {
-          "200": {
-            "description": "Stopped.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["ok", "state"],
-                  "properties": {
-                    "ok": { "type": "boolean", "enum": [true] },
-                    "state": { "type": "string", "enum": ["stopped"] }
-                  }
-                }
-              }
-            }
-          },
-          "401": { "$ref": "#/components/responses/Error" }
-        }
-      }
-    },
-    "/api/replays/status": {
-      "get": {
-        "operationId": "getReplayStatus",
-        "description": "The replay service's own record - selection, progression, queue depth and fault counters. Public route. State transitions also surface as type-3 events on /api/events, so a replay that ends by itself is never an unexplained 'stopped'.",
-        "responses": {
-          "200": {
-            "description": "Replay status document.",
-            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ReplayStatus" } } }
-          }
-        }
-      }
-    },
     "/api/config/public": {
       "put": {
         "operationId": "putPublicConfig",
@@ -1048,7 +857,7 @@
       },
       "put": {
         "operationId": "putSdResource",
-        "description": "Atomically replaces a file under www/. The body is streamed directly to SD (so it needs a Content-Length; a chunked body is refused) and is limited by the card and uint32 Content-Length, not firmware RAM. Content-Range is ignored on this route: unlike the replay upload there is no chunked resume, one request is the whole file. The 200 is emitted at accept, once the body is in the write-behind store, with or without a card; the card write follows (poll sd_flush.dirty). Refusal order is fixed: the *config.json write guard outranks authentication, which outranks media state.",
+        "description": "Atomically replaces a file under www/. The body is streamed directly to SD (so it needs a Content-Length; a chunked body is refused) and is limited by the card and uint32 Content-Length, not firmware RAM. Content-Range is ignored on this route: there is no chunked resume, one request is the whole file. The 200 is emitted at accept, once the body is in the write-behind store, with or without a card; the card write follows (poll sd_flush.dirty). Refusal order is fixed: the *config.json write guard outranks authentication, which outranks media state.",
         "requestBody": { "$ref": "#/components/requestBodies/RawFile" },
         "parameters": [{ "$ref": "#/components/parameters/SdAuth" }],
         "responses": {
@@ -1388,10 +1197,9 @@
           "tx_gate": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["open", "replay_running"],
+            "required": ["open"],
             "properties": {
-              "open": { "type": "integer", "minimum": 0, "maximum": 1 },
-              "replay_running": { "type": "integer", "minimum": 0, "maximum": 1 }
+              "open": { "type": "integer", "minimum": 0, "maximum": 1 }
             }
           }
         }
@@ -1791,7 +1599,7 @@
           },
           "vector_id": {
             "type": ["string", "null"],
-            "description": "The replay vector the session was armed against; null before any session."
+            "description": "The measurement vector the session was armed against; null before any session."
           },
           "captured_frames": { "type": "integer", "minimum": 0, "maximum": 16384 },
           "capture_frames": { "type": "integer", "const": 16384 },
@@ -1816,7 +1624,7 @@
             "type": "object",
             "additionalProperties": false,
             "required": ["thd_n_db", "snr_db", "thd_dbc"],
-            "description": "Resolvable floors of the 16-bit replay stimulus, stated beside the figures they bound. A figure at its floor means \"at least this good\". The -140 dB inter-stage requantisation claim is host-proven and deliberately absent here: no 16-bit transport can verify it on-device.",
+            "description": "Resolvable floors of the 16-bit U24 render stimulus, stated beside the figures they bound. A figure at its floor means \"at least this good\". The -140 dB inter-stage requantisation claim is host-proven and deliberately absent here: no 16-bit transport can verify it on-device.",
             "properties": {
               "thd_n_db": { "type": "number", "const": -96.0 },
               "snr_db": { "type": "number", "const": 96.0 },
@@ -1876,7 +1684,7 @@
           "id": {
             "type": "string",
             "pattern": "^[A-Za-z0-9_-]+$",
-            "description": "The replay vector to measure against (the corpus under tools/measure_vectors, uploaded via PUT /sd/replays/{id})."
+            "description": "The measurement vector to measure against (the corpus under tools/measure_vectors, played through the U24 by the host tool)."
           },
           "f0_l": {
             "type": "integer",
@@ -2268,7 +2076,7 @@
       "SdDiag": {
         "type": "object",
         "additionalProperties": false,
-        "description": "The storage service's own record: lifetime job counters, the SD adapter's totals, live ownership of the volume, live transfer progress, and the last latched failure. Diagnostic only, and free to read - every value is already latched, so serving it spends no SD primitive. It covers the storage service's job stream only; the replay refill runs on its own job and is reported in replay_diag.",
+        "description": "The storage service's own record: lifetime job counters, the SD adapter's totals, live ownership of the volume, live transfer progress, and the last latched failure. Diagnostic only, and free to read - every value is already latched, so serving it spends no SD primitive.",
         "required": [
           "http_jobs",
           "root_jobs",
@@ -2357,7 +2165,7 @@
           "longest_primitive_us": {
             "type": "integer",
             "minimum": 0,
-            "description": "Longest single SD primitive since boot, across every job and every owner. It carries no attribution; replay_diag.longest_action is the counterpart that names the action."
+            "description": "Longest single SD primitive since boot, across every job and every owner. It carries no attribution."
           },
           "sd_mode": {
             "type": "string",
@@ -2421,7 +2229,7 @@
           "job_kind": {
             "type": "integer",
             "minimum": 0,
-            "description": "AiusSdJobKind of the running job (0 probe, 1 config load, 2 usage refresh, 3 upload, 4 download, 5 delete, 6 replay refill)."
+            "description": "AiusSdJobKind of the running job (0 probe, 1 config load, 2 usage refresh, 3 upload, 4 download, 5 delete, 7 cache fill; 6 is retired and never reused)."
           },
           "job_state": {
             "type": "integer",
@@ -2540,97 +2348,6 @@
           }
         }
       },
-      "ReplayDiag": {
-        "type": "object",
-        "additionalProperties": false,
-        "description": "The replay refill job's own diagnostics, served BESIDE sd_diag rather than inside it. The refill runs on its own job, not the storage service's, so its failures never reach that service's last_failure: before this object existed a refill fault showed only as sd_diag.driver_faults ticking while last_failure described something else entirely. It also times its own primitives so the worst one keeps the action that caused it.",
-        "required": [
-          "jobs",
-          "faults",
-          "mounts",
-          "mount_reuses",
-          "consecutive_faults",
-          "last_primitive_us",
-          "longest_primitive_us",
-          "longest_action",
-          "last_fault",
-          "last_fault_phase",
-          "last_fault_action",
-          "last_fault_driver",
-          "last_fault_offset_bytes",
-          "last_fault_loops",
-          "last_fault_at_ms"
-        ],
-        "properties": {
-          "jobs": { "type": "integer", "minimum": 0, "description": "Refill jobs started." },
-          "faults": { "type": "integer", "minimum": 0, "description": "Refill jobs that ended in FAIL." },
-          "mounts": {
-            "type": "integer",
-            "minimum": 0,
-            "description": "Mount primitives the refill itself performed. Equal to jobs is the signature of a per-job remount, which is how the 1.02 s stall this object was built to explain was identified."
-          },
-          "mount_reuses": {
-            "type": "integer",
-            "minimum": 0,
-            "description": "Mount requests the adapter answered from its cached mount. Adapter-global rather than replay-scoped: every consumer's mounts share one cache, and a per-job attribution would claim a precision this counter does not have."
-          },
-          "consecutive_faults": {
-            "type": "integer",
-            "minimum": 0,
-            "description": "Consecutive refill faults the replay service is holding. A single fault is survivable; reaching the service's limit stops the replay, which is the one ending an operator cannot infer from a stopped replay alone."
-          },
-          "last_primitive_us": {
-            "type": "integer",
-            "minimum": 0,
-            "description": "Duration of the refill's most recent SD primitive, in microseconds, timed around its own call into the adapter."
-          },
-          "longest_primitive_us": {
-            "type": "integer",
-            "minimum": 0,
-            "description": "Longest refill primitive, kept together with longest_action so the worst reading names the card action that produced it."
-          },
-          "longest_action": {
-            "type": "integer",
-            "minimum": 0,
-            "description": "AiusSdActionKind of that longest primitive (firmware/lib/aius_sd/include/aius_sd.h)."
-          },
-          "last_fault": {
-            "type": "integer",
-            "minimum": 0,
-            "description": "AiusSdFault of the last failed refill, same encoding as sd_diag.last_failure.fault."
-          },
-          "last_fault_phase": {
-            "type": "integer",
-            "minimum": 0,
-            "description": "AiusSdPhase it landed in - which primitive failed."
-          },
-          "last_fault_action": {
-            "type": "integer",
-            "minimum": 0,
-            "description": "AiusSdActionKind that was in flight at the fault."
-          },
-          "last_fault_driver": {
-            "type": "integer",
-            "minimum": 0,
-            "description": "The driver's own fault word for it."
-          },
-          "last_fault_offset_bytes": {
-            "type": "integer",
-            "minimum": 0,
-            "description": "Byte offset within the replay file the fault landed at."
-          },
-          "last_fault_loops": {
-            "type": "integer",
-            "minimum": 0,
-            "description": "Which lap of a looping replay it landed on."
-          },
-          "last_fault_at_ms": {
-            "type": "integer",
-            "minimum": 0,
-            "description": "Board uptime in milliseconds at that fault."
-          }
-        }
-      },
       "AudioDiag": {
         "type": "object",
         "additionalProperties": false,
@@ -2643,7 +2360,6 @@
           "ingress_dropped_words",
           "ingress_drop_overflow",
           "ingress_drop_missing_live",
-          "ingress_drop_short_replay",
           "source_changes",
           "source_flushes",
           "source_flush_words",
@@ -2718,15 +2434,10 @@
             "minimum": 0,
             "description": "Gaps recorded because the live source produced no audio block for the slot."
           },
-          "ingress_drop_short_replay": {
-            "type": "integer",
-            "minimum": 0,
-            "description": "Gaps recorded because a replay refill delivered fewer than the 256 words a chunk needs, so the reserved slot was cancelled instead of committed."
-          },
           "source_changes": {
             "type": "integer",
             "minimum": 0,
-            "description": "Times the producer recorded a change of audio source (optical carrier to replay, or back)."
+            "description": "Times the gate service saw an undebounced carrier lock-gained or lock-lost edge (a dark-input blip adds 2)."
           },
           "source_flushes": {
             "type": "integer",
@@ -2768,7 +2479,7 @@
           "service_requested_resets": {
             "type": "integer",
             "minimum": 0,
-            "description": "Pipeline resets the service performed because the epoch asked for one (a replay start, or a debounced carrier relock)."
+            "description": "Pipeline resets the service performed because the epoch asked for one (a debounced carrier relock)."
           },
           "service_max_us": {
             "type": "integer",
@@ -2939,7 +2650,6 @@
           "tx_missed_fill_flexspi2_intr",
           "tx_missed_fill_flexspi2_sts1",
           "gate_open_target_frames",
-          "gate_open_replay_target_frames",
           "gate_open_trims",
           "gate_open_trimmed_frames",
           "gate_open_last_trim_at_ms",
@@ -2996,13 +2706,13 @@
           },
           "master": {
             "type": "string",
-            "enum": ["input", "output"],
-            "description": "\"input\" while the transmitter follows the carrier; \"output\" while the board's own clock is master, which is the replay case."
+            "enum": ["input"],
+            "description": "Constant \"input\": the transmitter always follows the carrier. Kept for client compatibility."
           },
           "state": {
             "type": "string",
-            "enum": ["replay", "fault", "unlocked", "unsupported", "tracking", "refused", "acquiring"],
-            "description": "First match wins, in this order: \"replay\" the output is master; \"fault\" a clock apply failed and the episode has not cleared; \"unlocked\" no carrier is locked; \"unsupported\" the carrier's rate is outside the supported set (32000, 44100, 48000); then with a settled carrier \"tracking\" when the plan is applied and \"refused\" when it is not; \"acquiring\" while the tracker is still settling."
+            "enum": ["fault", "unlocked", "unsupported", "tracking", "refused", "acquiring"],
+            "description": "First match wins, in this order: \"fault\" a clock apply failed and the episode has not cleared; \"unlocked\" no carrier is locked; \"unsupported\" the carrier's rate is outside the supported set (32000, 44100, 48000); then with a settled carrier \"tracking\" when the plan is applied and \"refused\" when it is not; \"acquiring\" while the tracker is still settling."
           },
           "rate_changes": {
             "type": "integer",
@@ -3026,12 +2736,12 @@
           },
           "fill_offset_millihz": {
             "type": "integer",
-            "description": "The fill loop's signed offset: the composed output-rate target minus the centre (the carrier-estimate target), in millihertz, clamped to +/-900. Positive speeds the output up (the ring is filling). Updated every rate-service pass; 0 before the first lock and after a reset of the loop (accept, full apply, replay, carrier loss)."
+            "description": "The fill loop's signed offset: the composed output-rate target minus the centre (the carrier-estimate target), in millihertz, clamped to +/-900. Positive speeds the output up (the ring is filling). Updated every rate-service pass; 0 before the first lock and after a reset of the loop (accept, full apply, carrier loss)."
           },
           "fill_setpoint_frames": {
             "type": "integer",
             "minimum": 0,
-            "description": "This lock's fill setpoint in frames: the phase-corrected occupancy measured inside the gate open's masked section, 384 - phi*128 (257 to 384). When a period boundary was pending the open pads one more half, which the late ISR takes on the unmask, so the setpoint is 384 - phi'*128 in the same range. Fixed for the lock; a governor trim leaves it valid. 0 = no live open yet, after carrier loss or a rate change, and for a replay open."
+            "description": "This lock's fill setpoint in frames: the phase-corrected occupancy measured inside the gate open's masked section, 384 - phi*128 (257 to 384). When a period boundary was pending the open pads one more half, which the late ISR takes on the unmask, so the setpoint is 384 - phi'*128 in the same range. Fixed for the lock; a governor trim leaves it valid. 0 = no live open yet, after carrier loss or a rate change."
           },
           "fill_open_boundary_pending": {
             "type": "boolean",
@@ -3137,11 +2847,6 @@
             "minimum": 0,
             "description": "The compile-time transmit-ring occupancy every closed-to-open gate edge sets the ring to (e2e-latency Phase 3 R1; output-jitter Phase F). The edge executes at the producer's pre-commit instant and trims down or pads up with silence, so the standing pre-commit floor of a session is exactly this constant rather than the phase luck of the first burst; 256 is two blocks of service-jitter margin beyond the in-flight block, the deployed env runs 128."
           },
-          "gate_open_replay_target_frames": {
-            "type": "integer",
-            "minimum": 0,
-            "description": "The compile-time transmit-ring occupancy a gate-open edge sets when the source is a replay (2026-09-03). A replay's producer is the SD refill job, whose OPEN_READ / READ primitives (8.3 / 6.3 ms measured) block the epoch two checkpoints before AUDIO enqueues, so the live target's one block of margin lost that race at replay start about one run in three. Replay has no lip-sync to protect, so its floor is sized to the primitive: the deployed env runs 768 (16 ms). A replay start therefore advances gate_open_padded_frames by up to this value, not gate_open_target_frames; a replay-to-live relock trims back to the live target."
-          },
           "gate_open_trims": {
             "type": "integer",
             "minimum": 0,
@@ -3205,7 +2910,7 @@
           "fill_level_q4": {
             "type": "integer",
             "nullable": true,
-            "description": "Phase-corrected transmit-ring occupancy, the last valid 192,000-frame window statistic, in 1/16 frame (level + 256 minus the DMA read offset in frames, minimum per 12,000-frame sub-window, mean of the non-excluded minima). Signed. null before the first valid window, after a reset (gate close, governor trim, carrier loss, replay block) and after a closed window with fewer than 8 valid sub-windows, until the next valid window closes. Observed only; nothing acts on it."
+            "description": "Phase-corrected transmit-ring occupancy, the last valid 192,000-frame window statistic, in 1/16 frame (level + 256 minus the DMA read offset in frames, minimum per 12,000-frame sub-window, mean of the non-excluded minima). Signed. null before the first valid window, after a reset (gate close, governor trim, carrier loss) and after a closed window with fewer than 8 valid sub-windows, until the next valid window closes. Observed only; nothing acts on it."
           },
           "fill_subwindow_spread_frames": {
             "type": "integer",
@@ -3236,7 +2941,7 @@
             "type": "integer",
             "minimum": 0,
             "maximum": 15,
-            "description": "Exclusion-reason bits ORed over the last closed window's sub-windows: 1 underrun, 2 production stall, 4 missed fill, 8 no sample. 0 after a sensor reset (gate close, governor trim, carrier loss, replay block)."
+            "description": "Exclusion-reason bits ORed over the last closed window's sub-windows: 1 underrun, 2 production stall, 4 missed fill, 8 no sample. 0 after a sensor reset (gate close, governor trim, carrier loss)."
           },
           "underrun_episodes": {
             "type": "array",
@@ -3341,7 +3046,7 @@
           "spdif_out_master": {
             "type": "integer",
             "enum": [0, 1],
-            "description": "1 when the transmitter's DMA interrupt paces the graph instead (replay clock handover)."
+            "description": "1 when the transmitter's DMA interrupt paces the graph instead."
           },
           "tx_fills": {
             "type": "integer",
@@ -3499,7 +3204,7 @@
           "rx_dropped_halves": {
             "type": "integer",
             "minimum": 0,
-            "description": "Lifetime S/PDIF receive DMA halves dropped because the AudioStream block pair was still unconsumed or unallocated (aius_spdif_rx.h). Advances in practice only while replay drives the graph with the receiver's DPLL unlocked, when the receive DMA storms at several times the block rate; the retained vendor ISR wrote those halves past the block pair instead (RX pool corruption under replay, 2026-09-03)."
+            "description": "Lifetime S/PDIF receive DMA halves dropped because the AudioStream block pair was still unconsumed or unallocated (aius_spdif_rx.h). Advances in practice only with the receiver's DPLL unlocked, when the receive DMA storms at several times the block rate."
           },
           "pool_blocks_used": {
             "type": "integer",
@@ -3823,90 +3528,6 @@
           "flexspi2_sts1": {
             "type": "string",
             "description": "FLEXSPI2_STS1 raw word read after the last stalled epoch, 8-digit lowercase hex. AHBCMDERRID (bits 3:0) names the AHB buffer/master whose command errored and AHBCMDERRCODE (bits 11:8) the error class - the register that says WHO issued the timing-out PSRAM access."
-          }
-        }
-      },
-      "ReplayList": {
-        "type": "object",
-        "additionalProperties": false,
-        "description": "GET /api/replays listing. Bounded enumeration of /aius/replays: complete vectors (.iec) and in-flight uploads (.part) only; other files are skipped silently. truncated:true means either the scan cap or the response buffer stopped the listing early - the rows present are correct, the set is incomplete.",
-        "required": ["ok", "files", "truncated"],
-        "properties": {
-          "ok": { "type": "boolean", "enum": [true] },
-          "files": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "additionalProperties": false,
-              "required": ["id", "bytes", "duration_seconds", "upload_next_offset", "complete", "active"],
-              "properties": {
-                "id": { "type": "string", "description": "Filename stem under /aius/replays." },
-                "bytes": {
-                  "type": "integer",
-                  "minimum": 0,
-                  "description": "Current on-card size (.part: bytes staged so far)."
-                },
-                "duration_seconds": {
-                  "type": "number",
-                  "nullable": true,
-                  "description": "bytes / 192,000 (48 kHz stereo s16 IEC61937 wire rate) for a complete vector; null for a .part."
-                },
-                "upload_next_offset": {
-                  "type": "integer",
-                  "minimum": 0,
-                  "description": "Resume offset for a chunked upload - equals bytes; the uploader appends from here."
-                },
-                "complete": { "type": "boolean", "description": "true for .iec, false for .part." },
-                "active": {
-                  "type": "boolean",
-                  "description": "true when this complete vector is the replay service's current selection."
-                }
-              }
-            }
-          },
-          "truncated": { "type": "boolean" }
-        }
-      },
-      "ReplayStatus": {
-        "type": "object",
-        "additionalProperties": false,
-        "description": "GET /api/replays/status. The replay service's live record. state is the portable service's own vocabulary; stop_reason says who stopped it (carrier = a live input reclaimed the path, request = POST /api/replays/stop, fault = the service stopped itself) and reads none while anything other than stopped.",
-        "required": [
-          "ok",
-          "state",
-          "stop_reason",
-          "id",
-          "file_bytes",
-          "offset_bytes",
-          "duration_seconds",
-          "loop",
-          "loops_completed",
-          "queue_words",
-          "watermark_words",
-          "underruns",
-          "input_class",
-          "decoder_errors",
-          "refill_faults"
-        ],
-        "properties": {
-          "ok": { "type": "boolean", "enum": [true] },
-          "state": { "type": "string", "enum": ["stopped", "prebuffering", "playing", "eof", "error"] },
-          "stop_reason": { "type": "string", "enum": ["none", "carrier", "request", "fault"] },
-          "id": { "type": "string", "description": "Current selection; empty when none." },
-          "file_bytes": { "type": "integer", "minimum": 0 },
-          "offset_bytes": { "type": "integer", "minimum": 0, "description": "Read cursor into the vector." },
-          "duration_seconds": { "type": "number", "minimum": 0 },
-          "loop": { "type": "boolean" },
-          "loops_completed": { "type": "integer", "minimum": 0 },
-          "queue_words": { "type": "integer", "minimum": 0, "description": "IEC words queued toward the decoder." },
-          "watermark_words": { "type": "integer", "minimum": 0, "description": "Queue high-water since selection." },
-          "underruns": { "type": "integer", "minimum": 0, "description": "Refill starvation events since selection." },
-          "input_class": { "type": "string", "enum": ["dts", "pcm", "unknown"] },
-          "decoder_errors": { "type": "integer", "minimum": 0 },
-          "refill_faults": {
-            "type": "integer",
-            "minimum": 0,
-            "description": "SD refill job faults; the replay_diag object on GET /api/status carries the fault detail."
           }
         }
       },
@@ -4266,14 +3887,14 @@
             "minItems": 8,
             "maxItems": 8,
             "items": { "type": "integer", "minimum": 0 },
-            "description": "Phase 4f: 503 audio_busy answers per admission class, in order: full status, brief status, meters, events, settings PUT parse, directory listing, SD start (DMA), SD start (FIFO). Reset by POST /api/clear."
+            "description": "Phase 4f: 503 audio_busy answers per admission class, in order: full status, brief status, meters, events, settings PUT parse, reserved (directory listing class retired in Phase 4i; always 0), SD start (DMA), SD start (FIFO). Reset by POST /api/clear."
           },
           "http_class_cost_us": {
             "type": "array",
             "minItems": 8,
             "maxItems": 8,
             "items": { "type": "integer", "minimum": 0, "maximum": 65535 },
-            "description": "Phase 4f: each admission class's current cost (us), in http_shed_class's order: the bucketed maximum of the longest stretch between yield points over the last 64 to 79 samples or about 8 to 10 s, whichever is shorter (a bucket closes after 16 samples or 2,000 ms; a shed adds no sample, so a shed class's cost still ages), or the declared seed until the first measurement and again once every bucket has aged out empty. Kept across POST /api/clear (F8)."
+            "description": "Phase 4f: each admission class's current cost (us), in http_shed_class's order: the bucketed maximum of the longest stretch between yield points over the last 64 to 79 samples or about 8 to 10 s, whichever is shorter (a bucket closes after 16 samples or 2,000 ms; a shed adds no sample, so a shed class's cost still ages), or the declared seed until the first measurement and again once every bucket has aged out empty. Slot 5 is reserved (directory listing class retired in Phase 4i; cost reads its seed). Kept across POST /api/clear (F8)."
           },
           "status_render_failures": {
             "type": "integer",
@@ -4301,7 +3922,7 @@
             "type": "integer",
             "minimum": 0,
             "maximum": 10,
-            "description": "Runtime checkpoint persisted before the last service call: 0 reset-capture, 1 usb-rx, 2 usb-tx, 3 metrics, 4 network, 5 http, 6 udp, 7 replay, 8 sd, 9 audio, 10 epoch-complete. Only 10 marks a completed epoch. After a watchdog reset this names the service that stalled. The audio checkpoint was inserted at 9 by output-jitter Phase B and this vocabulary did not follow it until 2026-08-16; the encoder has always bounded the field against AIUS_BOOT_CHECKPOINT_EPOCH_COMPLETE, which is 10."
+            "description": "Runtime checkpoint persisted before the last service call: 0 reset-capture, 1 usb-rx, 2 usb-tx, 3 metrics, 4 network, 5 http, 6 udp, 7 service, 8 sd, 9 audio, 10 epoch-complete. Only 10 marks a completed epoch. After a watchdog reset this names the service that stalled. The audio checkpoint was inserted at 9 by output-jitter Phase B and this vocabulary did not follow it until 2026-08-16; the encoder has always bounded the field against AIUS_BOOT_CHECKPOINT_EPOCH_COMPLETE, which is 10."
           },
           "network_generation": {
             "type": "integer",
@@ -4349,7 +3970,6 @@
           "sd_diag": { "$ref": "#/components/schemas/SdDiag" },
           "sd_flush": { "$ref": "#/components/schemas/SdFlush" },
           "www_cache": { "$ref": "#/components/schemas/WwwCache" },
-          "replay_diag": { "$ref": "#/components/schemas/ReplayDiag" },
           "audio_diag": { "$ref": "#/components/schemas/AudioDiag" },
           "clock": { "$ref": "#/components/schemas/Clock" },
           "clk_regs": { "$ref": "#/components/schemas/ClkRegs" },
@@ -4738,8 +4358,8 @@
       "TxGate": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["open", "carrier_locked", "replay_running"],
-        "description": "The optical transmit gate's latched per-epoch decision and inputs, evaluated once per epoch at the replay checkpoint and never re-derived at request time (so this JSON and the physical pad cannot disagree within one poll). Policy: open iff carrier_locked or replay_running. On the bench build the actuator is pad 14's mux (dark = GPIO driven low, the same electrical state the carrier board's TX_ENABLE gate produces); an unavoidable ~ms silence-carrier blip exists at static construction ~300 ms after every reset, before setup()'s dark-set -- closed from setup() onward. In recovery-safe mode the gate stays frozen dark.",
+        "required": ["open", "carrier_locked"],
+        "description": "The optical transmit gate's latched per-epoch decision and inputs, evaluated once per epoch at the service checkpoint and never re-derived at request time (so this JSON and the physical pad cannot disagree within one poll). Policy: open iff carrier_locked. On the bench build the actuator is pad 14's mux (dark = GPIO driven low, the same electrical state the carrier board's TX_ENABLE gate produces); an unavoidable ~ms silence-carrier blip exists at static construction ~300 ms after every reset, before setup()'s dark-set -- closed from setup() onward. In recovery-safe mode the gate stays frozen dark.",
         "properties": {
           "open": {
             "type": "integer",
@@ -4750,11 +4370,6 @@
             "type": "integer",
             "enum": [0, 1],
             "description": "The latched S/PDIF receiver PLL lock at the last evaluation."
-          },
-          "replay_running": {
-            "type": "integer",
-            "enum": [0, 1],
-            "description": "The latched replay term: source is SWITCHING_TO_REPLAY (prebuffering counts, giving the sink lock lead time) or REPLAY. An EOF'd replay keeps this 1 until stopped or displaced by a carrier -- the accepted policy residue."
           }
         }
       },
@@ -5014,13 +4629,13 @@
           "uptime_ms": { "type": "integer" },
           "type": {
             "type": "integer",
-            "description": "Allocated once, never renumbered or reused; a reader must ignore a value it does not know. 1 state (S/PDIF lock or pipeline classification moved), 2 test tone toggled, 3 replay stopped by itself, 4 audio overruns, 5 datagrams that failed decode, 6 UDP service calls over budget, 7 config parse failed, 8 network stack restarted, 9 DHCP lease bound, 10 retained watchdog early-reset count, 11 accepted live nominal rate, 12 refused-rate episode, 13 failed clock apply, 14 gate-open underrun episode (posted when it ends), 15 latency-governor trim, 16 accepted same-nominal PLL trim, 17 missed transmit fills, 18 a compressed access unit refused by its own syncframe CRC and replaced by silence, 19 a pending preset or www entry dropped after a chip CRC fault (AIUS_EVENT_SD_FLUSH_CRC_DROP; counted in sd_flush.crc_drops, the card's older file returns at the next refill).",
+            "description": "Allocated once, never renumbered or reused; a reader must ignore a value it does not know. 1 state (S/PDIF lock or pipeline classification moved), 2 test tone toggled, 3 retired (formerly a replay stopping by itself; never reused), 4 audio overruns, 5 datagrams that failed decode, 6 UDP service calls over budget, 7 config parse failed, 8 network stack restarted, 9 DHCP lease bound, 10 retained watchdog early-reset count, 11 accepted live nominal rate, 12 refused-rate episode, 13 failed clock apply, 14 gate-open underrun episode (posted when it ends), 15 latency-governor trim, 16 accepted same-nominal PLL trim, 17 missed transmit fills, 18 a compressed access unit refused by its own syncframe CRC and replaced by silence, 19 a pending preset or www entry dropped after a chip CRC fault (AIUS_EVENT_SD_FLUSH_CRC_DROP; counted in sd_flush.crc_drops, the card's older file returns at the next refill).",
             "minimum": 1
           },
           "state": { "type": "integer" },
           "detail": {
             "type": "integer",
-            "description": "Type-specific. 2: 1 running / 0 stopped. 3: the replay stop reason. 4, 5, 6, 9, 10: the counter's advance since the previous epoch, clamped to 65535. 7: the AiusConfigErrorCode. 8: the AiusNetFault that caused the restart. 11: the accepted rate in Hz. 12: the measured rate in Hz, or 0 for an unsupported decoded block. 13: the AiusClockApplyResult. 14: the episode's substituted frames, saturated to 65535 (its start and duration are in clock.underrun_episodes). 15: the frames that trim dropped. 16: |target - nominal| in millihertz, saturated; the sign is clock.trim_ppm on the next status read. 17: missed fills since the previous post. 18: the rejected frame's byte length (64-3840 for AC-3), which is what names the unit against a capture.",
+            "description": "Type-specific. 2: 1 running / 0 stopped. 3: retired. 4, 5, 6, 9, 10: the counter's advance since the previous epoch, clamped to 65535. 7: the AiusConfigErrorCode. 8: the AiusNetFault that caused the restart. 11: the accepted rate in Hz. 12: the measured rate in Hz, or 0 for an unsupported decoded block. 13: the AiusClockApplyResult. 14: the episode's substituted frames, saturated to 65535 (its start and duration are in clock.underrun_episodes). 15: the frames that trim dropped. 16: |target - nominal| in millihertz, saturated; the sign is clock.trim_ppm on the next status read. 17: missed fills since the previous post. 18: the rejected frame's byte length (64-3840 for AC-3), which is what names the unit against a capture.",
             "minimum": 0
           }
         }

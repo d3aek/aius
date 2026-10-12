@@ -3,8 +3,8 @@
 
 Gate 5 of aius-sample-rate-following.md (lines 596-598) feeds encoded 44.1 kHz
 AC-3 INTO the board's S/PDIF receiver and requires carrier, decoder and output
-nominal rates to agree with no mismatch or refusal. The board's own replay is
-its output side, so the stimulus has to come from the host: this script encodes
+nominal rates to agree with no mismatch or refusal. The board only produces
+output, so the stimulus has to come from the host: this script encodes
 a known tone programme with FFmpeg's native `ac3` encoder, muxes it with
 FFmpeg's `spdif` muxer exactly as tools/latency/bench.py does (`-c:a ac3`, then
 `-f spdif`), and wraps the resulting 16-bit little-endian wire words as a
@@ -60,7 +60,7 @@ PA = 0xF872
 PB = 0x4E1F
 AC3_DATA_TYPE = 1
 
-# Bitrates pinned as in generate.sh (stereo) and bench.py / replay_samples
+# Bitrates pinned as in generate.sh (stereo) and bench.py / iec_fixtures
 # (5.1) so the stream does not drift with FFmpeg's defaults.
 BITRATE = {"tone": "192k", "surround51_ident": "448k"}
 # The channel-identity programme of the corpus's surround51_ident vector: FL

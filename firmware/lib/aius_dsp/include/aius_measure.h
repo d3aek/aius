@@ -233,7 +233,7 @@ AiusStatus aius_measure_release(AiusMeasureCapture *c);
 /* The published figures. Amplitudes are dBFS re AIUS_DSP_SAMPLE_MAX (the
  * 24-bit full scale the tap copies); ratios are dB re the fitted fundamental.
  * Resolvable floors are a property of the STIMULUS, not of this struct: a
- * 16-bit replay vector bottoms THD+N/SNR at ~-93..-96 dB and Goertzel THD
+ * 16-bit vector bottoms THD+N/SNR at ~-93..-96 dB and Goertzel THD
  * stays usable to ~-95 dBc; the -140 dB inter-stage floor is not verifiable
  * on-device by any 16-bit transport and stays host-proven. The HTTP surface
  * states the floor beside each figure. */

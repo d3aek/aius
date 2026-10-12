@@ -44,8 +44,6 @@ typedef struct {
 	bool serializers_fit;
 	AiusOpticalAppStoreResult public_store;
 	AiusOpticalAppStoreResult dsp_store;
-	AiusOpticalAppReplayResult replay_start_result;
-	AiusOpticalAppReplayResult replay_delete_result;
 	size_t usb_payload_length;
 	char usb_payload[AIUS_OPTICAL_APP_USB_PAYLOAD_STORAGE + 8u];
 	uint32_t upload_id;
@@ -61,8 +59,6 @@ typedef struct {
 	char log[LOG_ENTRIES][LOG_STORAGE];
 	size_t log_count;
 	uint32_t last_cursor;
-	char last_replay_id[AIUS_OPTICAL_APP_REPLAY_ID_STORAGE];
-	bool last_replay_loop;
 	bool test_running;
 	size_t stored_length;
 	unsigned reboots;
@@ -74,7 +70,7 @@ typedef struct {
 
 	/* What the last measure_start carried, and whether to accept it. */
 	bool measure_start_result;
-	char last_measure_id[AIUS_OPTICAL_APP_REPLAY_ID_STORAGE];
+	char last_measure_id[AIUS_OPTICAL_APP_VECTOR_ID_STORAGE];
 	uint32_t last_measure_f0_l;
 	uint32_t last_measure_f0_r;
 	uint32_t last_measure_probes[AIUS_OPTICAL_APP_MEASURE_PROBES_MAX];
@@ -213,18 +209,6 @@ static size_t fake_write_meters(void *context, uint8_t *body, size_t capacity)
 	return fake_serialize((Fake *)context, "meters", body, capacity);
 }
 
-static size_t fake_write_replay_status(void *context, uint8_t *body,
-                                       size_t capacity)
-{
-	return fake_serialize((Fake *)context, "replay_status", body, capacity);
-}
-
-static size_t fake_write_replay_list(void *context, uint8_t *body,
-                                     size_t capacity)
-{
-	return fake_serialize((Fake *)context, "replay_list", body, capacity);
-}
-
 static AiusOpticalAppStoreResult fake_store_public_config(void *context,
                                                           const uint8_t *body,
                                                           size_t length)
@@ -278,32 +262,6 @@ static AiusOpticalAppDirResult fake_read_directory(void *context,
 		batch->count++;
 	}
 	return AIUS_OPTICAL_APP_DIR_OK;
-}
-
-static AiusOpticalAppReplayResult fake_replay_start(void *context,
-                                                    const char *id, bool loop)
-{
-	Fake *fake = (Fake *)context;
-	record(fake, "replay_start");
-	snprintf(fake->last_replay_id, sizeof(fake->last_replay_id), "%s", id);
-	fake->last_replay_loop = loop;
-	return fake->replay_start_result;
-}
-
-static AiusOpticalAppReplayResult fake_replay_delete(void *context,
-                                                     const char *id)
-{
-	Fake *fake = (Fake *)context;
-	record(fake, "replay_delete");
-	snprintf(fake->last_replay_id, sizeof(fake->last_replay_id), "%s", id);
-	return fake->replay_delete_result;
-}
-
-static void fake_replay_stop(void *context)
-{
-	Fake *fake = (Fake *)context;
-	record(fake, "replay_stop");
-	fake->stops++;
 }
 
 static void fake_set_test_running(void *context, bool running)
@@ -587,14 +545,9 @@ static AiusOpticalApp fake_app(Fake *fake)
 	app.write_events = fake_write_events;
 	app.write_dsp_config = fake_write_dsp_config;
 	app.write_meters = fake_write_meters;
-	app.write_replay_status = fake_write_replay_status;
-	app.write_replay_list = fake_write_replay_list;
 	app.store_public_config = fake_store_public_config;
 	app.store_dsp_config = fake_store_dsp_config;
 	app.read_directory = fake_read_directory;
-	app.replay_start = fake_replay_start;
-	app.replay_delete = fake_replay_delete;
-	app.replay_stop = fake_replay_stop;
 	app.set_test_running = fake_set_test_running;
 	app.clear_counters = fake_clear_counters;
 	app.sd_set_mode = fake_sd_set_mode;
@@ -666,8 +619,6 @@ static void fixture_init(Fixture *fixture)
 	 * good body is ACCEPTED and the dispatcher owns the write. */
 	fixture->fake.public_store = AIUS_OPTICAL_APP_STORE_ACCEPTED;
 	fixture->fake.dsp_store = AIUS_OPTICAL_APP_STORE_ACCEPTED;
-	fixture->fake.replay_start_result = AIUS_OPTICAL_APP_REPLAY_OK;
-	fixture->fake.replay_delete_result = AIUS_OPTICAL_APP_REPLAY_OK;
 	fixture->fake.measure_start_result = true;
 	fixture->fake.recorder_accept = true;
 	fixture->fake.recorder_read_result = AIUS_OPTICAL_APP_RECORDER_READ_OK;
@@ -870,18 +821,15 @@ static void test_init_validation(void)
 
 	/* Every callback is required; a hole must be refused at init, never
 	 * discovered as a null call during dispatch. */
-	for (size_t i = 0; i < 28u; ++i) {
+	for (size_t i = 0; i < 23u; ++i) {
 		AiusOpticalApp holed = fake_app(&fake);
 		void **slots[] = {
 			(void **)&holed.sd_ready, (void **)&holed.sd_busy,
 			(void **)&holed.auth_matches, (void **)&holed.write_home,
 			(void **)&holed.write_status, (void **)&holed.write_events,
 			(void **)&holed.write_dsp_config, (void **)&holed.write_meters,
-			(void **)&holed.write_replay_status,
-			(void **)&holed.write_replay_list,
 			(void **)&holed.store_public_config,
-			(void **)&holed.store_dsp_config, (void **)&holed.replay_start,
-			(void **)&holed.replay_delete, (void **)&holed.replay_stop,
+			(void **)&holed.store_dsp_config,
 			(void **)&holed.set_test_running, (void **)&holed.clear_counters,
 			(void **)&holed.request_reboot, (void **)&holed.write_usb_payload,
 			(void **)&holed.upload_id, (void **)&holed.write_measure,
@@ -890,7 +838,7 @@ static void test_init_validation(void)
 			(void **)&holed.recorder_config, (void **)&holed.recorder_read,
 			(void **)&holed.recorder_read_release
 		};
-		assert(ARRAY_LENGTH(slots) == 28u);
+		assert(ARRAY_LENGTH(slots) == 23u);
 		*slots[i] = NULL;
 		assert(!aius_optical_app_init(&dispatcher, &holed, body, sizeof(body)));
 		assert(aius_optical_app_http_dispatch(&dispatcher, &request) == NULL);
@@ -930,10 +878,22 @@ static void test_golden_immediate_routes(void)
 	                 "{\"body\":\"dsp_config\"}");
 	expect_immediate(dispatch_get(&fixture, "GET /api/sd"), 200,
 	                 "{\"ready\":true}");
-	expect_immediate(dispatch_get(&fixture, "GET /api/replays/status"), 200,
-	                 "{\"body\":\"replay_status\"}");
-	expect_immediate(dispatch_get(&fixture, "GET /api/replays"), 200,
-	                 "{\"body\":\"replay_list\"}");
+	/* Replay is retired (Phase 4i): its routes are unknown, which the
+	 * transaction layer answers 404 (ERR_ROUTE), before any dispatch. */
+	{
+		static const char *const dead[] = {
+			"GET /api/replays HTTP/1.0\r\n\r\n",
+			"GET /api/replays/status HTTP/1.0\r\n\r\n",
+			"POST /api/replays/start HTTP/1.0\r\nContent-Length: 15\r\n\r\n"
+			"{\"id\":\"take1\"}\n",
+			"POST /api/replays/stop HTTP/1.0\r\n\r\n",
+			"DELETE /api/replays HTTP/1.0\r\n\r\n"
+		};
+		AiusHttpRequest dead_request;
+		for (size_t i = 0; i < ARRAY_LENGTH(dead); ++i)
+			assert(aius_http_parse((const uint8_t *)dead[i], strlen(dead[i]),
+			                       &dead_request) == AIUS_HTTP_ERR_ROUTE);
+	}
 
 	/* The four control routes carry the token: they mutate the running system,
 	 * so they are authenticated like every other mutating route. Their refusals
@@ -1072,7 +1032,7 @@ static void test_serializer_exhaustion(void)
 	Fixture fixture;
 	static const char *const json_routes[] = {
 		"GET /api/status", "GET /api/events", "GET /api/meters",
-		"GET /api/dsp/config", "GET /api/replays/status", "GET /api/replays"
+		"GET /api/dsp/config"
 	};
 	fixture_init(&fixture);
 	fixture.fake.serializers_fit = false;
@@ -1095,6 +1055,7 @@ static void test_sd_media_and_paths(void)
 	static const char *const rejected[] = {
 		"GET /sd/x",
 		"GET /sd/etc/passwd",
+		"GET /sd/replays/take1", /* replay retired: no longer a route of its own */
 		"GET /sd/www/../secret",
 		"GET /sd/www/a//b",
 		"GET /sd/www/%2e%2e/x",
@@ -1103,7 +1064,7 @@ static void test_sd_media_and_paths(void)
 	/* max_age pins the dispatcher's caching policy per suffix: day-long for
 	 * the two stable asset kinds (.js/.css), zero for everything else --
 	 * html so a card sync propagates, json because it is live data, binary
-	 * because it covers presets and replay vectors. */
+	 * because it covers presets. */
 	static const struct {
 		const char *line;
 		const char *type;
@@ -1156,19 +1117,6 @@ static void test_sd_media_and_paths(void)
 		const AiusHttpApplicationResponse *response =
 			dispatch_get(&fixture, "GET /sd/www/index.html");
 		assert(strcmp(response->sd_job.target_path, "/aius/www/index.html") == 0);
-	}
-	{
-		const AiusHttpApplicationResponse *response =
-			dispatch_get(&fixture, "GET /sd/replays/take1");
-		expect_response(response, AIUS_HTTP_APP_SD_JOB, 200,
-		                "application/octet-stream", NULL);
-		assert(response->sd_job.kind == AIUS_SD_JOB_DOWNLOAD);
-		assert(strcmp(response->sd_job.target_path,
-		              "/aius/replays/take1.iec") == 0);
-		/* Replay vectors are re-listed and re-fetched by id; never cached. */
-		assert(response->cache_max_age_s == 0u);
-		assert(!response->vary_accept_encoding);
-		assert(!response->cache_no_cache);
 	}
 
 	/* The /aius/<name> builder the config routes now share, at its limit: the
@@ -1652,65 +1600,18 @@ static void test_sd_upload(void)
 	expect_immediate(dispatch_request(&fixture, "PUT /sd/etc/passwd",
 	                                  "X-Aius-SD-Auth: token\r\n", NULL, 16),
 	                 507, "{\"ok\":false,\"error\":\"sd_upload\"}");
-}
 
-static void test_replay_chunk_upload(void)
-{
-	Fixture fixture;
-	const AiusHttpApplicationResponse *response;
-	fixture_init(&fixture);
-
-	response = dispatch_request(&fixture, "PUT /sd/replays/take1",
-	                            "X-Aius-SD-Auth: token\r\n"
-	                            "Content-Range: bytes 0-511/2048\r\n",
-	                            NULL, 512);
-	expect_response(response, AIUS_HTTP_APP_SD_JOB, 200, "application/json",
-	                "{\"ok\":true,\"next_offset\":512}");
-	assert(response->sd_job.kind == AIUS_SD_JOB_UPLOAD);
-	assert(response->sd_job.install_mode == AIUS_SD_INSTALL_APPEND_PART);
-	assert(strcmp(response->sd_job.target_path,
-	              "/aius/replays/take1.part") == 0);
-	assert(response->sd_job.temp_path == NULL);
-	assert(response->sd_job.backup_path == NULL);
-	assert(response->sd_job.content_type == NULL);
-	assert(response->sd_job.total == 512u);
-	assert(response->sd_job.initial_offset == 0u);
-
-	response = dispatch_request(&fixture, "PUT /sd/replays/take1",
-	                            "X-Aius-SD-Auth: token\r\n"
-	                            "Content-Range: bytes 512-1023/2048\r\n",
-	                            NULL, 512);
-	expect_response(response, AIUS_HTTP_APP_SD_JOB, 200, "application/json",
-	                "{\"ok\":true,\"next_offset\":1024}");
-	assert(response->sd_job.initial_offset == 512u);
-
-	/* Final chunk installs the .part file under its playable name. */
-	response = dispatch_request(&fixture, "PUT /sd/replays/take1",
-	                            "X-Aius-SD-Auth: token\r\n"
-	                            "Content-Range: bytes 1536-2047/2048\r\n",
-	                            NULL, 512);
-	expect_response(response, AIUS_HTTP_APP_SD_JOB, 200, "application/json",
-	                "{\"ok\":true}");
-	assert(response->sd_job.install_mode == AIUS_SD_INSTALL_FINALIZE_PART);
-	assert(strcmp(response->sd_job.target_path,
-	              "/aius/replays/take1.iec") == 0);
-	assert(strcmp(response->sd_job.temp_path,
-	              "/aius/replays/take1.part") == 0);
-	assert(strcmp(response->sd_job.backup_path,
-	              "/aius/.backup-1234abcd-00000001.bak") == 0);
-	assert(response->sd_job.total == 512u);
-	assert(response->sd_job.initial_offset == 1536u);
-
-	/* A streamed replay PUT without Content-Range would append at offset zero
-	 * and never finalize; refuse it deterministically instead. */
+	/* Replay retired: /sd/replays/ is an ordinary non-www SD file path. With a
+	 * card the upload is refused as a path (507), with none the media gate
+	 * answers first (503); neither reaches a job. No overlay in this fixture. */
 	expect_immediate(dispatch_request(&fixture, "PUT /sd/replays/take1",
-	                                  "X-Aius-SD-Auth: token\r\n", NULL, 512),
-	                 400, "{\"ok\":false,\"error\":\"sd_upload\"}");
+	                                  "X-Aius-SD-Auth: token\r\n", NULL, 16),
+	                 507, "{\"ok\":false,\"error\":\"sd_upload\"}");
+	fixture.fake.sd_ready = false;
 	expect_immediate(dispatch_request(&fixture, "PUT /sd/replays/take1",
-	                                  "X-Aius-SD-Auth: wrong\r\n"
-	                                  "Content-Range: bytes 0-511/2048\r\n",
-	                                  NULL, 512),
-	                 401, "{\"ok\":false,\"error\":\"sd_auth\"}");
+	                                  "X-Aius-SD-Auth: token\r\n", NULL, 16),
+	                 503, "{\"ok\":false,\"error\":\"sd_unavailable\"}");
+	fixture.fake.sd_ready = true;
 }
 
 static void test_dsp_config_put(void)
@@ -1849,347 +1750,78 @@ static void test_config_put_body_bounds(void)
 	assert(fixture.fake.stored_length == 0u);
 }
 
-static void test_replay_control(void)
-{
-	Fixture fixture;
-	fixture_init(&fixture);
-
-	/* Status and listing are public; every mutation needs the SD token. */
-	expect_immediate(dispatch_request(&fixture, "POST /api/replays/stop",
-	                                  "X-Aius-SD-Auth: wrong\r\n", NULL, -1),
-	                 401, "{\"ok\":false,\"error\":\"sd_auth\"}");
-	expect_immediate(dispatch_request(&fixture, "POST /api/replays/stop",
-	                                  "X-Aius-SD-Auth: token\r\n", NULL, -1),
-	                 200, "{\"ok\":true,\"state\":\"stopped\"}");
-	assert(fixture.fake.stops == 1u);
-
-	expect_immediate(dispatch_request(&fixture, "POST /api/replays/start",
-	                                  "X-Aius-SD-Auth: token\r\n",
-	                                  "{\"id\":\"take1\",\"loop\":true}", -1),
-	                 200,
-	                 "{\"ok\":true,\"state\":\"prebuffering\",\"id\":\"take1\"}");
-	assert(strcmp(fixture.fake.last_replay_id, "take1") == 0);
-	assert(fixture.fake.last_replay_loop);
-
-	expect_immediate(dispatch_request(&fixture, "POST /api/replays/start",
-	                                  "X-Aius-SD-Auth: token\r\n",
-	                                  "{\"id\":\"take2\"}", -1),
-	                 200,
-	                 "{\"ok\":true,\"state\":\"prebuffering\",\"id\":\"take2\"}");
-	assert(!fixture.fake.last_replay_loop);
-
-	fixture.fake.replay_start_result = AIUS_OPTICAL_APP_REPLAY_NOT_FOUND;
-	expect_immediate(dispatch_request(&fixture, "POST /api/replays/start",
-	                                  "X-Aius-SD-Auth: token\r\n",
-	                                  "{\"id\":\"take1\"}", -1),
-	                 404, "{\"ok\":false,\"error\":\"replay_not_found\"}");
-	fixture.fake.replay_start_result = AIUS_OPTICAL_APP_REPLAY_FAILED;
-	expect_immediate(dispatch_request(&fixture, "POST /api/replays/start",
-	                                  "X-Aius-SD-Auth: token\r\n",
-	                                  "{\"id\":\"take1\"}", -1),
-	                 409, "{\"ok\":false,\"error\":\"replay_start\"}");
-	/* A live carrier refuses with its own token, so a client can tell it from
-	 * every other 409 on this route. */
-	fixture.fake.replay_start_result = AIUS_OPTICAL_APP_REPLAY_CARRIER_PRESENT;
-	expect_immediate(dispatch_request(&fixture, "POST /api/replays/start",
-	                                  "X-Aius-SD-Auth: token\r\n",
-	                                  "{\"id\":\"take1\"}", -1),
-	                 409, "{\"ok\":false,\"error\":\"replay_carrier_present\"}");
-	/* Phase 4g (owner, audit finding 2): the fill walk refuses a start with
-	 * a retryable 503 of its own (the 503 carries Retry-After). */
-	fixture.fake.replay_start_result = AIUS_OPTICAL_APP_REPLAY_FILL_BUSY;
-	expect_immediate(dispatch_request(&fixture, "POST /api/replays/start",
-	                                  "X-Aius-SD-Auth: token\r\n",
-	                                  "{\"id\":\"take1\"}", -1),
-	                 503, "{\"ok\":false,\"error\":\"fill_busy\"}");
-
-	/* A malformed or unusable id never reaches the application. */
-	static const char *const bad_bodies[] = {
-		"{}", "{\"id\":\"\"}", "{\"id\":\"bad id\"}", "{\"id\":\"bad/id\"}",
-		"{\"id\":\"unterminated}"
-	};
-	for (size_t i = 0; i < ARRAY_LENGTH(bad_bodies); ++i) {
-		expect_immediate(dispatch_request(&fixture, "POST /api/replays/start",
-		                                  "X-Aius-SD-Auth: token\r\n",
-		                                  bad_bodies[i], -1),
-		                 400, "{\"ok\":false,\"error\":\"replay_body\"}");
-		expect_immediate(dispatch_request(&fixture, "DELETE /api/replays",
-		                                  "X-Aius-SD-Auth: token\r\n",
-		                                  bad_bodies[i], -1),
-		                 400, "{\"ok\":false,\"error\":\"replay_body\"}");
-	}
-
-	fixture.fake.replay_start_result = AIUS_OPTICAL_APP_REPLAY_OK;
-	fixture.fake.sd_ready = false;
-	expect_immediate(dispatch_request(&fixture, "POST /api/replays/start",
-	                                  "X-Aius-SD-Auth: token\r\n",
-	                                  "{\"id\":\"take1\"}", -1),
-	                 400, "{\"ok\":false,\"error\":\"replay_body\"}");
-	/* The listing keeps its pre-cutover shape: 200 carrying its own error. */
-	expect_immediate(dispatch_get(&fixture, "GET /api/replays"), 200,
-	                 "{\"ok\":false,\"error\":\"sd_unavailable\"}");
-	fixture.fake.sd_ready = true;
-
-	expect_immediate(dispatch_request(&fixture, "DELETE /api/replays",
-	                                  "X-Aius-SD-Auth: token\r\n",
-	                                  "{\"id\":\"take1\"}", -1),
-	                 200, "{\"ok\":true,\"deleted\":\"take1\"}");
-	fixture.fake.replay_delete_result = AIUS_OPTICAL_APP_REPLAY_ACTIVE;
-	expect_immediate(dispatch_request(&fixture, "DELETE /api/replays",
-	                                  "X-Aius-SD-Auth: token\r\n",
-	                                  "{\"id\":\"take1\"}", -1),
-	                 409, "{\"ok\":false,\"error\":\"replay_active\"}");
-	fixture.fake.replay_delete_result = AIUS_OPTICAL_APP_REPLAY_NOT_FOUND;
-	expect_immediate(dispatch_request(&fixture, "DELETE /api/replays",
-	                                  "X-Aius-SD-Auth: token\r\n",
-	                                  "{\"id\":\"take1\"}", -1),
-	                 404, "{\"ok\":false,\"error\":\"replay_not_found\"}");
-	fixture.fake.replay_delete_result = AIUS_OPTICAL_APP_REPLAY_FAILED;
-	expect_immediate(dispatch_request(&fixture, "DELETE /api/replays",
-	                                  "X-Aius-SD-Auth: token\r\n",
-	                                  "{\"id\":\"take1\"}", -1),
-	                 503, "{\"ok\":false,\"error\":\"replay_delete\"}");
-	expect_immediate(dispatch_request(&fixture, "DELETE /api/replays",
-	                                  "X-Aius-SD-Auth: wrong\r\n",
-	                                  "{\"id\":\"take1\"}", -1),
-	                 401, "{\"ok\":false,\"error\":\"sd_auth\"}");
-}
-
-/* The two replay routes that reach the card directly are excluded while a job
- * owns the volume, exactly as GET /sd/<dir>/ already is.
- *
- * Both enumerate or stat the card outside the bounded job engine -- the
- * portable engine has no directory job, and delete is two constant primitives
- * -- so overlapping a running job means walking a volume someone else is
- * mid-transaction on. The Phase 14d audit found neither gated. A refused call
- * answers 503 sd_busy: the same distinguishable token every other SD route
- * uses, and a refusal rather than a listing read across a foreign transaction
- * or a 404 that only means "the card was busy".
- *
- * The memory-only replay routes are deliberately NOT gated, and that is
- * asserted here rather than left implicit: start, stop and status touch no
- * primitive, and start must in particular still be admitted while a refill job
- * for the previous selection is draining, because cancelling it is exactly what
- * start does. */
-static void test_replay_card_routes_are_gated(void)
-{
-	Fixture fixture;
-	static const char *const list_calls[] = { "sd_ready", "sd_busy" };
-	static const char *const delete_calls[] = { "auth_matches", "sd_busy" };
-	static const char *const start_calls[] = {
-		"auth_matches", "sd_ready", "replay_start"
-	};
-	static const char *const stop_calls[] = { "auth_matches", "replay_stop" };
-	static const char *const status_calls[] = { "replay_status" };
-
-	fixture_init(&fixture);
-	fixture.fake.sd_busy = true;
-
-	/* The listing never reaches the serializer, so no enumeration happens. */
-	expect_immediate(dispatch_get(&fixture, "GET /api/replays"), 503,
-	                 "{\"ok\":false,\"error\":\"sd_busy\"}");
-	expect_log(&fixture, list_calls, ARRAY_LENGTH(list_calls));
-
-	/* Delete never reaches the application, so nothing is stat'd or removed. */
-	expect_immediate(dispatch_request(&fixture, "DELETE /api/replays",
-	                                  "X-Aius-SD-Auth: token\r\n",
-	                                  "{\"id\":\"take1\"}", -1),
-	                 503, "{\"ok\":false,\"error\":\"sd_busy\"}");
-	expect_log(&fixture, delete_calls, ARRAY_LENGTH(delete_calls));
-
-	/* A malformed body is still a 400 whatever the volume is doing: the
-	 * request is wrong regardless, and answering 503 would tell the client to
-	 * retry a request that can never succeed. */
-	expect_immediate(dispatch_request(&fixture, "DELETE /api/replays",
-	                                  "X-Aius-SD-Auth: token\r\n", "{}", -1),
-	                 400, "{\"ok\":false,\"error\":\"replay_body\"}");
-
-	/* And the memory-only routes are unaffected by a busy volume. */
-	expect_immediate(dispatch_request(&fixture, "POST /api/replays/start",
-	                                  "X-Aius-SD-Auth: token\r\n",
-	                                  "{\"id\":\"take1\"}", -1),
-	                 200,
-	                 "{\"ok\":true,\"state\":\"prebuffering\",\"id\":\"take1\"}");
-	expect_log(&fixture, start_calls, ARRAY_LENGTH(start_calls));
-	expect_immediate(dispatch_request(&fixture, "POST /api/replays/stop",
-	                                  "X-Aius-SD-Auth: token\r\n", NULL, -1),
-	                 200, "{\"ok\":true,\"state\":\"stopped\"}");
-	expect_log(&fixture, stop_calls, ARRAY_LENGTH(stop_calls));
-	expect_immediate(dispatch_get(&fixture, "GET /api/replays/status"), 200,
-	                 "{\"body\":\"replay_status\"}");
-	expect_log(&fixture, status_calls, ARRAY_LENGTH(status_calls));
-
-	/* Idle again, and both routes serve. */
-	fixture.fake.sd_busy = false;
-	expect_immediate(dispatch_get(&fixture, "GET /api/replays"), 200,
-	                 "{\"body\":\"replay_list\"}");
-	expect_immediate(dispatch_request(&fixture, "DELETE /api/replays",
-	                                  "X-Aius-SD-Auth: token\r\n",
-	                                  "{\"id\":\"take1\"}", -1),
-	                 200, "{\"ok\":true,\"deleted\":\"take1\"}");
-}
-
 /* RFC 8259 §2 makes whitespace insignificant before and after every structural
- * character, so a body is identified by what it means, not by how it is spaced.
- * The compact form the bundled page happens to emit (JSON.stringify) and the
- * spaced form every Python client emits (json.dumps) are the same request.
- *
- * Whitespace inside the quotes is data, not structure: it must survive into the
- * id and then fail the id charset, exactly as it did before. */
-static void test_replay_body_whitespace(void)
+ * character, so a body is identified by what it means, not by how it is spaced
+ * (compact JSON.stringify and spaced json.dumps are the same request).
+ * Whitespace inside the quotes is data: it survives into the id and then fails
+ * the id charset. */
+static void test_measure_body_whitespace(void)
 {
-	/* Each body carries id "take1" and, where a loop key is present, loop true. */
-	static const struct {
-		const char *body;
-		bool loop;
-	} accepted[] = {
-		/* the pre-fix compact form, unchanged */
-		{ "{\"id\":\"take1\",\"loop\":true}", true },
-		{ "{\"id\":\"take1\"}", false },
-		/* json.dumps default: one space after every colon and comma */
-		{ "{\"id\": \"take1\", \"loop\": true}", true },
-		{ "{\"id\": \"take1\"}", false },
-		/* space before the colon, and around the comma */
-		{ "{\"id\" : \"take1\" , \"loop\" : true}", true },
-		/* leading and trailing whitespace around the whole body */
-		{ "  {\"id\":\"take1\"}  ", false },
-		{ "\r\n\t{\"id\":\"take1\",\"loop\":true}\n", true },
-		/* newlines and tabs are whitespace wherever a space would be */
-		{ "{\n\t\"id\": \"take1\",\n\t\"loop\": true\n}", true },
-		{ "{\r\n  \"id\" :\t\"take1\"\r\n}", false },
-		/* inside the braces, either side of the first key */
-		{ "{ \"id\":\"take1\" }", false },
-		/* loop false is a value, not an absent key */
-		{ "{\"id\": \"take1\", \"loop\": false}", false },
-		/* key order is not part of the grammar */
-		{ "{\"loop\" : true , \"id\" : \"take1\"}", true },
+	static const char *const accepted[] = {
+		"{\"id\":\"take1\"}",
+		"{\"id\": \"take1\"}",
+		"{ \"id\" : \"take1\" }",
+		"  {\"id\":\"take1\"}  ",
+		"\r\n\t{\"id\":\"take1\"}\n",
+		"{\r\n  \"id\" :\t\"take1\"\r\n}",
+		"{\"id\": \"take1\", \"f0_l\": 440, \"f0_r\": 440}",
+		"{\"f0_r\" : 440 , \"id\" : \"take1\" , \"f0_l\" : 440}",
+		"{\"id\": \"take1\", \"probes\": [ 40 , 100 ]}",
 	};
-	/* Whitespace tolerance is not licence for junk: every entry here is either
-	 * invalid JSON or a valid document this route does not accept. */
 	static const char *const rejected[] = {
-		/* the pre-fix rejections, still rejected */
 		"{}", "{\"id\":\"\"}", "{\"id\":\"bad id\"}", "{\"id\":\"bad/id\"}",
 		"{\"id\":\"unterminated}",
-		/* whitespace inside the string is preserved, so it still fails the
-		 * charset -- a parser that stripped it would admit "badid" */
 		"{\"id\": \"bad id\"}", "{\"id\":\"\tbad\"}", "{\"id\":\"take1 \"}",
 		"{ \"id\" : \" \" }",
-		/* whitespace does not repair a broken document */
 		"", "   ", "{", "}", "{\"id\": }", "{\"id\" \"take1\"}",
-		"{\"id\": \"take1\",}", "{\"id\": \"take1\" \"loop\": true}",
+		"{\"id\": \"take1\",}",
 		"{\"id\": \"take1\"} trailing", "{\"id\": \"take1\"}{",
 		"[{\"id\": \"take1\"}]", "\"take1\"",
-		/* wrong-typed or unparsable loop */
-		"{\"id\": \"take1\", \"loop\": \"true\"}",
-		"{\"id\": \"take1\", \"loop\": 1}",
-		"{\"id\": \"take1\", \"loop\": truex}",
-		"{\"id\": \"take1\", \"loop\": null}",
-		/* wrong-typed id */
 		"{\"id\": 1}", "{\"id\": true}", "{\"id\": [\"take1\"]}",
-		/* unknown field, duplicate key, missing key */
 		"{\"id\": \"take1\", \"speed\": 2}", "{\"identity\": \"take1\"}",
 		"{\"id\": \"take1\", \"id\": \"take2\"}",
-		"{\"loop\": true, \"loop\": false, \"id\": \"take1\"}",
-		"{\"loop\": true}",
-		/* an over-long id (49 chars, one past AIUS_HTTP_MAX_REPLAY_ID) */
-		"{\"id\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}"
-	};
-	/* The substring scan this parser replaced accepted every one of these: it
-	 * hunted "id":" anywhere in the bytes and never read the document around
-	 * it, so junk, an extra field, a second id, a non-boolean loop and even a
-	 * body that was not JSON all started a replay. Reading the object left to
-	 * right is what refuses them, and they are compact on purpose -- spelled
-	 * with a space the old scan refused them for the wrong reason. */
-	static const char *const newly_rejected[] = {
-		"{\"id\":\"take1\",\"speed\":2}",
-		"{\"identity\":\"take1\",\"id\":\"take1\"}",
-		"{\"id\":\"take1\",\"id\":\"take2\"}",
-		"{\"id\":\"take1\",\"loop\":\"true\"}",
-		"{\"id\":\"take1\",\"loop\":1}",
-		"{\"id\":\"take1\",\"loop\":truex}",
-		"{\"id\":\"take1\",\"loop\":true,\"loop\":false}",
-		"{\"id\":\"take1\",\"loop\":true",
-		"{\"id\":\"take1\"} trailing",
-		"{\"id\":\"take1\"}{",
-		"[{\"id\":\"take1\"}]",
-		"garbage{\"id\":\"take1\"}",
+		"{\"id\": \"take1\", \"loop\": true}",
+		"{\"id\":\"take1\",\"f0_l\":440,\"f0_l\":440}",
+		"{\"id\":\"take1\",\"f0_l\":4.5}",
 		"{\"nested\":{\"id\":\"take1\"}}",
-		"not json at all \"id\":\"take1\" either"
+		"not json at all \"id\":\"take1\" either",
+		/* 49 chars: one past AIUS_HTTP_MAX_VECTOR_ID */
+		"{\"id\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}"
 	};
 	Fixture fixture;
 	fixture_init(&fixture);
 
 	for (size_t i = 0; i < ARRAY_LENGTH(accepted); ++i) {
-		fixture.fake.last_replay_id[0] = '\0';
-		fixture.fake.last_replay_loop = !accepted[i].loop;
-		expect_immediate(dispatch_request(&fixture, "POST /api/replays/start",
+		fixture.fake.last_measure_id[0] = '\0';
+		expect_immediate(dispatch_request(&fixture, "POST /api/measure/start",
 		                                  "X-Aius-SD-Auth: token\r\n",
-		                                  accepted[i].body, -1),
+		                                  accepted[i], -1),
 		                 200,
-		                 "{\"ok\":true,\"state\":\"prebuffering\",\"id\":\"take1\"}");
-		if (strcmp(fixture.fake.last_replay_id, "take1") != 0)
-			fprintf(stderr, "body \"%s\" yielded id \"%s\"\n", accepted[i].body,
-			        fixture.fake.last_replay_id);
-		assert(strcmp(fixture.fake.last_replay_id, "take1") == 0);
-		if (fixture.fake.last_replay_loop != accepted[i].loop)
-			fprintf(stderr, "body \"%s\" yielded loop %d\n", accepted[i].body,
-			        (int)fixture.fake.last_replay_loop);
-		assert(fixture.fake.last_replay_loop == accepted[i].loop);
-
-		/* DELETE reads the same body through the same parser. */
-		fixture.fake.last_replay_id[0] = '\0';
-		expect_immediate(dispatch_request(&fixture, "DELETE /api/replays",
-		                                  "X-Aius-SD-Auth: token\r\n",
-		                                  accepted[i].body, -1),
-		                 200, "{\"ok\":true,\"deleted\":\"take1\"}");
-		assert(strcmp(fixture.fake.last_replay_id, "take1") == 0);
+		                 "{\"ok\":true,\"state\":\"armed\",\"id\":\"take1\"}");
+		assert(strcmp(fixture.fake.last_measure_id, "take1") == 0);
 	}
-
 	for (size_t i = 0; i < ARRAY_LENGTH(rejected); ++i) {
 		const AiusHttpApplicationResponse *response;
-		fixture.fake.last_replay_id[0] = '\0';
-		response = dispatch_request(&fixture, "POST /api/replays/start",
+		fixture.fake.last_measure_id[0] = '\0';
+		response = dispatch_request(&fixture, "POST /api/measure/start",
 		                            "X-Aius-SD-Auth: token\r\n", rejected[i], -1);
 		if (response == NULL || response->status != 400)
 			fprintf(stderr, "body \"%s\" was not refused\n", rejected[i]);
 		expect_immediate(response, 400,
-		                 "{\"ok\":false,\"error\":\"replay_body\"}");
-		expect_immediate(dispatch_request(&fixture, "DELETE /api/replays",
-		                                  "X-Aius-SD-Auth: token\r\n",
-		                                  rejected[i], -1),
-		                 400, "{\"ok\":false,\"error\":\"replay_body\"}");
-		/* A refused body never named a replay to the application. */
-		assert(fixture.fake.last_replay_id[0] == '\0');
-	}
-
-	for (size_t i = 0; i < ARRAY_LENGTH(newly_rejected); ++i) {
-		const AiusHttpApplicationResponse *response;
-		fixture.fake.last_replay_id[0] = '\0';
-		response = dispatch_request(&fixture, "POST /api/replays/start",
-		                            "X-Aius-SD-Auth: token\r\n",
-		                            newly_rejected[i], -1);
-		if (response == NULL || response->status != 400)
-			fprintf(stderr, "body \"%s\" was not refused\n", newly_rejected[i]);
-		expect_immediate(response, 400,
-		                 "{\"ok\":false,\"error\":\"replay_body\"}");
-		expect_immediate(dispatch_request(&fixture, "DELETE /api/replays",
-		                                  "X-Aius-SD-Auth: token\r\n",
-		                                  newly_rejected[i], -1),
-		                 400, "{\"ok\":false,\"error\":\"replay_body\"}");
-		assert(fixture.fake.last_replay_id[0] == '\0');
+		                 "{\"ok\":false,\"error\":\"measure_body\"}");
+		assert(fixture.fake.last_measure_id[0] == '\0');
 	}
 
 	/* The longest id the route admits still parses when spaced out. */
-	fixture.fake.last_replay_id[0] = '\0';
-	expect_immediate(dispatch_request(&fixture, "POST /api/replays/start",
+	expect_immediate(dispatch_request(&fixture, "POST /api/measure/start",
 	                                  "X-Aius-SD-Auth: token\r\n",
 	                                  "{ \"id\" : "
 	                                  "\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\" }",
 	                                  -1),
 	                 200,
-	                 "{\"ok\":true,\"state\":\"prebuffering\",\"id\":\""
+	                 "{\"ok\":true,\"state\":\"armed\",\"id\":\""
 	                 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}");
-	assert(strlen(fixture.fake.last_replay_id) == AIUS_HTTP_MAX_REPLAY_ID);
+	assert(strlen(fixture.fake.last_measure_id) == AIUS_HTTP_MAX_VECTOR_ID);
 }
 
 /* One dispatch touches exactly the callbacks its decision needs -- no probing,
@@ -2464,15 +2096,14 @@ static void test_usb_commands(void)
 	assert(response->payload_length == AIUS_OPTICAL_APP_USB_PAYLOAD_MAX);
 }
 
-/* The two 405 method fall-throughs the parser rejects before dispatch ever sees
- * them (POST to /sd/<file> and POST to /api/replays). They are the dispatcher's
+/* The 405 method fall-through the parser rejects before dispatch ever sees
+ * it (POST to /sd/<file>), plus the unknown-route tail. They are the dispatcher's
  * own last line, so they are driven from a hand-built request rather than the
  * parser -- and their bodies are asserted byte-for-byte like every other. */
 static void test_unreachable_method_defaults(void)
 {
 	Fixture fixture;
 	static const uint8_t resource[] = "www/index.html";
-	static const uint8_t auth[] = "token";
 	AiusHttpRequest request;
 	fixture_init(&fixture);
 
@@ -2484,15 +2115,6 @@ static void test_unreachable_method_defaults(void)
 	expect_immediate(aius_optical_app_http_dispatch(&fixture.dispatcher,
 	                                                &request),
 	                 405, "{\"ok\":false,\"error\":\"sd_method\"}");
-
-	memset(&request, 0, sizeof(request));
-	request.method = AIUS_HTTP_POST;
-	request.route = AIUS_HTTP_ROUTE_REPLAYS;
-	request.sd_auth = auth;
-	request.sd_auth_length = sizeof(auth) - 1u;
-	expect_immediate(aius_optical_app_http_dispatch(&fixture.dispatcher,
-	                                                &request),
-	                 405, "{\"ok\":false,\"error\":\"replay_method\"}");
 
 	/* The switch tail. /api/mode and /api/mix reached it while they still
 	 * parsed; with them retired no byte sequence produces a dispatchable
@@ -2884,7 +2506,7 @@ static const char *ota_carrier(AiusOpticalAppOtaRoute route)
 	case AIUS_OPTICAL_APP_OTA_ROUTE_IMAGE:
 		return "PUT /api/dsp/config"; /* buffered PUT carrying a body */
 	default:
-		return "POST /api/replays/stop"; /* POST, no body */
+		return "POST /api/clear"; /* POST, no body */
 	}
 }
 
@@ -3719,13 +3341,6 @@ static void test_route_coverage(void)
 		{ "GET /api/dsp/config", NULL, NULL, -1 },
 		{ "PUT /api/dsp/config", "X-Aius-SD-Auth: token\r\n", "{}", -1 },
 		{ "GET /api/meters", NULL, NULL, -1 },
-		{ "GET /api/replays", NULL, NULL, -1 },
-		{ "GET /api/replays/status", NULL, NULL, -1 },
-		{ "POST /api/replays/start", "X-Aius-SD-Auth: token\r\n",
-		  "{\"id\":\"take1\"}", -1 },
-		{ "POST /api/replays/stop", "X-Aius-SD-Auth: token\r\n", NULL, -1 },
-		{ "DELETE /api/replays", "X-Aius-SD-Auth: token\r\n",
-		  "{\"id\":\"take1\"}", -1 },
 		{ "GET /sd/replays/take1", NULL, NULL, -1 },
 		{ "GET /api/measure", NULL, NULL, -1 },
 		{ "POST /api/measure/start", "X-Aius-SD-Auth: token\r\n",
@@ -3861,13 +3476,11 @@ static void test_admission_classes(void)
 		{ AIUS_HTTP_ROUTE_EVENTS, AIUS_HTTP_GET, AIUS_OPTICAL_ADMIT_EVENTS },
 		{ AIUS_HTTP_ROUTE_DSP_CONFIG, AIUS_HTTP_PUT, AIUS_OPTICAL_ADMIT_SETTINGS },
 		{ AIUS_HTTP_ROUTE_CONFIG_PUBLIC, AIUS_HTTP_PUT, AIUS_OPTICAL_ADMIT_SETTINGS },
-		{ AIUS_HTTP_ROUTE_REPLAYS, AIUS_HTTP_GET, AIUS_OPTICAL_ADMIT_DIRECTORY },
 	};
 	/* F13: never shed, whatever the margin. */
 	static const struct { AiusHttpRoute route; AiusHttpMethod method; } never[] = {
 		{ AIUS_HTTP_ROUTE_DSP_CONFIG, AIUS_HTTP_GET },
 		{ AIUS_HTTP_ROUTE_SD_FILE, AIUS_HTTP_GET },
-		{ AIUS_HTTP_ROUTE_REPLAYS_STATUS, AIUS_HTTP_GET },
 		{ AIUS_HTTP_ROUTE_RECORDER, AIUS_HTTP_GET },
 		{ AIUS_HTTP_ROUTE_RECORDER_DATA, AIUS_HTTP_GET },
 		{ AIUS_HTTP_ROUTE_RECORDER_CONFIG, AIUS_HTTP_PUT },
@@ -3876,7 +3489,6 @@ static void test_admission_classes(void)
 		{ AIUS_HTTP_ROUTE_CLEAR, AIUS_HTTP_POST },
 		{ AIUS_HTTP_ROUTE_REBOOT, AIUS_HTTP_POST },
 		{ AIUS_HTTP_ROUTE_SD_MODE, AIUS_HTTP_POST },
-		{ AIUS_HTTP_ROUTE_REPLAYS, AIUS_HTTP_DELETE },
 		{ AIUS_HTTP_ROUTE_OTA, AIUS_HTTP_GET },
 		{ AIUS_HTTP_ROUTE_OTA_IMAGE, AIUS_HTTP_PUT },
 		{ AIUS_HTTP_ROUTE_OTA_ACTIVATE, AIUS_HTTP_POST },
@@ -4311,15 +3923,13 @@ static void test_web_fill_route(void)
 		const char *resource;
 		bool reads_card;
 	} k_routes[] = {
-		{ AIUS_HTTP_ROUTE_REPLAYS, AIUS_HTTP_GET, NULL, true },
-		{ AIUS_HTTP_ROUTE_REPLAYS, AIUS_HTTP_DELETE, NULL, true },
 		{ AIUS_HTTP_ROUTE_SD_FILE, AIUS_HTTP_GET, "www/presets/", true },
 		{ AIUS_HTTP_ROUTE_SD_FILE, AIUS_HTTP_GET, "www/", true },
 		{ AIUS_HTTP_ROUTE_SD_FILE, AIUS_HTTP_GET, "www/index.html", false },
 		{ AIUS_HTTP_ROUTE_SD_FILE, AIUS_HTTP_PUT, "www/presets/", false },
 		{ AIUS_HTTP_ROUTE_SD_FILE, AIUS_HTTP_DELETE, "www/x.js", false },
-		{ AIUS_HTTP_ROUTE_REPLAYS_START, AIUS_HTTP_POST, NULL, false },
-		{ AIUS_HTTP_ROUTE_REPLAYS_STATUS, AIUS_HTTP_GET, NULL, false },
+		{ AIUS_HTTP_ROUTE_MEASURE_START, AIUS_HTTP_POST, NULL, false },
+		{ AIUS_HTTP_ROUTE_MEASURE, AIUS_HTTP_GET, NULL, false },
 		{ AIUS_HTTP_ROUTE_STATUS, AIUS_HTTP_GET, NULL, false },
 	};
 	AiusOpticalWebFill f;
@@ -4379,35 +3989,6 @@ static void test_web_fill_route(void)
  * (the adapter's trusted mount lost, card still "ready" to the lifecycle,
  * the probe skipped in playback) empties the cache at once and parks the
  * walk; it restarts only once a mount appears, never on the stale mount. */
-/* Owner (closure nit A): a playing replay pauses the fill. A walk restarted
- * mid-replay (an upload's invalidation, a refill) starts no file while the
- * replay plays or switches to replay, whatever the hold says; once it stops
- * the walk resumes, the hold's own rule unchanged. */
-static void test_web_fill_replay_pause(void)
-{
-	AiusOpticalWebFill f;
-
-	aius_optical_web_fill_init(&f);
-	assert(!aius_optical_web_fill_paused(&f, 0u, false));
-	/* Replay playing (REPLAY or SWITCHING_TO_REPLAY), hold lapsed: paused
-	 * across any time, including long after any hold could lapse. */
-	for (uint32_t t = 0u; t <= 600000u; t += 50000u)
-		assert(aius_optical_web_fill_paused(&f, t, true));
-	/* The replay stops: the walk resumes at once. */
-	assert(!aius_optical_web_fill_paused(&f, 600001u, false));
-	/* A cancel's hold during the replay: the replay's end does not release
-	 * it; the hold's own release does, 2 s after its end. */
-	assert(aius_optical_web_fill_cancel(&f, true));
-	assert(aius_optical_web_fill_paused(&f, 700000u, true));
-	assert(aius_optical_web_fill_paused(&f, 700000u, false));
-	aius_optical_web_fill_hold_release(&f, 700000u);
-	assert(aius_optical_web_fill_paused(&f, 701999u, false));
-	assert(aius_optical_web_fill_paused(&f, 702000u, true));
-	assert(!aius_optical_web_fill_paused(&f, 702000u, false));
-	assert(!aius_optical_web_fill_paused(NULL, 0u, false));
-	assert(aius_optical_web_fill_paused(NULL, 0u, true));
-}
-
 static void test_web_fill_follow_card(void)
 {
 	bool walk_card = false;
@@ -5292,12 +4873,14 @@ static void test_sd_overlay_writes(void)
 	                                  "X-Aius-SD-Auth: token\r\n", NULL, 16),
 	                 403, "{\"ok\":false,\"error\":\"config_public_only\"}");
 	assert(overlay.put_begins == 4u);
-	/* A replay upload keeps the card gate. */
+	/* Replay is retired: /sd/replays/ is an ordinary SD file path, which the
+	 * www-only path rule refuses, authenticated and with a store present. */
 	expect_immediate(dispatch_request(&fixture, "PUT /sd/replays/take1",
 	                                  "X-Aius-SD-Auth: token\r\n"
 	                                  "Content-Range: bytes 0-15/32\r\n",
 	                                  NULL, 16),
-	                 503, "{\"ok\":false,\"error\":\"sd_unavailable\"}");
+	                 507, "{\"ok\":false,\"error\":\"sd_upload\"}");
+	assert(overlay.put_begins == 4u);
 
 	/* A www DELETE is a tombstone, 200 at accept with no card (S2). */
 	expect_immediate(dispatch_request(&fixture, "DELETE /sd/www/presets/x.json",
@@ -5786,7 +5369,7 @@ static void test_sd_flush_put_stops_fill(void)
 	assert(g_ff.cancel_roots == 1u && fill_cancels == 1u);
 	assert(g_ff.fill_cancels == 0u && g_ff.web.latches == 0u);
 	assert(!aius_optical_web_fill_held(&g_ff.web, 0u));
-	assert(!aius_optical_web_fill_paused(&g_ff.web, 0u, false));
+	assert(!aius_optical_web_fill_paused(&g_ff.web, 0u));
 	assert(flush.put_open);
 	/* The one streamed put: a second is BUSY until commit or abort. */
 	assert(aius_optical_sd_flush_put_begin(&flush, &g_ff_ops, &fill_cancels,
@@ -6499,7 +6082,7 @@ static void test_sd_flush_audit_fixes(void)
 		                                 false) ==
 		       AIUS_OPTICAL_SD_IDLE_FILL);
 	assert(g_ff.fill_cancels == 0u && g_ff.web.latches == 0u);
-	assert(!aius_optical_web_fill_paused(&g_ff.web, 500u, false));
+	assert(!aius_optical_web_fill_paused(&g_ff.web, 500u));
 	/* Once the entry is due again, the flush takes the pass. */
 	g_ff.due = true;
 	assert(aius_optical_sd_idle_step(&flush, &g_ff_ops, 600u, false) ==
@@ -6849,7 +6432,7 @@ static void test_sd_card_loss_call_sites(void)
 	assert(d5_observe(&flush, &adapter, 10u) ==
 	       AIUS_OPTICAL_SD_CARD_FAULT_PRESENT);
 	for (t = 11u; t < 2010u; t += 100u) {
-		assert(!aius_optical_sd_replay_begin_blocked(&flush, &g_ff_ops));
+		assert(!aius_optical_sd_no_card_begin_blocked(&flush, &g_ff_ops));
 		assert(aius_optical_sd_begin_blocked(&flush, &g_ff_ops, t) ==
 		       AIUS_OPTICAL_SD_BEGIN_WAIT);
 	}
@@ -6869,7 +6452,7 @@ static void test_sd_card_loss_call_sites(void)
 	assert(d5_observe(&flush, &adapter, 30u) == AIUS_OPTICAL_SD_CARD_GONE);
 	{
 		const unsigned lost = g_ff.card_lost;
-		assert(aius_optical_sd_replay_begin_blocked(&flush, &g_ff_ops));
+		assert(aius_optical_sd_no_card_begin_blocked(&flush, &g_ff_ops));
 		assert(g_ff.card_lost == lost + 1u);
 	}
 
@@ -7089,7 +6672,6 @@ int main(void)
 	RUN_TEST(test_admission_time_ageing);
 	RUN_TEST(test_web_fill_hold);
 	RUN_TEST(test_web_fill_route);
-	RUN_TEST(test_web_fill_replay_pause);
 	RUN_TEST(test_web_fill_follow_card);
 	RUN_TEST(test_web_fill_hold_long_lapse);
 	RUN_TEST(test_admission_first_measurement_outlier);
@@ -7106,13 +6688,10 @@ int main(void)
 	RUN_TEST(test_sd_index_unwired);
 	RUN_TEST(test_sd_delete);
 	RUN_TEST(test_sd_upload);
-	RUN_TEST(test_replay_chunk_upload);
 	RUN_TEST(test_dsp_config_put);
 	RUN_TEST(test_config_public_put);
 	RUN_TEST(test_config_put_body_bounds);
-	RUN_TEST(test_replay_control);
-	RUN_TEST(test_replay_card_routes_are_gated);
-	RUN_TEST(test_replay_body_whitespace);
+	RUN_TEST(test_measure_body_whitespace);
 	RUN_TEST(test_measure_control);
 	RUN_TEST(test_callback_isolation);
 	RUN_TEST(test_dispatch_counts);

@@ -11,14 +11,16 @@ extern "C" {
 
 #define AIUS_SD_PATH_STORAGE 128u
 
+/* Explicit values: a kind is a wire value (job events, /api/status). 6 was
+ * REPLAY_REFILL, retired with replay (Phase 4i) and never reused, so
+ * CACHE_FILL keeps 7. */
 typedef enum {
-	AIUS_SD_JOB_PROBE,
-	AIUS_SD_JOB_CONFIG_LOAD,
-	AIUS_SD_JOB_USAGE_REFRESH,
-	AIUS_SD_JOB_UPLOAD,
-	AIUS_SD_JOB_DOWNLOAD,
-	AIUS_SD_JOB_DELETE,
-	AIUS_SD_JOB_REPLAY_REFILL,
+	AIUS_SD_JOB_PROBE = 0,
+	AIUS_SD_JOB_CONFIG_LOAD = 1,
+	AIUS_SD_JOB_USAGE_REFRESH = 2,
+	AIUS_SD_JOB_UPLOAD = 3,
+	AIUS_SD_JOB_DOWNLOAD = 4,
+	AIUS_SD_JOB_DELETE = 5,
 	/* Reads one file from initial_offset to its end (total 0, no
 	 * content_type), one capacity-sized chunk per READ/OUTPUT primitive
 	 * pair. initial_offset is 0 or a multiple of
@@ -28,7 +30,7 @@ typedef enum {
 	 * buffer/length/offset (absolute) and acknowledges with OK, or with a
 	 * FAULT event to fail the job. Read only: a cancel closes the file and
 	 * issues no write. */
-	AIUS_SD_JOB_CACHE_FILL
+	AIUS_SD_JOB_CACHE_FILL = 7
 } AiusSdJobKind;
 
 /* A CACHE_FILL's initial_offset granularity: the web cache's chunk. */

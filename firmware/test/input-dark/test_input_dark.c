@@ -154,7 +154,7 @@ int main(void)
 		       AIUS_INPUT_DARK_GATE_ARMED);
 		locked_gate_open(&cursor);
 		assert(aius_input_dark_phase(&cursor) == AIUS_INPUT_DARK_GATE_OPEN);
-		/* A replay's open gate under a dark carrier is still open. */
+		/* An open gate under a dark carrier is still open. */
 		cursor.carrier_locked = 0u;
 		assert(aius_input_dark_phase(&cursor) == AIUS_INPUT_DARK_GATE_OPEN);
 		assert(strcmp(aius_input_dark_phase_name(

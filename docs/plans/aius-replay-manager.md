@@ -15,6 +15,20 @@ Provide a separate SD-hosted replay page for representative IEC 61937/DTS
 captures. Replay is an independent device service: navigating between the
 replay manager and DSP editor must not stop an active replay.
 
+## Retired: replay removed (2026-10-12)
+
+**Retired by [`aius-sample-rate-following.md`](aius-sample-rate-following.md)
+Phase 4i (owner, 2026-10-12).** The replay library, ring, refill job, routes
+(`/api/replays*`, `/sd/replays/*`), page and status fields no longer exist in
+the firmware, the web UI or the bench tools. The rest of this plan is history,
+kept unrewritten.
+
+- **Captures' provenance.** The five complete cards captures were archived
+  before deletion: LFS objects under `docs/reference/datasheets.mdAIUS-REPLAY-CAPTURES/`,
+  listed by `evidence/AIUS-REPLAY-CAPTURES.manifest.json` (id, bytes, sha256,
+  board `build_revision` ce1159286fd2), archived in commit `165814b`, then
+  deleted from the card on 2026-10-12. They can no longer be played on the board.
+
 ## Delivery state — shipped (noted 2026-08-04)
 
 All four phases are delivered and proven on hardware; this plan is a contract

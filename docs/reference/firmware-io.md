@@ -105,7 +105,6 @@ flowchart TB
     epoch["loop: one runtime epoch, checkpoints 0 to 10<br/>NETWORK checkpoint drives fnet_poll, 1 per ms"]
   end
   rx -->|pends while holding update_responsibility, carrier| sw
-  tx -->|pends while holding update_responsibility, replay| sw
   sw --> publish["AudioStream update_all, then bounded ingress publish"]
   publish --> ingress["8192-word SPSC ingress in OCRAM"]
   ingress -->|AUDIO checkpoint 9| chain["reset/flush, ingest, classify, decode, enqueue and DSP"]
@@ -122,9 +121,11 @@ flowchart TB
 - **The audio DMA ISRs** own the block clock, at the startup-default priority 128.
   Whichever S/PDIF peripheral holds `update_responsibility` pends the audio software
   interrupt from its DMA interrupt; the input claims it first because `g_spdif_in` is
-  constructed above `g_spdif_out` (`src/optical_main.cpp:316`, `:1245`), and
-  `replay_clock_service()` hands it to the transmitter while a replay plays
-  (`src/optical_main.cpp:3973`).
+  constructed above `g_spdif_out` (`src/optical_main.cpp:316`, `:1245`). The
+  transmitter never holds it: the replay source that once handed it over was
+  retired by
+  [`aius-sample-rate-following.md`](../plans/aius-sample-rate-following.md) Phase 4i
+  (2026-10-12).
 - **The audio software interrupt** — pended by `update_all()`'s trigger, at NVIC
   priority 208 (`cores/teensy4/AudioStream.cpp:424`) — now does only the bounded
   `update()` ingress publish and releases its two pool blocks. It never classifies,
@@ -191,7 +192,7 @@ turns a wedged service into a bounded reset rather than a hang
 | `4 NETWORK` | supervisor + adapter | 1 | 0 | 0 | none |
 | `5 HTTP` | one transaction step | 1 | 256 | 512 | 2 ms |
 | `6 UDP` | one datagram | 1 | 532 | 532 | 2 ms |
-| `7 REPLAY` | SD lifecycle + replay refill | 1 | 2048 | 0 | none |
+| `7 SERVICE` | SD lifecycle + platform services | 1 | 2048 | 0 | none |
 | `9 AUDIO` | ingress drain + pipeline/output service | 1 | 0 | 0 | 8 ms |
 | `8 SD` | one SD job step | 1 | 512 | 512 | none |
 | `10 EPOCH_COMPLETE` | ledger + watchdog feed | 0 | 0 | 0 | 8 s watchdog |
@@ -211,7 +212,7 @@ payload).
 
 In recovery-safe mode the scheduler runs only `USB_RX` and `USB_TX` before
 `EPOCH_COMPLETE` (`lib/aius_runtime/src/aius_runtime.c:82`), so no network, audio,
-SD or replay service happens at all.
+or SD service happens at all.
 
 ## The five isolation mechanisms
 
@@ -274,8 +275,7 @@ optical object to exactly `update()` and `audio_ingress_publish_live()` and the 
 ingress object to its five producer entry points; all consumption, reset and
 diagnostic entry points remain cold (`test/itcm-placement/verify_target.py:90`).
 The sample walk is exactly `AUDIO_BLOCK_SAMPLES`; a full ingress records one dropped
-chunk and replay discards the matching 256-word time slice rather than blocking
-(`src/optical_main.cpp:1321`).
+chunk rather than blocking (`src/optical_main.cpp:1321`).
 
 **Its storage moved to OCRAM, while decode remains in DTCM.** The exact 16 KiB ingress
 absorbs interrupt-to-epoch jitter. The decoder/pipeline arena is 218,688 B in DTCM
@@ -333,7 +333,7 @@ is FLASH; the framework's link script copies every other `.rodata` into DTCM):
 
 ## S/PDIF output — the transmit half of the hot path
 
-The optical transmitter, and the clock master while a replay plays with no carrier.
+The optical transmitter. The receiver is the clock master (`clock.master` reads the constant `input`).
 
 **The path is 24-bit, and it does not go through `audio_block_t`.** This is the first
 item of the audio-quality roadmap in
@@ -501,22 +501,14 @@ transmit interrupt is 228 bytes of ITCM with a 9-instruction inner loop
 shift plus 32 separate `arm_dcache_flush()` calls, and `emit_block()`'s two `allocate()`
 / `release()` pairs and second full copy are gone outright.
 
-**Why this implementation, and the alternative that was rejected.** The transmitter
-can hold `update_responsibility` because its DMA is clocked by PLL4 through
-`SPDIF0_CLK_ROOT` and not by the receiver: `SPDIF_SCR_TXSEL(5)` is normal transmit,
-not feed-through, and the dependency in fact runs the other way — the receiver falls
-back to `tx_clk` when its DPLL is unlocked
-(`src/optical_main.cpp:2808`). Without the handover a replay reported `playing` and
-processed exactly zero blocks, because with the input unsoldered the receive DMA ISR
-never fires and `update_all()` is never called (`src/optical_main.cpp:2796`).
-
-The rejected alternative was **a pair of pokes in `app_replay_start()` and
-`app_replay_stop()`**. It was refused because start only publishes `PREBUFFERING` —
-playback begins later and elsewhere — and because a replay ends in five different
-ways (operator stop, EOF, decoder error, a cancelled job displaced by a new
-selection, and a carrier arriving), all of which reach the same `source` field. One
-derived reconciler covers every one; five call sites would each be a chance to leave
-the clock behind (`src/optical_main.cpp:2899`).
+**The transmit DMA is clocked by PLL4 through `SPDIF0_CLK_ROOT`, not by the
+receiver:** `SPDIF_SCR_TXSEL(5)` is normal transmit, not feed-through, and the
+dependency in fact runs the other way: the receiver falls back to `tx_clk` when
+its DPLL is unlocked (`src/optical_main.cpp:2808`). The `update_responsibility`
+handover to the transmitter that once let a carrier-free replay run was retired
+with replay
+([`aius-sample-rate-following.md`](../plans/aius-sample-rate-following.md) Phase
+4i, 2026-10-12).
 
 **The transmitted validity flag is `SPDIF_SCR[VALCTRL]`, and its polarity is inverted
 against its own name.** `ValCtrl = 1` means "outgoing validity always *clear*", i.e.
@@ -544,15 +536,14 @@ touches neither `VALCTRL` nor `invalid_periods_remaining`
 dark applies only. The dark full-apply and structural-replan paths keep the hold, where
 the pad is closed anyway and the discontinuity is real.
 
-**Boot and replay are 48 kHz; live output follows the source at 32, 44.1 or
+**Boot is 48 kHz; live output follows the source at 32, 44.1 or
 48 kHz.** `AUDIO_SAMPLE_RATE_EXACT=48000.0f` remains the bootstrap value used
-by `config_spdif3()` and the exact replay/config default. The `static_assert`
+by `config_spdif3()` and the config default. The `static_assert`
 against `AIUS_OPTICAL_SAMPLE_RATE_HZ` keeps those two 48 kHz roles coherent.
 Once a live carrier is accepted, checkpoint 7 plans PLL4 from the receiver's
 `SPDIF_SRFM` millihertz measurement and applies the whole nominal rate before
 opening the pad. Later same-structure corrections queue only
-`CCM_ANALOG_PLL_AUDIO_NUM` for the next 128-frame TX boundary. Replay restores
-the exact 48,000,000 millihertz plan before output becomes graph master
+`CCM_ANALOG_PLL_AUDIO_NUM` for the next 128-frame TX boundary
 (`lib/aius_audio/src/aius_audio_clock.cpp`,
 `src/optical_main.cpp`, `lib/aius_clock/src/aius_clock.c`).
 
@@ -596,7 +587,7 @@ output is retained rather than dropped.
 not override — and is the *engine* block: it sizes both DMA buffers, the
 `audio_block_t` pool, the ingress chunk and the transmit interrupt's drain of the
 24-bit ring, so `update()` runs at the active rate divided by 128 (375 times/s
-for 48 kHz replay) and publishes 512 bytes each time. 512 frames is the
+at 48 kHz) and publishes 512 bytes each time. 512 frames is the
 *decoded* block and is what `blocks` counts: a DTS Core access unit reconstructs to
 512 samples per channel and PCM passthrough stages the same 512
 (`AIUS_PIPELINE_PCM_BLOCK_FRAMES`), so AUDIO reaches `enqueue()` once per four
@@ -717,8 +708,8 @@ in an object the ITCM guard does not police (`lib/aius_dsp/include/aius_measure.
 sample (`src/optical_main.cpp:3169`, `:2973`). One epoch advances exactly one of: the
 **wall-clock stall watch** — only the epoch can time out a capture the producer provably
 is not feeding, cancelling after 10 s armed (the operator gap between
-`POST /api/measure/start` and `POST /api/replays/start`), 2 s capturing (a replay
-stopped underneath the capture), and reclaiming an unacknowledged cancel after a
+`POST /api/measure/start` and the U24 `aplay` stimulus reaching the gate), 2 s
+capturing (the stimulus stopped underneath the capture), and reclaiming an unacknowledged cancel after a
 further 1 s of the block counter unchanged (`src/optical_main.cpp:2909`) — or **one
 256-frame analysis slice** through both channel accumulators (~2 × 170 µs worst
 case; a full 8,192-frame window completes in 32 epochs). Overruns of the budget land
@@ -734,7 +725,7 @@ check-then-store interleaving can lose only that capture, never corrupt it
 
 **Interlocks with the rest of the control surface.**
 
-- **`POST /api/replays/start` advances a monotonic audio-reset sequence.** At the
+- **An audio reset request (a relock, for one) advances a monotonic audio-reset sequence.** At the
   next AUDIO checkpoint the service briefly masks interrupts only while it flushes
   queued ingress and acknowledges the matching ingress generations, then unmasks
   before calling `aius_pipeline_reset()` (`src/optical_main.cpp:611`,
@@ -759,7 +750,7 @@ budget with an overrun counter as the evidence. The measured acceptance is in
 `dsp_cycles_max` distributions with captures armed and unarmed are indistinguishable
 inside the block-to-block spread.
 
-## PSRAM flight recorder — AUDIO checkpoint producer, REPLAY checkpoint drain
+## PSRAM flight recorder — AUDIO checkpoint producer, SERVICE checkpoint drain
 
 Always-on capture of the committed output words into fitted PSRAM, so a transient
 defect (an impulse, an underrun, a carrier drop) is inspectable after the fact
@@ -770,7 +761,7 @@ Absent PSRAM the whole feature costs one `bool` test per block
 **Buffers.**
 
 - Staging: the first 32 KiB of fitted PSRAM — 8 planar 512-frame slots, sized so
-  AUDIO's maximum burst of eight output steps after REPLAY has already drained is
+  AUDIO's maximum burst of eight output steps after SERVICE has already drained is
   gap-free (`RECORDER_STAGING_BYTES`, `src/optical_main.cpp:673`).
 - Ring: the remainder of PSRAM at a power-of-two byte capacity, beginning after
   staging (`aius_recorder_ring_bytes_after_staging`, `src/optical_main.cpp:1704`).
@@ -783,7 +774,7 @@ Absent PSRAM the whole feature costs one `bool` test per block
 **Why this implementation.** The producer is `aius_recorder_producer_block()` in
 `enqueue()`, immediately beside the measurement tap so both cover exactly the
 committed frames (`src/optical_main.cpp:1612`); it stages into the PSRAM slots and
-never touches the ring. The drain rides the REPLAY checkpoint's budget row, after
+never touches the ring. The drain rides the SERVICE checkpoint's budget row, after
 `tx_gate_service()` by contract so trigger evaluation consumes this epoch's latched
 gate and carrier: at most 32 KiB per epoch, ~2× the 384 KiB/s fill rate, so a
 post-stall backlog clears (`src/optical_main.cpp:7029`). Both producer and drain are
@@ -887,8 +878,6 @@ closed both gaps (open defect 6).
 | Route | Call site | Bound | `sd_busy` gate |
 |---|---|---|---|
 | `GET /sd/<dir>/` | `app_read_directory`, `src/optical_main.cpp:2590` | 128 raw entry reads | yes — 503 `sd_busy` |
-| `GET /api/replays` | `http_replay_list_json`, `src/optical_main.cpp:2150` | 128 raw entry reads | yes — 503 `sd_busy` |
-| `DELETE /api/replays` | `app_replay_delete`, `src/optical_main.cpp:2425` | 2 primitives | yes — 503 `sd_busy` |
 
 **The directory index is the designed case.** The portable engine has no directory
 job kind, so there is nothing bounded to drive; the dispatcher calls the callback
@@ -898,80 +887,23 @@ unknown size (`src/aius_optical_app.h:71`, `:225`). The gate is load-bearing rat
 than cosmetic and is stated as such at the dispatch site
 (`src/aius_optical_app.cpp:838`). The handle is never retained past the call.
 
-**The replay listing is held to the same two rules, and was found holding neither.**
-`http_replay_list_json` now stops at the same 128-read scan cap — what it replaces is
-a `for (;;) openNextFile()` over a directory of unknown size inside a single epoch,
-the most plausible unexplained 8 s watchdog reset in the image, since the SD library
-is uncancellable — and reserves its JSON tail so either bound, scan cap or response
-buffer, reports `"truncated": true` rather than passing a partial listing off as
-complete (`src/optical_main.cpp:2133`, `:2173`, `:2220`). The dispatcher calls it
-only when `app_sd_busy()` is false and answers 503 `sd_busy` otherwise, so it can no
-longer walk `/aius/replays` while a refill, upload, download or probe holds the
-volume (`src/aius_optical_app.cpp:1093`).
+**The replay listing and delete that once shared this table left with replay**
+(Phase 4i, 2026-10-12).
 
-**The replay delete spends a constant two primitives** — `SD.exists()` then
-`SD.remove()` (`src/optical_main.cpp:2434`) — **and is gated the same way**, ordered
-after the body parse so a malformed request keeps answering 400 whatever the volume
-is doing (`src/aius_optical_app.cpp:1108`). The bound was never its problem; the
-missing exclusion was.
-
-**Audio-path justification.** All three run at checkpoint 5 in thread context, so
-none can extend a block callback, and all three are `FLASHMEM`. What they bound is
+**Audio-path justification.** The directory read runs at checkpoint 5 in thread
+context, so it cannot extend a block callback, and is `FLASHMEM`. What they bound is
 the *watchdog* argument, not the audio one: the epoch's worst case at checkpoint 5 is
 now one call plus a 128-entry directory walk against the fixed 8 s window, rather
 than an unbounded one. The per-entry cost of a raw `openNextFile()` has not been
 measured on hardware — see
 [§Figures that need the device](#figures-that-need-the-device).
 
-## Replay file reader
+## Replay file reader: retired
 
-Playing a stored IEC file when no optical carrier is present.
-
-**Buffers.**
-
-- `g_replay_service`, `DMAMEM` — an 8,192-byte SPSC word ring (4,096 `uint16_t`) plus
-  a 512-byte decode scratch, the selected id and the read offset
-  (`src/optical_main.cpp:103`, `lib/aius_replay/include/aius_replay.h:139`).
-- `g_replay_job`, an `AiusSdJob`, `DMAMEM`, and `g_replay_transfer[512]`, its own
-  transfer slice — deliberately not shared with the storage service's, because
-  sharing would couple two jobs that are only serialized, not merged
-  (`src/optical_main.cpp:137`).
-- `g_replay_path[96]`, DTCM `.bss` — the path the refill job opens, built once by
-  `app_replay_start()` (`src/optical_main.cpp:104`).
-- A `static_assert` keeps the transfer slice inside the service's delivery bound, so
-  a widened slice is a compile error rather than a run-time `NO_SPACE` that faults the
-  refill (`src/optical_main.cpp:147`).
-
-**Why this implementation, and the alternative that was replaced.** The replay used
-to own an SD `File` and read it synchronously inside the refill call. That was wrong
-twice: it spent a second blocking SD primitive in an epoch whose contract is one, and
-— worse — every portable job begins at `AIUS_SD_PHASE_BEGIN`, whose adapter action
-calls `SD.begin(BUILTIN_SDCARD)` (`src/aius_sd_teensy.cpp:183`), so any config `PUT`,
-download or probe re-mounted the volume underneath that open handle
-(`src/optical_main.cpp:106`). **Refusing `POST /api/replays/start` outright was the
-interim answer** and was itself an application of the deciding principle: refusing a
-route is acceptable, risking a block callback is not
-(`docs/plans/aius-network-hardening.md:37`, `:4552`).
-
-Both problems are structural now rather than a question of ordering. The read
-position is a byte offset held by the portable service, never a handle, and the read
-is an `AIUS_SD_JOB_REPLAY_REFILL` job that opens and closes inside itself, through
-the storage service's own adapter — the single owner of the only card handle in the
-firmware (`src/optical_main.cpp:117`, `lib/aius_replay/include/aius_replay.h:126`).
-
-**Audio-path justification.** The refill runs at checkpoint 7 and spends at most one
-SD primitive, and only when the storage service is completely idle; a refusal is free
-— the plan is abandoned and re-made next epoch
-(`src/optical_main.cpp:2777`, `:2423`). The audio side touches only the ring:
-`aius_replay_service_pop_words()` runs per block and is explicitly forbidden a lock,
-a waiting branch or any refill work (`lib/aius_replay/include/aius_replay.h:224`); a
-short pop is an underrun counter, not a stall (`src/optical_main.cpp:570`). The ring
-is SPSC with atomic indices, so the producer in thread context and the consumer in
-ISR context never share a lock (`lib/aius_replay/include/aius_replay.h:40`).
-
-**If the bound were violated** — a refill that did not yield to a running job — the
-adapter would refuse the `BEGIN` of whichever job arrived second, and a route already
-admitted at checkpoint 5 would fail in-band at checkpoint 8.
+The replay file reader (ring, refill job, source and routes) was retired by
+[`aius-sample-rate-following.md`](../plans/aius-sample-rate-following.md) Phase 4i
+(2026-10-12); live input is the only audio source. The SD job kind it used (6,
+`REPLAY_REFILL`) is retired and never reused.
 
 ## OTA staged upgrade — SD staging, PSRAM copy, dark-window flash
 
@@ -985,7 +917,7 @@ lives in the composition root (`src/optical_main.cpp:3186`).
 
 - **Chunk staging (HTTP checkpoint → SD checkpoint).** `POST /api/ota/image` writes
   each 4,096-byte container chunk to `/aius/ota-staged.img` through the existing
-  bounded SD job engine, mirroring the replay `APPEND_PART` upload
+  bounded SD job engine, through the `APPEND_PART` upload
   (`src/optical_main.cpp:3194`). The session hashes each chunk synchronously at
   dispatch while the durable write is asynchronous; a chunk whose SD write fails
   leaves the hash ahead of the card, which the pre-activation re-digest catches, so a
@@ -1065,7 +997,7 @@ public read serving the capture state machine, the published figures with their
 stimulus floors, and `metrics_service_overruns`
 (`lib/aius_http/src/aius_http.c:148`, `src/optical_main.cpp:3098`).
 `POST /api/measure/start` is auth-gated: it is the **fifth** route in
-`route_is_control()` — beside replay start, replay stop, counter clear and reboot —
+`route_is_control()` — beside start, stop, counter clear and reboot —
 because arming a capture mutates the running system without touching the card, which
 is exactly that gate's definition; the gate runs once before the dispatch switch, so
 no control route can individually forget it (`src/aius_optical_app.cpp:1187`,
@@ -1383,7 +1315,7 @@ Also not in this image: the RawHID capability transport, which is a separate
 Stated plainly rather than estimated, per the plan's acceptance criterion that every
 number comes from a real build or a real device.
 
-- **The per-block DSP cost has been measured, over a replay rather than a carrier.**
+- **The per-block DSP cost has been measured, over a retired replay source rather than a carrier.**
   The DWT counters in `enqueue()` reported 398,591–431,995 cycles per *decoded*
   (512-frame) block. At 600 MHz that block's period is 512/48,000 = 10,667 µs =
   6,400,000 cycles, so the DSP occupies **6.2 %–6.8 % of the per-block budget**. The
@@ -1403,7 +1335,7 @@ number comes from a real build or a real device.
   25 ms complete-epoch diagnostic rather than stolen as invisible interrupt time —
   but no one has published a per-call figure.
 - **The worst-case duration of a 128-entry raw directory walk is not measured**, on
-  any card. `GET /sd/<dir>/` and `GET /api/replays` bound the *entry count*; the
+  any card. `GET /sd/<dir>/` bounds the *entry count*; the
   per-entry cost of `openNextFile()` on this library is not a number anyone has
   taken.
 - **`sizeof(AiusRuntimeTeensy)` is not in the bank report.** The header's "roughly
@@ -1428,7 +1360,7 @@ number comes from a real build or a real device.
   audio software-interrupt priority, per network generation.
 - **`test/optical-cutover/`**, whose absence group asserts file-wide that no static
   network fallback, rebind globals, raw FNET access or extra watchdog feed exists.
-- The component suites `sd`, `sd-target`, `runtime-target`, `http`, `net`, `replay`,
+- The component suites `sd`, `sd-target`, `runtime-target`, `http`, `net`,
   `boot-target`, `usb-control`, `measure`, `optical-app`, `recorder`, `ota` and the
   codec suites, run via `scripts/test.sh --environment native --suite <name>`.
 

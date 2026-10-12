@@ -12,7 +12,7 @@
 #         capability, pipeline, dsp, dsp-vectors, downmix-identity, measure, net, net-runner,
 #         rate-runner, rate-gate-capture, latency-runner,
 #         recovery-runner, flash, http,
-#         usb-control, replay, replay-samples, tx-gate, tx-governor, tx-fill-sensor, tx-fill-witness, underrun-episodes, input-liveness, input-dark, event-ring, recorder, boot, boot-target, fault-target, ota,
+#         usb-control, iec-fixtures, tx-gate, tx-governor, tx-fill-sensor, tx-fill-witness, underrun-episodes, input-liveness, input-dark, event-ring, recorder, boot, boot-target, fault-target, ota,
 #         build-metadata, runtime, network-transport, sd, sd-target, optical-app,
 #         optical-cutover, status-body-bound, runtime-target, memory, itcm-placement, fake-fidelity,
 #         sdfat-vendor, producer-yield, producer-isolation, stack-bound, www-bundle, measure-vectors, web-cache, sd-overlay, registry, sd-editor.
@@ -357,7 +357,7 @@ config)
 	;;
 json)
 	# The shared JSON cursor the three bounded parsers depend on: lib/aius_config,
-	# lib/aius_dsp_config, and the replay body reader in src/aius_optical_app.cpp
+	# lib/aius_dsp_config, and the /api/measure body reader in src/aius_optical_app.cpp
 	# each carried its own copy until they were hoisted here. Allocation-free and
 	# non-recursive over untrusted input, so the test links --wrap over the libc
 	# allocators and asserts zero allocations, exactly as the config suite does.
@@ -809,54 +809,37 @@ usb-control)
 		-o "$usb_out"
 	"$usb_out"
 	;;
-replay)
-	replay_out="$build_dir/replay"
-	"$cc" "${cflags[@]}" "-I$fw_root/lib/aius_pipeline/include" \
-		"-I$fw_root/lib/aius_dts/include" \
-		"-I$fw_root/lib/aius_iec61937/include" \
-		"-I$fw_root/lib/aius_replay/include" \
-		"$fw_root/test/replay/test_replay.c" \
-		"$fw_root/lib/aius_replay/src/aius_replay.c" \
-		-o "$replay_out"
-	"$replay_out"
-	;;
-replay-samples)
-	replay_samples_generated="$build_dir/replay-samples-generated"
-	OUT="$replay_samples_generated" DURATION=1 \
-		"$fw_root/tools/replay_samples/generate.sh"
-	python3 "$fw_root/tools/replay_samples/validate.py" \
-		"$replay_samples_generated"
-	python3 "$fw_root/test/replay-samples/test_validate.py" \
-		"$fw_root/tools/replay_samples/validate.py" \
-		"$replay_samples_generated" \
-		"$build_dir/replay-samples-negative"
-	replay_samples_out="$build_dir/replay-samples"
+iec-fixtures)
+	iec_fixtures_generated="$build_dir/iec-fixtures-generated"
+	OUT="$iec_fixtures_generated" DURATION=1 \
+		"$fw_root/tools/iec_fixtures/generate.sh"
+	python3 "$fw_root/tools/iec_fixtures/validate.py" \
+		"$iec_fixtures_generated"
+	python3 "$fw_root/test/iec-fixtures/test_validate.py" \
+		"$fw_root/tools/iec_fixtures/validate.py" \
+		"$iec_fixtures_generated" \
+		"$build_dir/iec-fixtures-negative"
+	iec_fixtures_out="$build_dir/iec-fixtures"
 	"$cc" "${cflags[@]}" "-I$fw_root/lib/aius_iec61937/include" \
-		"$fw_root/test/replay-samples/test_replay_samples.c" \
+		"$fw_root/test/iec-fixtures/test_iec_fixtures.c" \
 		"$fw_root/lib/aius_iec61937/src/aius_iec61937.c" \
-		-o "$replay_samples_out"
-	"$replay_samples_out" \
-		"$replay_samples_generated/channel_id_51.ac3" \
-		"$replay_samples_generated/channel_id_51_ac3.iec"
-	"$replay_samples_out" \
-		"$replay_samples_generated/channel_impulse_51.ac3" \
-		"$replay_samples_generated/channel_impulse_51_ac3.iec"
-	"$replay_samples_out" \
-		"$replay_samples_generated/cinematic_program_51.ac3" \
-		"$replay_samples_generated/cinematic_program_51_ac3.iec"
-	# Discovers "$fw_root/test/replay-samples/test_eac3_acceptance.py".
-	python3 -B -m unittest discover -s "$fw_root/test/replay-samples" \
-		-p 'test_eac3_acceptance.py'
+		-o "$iec_fixtures_out"
+	"$iec_fixtures_out" \
+		"$iec_fixtures_generated/channel_id_51.ac3" \
+		"$iec_fixtures_generated/channel_id_51_ac3.iec"
+	"$iec_fixtures_out" \
+		"$iec_fixtures_generated/channel_impulse_51.ac3" \
+		"$iec_fixtures_generated/channel_impulse_51_ac3.iec"
+	"$iec_fixtures_out" \
+		"$iec_fixtures_generated/cinematic_program_51.ac3" \
+		"$iec_fixtures_generated/cinematic_program_51_ac3.iec"
 	;;
 tx-gate)
-	# Header-only predicate: the test compiles against the replay lib's
-	# include set (aius_replay.h pulls codec + pipeline types) but links no
-	# implementation -- the whole policy is the inline in aius_tx_gate.h.
+	# Header-only predicate: the test includes aius_tx_gate.h by name from
+	# aius_audio's src and links no implementation -- the whole policy is the
+	# inline in aius_tx_gate.h.
 	tx_gate_out="$build_dir/tx-gate"
-	"$cc" "${cflags[@]}" "-I$fw_root/lib/aius_pipeline/include" \
-		"-I$fw_root/lib/aius_dts/include" \
-		"-I$fw_root/lib/aius_iec61937/include" \
-		"-I$fw_root/lib/aius_replay/include" \
+	"$cc" "${cflags[@]}" "-I$fw_root/lib/aius_audio/src" \
 		"$fw_root/test/tx-gate/test_tx_gate.c" \
 		-o "$tx_gate_out"
 	"$tx_gate_out"
@@ -1247,7 +1230,7 @@ runtime-target)
 		"-I$fw_root/lib/aius_ota/include" \
 		"-I$fw_root/lib/aius_recorder/include" \
 		"-I$fw_root/src")
-	# aius_json is here because aius_optical_app.cpp's replay body reader is one
+	# aius_json is here because aius_optical_app.cpp's /api/measure body reader is one
 	# of its three callers; the two config parsers are the others, and neither
 	# links into this suite. Phase 4h NS4: the real store (aius_web_cache,
 	# aius_sd_overlay) behind the dispatcher's web cache and overlay seams.

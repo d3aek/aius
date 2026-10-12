@@ -95,7 +95,6 @@ SD_ROWS = [SiteRow(n, o, c, SD_LIBRARY_ROW) for n, o, c in [
             ("taken_by", r"aius_boot_teensy\.cpp\.o")),
     # 25 since Phase 4g round 5 (SD.clearError and direct_card_settle(SD.sdErrorCode())).
     SiteRow("_ZL18app_read_directoryPvPKcP22AiusOpticalAppDirBatch", MAIN, 25, SDFILE_ROW),
-    SiteRow("_ZL21app_write_replay_listPvPhj", MAIN, 35, SDFILE_ROW),
     SiteRow("_ZL24ota_copy_staged_to_psramPhm", MAIN, 14, SDFILE_ROW),
     SiteRow("_Z22aius_sd_teensy_executeP12AiusSdTeensyPK12AiusSdAction", "aius_sd_teensy.cpp.o", 17,
             ("vtables", ["_ZTV6SDFile", "_ZTV6FsFile", "_ZTV10StreamFileI10FsBaseFileyE"])),
@@ -190,7 +189,7 @@ RECURSION = [RecursionRow(anchor=("ff_tx_init_subtx", None), bound=2,
                           guard="no recursion: shared card-vtable target set; device floor stack_free_min_bytes")]
 
 TABLES = Tables(
-    # Phase 4j (S1, S-new1): the idle DSP apply, called from platform_replay
+    # Phase 4j (S1, S-new1): the idle DSP apply, called from platform_service
     # (which yields), must reach no yield point between its flag read and
     # clear, apply_config included; noinline so this row cannot inline away.
     producer_roots=[("aius_audio_service_run", "aius_audio_service.c.o"),
@@ -218,8 +217,8 @@ TABLES = Tables(
                  ("_ZL22web_cache_verify_yieldPv", MAIN)],
     sd_windowed=[("_ZN12_GLOBAL__N_1L7advanceEP18AiusRuntimeStoragemb", "aius_runtime_storage.cpp.o"),
                  ("_ZL18app_read_directoryPvPKcP22AiusOpticalAppDirBatch", MAIN),
-                 ("_ZL21app_write_replay_listPvPhj", MAIN), ("_ZL17app_replay_deletePvPKc", MAIN)],
-    sd_unwindowed=[("_ZL18replay_job_advancem", MAIN), ("_ZL24ota_copy_staged_to_psramPhm", MAIN)],
+                 ],
+    sd_unwindowed=[("_ZL24ota_copy_staged_to_psramPhm", MAIN)],
     sd_stack_obj=r"libSdFat\.a\(|libSD\.a\(|aius_sd_teensy\.cpp\.o",
     sites=SITES,
     libc_row=LIBC_ROW,

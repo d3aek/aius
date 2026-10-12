@@ -2925,14 +2925,14 @@ static void test_teardown_drops_partial_burst(const char *dir, const char *name,
 	free(wire);
 }
 
-/* ---- a carrier displacing a COMPRESSED replay counts its cut burst once ----
+/* ---- a discontinuity cutting a COMPRESSED stream counts its cut burst once ----
  *
  * Open-work register, 2026-09-03: `au_abandons` +1 with `last_failure`
- * MALFORMED at every carrier return during a `--with-replay` gate-4 run, filed
- * as a false latch on a "PCM replay". The replay is not PCM: `channel_id_51`
- * resolves to `/aius/replays/channel_id_51.iec`, the DTS Core rendering, so the
- * carrier displaces a real IEC 61937 bitstream at an arbitrary word and the
- * defect-35 accounting above counts the burst it cut. These legs pin the
+ * MALFORMED at every carrier return during a gate-4 run (filed against the
+ * replay source Phase 4i retired), first read as a false latch on PCM. The
+ * stream was a DTS Core IEC 61937 rendering, so the discontinuity cut a real
+ * bitstream at an arbitrary word and the defect-35 accounting above counts
+ * the burst it cut. These legs pin the
  * boundary that makes that reading honest rather than noisy: a discontinuity
  * counts exactly one abandon when -- and only when -- the parser is past a
  * confirmed Pa/Pb with header or payload outstanding. It counts nothing over

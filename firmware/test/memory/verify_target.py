@@ -45,12 +45,17 @@ DECODER_ARENA_BYTES = 218688
 # ledger, funded by the 0x1FFE0 link floor). The plain image then measured
 # 131,776 B (736 B over the link floor), so the old "margin is zero" note was
 # stale by the time this table replaced it.
+#
+# Phase 4i (2026-10-12) retired replay: the 128 KiB ring in g_replay_service
+# plus g_replay_job, g_replay_transfer and g_replay_diag left OCRAM, a measured
+# gain of 132,992 B per env (131,776 -> 264,768 plain and fault; 131,744 ->
+# 264,736 slot-a and slot-b). Every floor below is that link's figure.
 OCRAM_LINK_FLOOR_BYTES = 0x1FFE0
 OCRAM_FREE_FLOORS = {
-    "teensy41-optical": 131776,
-    "teensy41-optical-slot-a": 131744,
-    "teensy41-optical-slot-b": 131744,
-    "teensy41-optical-fault": 131776,
+    "teensy41-optical": 264768,
+    "teensy41-optical-slot-a": 264736,
+    "teensy41-optical-slot-b": 264736,
+    "teensy41-optical-fault": 264768,
 }
 
 # Canonical-image RAM1 budgets (aius-sample-rate-following.md Phase 4g,
@@ -64,12 +69,14 @@ ITCM_BLOCK_BYTES = 32 * 1024
 ITCM_SECTIONS = frozenset({".text.itcm", ".ARM.exidx", ".fini"})
 # ITCM free = _itcm_block_count * 32 KiB minus the ITCM high-water mark (the
 # mem_report.py figure). Set from the Phase 4h link (2026-10-11): 12,708 B
-# free (4g's link had 12,900 B; its 1,000 B allowance went to 4h). The next
-# phase records its own allowance.
-ITCM_FREE_FLOOR_BYTES = 12708
+# free (4g's link had 12,900 B; its 1,000 B allowance went to 4h). Reset by
+# the Phase 4i link (2026-10-12, replay retired): 13,284 B. The next phase
+# records its own allowance.
+ITCM_FREE_FLOOR_BYTES = 13284
 # DTCM statics end (`_ebss`). Set from the Phase 4h link (2026-10-11):
-# 0x20049560 (4g's ceiling was 0x20049A00).
-DTCM_EBSS_CEILING = 0x20049560
+# 0x20049560 (4g's ceiling was 0x20049A00); Phase 4i link (2026-10-12):
+# 0x200494c0 on the slot-a image.
+DTCM_EBSS_CEILING = 0x200494c0
 # `_VectorsRam` (the 1,024 B-aligned RAM vector table, last in `.data`) sits
 # at 0x20007800, set from the Phase 4h link (2026-10-11; the 4g link had it
 # at 0x20007c00); `.data` growth past that step moves it to the next 1,024 B

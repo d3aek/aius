@@ -310,9 +310,9 @@ static void test_sd_auth_header_name_case(void)
 }
 
 /* Same rule for Content-Range: the NAME folds, the value does not. A "BYTES"
- * unit token is an unrecognised range and is ignored exactly as before, which
- * on a complete PUT to /sd/replays/<id> surfaces as ERR_BODY -- that is what
- * every non-matching row asserts. */
+ * unit token is an unrecognised range and is ignored exactly as before: the
+ * request parses and carries no range, which is what every non-matching row
+ * asserts. */
 static void test_content_range_header_name_case(void)
 {
 	static const struct {
@@ -337,11 +337,11 @@ static void test_content_range_header_name_case(void)
 		char raw[192];
 		int length;
 		AiusHttpResult result;
-		AiusHttpResult expected = rows[i].matches ? AIUS_HTTP_OK : AIUS_HTTP_ERR_BODY;
+		AiusHttpResult expected = AIUS_HTTP_OK;
 		for (size_t j = 0; j < i; ++j)
 			assert(strcmp(rows[i].key, rows[j].key) != 0);
 		length = snprintf(raw, sizeof(raw),
-		                  "PUT /sd/replays/take1 HTTP/1.0\r\n%s:%s\r\n"
+		                  "PUT /sd/www/take1 HTTP/1.0\r\n%s:%s\r\n"
 		                  "Content-Length: 4\r\n\r\nABCD",
 		                  rows[i].name, rows[i].value);
 		assert(length > 0);
@@ -442,29 +442,36 @@ static void test_framing_header_name_case(void)
 	       AIUS_HTTP_ERR_MALFORMED);
 }
 
-static void test_replay_routes(void)
+/* Replay retired (Phase 4i): the /api/replays* routes are unknown, and a
+ * /sd/replays/ path is an ordinary SD file route. */
+static void test_retired_replay_paths(void)
 {
 	AiusHttpRequest request;
 	const char *upload = "PUT /sd/replays/trailer-51 HTTP/1.0\r\n"
 		"X-Aius-SD-Auth: 0123456789abcdef\r\n"
 		"Content-Range: bytes 0-3/8\r\nContent-Length: 4\r\n\r\nABCD";
 	assert(aius_http_parse((const uint8_t *)upload, strlen(upload), &request) == AIUS_HTTP_OK);
-	assert(request.route == AIUS_HTTP_ROUTE_SD_REPLAY);
-	assert(request.replay_id_length == 10);
+	assert(request.route == AIUS_HTTP_ROUTE_SD_FILE);
+	assert(request.resource_length == strlen("replays/trailer-51"));
+	assert(memcmp(request.resource, "replays/trailer-51", request.resource_length) == 0);
 	assert(request.has_content_range);
 	assert(request.content_range_start == 0);
 	assert(request.content_range_end == 3);
 	assert(request.content_range_total == 8);
-	parse_ok("GET /api/replays HTTP/1.0\r\n\r\n", AIUS_HTTP_ROUTE_REPLAYS);
-	parse_ok("GET /api/replays/status HTTP/1.0\r\n\r\n", AIUS_HTTP_ROUTE_REPLAYS_STATUS);
-	parse_ok("POST /api/replays/start HTTP/1.0\r\nContent-Length: 2\r\n\r\n{}",
-	         AIUS_HTTP_ROUTE_REPLAYS_START);
-	parse_ok("POST /api/replays/stop HTTP/1.0\r\n\r\n", AIUS_HTTP_ROUTE_REPLAYS_STOP);
+	const char *dead[] = {
+		"GET /api/replays HTTP/1.0\r\n\r\n",
+		"DELETE /api/replays HTTP/1.0\r\n\r\n",
+		"GET /api/replays/status HTTP/1.0\r\n\r\n",
+		"POST /api/replays/start HTTP/1.0\r\nContent-Length: 2\r\n\r\n{}",
+		"POST /api/replays/stop HTTP/1.0\r\n\r\n",
+	};
+	for (size_t i = 0; i < ARRAY_LENGTH(dead); ++i)
+		assert(aius_http_parse((const uint8_t *)dead[i], strlen(dead[i]), &request) ==
+		       AIUS_HTTP_ERR_ROUTE);
 	const char *odd = "PUT /sd/replays/x HTTP/1.0\r\nContent-Range: bytes 0-2/4\r\n\r\nABC";
 	assert(aius_http_parse((const uint8_t *)odd, strlen(odd), &request) ==
 	       AIUS_HTTP_ERR_MALFORMED);
-	const char *bad_id = "GET /sd/replays/a.b HTTP/1.0\r\n\r\n";
-	assert(aius_http_parse((const uint8_t *)bad_id, strlen(bad_id), &request) == AIUS_HTTP_ERR_ROUTE);
+	parse_ok("GET /sd/replays/a.b HTTP/1.0\r\n\r\n", AIUS_HTTP_ROUTE_SD_FILE);
 }
 
 static void test_framing(void)
@@ -502,7 +509,7 @@ static void test_framing(void)
 	assert(request.has_body == 1);
 
 	const char *streamed_empty =
-		"PUT /sd/replays/r1 HTTP/1.0\r\nContent-Length: 5\r\n\r\n";
+		"PUT /sd/www/r1.html HTTP/1.0\r\nContent-Length: 5\r\n\r\n";
 	AiusHttpResult streamed_empty_result =
 		aius_http_parse((const uint8_t *)streamed_empty, strlen(streamed_empty),
 		                &request);
@@ -629,10 +636,9 @@ static void test_parser_result_registry(void)
 		"X-Aius-SD-Auth: 0123456789abcdef0\r\n\r\n";
 	static const char method[] = "PUT /api/status HTTP/1.0\r\n\r\n";
 	static const char route[] = "GET /not-a-route HTTP/1.0\r\n\r\n";
-	/* ERR_BODY now comes from the replay-chunk rule: a complete PUT body on
-	 * /sd/replays/<id> with no Content-Range cannot be placed in the file. */
+	/* ERR_BODY: a buffered route whose declared body is not all here. */
 	static const char body[] =
-		"PUT /sd/replays/trailer-51 HTTP/1.0\r\nContent-Length: 4\r\n\r\nABCD";
+		"PUT /api/config/public HTTP/1.0\r\nContent-Length: 5\r\n\r\nab";
 	static const struct ParserResultRow rows[] = {
 		{ "parse.ok", ok, sizeof(ok) - 1u, AIUS_HTTP_OK },
 		{ "parse.empty", "", 0, AIUS_HTTP_ERR_EMPTY },
@@ -893,7 +899,7 @@ int main(void)
 	test_dsp_config_route();
 	test_measure_routes();
 	test_ota_routes();
-	test_replay_routes();
+	test_retired_replay_paths();
 	test_framing();
 	test_response_headers();
 	test_response_headers_cache();
@@ -1064,7 +1070,7 @@ int main(void)
 	       AIUS_HTTP_ERR_ROUTE);
 	/* Body bytes with no Content-Length are malformed whatever the POST route. */
 	const char *undeclared_post =
-		"POST /api/replays/stop HTTP/1.0\r\n\r\n{\"id\":\"take1\"}";
+		"POST /api/clear HTTP/1.0\r\n\r\n{\"id\":\"take1\"}";
 	assert(aius_http_parse((const uint8_t *)undeclared_post,
 	                       strlen(undeclared_post), &request) ==
 	       AIUS_HTTP_ERR_MALFORMED);
@@ -1077,7 +1083,7 @@ int main(void)
 	assert(aius_http_parse((const uint8_t *)nope, strlen(nope), &request) == AIUS_HTTP_ERR_ROUTE);
 	parse_ok("GET /api/status HTTP/1.1\r\nHost: device\r\nConnection: close\r\n\r\n",
 	         AIUS_HTTP_ROUTE_STATUS);
-	const char *empty_body = "POST /api/replays/start HTTP/1.0\r\n\r\n{}";
+	const char *empty_body = "POST /api/measure/start HTTP/1.0\r\n\r\n{}";
 	assert(aius_http_parse((const uint8_t *)empty_body, strlen(empty_body), &request) ==
 	       AIUS_HTTP_ERR_MALFORMED);
 	const char *truncated = "GET /api/status HTTP/1.0\r\n";

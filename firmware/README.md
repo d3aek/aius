@@ -27,7 +27,6 @@ dependency, so the identical source runs in host tests and on the Teensy.
 | `lib/aius_dsp/` | 5.1→stereo downmix + biquad EQ output DSP. |
 | `lib/aius_dsp_runtime_config/` | Shared production-model resolver for firmware and native renderers: feature bypass, coefficient design, state reset and meter cadence. |
 | `lib/aius_capability/` | USB capability wire protocol + arena-driven device handler. |
-| `lib/aius_replay/` | Replay service over a caller-supplied `AiusReplayReader`. |
 | `lib/aius_boot/` | Retained boot ledger: generation, checkpoint, reset kind, recovery mode. |
 | `lib/aius_ota/` | Portable OTA image container, staged-upgrade state machine and image-health records, plus the Ed25519 verifier adapter (`aius_ota_ed25519.c`, signature scheme tag 1) behind the injected signature seam, over the verbatim TweetNaCl in `vendor/tweetnacl/`. |
 | `lib/aius_runtime/` | Epoch scheduler + the per-checkpoint budget table. |
@@ -45,7 +44,7 @@ dependency, so the identical source runs in host tests and on the Teensy.
 | `tools/device/` | Simulated device + host runner, including the P6 hidraw transport. |
 | `tools/net/` | HTTP and UDP exercisers for a running optical board. |
 | `tools/dts_vectors/`, `tools/iec_corpus/` | Committed DTS/IEC test corpora + generators. |
-| `tools/replay_samples/` | Additive DTS/AC-3 SD replay-pack generator and AC-3 transport validator. |
+| `tools/iec_fixtures/` | Additive DTS/AC-3 IEC 61937 fixture generator and AC-3 transport validator. |
 | `tools/dcadec_ref/` | dcadec-reference generator for the LFE bit-exactness suite. |
 | `tools/measure_vectors/` | Committed PCM stimulus vectors for the measurement loopback + their generator/validator (preamble-free and loop-coherence obligations asserted at generation, revalidated by the `measure` suite). |
 | `tools/memory/` | Linker-map → per-bank memory report. |
@@ -98,7 +97,7 @@ from `lib/aius_runtime/`:
 | 4 | `NETWORK` | One supervisor step or one adapter operation, never both. |
 | 5 | `HTTP` | One transaction step; at most one SD-backed action is admitted. |
 | 6 | `UDP` | One datagram in, at most one reply out. |
-| 7 | `REPLAY` | Replay refill, and the SD lifecycle driver. |
+| 7 | `SERVICE` | The SD lifecycle driver and the other platform services. |
 | 8 | `SD` | At most one SD primitive. |
 | 9 | `EPOCH_COMPLETE` | Recorded, then the single watchdog feed. |
 
@@ -107,17 +106,17 @@ the feed — which is what makes a wedged call a bounded reset rather than a han
 
 ### The audio clock
 
-**The boot and replay clock run at 48 kHz, and `teensy41-optical` pins that
+**The boot clock runs at 48 kHz, and `teensy41-optical` pins that
 default with
 `-DAUDIO_SAMPLE_RATE_EXACT=48000.0f`.** `AudioStream.h` defaults that macro to
 `44100.0f` behind an `#ifndef`, and `config_spdif3()` derives the whole S/PDIF
 transmit clock tree from it — so the default silently made the optical output
-44.1 kHz while the DTS decoder, the PCM passthrough tag, the DSP config, the meters
-and the replay seam all said 48,000. The audible result was 48 kHz material playing
+44.1 kHz while the DTS decoder, the PCM passthrough tag, the DSP config, and the meters
+all said 48,000. The audible result was 48 kHz material playing
 8.1 % slow, about 1.4 semitones flat, with every counter honestly zero because the
 producer and the consumer both ran off the same wrong clock.
 `optical_main.cpp` still `static_assert`s the boot flag equal to the 48 kHz
-generated model/replay contract, which
+generated model contract, which
 `scripts/build_config.py` generates from `config/optical_dsp.json`.
 
 **Nothing in the audio path resamples.** The portable clock tracker recognizes
@@ -125,8 +124,7 @@ generated model/replay contract, which
 rate; and rate-dependent DSP coefficients and meters use that block rate.
 For live input, checkpoint 7 applies a whole-rate PLL4 plan and then follows the
 source oscillator with boundary-queued numerator trims. The input remains graph
-master. Replay restores the exact 48,000,000 millihertz plan before output takes
-graph ownership. A nominal change closes the physical pad and flushes stale
+master. A nominal change closes the physical pad and flushes stale
 output; a same-nominal trim keeps the carrier and ring continuous while marking
 exactly four 128-frame transmit periods invalid. A block/clock mismatch is
 counted and refused before DSP/output state advances. The `clock` object on
@@ -134,7 +132,7 @@ counted and refused before DSP/output state advances. The `clock` object on
 
 **The engine and codec work units have different sizes.**
 `AUDIO_BLOCK_SAMPLES` is the core default 128 frames and is the *engine* block, so
-`update()` runs at the active rate divided by 128 (375 times/s for replay). A DTS access unit and
+`update()` runs at the active rate divided by 128 (375 times/s at 48 kHz). A DTS access unit and
 `AIUS_PIPELINE_PCM_BLOCK_FRAMES` passthrough block are 512 frames. An AC-3 access
 unit is six 256-frame decode units; its DWT metric is their completed-AU
 aggregate, while partial or abandoned AUs publish no timing result.
@@ -193,7 +191,7 @@ against that key.
 **Durable staging.** `PUT /api/ota/image` drives `aius_ota_absorb` (incremental
 SHA-256, which is what `verify` checks) AND writes each container chunk to
 `/aius/ota-staged.img` through the bounded SD job engine (`AIUS_SD_INSTALL_APPEND_PART`
-at the chunk's file offset, exactly the replay upload); the 200 is the SD job's.
+at the chunk's file offset); the 200 is the SD job's.
 `absorb` hashes at dispatch while the SD write is async, so a chunk whose write
 fails leaves the session hash ahead of the card — which the activation's
 pre-window re-digest catches (below), so a corrupt image faults activation rather
@@ -258,7 +256,7 @@ Since aius-sample-rate-following Phase 4f no HTTP dispatch runs CPU work the
 transmit ring cannot absorb. While live input owns the ring (`live_owns_ring()`
 in `optical_main.cpp`: the ring's gate flag set with the carrier locked), a
 route in an admission class (full status, `GET /api/status/brief`, meters,
-events, the settings `PUT` parses, `GET /api/replays`) whose cost exceeds the
+events, the settings `PUT` parses) whose cost exceeds the
 ring margin answers an immediate `503 audio_busy` with `Retry-After: 1`, and an
 HTTP SD job start is refused the same way. A class's cost is its longest
 stretch between yield points with nested producer passes excluded, a bucketed
@@ -335,7 +333,7 @@ checkpoint was not `EPOCH_COMPLETE` increments the count, and the second
 consecutive one selects **recovery-safe** mode. A changed build id clears both.
 
 In recovery-safe mode the scheduler runs only `USB_RX` and `USB_TX` before
-`EPOCH_COMPLETE`. No network, SD or replay work happens at all, so a board
+`EPOCH_COMPLETE`. No network or SD work happens at all, so a board
 looping on a wedged service still enumerates over USB and can be re-flashed.
 
 The count is cleared by a complete epoch reached at least 10 s after
@@ -357,7 +355,7 @@ straight out of the audio path's headroom. Three rules, all enforced:
   aius-sample-rate-following Phase 4e start; 25,728 B on the plain image; it
   moves with every static addition, so read it from the build); a DTCM
   instance could not fit. The
-  active and pending DSP models, the replay service and the three UDP buffers are
+  active and pending DSP models and the three UDP buffers are
   placed the same way. That zone is the whole stack for both the main loop and
   audio ISR. `enqueue()` uses about 4 kB of frame at the bounded AUDIO
   checkpoint; the ISR now only publishes ingress. Since Phase 4e a nested
@@ -391,9 +389,9 @@ straight out of the audio path's headroom. Three rules, all enforced:
   stack/local zone.
 - **A post-link audio-memory guard**, in `test/memory/verify_target.py`, pins the
   16 KiB OCRAM ingress, the 213.6 KiB DTCM decoder arena, zero OCRAM recorder
-  staging, and a per-env OCRAM free floor (`OCRAM_FREE_FLOORS`: 131,776 B plain
-  and fault, 131,744 B slot-a and slot-b, the Phase 4e start measurements,
-  above the 131,040 B `0x1FFE0` link floor). A floor only rises to a fresh
+  staging, and a per-env OCRAM free floor (`OCRAM_FREE_FLOORS`: 264,768 B plain
+  and fault, 264,736 B slot-a and slot-b, measured after Phase 4i retired
+  replay (+132,992 B), above the 131,040 B `0x1FFE0` link floor). A floor only rises to a fresh
   measurement, so any OCRAM growth in any optical env fails the build.
 
 `scripts/build.sh` prints the per-bank report and fails when a bank is over
@@ -427,7 +425,7 @@ Suites (all build with `-Wall -Wextra -Werror` + ASan/UBSan):
 | `eac3` | E-AC-3 decode differential vs FFmpeg (committed corpus), regression hash, arena/no-alloc steady state, malformed family. |
 | `eac3-fuzz` | E-AC-3 adapter robustness fuzz: seam hunt + random corruption under the termination oracle. |
 | `iec61937`, `iec61937-fuzz` | IEC 61937 parser known-answer + fuzz. |
-| `replay-samples` | Generate additive DTS/AC-3 replay packs, validate AC-3 IEC periods and payloads, and consume them through the production IEC parser, plus the E-AC-3 acceptance unittests (`test_eac3_acceptance.py`). |
+| `iec-fixtures` | Generate additive DTS/AC-3 IEC 61937 fixture packs, validate AC-3 IEC periods and payloads, and consume them through the production IEC parser. |
 | `pipeline` | Classifier + parser→decoder end-to-end, including the AC-3 / E-AC-3 syncframe CRC gate (corpus spans, single-bit flips) and its silent substitution (output-jitter Phase I). |
 | `capability-protocol`, `capability` | USB protocol goldens + sim device round-trip. |
 | `dsp`, `dsp-vectors` | Downmix + EQ known-answer, shared production-model runtime resolution, and the public DSP interface over the DTS corpus. |
@@ -435,7 +433,7 @@ Suites (all build with `-Wall -Wextra -Werror` + ASan/UBSan):
 | `measure` | The measurement loopback's portable core: every capture state-machine edge (both dual-terminal cancel interleavings included) and the sliced sine-fit + Goertzel analysis known answers, with the pure-sine leakage canary whose tolerance is never widened. |
 | `auth` | The SD maintenance token's derivation, firmware side and the host generator together. |
 | `config`, `dsp-config` | The optical DSP config header generator and the runtime feature-flag parser; plus the `PUT /api/dsp/config` validator. |
-| `json` | The one JSON read cursor those two parsers and the replay body reader share: bounded by length, allocation-free, and strict about the value terminators (`,` `}` `]` or end of input) that keep `1 2` and `truex` out. |
+| `json` | The one JSON read cursor those two parsers and the `/api/measure` body reader share: bounded by length, allocation-free, and strict about the value terminators (`,` `}` `]` or end of input) that keep `1 2` and `truex` out. |
 | `net`, `net-runner` | UDP codec + network supervisor oracle; the host-side runner tools. |
 | `rate-runner` | The read-only sample-rate bench collector and pure analyzer, including drift, transition, mismatch, encoded and waveform evidence gates. |
 | `rate-gate-capture` | The host-side optical capture reducers behind gates 2, 4 and 7: the output-rate model and its self-referential marking, the two capture↔status time origins, the amplitude-derived discontinuity detector at the documented ±410 stimulus (held block, 1- and 2-sample slips), the flight-recorder fiducial measurement of `old_rate_output_frames` and its no-transition-captured failure, and arecord's exit/overrun/short-WAV faults. Synthetic waveforms; no board and no ALSA device. |
@@ -444,8 +442,7 @@ Suites (all build with `-Wall -Wextra -Werror` + ASan/UBSan):
 | `flash` | The button-free flash path: HalfKay entry judged by the port going away rather than by an acknowledgement, the image-identity oracle over synthesised Intel HEX, and every fail-closed arm. |
 | `http` | Request parser + the bounded server transaction. |
 | `usb-control` | USB control command parser + runtime transaction. |
-| `replay` | Replay service over a fake reader. |
-| `tx-gate` | The transmit-gate predicate's whole truth table (no carrier and no replay → no output carrier). |
+| `tx-gate` | The transmit-gate predicate's whole truth table (no carrier → no output carrier). |
 | `tx-governor` | The latency governor's window-minimum floor estimator and one-skip trim decision (aius-output-jitter Phase E). |
 | `tx-fill-sensor` | The phase-corrected transmit-ring fill statistic: DMA-position occupancy, 16 sub-window minima, exclusions, torn-read retry and reset (aius-sample-rate-following Phase 3). |
 | `tx-fill-witness` | The transmit ISR's missed-fill detector (same DMA half filled twice = an interrupt a whole period late, so the DMA repeated a stale half) and the ring rebase that stops the miss from standing as permanent latency. |
@@ -476,7 +473,7 @@ Suites (all build with `-Wall -Wextra -Werror` + ASan/UBSan):
 | `web-cache` | The PSRAM web cache (`lib/aius_web_cache`): pad-2 placement and disjointness, per-chunk fill read-back, a publish that reads no chunk, verify order and yields, flipped bits, leases across invalidate, capacity fallback, the listing. |
 | `sd-overlay` | The PSRAM write-behind overlay (`lib/aius_sd_overlay`, Phase 4h) over the real store: latest wins, tombstones, the flush scheduler and its backoff, the card-loss hold, the safe-copy order, the restore decision, and the power-cut model (`lib/aius_sd` against the stateful fake card in `test/sd-overlay/fake_card.c`). |
 | `registry` | The guard on this table: fails when it, the `# Suites:` header in `scripts/test.sh` and that script's `case` arms disagree with the directories under `test/`. |
-| `sd-editor` | The SD-card web pages (status, DSP editor, replay manager, upgrade) as vitest suites at the repo root's `test/sd-editor/`, run with this repo as the vitest root; needs `pnpm` (resolved through the superproject when this repo is a submodule). |
+| `sd-editor` | The SD-card web pages (status, DSP editor, upgrade) as vitest suites at the repo root's `test/sd-editor/`, run with this repo as the vitest root; needs `pnpm` (resolved through the superproject when this repo is a submodule). |
 
 The `dts`/`dts-lfe` suites run against committed reference PCM, so `ffmpeg` /
 `dcadec` are needed only to regenerate the corpora, not to run the suites. This
@@ -555,8 +552,8 @@ the watchdog not resetting in normal operation, SD probe and both config loads,
 the status surface on all three channels, software bootloader entry, the SD
 directory index, DHCP reaching ONLINE on the first network generation, and the
 **audio path end to end** — the DSP runs, `GET /api/meters` publishes measured
-per-block cycles, and replay plays continuously across loop wraps at 48 kHz with
-zero overruns and zero underruns.
+per-block cycles, and the SD replay source (since retired) played continuously across loop wraps at
+48 kHz with zero overruns and zero underruns.
 
 **`POST /api/reboot` is deliberately not in that list.** It was, and the claim was
 wrong: the board reset but never delivered the response, because the reset fired
@@ -572,7 +569,7 @@ The S/PDIF input has confirmed carrier plus live PCM passthrough. Live DTS
 decode passed for 1,857 seconds on the tagged +438 ppm clock-isolation image.
 On exact production image `bc05232880a5+teensy41-optical`, bounded AC-3 also
 passes both source paths: 120 seconds from CM6206 IEC958 and 120 seconds from
-clock-coherent SD replay, with continuous decode/output progress, no
+clock-coherent SD replay (since retired), with continuous decode/output progress, no
 parse/decode rejection, AUDIO overrun, drop, abandon or watchdog reset, and
 completed-AU DWT measurements around 1.114 million cycles. The on-device
 committed-wire oracle identifies all six 5.1 channels with 100.52 dB or better
@@ -586,7 +583,7 @@ Three HTTP interop defects are open, all found by pointing a non-browser client
 at the board and all making the control surface work only for the exact byte
 shapes the bundled browser surface happens to emit: request header names are
 matched case-sensitively against `X-Aius-SD-Auth`, a request whose body arrives
-in a second TCP segment gets no response at all, and the replay body parser
+in a second TCP segment gets no response at all, and the `/api/measure` body parser
 rejects the insignificant JSON whitespace `json.dumps` emits by default. Until
 they land, drive the board with compact JSON in a single write and exact header
 case.

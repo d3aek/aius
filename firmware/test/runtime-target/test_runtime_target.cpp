@@ -837,7 +837,7 @@ struct PlatformFake {
 	bool reset_capture_ok;
 	bool metrics_ok;
 	bool udp_ok;
-	bool replay_ok;
+	bool service_ok;
 	bool audio_ok;
 	AiusRuntimeTeensyBootStatus status;
 	uint16_t checkpoints[MAX_TRACE];
@@ -849,7 +849,7 @@ struct PlatformFake {
 	unsigned reset_capture_calls;
 	unsigned metrics_calls;
 	unsigned udp_calls;
-	unsigned replay_calls;
+	unsigned service_calls;
 	unsigned audio_calls;
 };
 
@@ -907,22 +907,22 @@ static bool platform_udp(void *context, const AiusRuntimeBudget *budget,
 	return g_platform.udp_ok;
 }
 
-/* Checkpoint 7 is where optical_main.cpp's platform_replay runs the SD
+/* Checkpoint 7 is where optical_main.cpp's platform_service runs the SD
  * lifecycle (root starts behind sd_fifo_defer(), the commit arm, the orphan
  * staging drop); a case that models that composition installs it here.
  * reset_world() clears it. */
-static void (*g_replay_hook)(void);
+static void (*g_service_hook)(void);
 
-static bool platform_replay(void *context, const AiusRuntimeBudget *budget,
+static bool platform_service(void *context, const AiusRuntimeBudget *budget,
                             uint32_t now_ms)
 {
 	(void)now_ms;
 	CHECK(context == g_platform.expected_context);
-	record_budget(budget, AIUS_BOOT_CHECKPOINT_REPLAY);
-	g_platform.replay_calls++;
-	if (g_replay_hook != nullptr)
-		g_replay_hook();
-	return g_platform.replay_ok;
+	record_budget(budget, AIUS_BOOT_CHECKPOINT_SERVICE);
+	g_platform.service_calls++;
+	if (g_service_hook != nullptr)
+		g_service_hook();
+	return g_platform.service_ok;
 }
 
 static bool platform_audio(void *context, const AiusRuntimeBudget *budget,
@@ -988,7 +988,7 @@ static AiusRuntimeTeensyPlatformOps platform_ops(void)
 	ops.reset_capture = platform_reset_capture;
 	ops.metrics = platform_metrics;
 	ops.udp = platform_udp;
-	ops.replay = platform_replay;
+	ops.service = platform_service;
 	ops.audio = platform_audio;
 	ops.checkpoint = platform_checkpoint;
 	ops.feed_watchdog = platform_feed;
@@ -1011,6 +1011,7 @@ struct AppFake {
 	size_t usb_payload_length;
 	unsigned status_calls;
 	unsigned reboot_calls;
+	unsigned dir_calls; /* app_read_directory invocations */
 	unsigned usb_payload_calls;
 	/* Recorder read lease. `recorder_read_ok` flips the read from its
 	 * default refusal to a 200 that borrows recorder_body, which is what
@@ -1029,10 +1030,6 @@ struct AppFake {
 	bool stage_seen;
 	unsigned stage_commits;
 	unsigned stage_drops;
-	/* Phase 4g: a replay start refused while the fill walk is incomplete,
-	 * and the direct-card replay listing's calls. */
-	bool replay_fill_busy;
-	unsigned replay_list_calls;
 };
 
 static AppFake g_app;
@@ -1100,20 +1097,6 @@ static size_t app_write_meters(void *context, uint8_t *body, size_t capacity)
 	return write_text("{\"meters\":true}", body, capacity);
 }
 
-static size_t app_write_replay_status(void *context, uint8_t *body,
-                                      size_t capacity)
-{
-	(void)context;
-	return write_text("{\"replay\":false}", body, capacity);
-}
-
-static size_t app_write_replay_list(void *context, uint8_t *body, size_t capacity)
-{
-	(void)context;
-	g_app.replay_list_calls++;
-	return write_text("{\"replays\":[]}", body, capacity);
-}
-
 static AiusOpticalAppStoreResult app_store_public_config(void *context,
                                                         const uint8_t *body,
                                                         size_t length)
@@ -1138,27 +1121,20 @@ static AiusOpticalAppStoreResult app_store_dsp_config(void *context,
 	return AIUS_OPTICAL_APP_STORE_ACCEPTED;
 }
 
-static AiusOpticalAppReplayResult app_replay_start(void *context, const char *id,
-                                                  bool loop)
+static AiusOpticalAppDirResult app_read_directory(void *context,
+                                                  const char *path,
+                                                  AiusOpticalAppDirBatch *batch)
 {
 	(void)context;
-	(void)id;
-	(void)loop;
-	return g_app.replay_fill_busy ? AIUS_OPTICAL_APP_REPLAY_FILL_BUSY
-	                              : AIUS_OPTICAL_APP_REPLAY_OK;
-}
-
-static AiusOpticalAppReplayResult app_replay_delete(void *context,
-                                                   const char *id)
-{
-	(void)context;
-	(void)id;
-	return AIUS_OPTICAL_APP_REPLAY_OK;
-}
-
-static void app_replay_stop(void *context)
-{
-	(void)context;
+	(void)path;
+	g_app.dir_calls++;
+	if (batch->capacity > 0u) {
+		memset(&batch->entries[0], 0, sizeof(batch->entries[0]));
+		memcpy(batch->entries[0].name, "probe.txt", 10u);
+		batch->entries[0].size_bytes = 42u;
+		batch->count = 1u;
+	}
+	return AIUS_OPTICAL_APP_DIR_OK;
 }
 
 static void app_set_test_running(void *context, bool running)
@@ -1300,13 +1276,9 @@ static AiusOpticalApp app_table(void)
 	app.write_events = app_write_events;
 	app.write_dsp_config = app_write_dsp_config;
 	app.write_meters = app_write_meters;
-	app.write_replay_status = app_write_replay_status;
-	app.write_replay_list = app_write_replay_list;
 	app.store_public_config = app_store_public_config;
 	app.store_dsp_config = app_store_dsp_config;
-	app.replay_start = app_replay_start;
-	app.replay_delete = app_replay_delete;
-	app.replay_stop = app_replay_stop;
+	app.read_directory = app_read_directory;
 	app.set_test_running = app_set_test_running;
 	app.clear_counters = app_clear_counters;
 	app.request_reboot = app_request_reboot;
@@ -1341,7 +1313,7 @@ static void reset_world(bool recovery_safe)
 	memset(&g_net, 0, sizeof(g_net));
 	memset(&g_app, 0, sizeof(g_app));
 	memset(&g_publish, 0, sizeof(g_publish));
-	g_replay_hook = nullptr;
+	g_service_hook = nullptr;
 
 	g_cdc.expected_context = &g_cdc;
 	/* platform_ops() ran before the memsets above cleared the fake. */
@@ -1352,7 +1324,7 @@ static void reset_world(bool recovery_safe)
 	g_platform.reset_capture_ok = true;
 	g_platform.metrics_ok = true;
 	g_platform.udp_ok = true;
-	g_platform.replay_ok = true;
+	g_platform.service_ok = true;
 	g_platform.audio_ok = true;
 	g_platform.checkpoint_count = 0u;
 	g_platform.budget_count = 0u;
@@ -1360,7 +1332,7 @@ static void reset_world(bool recovery_safe)
 	g_platform.reset_capture_calls = 0u;
 	g_platform.metrics_calls = 0u;
 	g_platform.udp_calls = 0u;
-	g_platform.replay_calls = 0u;
+	g_platform.service_calls = 0u;
 	g_platform.audio_calls = 0u;
 	g_platform.status.boot_generation = 11u;
 	g_platform.status.reset_source = 0x20u;
@@ -1884,7 +1856,7 @@ static void test_service_budget_selectivity(void)
 	CHECK(g_platform.reset_capture_calls == 1u);
 	CHECK(g_platform.metrics_calls == 1u);
 	CHECK(g_platform.udp_calls == 1u);
-	CHECK(g_platform.replay_calls == 1u);
+	CHECK(g_platform.service_calls == 1u);
 	/* Two AUDIO dispatches per epoch since output-jitter Phase B
 	 * (f7e770cf0): the ring is topped up on BOTH sides of SD. */
 	CHECK(g_platform.audio_calls == 2u);
@@ -1896,7 +1868,7 @@ static void test_service_budget_selectivity(void)
 	CHECK(g_platform.budget_checkpoints[1] ==
 	      AIUS_BOOT_CHECKPOINT_METRICS);
 	CHECK(g_platform.budget_checkpoints[2] == AIUS_BOOT_CHECKPOINT_UDP);
-	CHECK(g_platform.budget_checkpoints[3] == AIUS_BOOT_CHECKPOINT_REPLAY);
+	CHECK(g_platform.budget_checkpoints[3] == AIUS_BOOT_CHECKPOINT_SERVICE);
 	CHECK(g_platform.budget_checkpoints[4] == AIUS_BOOT_CHECKPOINT_AUDIO);
 	CHECK(g_platform.budget_checkpoints[5] == AIUS_BOOT_CHECKPOINT_AUDIO);
 	CHECK(g_platform.budgets[0]->service_budget_ms == 250u);
@@ -4309,7 +4281,7 @@ static void test_epoch_traces(void)
 	CHECK(g_platform.reset_capture_calls == 1u);
 	CHECK(g_platform.metrics_calls == 1u);
 	CHECK(g_platform.udp_calls == 1u);
-	CHECK(g_platform.replay_calls == 1u);
+	CHECK(g_platform.service_calls == 1u);
 	CHECK(g_platform.audio_calls == 2u);
 	CHECK(g_runtime.last_checkpoint ==
 	      AIUS_BOOT_CHECKPOINT_EPOCH_COMPLETE);
@@ -4356,12 +4328,12 @@ static void test_epoch_traces(void)
 	g_platform.udp_ok = false;
 	CHECK(!run_epoch(now_ms++));
 	CHECK(g_platform.checkpoint_count == 7u);
-	CHECK(g_platform.replay_calls == 0u);
+	CHECK(g_platform.service_calls == 0u);
 	CHECK(g_platform.feeds == 0u);
 
 	current_key = "epoch.failure.7";
 	reset_world(false);
-	g_platform.replay_ok = false;
+	g_platform.service_ok = false;
 	CHECK(!run_epoch(now_ms++));
 	CHECK(g_platform.checkpoint_count == 8u);
 	CHECK(g_platform.feeds == 0u);
@@ -4742,7 +4714,7 @@ static void test_http_admission(void)
 	admit_reset();
 	g_root_gate.hold = true;
 	g_root_gate.started = false;
-	g_replay_hook = root_gate_service;
+	g_service_hook = root_gate_service;
 	now_ms = 1u;
 	drive_epochs(&now_ms, 4u);
 	CHECK(!g_root_gate.started);
@@ -4766,7 +4738,7 @@ static void test_http_admission(void)
 		CHECK(epochs <= 3u);
 		CHECK(g_sd.primitive_calls >= 2u);
 	}
-	g_replay_hook = nullptr;
+	g_service_hook = nullptr;
 
 	current_key = "admit.http-steps-not-deferred";
 	/* A started HTTP job steps every epoch to its 200. */
@@ -4824,7 +4796,7 @@ static void test_http_admission(void)
 	now_ms = 1u;
 	bring_online(&now_ms);
 	g_app.store_accept = true;
-	g_replay_hook = staging_service;
+	g_service_hook = staging_service;
 	g_admit.sd_verdict = AIUS_HTTP_VERDICT_ADMIT;
 	g_admit.sd_defer_left = 1000u;
 	admit_send(dsp_put_request);
@@ -4841,7 +4813,7 @@ static void test_http_admission(void)
 	CHECK(g_app.stage_drops == 1u);
 	CHECK(g_app.stage_commits == 0u);
 	CHECK(g_sd.open_calls == 0u);
-	g_replay_hook = nullptr;
+	g_service_hook = nullptr;
 
 	current_key = "admit.deferred-upload-commits";
 	/* The same upload held five consults then admitted: never dropped (not
@@ -4851,7 +4823,7 @@ static void test_http_admission(void)
 	now_ms = 1u;
 	bring_online(&now_ms);
 	g_app.store_accept = true;
-	g_replay_hook = staging_service;
+	g_service_hook = staging_service;
 	g_admit.sd_verdict = AIUS_HTTP_VERDICT_ADMIT;
 	g_admit.sd_defer_left = 5u;
 	admit_send(dsp_put_request);
@@ -4861,7 +4833,7 @@ static void test_http_admission(void)
 	CHECK(g_app.stage_commits == 1u);
 	CHECK(!g_app.staged);
 	CHECK(sink_contains("HTTP/1.0 200 OK"));
-	g_replay_hook = nullptr;
+	g_service_hook = nullptr;
 
 	current_key = "admit.rejected-start-staging";
 	/* Phase 4g carried-in pin: an admitted upload whose aius_sd_job_start is
@@ -4872,7 +4844,7 @@ static void test_http_admission(void)
 	now_ms = 1u;
 	bring_online(&now_ms);
 	g_app.store_accept = true;
-	g_replay_hook = staging_service;
+	g_service_hook = staging_service;
 	g_admit.sd_verdict = AIUS_HTTP_VERDICT_ADMIT;
 	g_runtime.storage.job.action_ids_exhausted = true;
 	admit_send(dsp_put_request);
@@ -4899,7 +4871,7 @@ static void test_http_admission(void)
 		CHECK(g_sd.primitive_calls == 0u);
 		CHECK(g_runtime.storage.job.state == AIUS_SD_FAILED);
 	}
-	g_replay_hook = nullptr;
+	g_service_hook = nullptr;
 	g_admit.armed = false; /* later cases see the admit-all default again */
 }
 
@@ -4908,28 +4880,24 @@ static void test_http_admission(void)
  * consult, beside a fill file). While held the application sees nothing,
  * nothing is written and the transaction is not stepped; each HTTP epoch asks
  * again with the transaction's own parsed request; the admitted dispatch
- * answers once and counts once. Audit finding 2: a replay start the
- * composition refuses for the fill walk answers 503 fill_busy, Retry-After. */
+ * answers once and counts once. */
 static void test_held_dispatch(void)
 {
 	static const char *const keys[] = {
-		"held.route-defer-holds", "held.defer-then-shed", "held.replay-fill-busy"
+		"held.route-defer-holds", "held.defer-then-shed"
 	};
 	static const char *const list_request =
-		"GET /api/replays HTTP/1.1\r\nHost: aius\r\n\r\n";
-	static const char *const start_request =
-		"POST /api/replays/start HTTP/1.1\r\nHost: aius\r\n"
-		"X-Aius-SD-Auth: token\r\nContent-Type: application/json\r\n"
-		"Content-Length: 13\r\n\r\n{\"id\":\"take\"}";
+		"GET /sd/www/ HTTP/1.1\r\nHost: aius\r\n\r\n";
 	uint32_t now_ms;
 
-	validate_unique_keys("registry.held", keys, ARRAY_COUNT(keys), 3u);
+	validate_unique_keys("registry.held", keys, ARRAY_COUNT(keys), 2u);
 
 	current_key = "held.route-defer-holds";
 	admit_reset();
 	now_ms = 1u;
 	bring_online(&now_ms);
 	g_app.sd_ready = true;
+	g_app.dir_calls = 0u;
 	g_admit.route_verdict = AIUS_HTTP_VERDICT_ADMIT;
 	g_admit.route_defer_left = 4u;
 	admit_send(list_request);
@@ -4939,7 +4907,7 @@ static void test_held_dispatch(void)
 			CHECK(run_epoch(now_ms++));
 	}
 	CHECK(g_admit.route_queries == 1u);
-	CHECK(g_admit.last_route == AIUS_HTTP_ROUTE_REPLAYS);
+	CHECK(g_admit.last_route == AIUS_HTTP_ROUTE_SD_FILE);
 	CHECK(g_admit.last_reads_card);
 	CHECK(g_runtime.network_http.deferred_dispatch_present);
 	CHECK(g_runtime.network_http.http.state == AIUS_HTTP_TX_DISPATCH);
@@ -4948,16 +4916,17 @@ static void test_held_dispatch(void)
 		CHECK(g_runtime.network_http.deferred_dispatch_present);
 		CHECK(!g_runtime.network_http.http_stepped);
 		CHECK(g_runtime.network_http.http.state == AIUS_HTTP_TX_DISPATCH);
+		CHECK(g_app.dir_calls == 0u);
 	}
 	CHECK(g_admit.route_queries == 4u);
-	CHECK(g_app.replay_list_calls == 0u);
 	CHECK(!sink_contains("HTTP/1.0"));
+	CHECK(g_app.dir_calls == 0u);
 	drive_epochs(&now_ms, 12u);
 	CHECK(g_admit.route_queries == 5u);
 	CHECK(!g_runtime.network_http.deferred_dispatch_present);
-	CHECK(g_app.replay_list_calls == 1u);
+	CHECK(g_app.dir_calls == 1u);
 	CHECK(sink_contains("HTTP/1.0 200 OK"));
-	CHECK(sink_contains("{\"replays\":[]}"));
+	CHECK(sink_contains("probe.txt"));
 	CHECK(g_runtime.network_http.http_requests == 1u);
 	CHECK(g_admit.shed_notes == 0u);
 
@@ -4966,35 +4935,18 @@ static void test_held_dispatch(void)
 	now_ms = 1u;
 	bring_online(&now_ms);
 	g_app.sd_ready = true;
+	g_app.dir_calls = 0u;
 	g_admit.route_verdict = AIUS_HTTP_VERDICT_SHED;
 	g_admit.route_defer_left = 2u;
 	admit_send(list_request);
 	drive_epochs(&now_ms, 14u);
 	CHECK(g_admit.route_queries == 3u);
 	CHECK(!g_runtime.network_http.deferred_dispatch_present);
-	CHECK(g_app.replay_list_calls == 0u);
+	CHECK(g_app.dir_calls == 0u);
 	CHECK(sink_contains("HTTP/1.0 503"));
 	CHECK(sink_contains("{\"ok\":false,\"error\":\"audio_busy\"}"));
 	CHECK(g_admit.shed_notes == 1u);
 	CHECK(g_runtime.network_http.http_requests == 1u);
-
-	current_key = "held.replay-fill-busy";
-	admit_reset();
-	now_ms = 1u;
-	bring_online(&now_ms);
-	g_app.sd_ready = true;
-	g_app.auth_ok = true;
-	g_app.replay_fill_busy = true;
-	g_admit.route_verdict = AIUS_HTTP_VERDICT_ADMIT;
-	admit_send(start_request);
-	drive_epochs(&now_ms, 20u);
-	CHECK(g_admit.route_queries == 1u);
-	CHECK(g_admit.last_route == AIUS_HTTP_ROUTE_REPLAYS_START);
-	CHECK(!g_admit.last_reads_card);
-	CHECK(sink_contains("HTTP/1.0 503"));
-	CHECK(sink_contains("Retry-After: 1\r\n"));
-	CHECK(sink_contains("{\"ok\":false,\"error\":\"fill_busy\"}"));
-	CHECK(g_admit.shed_notes == 0u);
 	g_admit.armed = false;
 }
 
@@ -5515,7 +5467,7 @@ static void test_sd_busy_and_store(void)
 		"busy.store-skips-hook", "store.config-load-waits"
 	};
 	static const char *const list_request =
-		"GET /api/replays HTTP/1.1\r\nHost: aius\r\n\r\n";
+		"GET /sd/www/ HTTP/1.1\r\nHost: aius\r\n\r\n";
 	static const char *const download_request =
 		"GET /sd/www/data.bin HTTP/1.1\r\nHost: aius\r\n\r\n";
 	/* An UPLOAD start the app builds today; store_flip_hook turns it into
@@ -5534,13 +5486,14 @@ static void test_sd_busy_and_store(void)
 		now_ms = 1u;
 		bring_online(&now_ms);
 		g_app.sd_ready = true;
+		g_app.dir_calls = 0u;
 		g_admit.route_verdict = AIUS_HTTP_VERDICT_BUSY;
 		g_admit.route_defer_left = held != 0u ? 2u : 0u;
 		admit_send(list_request);
 		drive_epochs(&now_ms, 14u);
+		CHECK(g_app.dir_calls == 0u);
 		CHECK(g_admit.route_queries == (held != 0u ? 3u : 1u));
 		CHECK(!g_runtime.network_http.deferred_dispatch_present);
-		CHECK(g_app.replay_list_calls == 0u);
 		CHECK(sink_contains("HTTP/1.0 503"));
 		CHECK(sink_contains("{\"ok\":false,\"error\":\"sd_busy\"}"));
 		CHECK(!sink_contains("audio_busy"));
@@ -5606,10 +5559,10 @@ static void test_sd_busy_and_store(void)
 		g_admit.sd_verdict = AIUS_HTTP_VERDICT_DEFER;
 		g_admit.sd_defer_left = 1000u;
 		card_before = g_sd.primitive_calls;
-		g_replay_hook = store_flip_hook;
+		g_service_hook = store_flip_hook;
 		admit_send(put_request);
 		drive_epochs(&now_ms, 40u);
-		g_replay_hook = nullptr;
+		g_service_hook = nullptr;
 		CHECK(g_admit.sd_queries == 0u);
 		CHECK(!g_runtime.network_http.deferred_start_present);
 		CHECK(g_store.opens == 1u);

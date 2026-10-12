@@ -17,8 +17,8 @@ extern "C" {
  * data[256..383] of a 128-sample block: 512 bytes past the pair, across the
  * next pool blocks' headers. Under the snapshot's own design that is latent --
  * the same ISR calls update_all() first, update() swaps the pair, and offset is
- * 0 at every copy. Aius breaks that assumption on purpose: replay hands
- * update_all() to the transmit ISR (replay_clock_service), and with the DPLL
+ * 0 at every copy. Aius broke that assumption on purpose while a
+ * replay source handed update_all() to the transmit ISR (since retired), and with the DPLL
  * unlocked the receive DMA storms at ~6.5x the block rate (2,465 update calls
  * per second measured on 2026-09-03), so several receive interrupts land
  * between two update() calls, the second writes out of bounds, and the

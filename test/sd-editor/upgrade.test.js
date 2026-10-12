@@ -27,7 +27,7 @@
  *                          OK); 404 {"error":"ota_absent"} when OTA is compiled out.
  *   PUT  /api/ota/image    container-absolute Content-Range chunks answering
  *                          {"ok":true,"next_offset":N}, the last one
- *                          {"ok":true} -- the same shape /sd/replays/<id> uses.
+ *                          {"ok":true} -- the same shape any Content-Range upload uses.
  *   POST /api/ota/verify   digest then signature, refusals latched in
  *                          fault / verifier_fault rather than only in the
  *                          response, so the page must READ THE POLL.

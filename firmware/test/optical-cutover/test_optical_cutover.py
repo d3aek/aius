@@ -13,8 +13,8 @@ Two independently runnable groups, selected with `--group`:
                       one runtime epoch, the watchdog is armed once at the
                       pinned 8 s interval and fed exactly once per epoch, all
                       three status channels (UDP, status JSON, USB ID) carry
-                      the recovery state, and the replay refill path performs
-                      no direct SD primitive.
+                      the recovery state, and the service checkpoint
+                      (platform_service) performs no direct SD primitive.
   --group absence     constructs the post-cutover file must NOT contain: a
                       static-address fallback, raw FNET access, the
                       listener-rebind globals, a blocking socket write loop,
@@ -43,21 +43,6 @@ DSP_RUNTIME_CONFIG = (
     / "aius_dsp_runtime_config"
     / "src"
     / "aius_dsp_runtime_config.c"
-)
-
-# The replay refill's sizing is spread across three libraries that NOTHING
-# compiles together: the portable SD engine caps a job's transfer slice, the
-# replay seam sizes its ring and refill against that slice, and optical_main.cpp
-# declares the buffer whose extent is the slice. Each builds cleanly on its own
-# while disagreeing with the other two, and the disagreement is only observable
-# on the card -- which is exactly how a replay that produced NOTHING shipped
-# past five green suites and a linking image. These are the files that check
-# reads.
-REPLAY_SIZING_SOURCES = (
-    Path("src") / "optical_main.cpp",
-    Path("lib") / "aius_sd" / "src" / "aius_sd.c",
-    Path("lib") / "aius_replay" / "include" / "aius_replay.h",
-    Path("src") / "aius_runtime_storage.h",
 )
 
 SETUP_MARKER = "void setup(void)"
@@ -300,7 +285,6 @@ FORBIDDEN_IN_LOOP = (
     "service_usb_control(",
     "supervise_network_link(",
     "Ethernet.maintain(",
-    "aius_replay_service_refill(",
     "watchdog_feed(",
 )
 
@@ -900,38 +884,6 @@ def assert_usb_id_carries_recovery_keys(text):
     )
 
 
-# Phase 14c: the replay path holds no card handle of its own.
-#
-# Nothing else can catch a regression here. No native suite compiles
-# optical_main.cpp, and the failure this prevents is silent on the bench: a
-# replay that reads the card directly keeps a file open across epochs, and every
-# portable SD job begins with SD.begin(BUILTIN_SDCARD), so the next config PUT,
-# download or probe re-mounts the volume underneath it. The replay then reads
-# from a handle whose volume moved, which sounds like a glitch rather than a
-# fault.
-#
-# The scan is by function NAME rather than by an enumerated list, so a replay
-# function added later is covered by construction rather than by remembering to
-# add it here.
-REPLAY_FUNCTION_NAME = re.compile(r"replay", re.IGNORECASE)
-
-# Replay functions that legitimately still reach the card directly, each with the
-# reason. Both are HTTP-context routes that Phase 14c does not own: they stat and
-# enumerate rather than stream, and the portable SD engine has no directory job
-# to move the listing onto. Naming them keeps the carve-out reviewable -- any
-# OTHER replay function reaching the card still fails.
-#
-# Exempt from the bounded JOB, never from being bounded at all:
-# assert_replay_card_walks_are_bounded() below holds exactly these two to the
-# rule app_read_directory() establishes. Phase 14d found the exemption had been
-# read as a licence -- the listing walked /aius/replays with no cap and no
-# exclusion -- which is why the second check exists beside this set rather than
-# the set being trusted on its own.
-REPLAY_SD_EXEMPT = {
-    "app_replay_delete": "DELETE /api/replays stats and removes the file",
-    "http_replay_list_json": "GET /api/replays enumerates /aius/replays",
-}
-
 # A direct card primitive: an `SD.<method>(` call, or a file-handle method that
 # only an owned `File` has.
 SD_PRIMITIVE = re.compile(
@@ -940,366 +892,126 @@ SD_PRIMITIVE = re.compile(
     r"(?:open|read|write|seek|close|truncate|size)\s*\("
 )
 
-# The refill must be the portable bounded job, not an ad-hoc read loop. Asserted
-# positively so the check cannot pass by the replay path having no I/O at all.
-REPLAY_REFILL_JOB = "AIUS_SD_JOB_REPLAY_REFILL"
-REPLAY_REQUIRED_FUNCTIONS = ("platform_replay",)
-
-
-def assert_replay_path_has_no_direct_sd(text):
-    definitions = function_definitions(text)
-    scanned = {
-        name: body
-        for name, body in definitions.items()
-        if REPLAY_FUNCTION_NAME.search(name) and name not in REPLAY_SD_EXEMPT
-    }
-    missing = [
-        name for name in REPLAY_REQUIRED_FUNCTIONS if name not in scanned
-    ]
-    assert not missing, (
-        f"replay functions {missing!r} were not found, so this check would "
-        "pass without scanning the refill path at all"
-    )
-    offenders = {}
-    for name, body in scanned.items():
-        match = SD_PRIMITIVE.search(without_comments_and_literals(body))
-        if match is not None:
-            offenders[name] = match.group(0).strip()
-    assert not offenders, (
-        f"the replay path calls a card primitive directly: {offenders!r}. "
-        "A replay read must go through the bounded "
-        f"{REPLAY_REFILL_JOB} job, which opens and closes inside itself, so no "
-        "replay handle can survive the SD.begin() every other job performs"
-    )
-    named = "".join(scanned.values())
-    assert REPLAY_REFILL_JOB in without_comments_and_literals(named), (
-        f"no replay function names {REPLAY_REFILL_JOB}, so nothing shows the "
-        "refill goes through the bounded SD job rather than some other read"
-    )
-
-
-# The two card walks the exemption above allows, and the bound each must keep.
-#
-# `app_read_directory` is the model: it caps its raw reads at
-# AIUS_OPTICAL_APP_INDEX_SCAN_MAX and the dispatcher calls it only when
-# app_sd_busy() is false. The replay listing had neither -- a `for (;;)
-# openNextFile()` that ran to the end of a directory of unknown size inside one
-# epoch, on a card whose library is synchronous and uncancellable. That is an 8 s
-# watchdog reset waiting for a big enough replays directory, and it is the kind
-# of defect nothing else in this repo can catch: no native suite compiles
-# optical_main.cpp, so the bound is only observable as text.
-#
-# Two rules, both asserted:
-#   - every loop over the card terminates on the scan cap, not on the directory;
-#   - a listing that stopped on either bound SAYS SO, because a truncated
-#     listing that reads as a complete one is a wrong answer rather than a
-#     refused one.
-# The exclusion itself (503 sd_busy) is dispatcher behaviour and is proven for
-# real in the optical-app suite, which drives the routes against a fake whose
-# sd_busy it controls; only the bound is a property of this file's text.
-REPLAY_WALK_SCAN_CAP = "AIUS_OPTICAL_APP_INDEX_SCAN_MAX"
-REPLAY_WALK_TRUNCATION_FIELD = r"\"truncated\""
-REPLAY_LIST_FUNCTION = "http_replay_list_json"
-REPLAY_DELETE_FUNCTION = "app_replay_delete"
-
-
-def assert_replay_card_walks_are_bounded(text):
-    definitions = function_definitions(text)
-    missing = [
-        name
-        for name in (REPLAY_LIST_FUNCTION, REPLAY_DELETE_FUNCTION)
-        if name not in definitions
-    ]
-    assert not missing, (
-        f"the exempt card walks {missing!r} were not found, so this check would "
-        "pass without reading either bound"
-    )
-
-    listing = definitions[REPLAY_LIST_FUNCTION]
-    headers = loop_headers(without_comments_and_literals(listing))
-    assert headers, (
-        f"{REPLAY_LIST_FUNCTION} enumerates the card but contains no loop at "
-        "all, so this check has nothing to bound -- the listing has moved "
-        "somewhere this check no longer sees"
-    )
-    unbounded = [
-        header.strip() for header in headers if REPLAY_WALK_SCAN_CAP not in header
-    ]
-    assert not unbounded, (
-        f"{REPLAY_LIST_FUNCTION} loops over the card without "
-        f"{REPLAY_WALK_SCAN_CAP} in the condition: {unbounded!r}. An unbounded "
-        "walk runs to the end of a directory of unknown size inside a single "
-        "epoch, and the SD library cannot be cancelled once it has started"
-    )
-    assert REPLAY_WALK_TRUNCATION_FIELD in without_comments(listing), (
-        f"{REPLAY_LIST_FUNCTION} never emits a {REPLAY_WALK_TRUNCATION_FIELD} "
-        "field, so a listing its own bound cut short is indistinguishable from "
-        "a complete one -- which turns a refusal into a wrong answer"
-    )
-
-    delete_headers = loop_headers(
-        without_comments_and_literals(definitions[REPLAY_DELETE_FUNCTION])
-    )
-    assert not delete_headers, (
-        f"{REPLAY_DELETE_FUNCTION} has grown a loop: {delete_headers!r}. Its "
-        "card cost is bounded by being a constant two primitives, and a loop "
-        "makes it a scan with no cap"
-    )
-
-
-# The replay refill's sizing, checked across the three libraries that own it.
-#
-# WHY THIS CHECK EXISTS. The replay refill was measured on the board running at
-# 65 % of realtime. The fix sized the ring, the watermark, the refill and the
-# job's transfer buffer together and raised the transfer buffer to 8 KB so one
-# refill would be one read primitive. Every native suite stayed green, the image
-# linked, all banks fit -- and the replay produced NOTHING on the board, because
-# aius_sd.c caps a job's transfer capacity at AIUS_SD_MAX_TRANSFER (512) and
-# validate_request() rejects a larger one with AIUS_SD_FAULT_CAPACITY before the
-# job emits its first action. No mount, no open, no read, one decoder error, and
-# a service parked in ERROR that never asks again.
-#
-# Nothing could have caught that. The engine's cap is a #define private to
-# aius_sd.c, so no translation unit sees it beside the replay constants; the
-# replay suite links no SD engine; the runtime-target suite links the engine but
-# not optical_main.cpp's buffer; and the target build only proves the image
-# fits. The invariant is real and cross-library, so it is checked here, as text,
-# because text is the only place all three are visible at once.
-#
-# It is a genuinely weaker check than a compile-time assertion and it is used
-# only where a compile-time one is impossible: the two guards optical_main.cpp
-# CAN express (`slice <= AIUS_REPLAY_DELIVER_MAX_BYTES` and
-# `slice <= AIUS_RUNTIME_STORAGE_TRANSFER`) stay static_asserts there, per
-# §Convention enforcement.
-NUMERIC_DEFINE = re.compile(
-    r"^[ \t]*#[ \t]*define[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]+"
-    r"([0-9]+)[uU]?[ \t]*$",
-    re.MULTILINE,
+# Checkpoint 7 (SERVICE; REPLAY until Phase 4i, same id 7 and budget row). Its
+# services run in this order: the SD lifecycle (with 4g's fill walk) before
+# 4j's idle DSP apply, the idle apply before the rate service (closure S1), the
+# rate service before the gate judges it, and the recorder drain last, after
+# the gate it consumes.
+SERVICE_CHECKPOINT_MARKER = (
+    "static FLASHMEM bool platform_service(void *, const AiusRuntimeBudget *budget,"
 )
-REPLAY_TRANSFER_DECL = re.compile(
-    r"\bg_replay_transfer\s*\[\s*([A-Za-z_][A-Za-z0-9_]*|[0-9]+)[uU]?\s*\]"
-)
-SD_TRANSFER_CAP = "AIUS_SD_MAX_TRANSFER"
-REPLAY_SIZING_REQUIRED = (
-    SD_TRANSFER_CAP,
-    "AIUS_REPLAY_WORD_RING_CAPACITY",
-    "AIUS_REPLAY_START_WATERMARK_WORDS",
-    "AIUS_REPLAY_REFILL_MAX_BYTES",
-    "AIUS_REPLAY_DELIVER_MAX_BYTES",
-)
-# The runtime budget field the refill must NOT read. It is documented in bytes,
-# consumed as bytes at the UDP checkpoint, and was consumed as WORDS here --
-# which silently halved every planned refill against constants this seam
-# believed it owned.
-RUNTIME_RX_BUDGET_FIELD = "max_rx_bytes"
-REPLAY_BUDGET_FREE_FUNCTIONS = ("replay_refill_service", "platform_replay")
-
-
-def read_replay_sizing_sources():
-    return "\n".join(
-        (FIRMWARE_ROOT / relative).read_text()
-        for relative in REPLAY_SIZING_SOURCES
-    )
-
-
-def _resolve_extent(token, defines):
-    if token.isdigit():
-        return int(token)
-    assert token in defines, (
-        f"g_replay_transfer is declared with extent {token!r}, which is not a "
-        "plain numeric #define in any source this check reads, so its real size "
-        "cannot be compared against the SD engine's cap"
-    )
-    return defines[token]
-
-
-def assert_replay_sizing_matches_the_sd_engine(text):
-    defines = {
-        name: int(value) for name, value in NUMERIC_DEFINE.findall(text)
-    }
-    missing = [name for name in REPLAY_SIZING_REQUIRED if name not in defines]
-    assert not missing, (
-        f"the replay sizing constants {missing!r} were not found, so this check "
-        "would pass without comparing anything"
-    )
-
-    declaration = REPLAY_TRANSFER_DECL.search(
-        without_comments_and_literals(text)
-    )
-    assert declaration is not None, (
-        "no g_replay_transfer[...] declaration was found, so the replay job's "
-        "transfer slice -- the thing the SD engine validates -- is invisible "
-        "to this check"
-    )
-    slice_bytes = _resolve_extent(declaration.group(1), defines)
-    engine_cap = defines[SD_TRANSFER_CAP]
-
-    # THE ONE THAT WOULD HAVE CAUGHT THE DEAD REPLAY.
-    assert slice_bytes <= engine_cap, (
-        f"the replay job's transfer slice is {slice_bytes} bytes but "
-        f"{SD_TRANSFER_CAP} is {engine_cap}: aius_sd.c's validate_request() "
-        "refuses any job whose capacity exceeds that cap with "
-        "AIUS_SD_FAULT_CAPACITY, before the job emits its first action. Every "
-        "refill would fail without mounting, opening or reading, and the replay "
-        "service would park in ERROR after the first one"
-    )
-    assert slice_bytes <= defines["AIUS_REPLAY_DELIVER_MAX_BYTES"], (
-        f"the transfer slice is {slice_bytes} bytes but a delivery is capped at "
-        f"{defines['AIUS_REPLAY_DELIVER_MAX_BYTES']}: the service would refuse "
-        "every chunk the job read, as a run-time NO_SPACE rather than a build "
-        "failure"
-    )
-
-    ring = defines["AIUS_REPLAY_WORD_RING_CAPACITY"]
-    watermark = defines["AIUS_REPLAY_START_WATERMARK_WORDS"]
-    refill = defines["AIUS_REPLAY_REFILL_MAX_BYTES"]
-    assert (ring - 1 - watermark) * 2 >= refill, (
-        f"the ring holds {ring} words with a {watermark}-word watermark, so a "
-        f"plan made just below the watermark gets {(ring - 1 - watermark) * 2} "
-        f"bytes of space against a {refill}-byte refill. Every plan would be "
-        "silently shrunk, and a shorter plan costs the same per-job overhead "
-        "for fewer bytes"
-    )
-    assert ring & (ring - 1) == 0, (
-        f"the word ring capacity {ring} is not a power of two; next_index() "
-        "reduces modulo it on the audio pop path, so this is a hardware divide "
-        "per sample"
-    )
-
-    # And the coupling that made the sizes disagree invisibly in the first
-    # place: a transport receive quota gating a disk read.
-    definitions = function_definitions(text)
-    for name in REPLAY_BUDGET_FREE_FUNCTIONS:
-        assert name in definitions, (
-            f"{name}() was not found, so this check cannot see whether the "
-            "refill still takes its size from the runtime transport budget"
-        )
-        body = without_comments_and_literals(definitions[name])
-        assert RUNTIME_RX_BUDGET_FIELD not in body, (
-            f"{name}() reads {RUNTIME_RX_BUDGET_FIELD}, the runtime's "
-            "transport receive quota. It is documented and consumed elsewhere "
-            "as BYTES and was consumed here as WORDS, which capped every "
-            "planned refill at half the size this seam's own constants say -- "
-            "invisibly, because the two live in different libraries. A disk "
-            "refill takes its bound from AIUS_REPLAY_REFILL_MAX_BYTES and the "
-            "ring, not from a network budget"
-        )
-
-
-# The replay clock handover.
-#
-# AudioStream::update_setup() grants update responsibility to the first claimant
-# and g_spdif_in is constructed first, so the INPUT drives update_all() from a
-# DMA ISR the incoming carrier clocks. With no carrier that ISR never fires,
-# AiusAudioProcessor::update() never runs, and a replay reports `playing` while
-# processing exactly zero blocks. The handover moves responsibility to the
-# transmitter -- whose DMA free-runs off the audio PLL -- for the duration of a
-# replay, and only while the receiver's DPLL is unlocked.
-#
-# Nothing else can catch a regression here: no native suite compiles
-# optical_main.cpp, and losing the handover in a later refactor reproduces
-# exactly the silent zero-block failure it exists to fix -- a replay that starts,
-# reports `playing`, and makes no sound. So the check is two-sided rather than a
-# presence assertion. WIDENING it is the other failure mode: taking the clock
-# from a LIVE carrier would run passthrough at the transmitter's free-running
-# rate instead of the recovered one, so the handover must stay conditional on
-# pllLocked() and must be reachable from nowhere but the replay reconciler.
-#
-# The reconciler also carries the settled invariant -- THE LIVE INPUT ALWAYS OWNS
-# THE AUDIO PATH -- so a carrier arriving mid-replay must STOP the replay, not
-# merely take the clock back. A reconciler that moved the clock and left the
-# replay running would leave two sources contending for the graph, which is the
-# state the invariant exists to make unreachable; it would also report itself as
-# a still-`playing` replay that produces nothing, which is where this began.
-CLOCK_SERVICE_MARKER = "static FLASHMEM void replay_clock_service(void)"
-SOURCE_SERVICE_MARKER = "static FLASHMEM void replay_source_service(void)"
-REPLAY_CHECKPOINT_MARKER = (
-    "static FLASHMEM bool platform_replay(void *, const AiusRuntimeBudget *budget,"
-)
-# Both flags, not one: a handover that sets only the taker leaves both driving
-# update_all() (a double-processed block), and one that sets only the yielder
-# leaves neither (a stalled graph).
-CLOCK_MASTER_SETTERS = (
-    "AiusSpdifOutputClock::set_master",
-    "AiusSpdifInputClock::set_master",
+SERVICE_ORDER = (
+    "admission_sd_window_sample(",
+    "sd_lifecycle_service(",
+    "dsp_idle_apply_service(",
+    "sample_rate_service(",
+    "tx_gate_service(",
+    "input_fault_service(",
+    "input_dark_service(",
+    "aius_recorder_bank_drain(",
 )
 
 
-def assert_replay_clock_handover_is_bounded(text):
-    body = function_body(text, CLOCK_SERVICE_MARKER)
+def assert_service_path_has_no_direct_sd(text):
+    """The checkpoint-7 driver reaches the card only through the bounded SD
+    lifecycle job, never by a direct primitive (the no-direct-SD scan that
+    covered platform_replay, now on platform_service)."""
+    body = function_body(text, SERVICE_CHECKPOINT_MARKER)
     clean = without_comments_and_literals(body)
-    source_body = function_body(text, SOURCE_SERVICE_MARKER)
-    source_clean = without_comments_and_literals(source_body)
-    assert "AIUS_REPLAY_SOURCE_REPLAY" in clean, (
-        "the clock handover is not bounded to the replay path: "
-        "replay_clock_service() never reads AIUS_REPLAY_SOURCE_REPLAY, so its "
-        "trigger is something other than the source the audio path is reading"
+    match = SD_PRIMITIVE.search(clean)
+    assert match is None, (
+        "platform_service() calls a card primitive directly "
+        f"({match.group(0).strip() if match else ''!r}); checkpoint 7 reaches "
+        "the card only through the bounded SD lifecycle job"
     )
-    assert "pllLocked(" in clean, (
-        "the clock handover does not consult AudioInputSPDIF3::pllLocked(), so "
-        "a replay could take the clock away from a LIVE carrier -- the input's "
-        "recovered clock is the correct master for passthrough"
-    )
-    assert "g_clock_replay_ready" in clean, (
-        "replay_clock_service() can give output graph ownership to a replay "
-        "whose exact 48 kHz clock plan and invalid hold are not acknowledged"
-    )
-    assert "AIUS_REPLAY_SOURCE_REPLAY" in source_clean, (
-        "replay_source_service() does not bound carrier displacement to replay"
-    )
-    assert "pllLocked(" in source_clean, (
-        "replay_source_service() does not consult the live carrier lock"
-    )
-    assert "aius_replay_service_stop(" in source_clean, (
-        "replay_source_service() observes a carrier but never "
-        "stops the replay, so a live input and a replay both hold the audio "
-        "path; the live input must win outright"
-    )
-    assert "record_event(" in source_clean, (
-        "a carrier displacing a replay is a transition, not a counter, and "
-        "replay_source_service() puts nothing in the event ring -- so the one "
-        "channel that could explain a replay ending by itself stays silent"
+    assert "sd_lifecycle_service(" in clean, (
+        "platform_service() never calls sd_lifecycle_service(), so this scan "
+        "would pass without the SD path it exists to cover"
     )
 
-    guard_open = clean.find("noInterrupts(")
-    guard_close = clean.find("interrupts()", guard_open + 1) if guard_open >= 0 else -1
-    assert guard_open >= 0 and guard_close > guard_open, (
-        "replay_clock_service() has no noInterrupts()/interrupts() critical "
-        "section; both responsibility flags are read from a DMA ISR, and an ISR "
-        "entering between the two stores would see both or neither peripheral "
-        "driving update_all()"
+
+def assert_service_checkpoint_runs_in_order(text):
+    body = function_body(text, SERVICE_CHECKPOINT_MARKER)
+    clean = without_comments_and_literals(body)
+    assert "AIUS_BOOT_CHECKPOINT_SERVICE" in clean, (
+        "platform_service() does not key on AIUS_BOOT_CHECKPOINT_SERVICE (id 7)"
     )
-    for setter in CLOCK_MASTER_SETTERS:
-        local = qualified_call_sites(body, setter)
-        assert len(local) == 1, (
-            f"replay_clock_service() calls {setter}() {len(local)} times; the "
-            "handover is one paired write, so anything else means a flag is "
-            "left behind or written twice"
-        )
-        assert guard_open < local[0] < guard_close, (
-            f"{setter}() is written outside the noInterrupts()/interrupts() "
-            "critical section that makes the pair atomic against both DMA ISRs"
-        )
+    assert not re.search(r"replay", clean, re.IGNORECASE), (
+        "platform_service() still names replay; Phase 4i retired every replay "
+        "service from checkpoint 7"
+    )
+    positions = []
+    for call in SERVICE_ORDER:
+        at = clean.find(call)
+        assert at >= 0, f"platform_service() never calls {call}...)"
+        positions.append(at)
+    assert positions == sorted(positions), (
+        "platform_service() runs its services out of order; expected "
+        + " -> ".join(c.rstrip("(") for c in SERVICE_ORDER)
+    )
+
+
+# Both flags, not one: a pin that sets only one leaves both or neither driving
+# update_all() (a double-processed block or a stalled graph).
+CLOCK_MASTER_SETTERS = (
+    ("AiusSpdifOutputClock::set_master", "false"),
+    ("AiusSpdifInputClock::set_master", "true"),
+)
+
+
+def assert_setup_pins_input_master_once(text):
+    """Phase 4i (owner Q3): live input is the only source, so setup() pins the
+    input as the graph's clock master once, explicitly, and nothing else in
+    the file can move it."""
+    body = function_body(text, SETUP_MARKER)
+    clean = without_comments_and_literals(body)
+    guard_open = clean.find("noInterrupts(")
+    guard_close = (
+        clean.find("interrupts()", guard_open + len("noInterrupts("))
+        if guard_open >= 0 else -1
+    )
+    assert guard_open >= 0 and guard_close > guard_open, (
+        "setup() pins the clock master outside a noInterrupts()/interrupts() "
+        "critical section; both flags are read from a DMA ISR"
+    )
+    for setter, value in CLOCK_MASTER_SETTERS:
         whole = qualified_call_sites(text, setter)
         assert len(whole) == 1, (
-            f"{setter}() has {len(whole)} call sites in the file; the clock "
-            "handover must be reachable only from replay_clock_service(), so "
-            "nothing outside the replay path can move the graph's clock"
+            f"{setter}() has {len(whole)} call sites in the file; setup() pins "
+            "the input once and nothing may move the graph's clock afterwards"
+        )
+        local = qualified_call_sites(body, setter)
+        assert len(local) == 1 and guard_open < local[0] < guard_close, (
+            f"{setter}() is not called once inside setup()'s critical section"
+        )
+        assert re.search(re.escape(setter) + r"\s*\(\s*" + value + r"\s*\)", clean), (
+            f"setup() must call {setter}({value}): the input is the master"
         )
 
-    driver = without_comments_and_literals(
-        function_body(text, REPLAY_CHECKPOINT_MARKER)
+
+TX_GATE_SERVICE_MARKER = "static FLASHMEM void tx_gate_service(void)"
+
+
+def assert_source_changes_count_carrier_edges(text):
+    """audio_diag.source_changes counts carrier gained and lost edges
+    (Phase 4i): tx_gate_service() bumps it when the live lock differs from the
+    latched carrier, before the latch moves."""
+    clean = without_comments_and_literals(
+        function_body(text, TX_GATE_SERVICE_MARKER)
     )
-    source_call = driver.find("replay_source_service(")
-    clock_call = driver.find("replay_clock_service(")
-    assert source_call >= 0 and clock_call > source_call, (
-        "platform_replay() must call replay_source_service() before "
-        "replay_clock_service(); otherwise source settlement is dead or the "
-        "clock reconciles stale ownership"
+    edge = re.search(
+        r"if\s*\(\s*carrier\s*!=\s*g_tx_gate_carrier[^)]*\)\s*"
+        r"g_audio_ingress\.source_changes\+\+\s*;",
+        clean,
     )
-    assert "replay_clock_service(" in driver, (
-        "platform_replay() never calls replay_clock_service(), so the handover "
-        "is dead code and a replay still processes zero blocks with no carrier"
+    assert edge is not None, (
+        "tx_gate_service() does not count a carrier edge into "
+        "g_audio_ingress.source_changes against the latched carrier"
+    )
+    latch = clean.find("g_tx_gate_carrier = carrier;")
+    assert latch > edge.start(), (
+        "tx_gate_service() moves g_tx_gate_carrier before comparing it, so no "
+        "carrier edge can ever be counted"
     )
 
 
@@ -1340,7 +1052,7 @@ def assert_replay_clock_handover_is_bounded(text):
 EVENT_TYPE_VALUES = {
     "AIUS_EVENT_STATE": 1,
     "AIUS_EVENT_TEST_TONE": 2,
-    "AIUS_EVENT_REPLAY_STOP": 3,
+    # 3 was AIUS_EVENT_REPLAY_STOP, retired with replay (Phase 4i).
     "AIUS_EVENT_OVERRUN": 4,
     "AIUS_EVENT_NETWORK_DROP": 5,
     "AIUS_EVENT_NETWORK_BUDGET": 6,
@@ -1359,6 +1071,8 @@ EVENT_TYPE_VALUES = {
     # Phase 4h (Q2): a pending preset or www entry dropped on a chip CRC fault.
     "AIUS_EVENT_SD_FLUSH_CRC_DROP": 19,
 }
+# Spent values: retired types whose number may never be allocated again.
+RETIRED_EVENT_TYPE_VALUES = {3: "AIUS_EVENT_REPLAY_STOP (Phase 4i)"}
 # Values 4..10 are the fixed counter-edge range; later episode events are not.
 COUNTER_EDGE_TYPES = tuple(
     name for name, value in EVENT_TYPE_VALUES.items() if 4 <= value <= 10
@@ -1383,6 +1097,13 @@ def assert_event_types_are_allocated_not_renumbered(text):
             f"event type {name} is allocated twice in the enum"
         )
         allocated[name] = int(value)
+    reused = sorted(f"{name} = {value} (was {RETIRED_EVENT_TYPE_VALUES[value]})"
+                    for name, value in allocated.items()
+                    if value in RETIRED_EVENT_TYPE_VALUES)
+    assert not reused, (
+        "a retired event type value is allocated again; a reader of a stored "
+        "sample cannot tell the old meaning from the new: " + ", ".join(reused)
+    )
     assert allocated == EVENT_TYPE_VALUES, (
         "the event-type allocation moved. `type` is a wire contract: GET "
         "/api/events serves it verbatim and tools/net/aius_net_runner.py reads "
@@ -1730,8 +1451,8 @@ def assert_transmit_isr_drains_the_24_bit_ring(text):
          "SPDIF_tx_buffer is cached OCRAM and the DMA reads it, so the fill must "
          "be flushed or the transmitter sends stale words"),
         ("update_responsibility",
-         "the transmitter must still be able to drive update_all(), or a replay "
-         "with no carrier processes zero blocks again"),
+         "the transmitter must still be able to drive update_all(), or a graph "
+         "the output masters with no carrier processes zero blocks again"),
     ):
         assert needle in clean, f"the transmit handler omits {needle!r}: {why}"
     # The handler's own body, not the file: the receive hook beside it
@@ -1771,8 +1492,8 @@ def assert_receive_isr_stages_only_into_an_empty_pair(text):
     The retained receive snapshot's isr() copies at `data[offset]` under a guard
     that admits offset == 2 * AUDIO_BLOCK_SAMPLES, 512 bytes past the block
     pair, whenever two DMA halves land between update() calls -- which is what
-    the unlocked receiver's DMA storm does while replay drives the graph (RX
-    pool corruption under replay, 2026-09-03: the pool leaked down to two free
+    the unlocked receiver's DMA storm does with the carrier down (RX pool
+    corruption, 2026-09-03, then under replay: the pool leaked down to two free
     blocks and the pipeline never typed the stream again). Our handler stages
     through aius_spdif_rx_stage(), which refuses a non-empty pair."""
     handler = without_comments_and_literals(
@@ -1801,7 +1522,8 @@ def assert_receive_isr_stages_only_into_an_empty_pair(text):
     )
     assert "dma.attachInterrupt(AiusSpdifRxHook::isr)" in install, (
         "nothing redirects the receive DMA vector, so the snapshot's copy loop "
-        "stays installed and the out-of-bounds write returns with the next replay"
+        "stays installed and the out-of-bounds write returns with the next "
+        "carrier-down DMA storm"
     )
 
 
@@ -1929,18 +1651,16 @@ def assert_apply_config_uses_stream_rate(text):
 
 
 def assert_rate_service_orders_safe_gate(text):
-    replay = without_comments_and_literals(
-        function_body(text, "static FLASHMEM bool platform_replay(")
+    service_driver = without_comments_and_literals(
+        function_body(text, "static FLASHMEM bool platform_service(")
     )
     order = [
-        replay.find("replay_source_service();"),
-        replay.find("sample_rate_service(now_ms);"),
-        replay.find("replay_clock_service();"),
-        replay.find("tx_gate_service();"),
+        service_driver.find("sample_rate_service(now_ms);"),
+        service_driver.find("tx_gate_service();"),
     ]
-    assert min(order) >= 0 and order == sorted(order) and len(set(order)) == 4, (
-        "checkpoint 7 must settle the source, update/apply rate truth, reconcile "
-        "graph ownership, then evaluate the physical gate"
+    assert min(order) >= 0 and order == sorted(order) and len(set(order)) == 2, (
+        "checkpoint 7 must update/apply rate truth, then evaluate the "
+        "physical gate"
     )
     service = without_comments_and_literals(
         function_body(text, "static FLASHMEM void sample_rate_service(")
@@ -2023,11 +1743,7 @@ def assert_rate_service_orders_safe_gate(text):
     gate = without_comments_and_literals(
         function_body(text, "static FLASHMEM void tx_gate_service(")
     )
-    assert (
-        "aius_tx_gate_permitted(carrier, g_clock_live_ready,"
-        in gate
-        and "g_clock_replay_ready, source)" in gate
-    ), (
+    assert "aius_tx_gate_permitted(carrier, g_clock_live_ready)" in gate, (
         "a locked but unaccepted/mismatched live carrier can still open the pad"
     )
     reset = gate.find("request_audio_reset();")
@@ -2036,13 +1752,6 @@ def assert_rate_service_orders_safe_gate(text):
         "the relock reset does not publish the credit that prevents a second "
         "reset at nominal acceptance"
     )
-    replay_clock = without_comments_and_literals(
-        function_body(text, "static FLASHMEM void replay_clock_service(")
-    )
-    assert "&& g_clock_replay_ready" in replay_clock, (
-        "replay can take graph ownership before its exact 48 kHz plan and "
-        "four-period invalid hold are acknowledged"
-    )
 
 
 def assert_enqueue_refuses_rate_before_dsp(text):
@@ -2050,7 +1759,7 @@ def assert_enqueue_refuses_rate_before_dsp(text):
         function_body(text, "AiusStatus enqueue(const AiusPcmBlock *block)")
     )
     support = body.find("supported_program_rate(block->sample_rate_hz)")
-    applied = body.find("!output_plan_ready")
+    applied = body.find("!g_clock_plan_applied")
     config = body.find("g_dsp_apply_pending")
     dsp = body.find("aius_dsp_process(")
     assert min(support, applied, config, dsp) >= 0, (
@@ -2064,7 +1773,7 @@ def assert_enqueue_refuses_rate_before_dsp(text):
         "enqueue() does not have distinct unsupported and mismatch refusal arms"
     )
     plan_wait = without_comments_and_literals(
-        conditional_body(body, "if (!output_plan_ready)")
+        conditional_body(body, "if (!g_clock_plan_applied)")
     )
     assert "close_stream_rate_gate();" in plan_wait, (
         "a block can wait for a clock transition while the physical pad stays open"
@@ -2079,11 +1788,11 @@ def assert_enqueue_refuses_rate_before_dsp(text):
     assert body.count("close_stream_rate_gate();") >= 2, (
         "a refused stream waits until the next epoch to close the physical pad"
     )
-    assert "replay ? AIUS_OPTICAL_SAMPLE_RATE_HZ" in body, (
-        "replay is not reconciled against its fixed 48 kHz rate contract"
+    assert "const uint32_t expected_rate_hz = g_clock_nominal_rate_hz;" in body, (
+        "enqueue() does not reconcile blocks against the accepted live nominal"
     )
-    assert "replay ? g_clock_replay_ready" in body, (
-        "replay blocks can enter DSP before the exact 48 kHz output plan is ready"
+    assert not re.search(r"replay", body, re.IGNORECASE), (
+        "enqueue() still names replay; live input is the only source (Phase 4i)"
     )
 
 
@@ -2128,8 +1837,6 @@ CLOCK_JSON_KEYS = (
     # Output-jitter phases D/E/F: gate-open TX-ring trim (cec2dfa), the
     # latency governor (fecd2e6), and the relock ring pad.
     "gate_open_target_frames",
-    # 2026-09-03: the replay gate-open floor, sized to the SD primitive.
-    "gate_open_replay_target_frames",
     "gate_open_trims",
     "gate_open_trimmed_frames",
     "gate_open_last_trim_at_ms",
@@ -2174,62 +1881,6 @@ CLOCK_COUNTERS = (
 RATE_UNSUPPORTED_EVENT = "record_event(AIUS_EVENT_RATE_UNSUPPORTED"
 
 
-# The trailing ")\n" excludes the `;`-terminated forward declaration.
-TX_GATE_EXECUTE_OPEN_DEFINITION = (
-    "static inline void tx_gate_execute_open(bool replay, bool first_in_unit,\n"
-    "                                        uint32_t unit_frames,\n"
-    "                                        uint32_t block_frames)\n"
-)
-
-
-def assert_replay_gate_open_pads_to_its_own_floor(text):
-    """A replay's gate-open floor is sized to the SD primitive its producer
-    blocks on, chosen at the pre-commit instant from enqueue()'s own source
-    fact (register: "Replay start can open the gate on an empty ring",
-    2026-09-03)."""
-    clean = without_comments_and_literals(text)
-    assert "#define AIUS_TX_GATE_OPEN_REPLAY_TARGET_FRAMES" in clean, (
-        "no replay gate-open floor macro; the live target's one block of "
-        "margin loses the race against the refill job's OPEN_READ"
-    )
-    assert re.search(
-        r"#if\s+AIUS_TX_GATE_OPEN_REPLAY_TARGET_FRAMES\s*<\s*"
-        r"AIUS_TX_GATE_OPEN_TARGET_FRAMES",
-        clean,
-    ), "the replay floor is not guarded against sinking below the live target"
-    # The trailing newline excludes the `;`-terminated forward declaration.
-    execute = without_comments_and_literals(
-        function_body(text, TX_GATE_EXECUTE_OPEN_DEFINITION)
-    )
-    assert re.search(
-        r"replay\s*\?\s*AIUS_TX_GATE_OPEN_REPLAY_TARGET_FRAMES\s*:\s*"
-        r"AIUS_TX_GATE_OPEN_TARGET_FRAMES",
-        execute,
-    ), "tx_gate_execute_open() does not select the floor by source"
-    assert re.search(
-        r"aius_spdif_tx24_set_level\(\s*&g_aius_spdif_tx24,\s*target_frames,",
-        execute,
-    ), "the gate-open pad is not set to the selected floor"
-    assert "AIUS_TX_GATE_OPEN_TARGET_FRAMES," not in execute, (
-        "the gate-open pad still hard-codes the live target"
-    )
-    enqueue = without_comments_and_literals(
-        function_body(text, "AiusStatus enqueue(const AiusPcmBlock *block)")
-    )
-    assert enqueue.count("tx_gate_execute_open(") == 1, (
-        "enqueue() must execute the armed open exactly once per block"
-    )
-    fact = re.search(
-        r"const bool replay\s*=\s*g_replay_service\.source\s*==\s*"
-        r"AIUS_REPLAY_SOURCE_REPLAY;",
-        enqueue,
-    )
-    call = enqueue.find("tx_gate_execute_open(replay,")
-    assert fact is not None and call >= 0 and fact.start() < call, (
-        "enqueue() does not pass its own replay fact to the gate-open edge"
-    )
-
-
 def assert_clock_status_clear_and_episode_contract(text):
     """Clock observability is complete, clearable and episode-bounded."""
     clean = without_comments_and_literals(text)
@@ -2261,7 +1912,7 @@ def assert_clock_status_clear_and_episode_contract(text):
         clock_json.find("g_clock_fault_episode ? ") <
         clock_json.find("!g_tx_gate_carrier ? ")
     ), (
-        "clock.state reports an unlocked input instead of an active replay "
+        "clock.state reports an unlocked input instead of an active "
         "clock-apply fault"
     )
 
@@ -2391,7 +2042,7 @@ def assert_rate_acquisition_quiesces_ingress(text):
     # Phase 4 moved the same-nominal centre path into clock_fill_service(),
     # called once from sample_rate_service(): splice its body in at the call
     # so the ownership order below still reads in execution order.
-    fill_call = "clock_fill_service(source, now_ms);"
+    fill_call = "clock_fill_service(now_ms);"
     if fill_call in service:
         assert service.count(fill_call) == 1, (
             "sample_rate_service() must call clock_fill_service() exactly once"
@@ -2413,11 +2064,6 @@ def assert_rate_acquisition_quiesces_ingress(text):
             r"false\s*,\s*false\s*\)",
             "same-nominal structural replan",
         ),
-        (
-            r"clock_apply_desired_plan\s*\(\s*now_ms\s*,\s*rate_changed\s*,\s*"
-            r"rate_changed\s*,\s*true\s*\)",
-            "replay acquisition",
-        ),
     ):
         assert re.search(call, service), (
             owner + " does not declare its fault-reset ownership"
@@ -2427,16 +2073,15 @@ def assert_rate_acquisition_quiesces_ingress(text):
         r"(true|false)\s*\)",
         service,
     )
-    assert invalid_plan_owners == ["true", "false", "true"], (
+    assert invalid_plan_owners == ["true", "false"], (
         "invalid-plan reset ownership must be nominal-acquisition=true, "
-        "same-nominal-target=false, replay-acquisition=true"
+        "same-nominal-target=false"
     )
     quiesce = service.find(
-        "if (result.quiesce_requested && carrier &&"
+        "if (result.quiesce_requested && carrier)"
     )
-    live_only = service.find("!replay_rate_requested(source)", quiesce)
     producer_close = service.find(
-        "g_clock_live_ingress_open = false;", live_only
+        "g_clock_live_ingress_open = false;", quiesce
     )
     close = service.find("close_stream_rate_gate();", quiesce)
     reset = service.find("request_audio_reset();", quiesce)
@@ -2447,7 +2092,6 @@ def assert_rate_acquisition_quiesces_ingress(text):
     assert (
         0
         <= quiesce
-        < live_only
         < producer_close
         < close
         < reset
@@ -2457,9 +2101,9 @@ def assert_rate_acquisition_quiesces_ingress(text):
         "the first locked live changed-rate sample does not close ingress and "
         "issue one nominal-bound reset credit before acceptance"
     )
-    refresh = service.find("clock_refresh_applied(source, now_ms);")
+    refresh = service.find("clock_refresh_applied(now_ms);")
     close_episode = service.find(
-        "if (replay_rate_requested(source) || !g_clock_carrier_ready)",
+        "if (!g_clock_carrier_ready)",
         refresh,
     )
     close_store = service.find(
@@ -2487,12 +2131,9 @@ def assert_audio_update_is_ingress_only(text):
         "if",
         "receiveReadOnly",
         "release",
-        "aius_audio_ingress_record_source_change",
         "aius_audio_ingress_reserve",
-        "aius_replay_service_pop_words",
         "aius_audio_ingress_commit",
         "aius_audio_ingress_cancel_gap",
-        "aius_replay_service_discard_words",
         "audio_ingress_publish_live",
         "aius_audio_ingress_record_gap",
         # Phase 4e pend stamp: an inline compare and two stores after the
@@ -2512,21 +2153,9 @@ def assert_audio_update_is_ingress_only(text):
     assert clean.count("audio_ingress_publish_live(") == 1, (
         "live input must use exactly one named bounded producer helper"
     )
-    assert re.search(
-        r"aius_replay_service_pop_words\s*\(\s*&g_replay_service\s*,\s*"
-        r"slot\s*,\s*AIUS_AUDIO_INGRESS_CHUNK_WORDS\s*\)",
-        clean,
-    ), "replay does not pop its exact 256 words directly into the reserved slot"
-    assert re.search(
-        r"aius_replay_service_discard_words\s*\(\s*&g_replay_service\s*,\s*"
-        r"AIUS_AUDIO_INGRESS_CHUNK_WORDS\s*\)",
-        clean,
-    ), "full ingress does not discard one bounded 256-word replay chunk"
-    source_change = clean.find("aius_audio_ingress_record_source_change(")
-    first_reserve = clean.find("aius_audio_ingress_reserve(")
-    assert 0 <= source_change < first_reserve, (
-        "the effective-source transition must publish before the first "
-        "commit, overflow gap, or missing-input gap"
+    assert not re.search(r"replay", clean, re.IGNORECASE), (
+        "AiusAudioProcessor::update() still names replay; live input is the "
+        "only source (Phase 4i)"
     )
     helper = function_body(
         text,
@@ -2649,7 +2278,6 @@ def assert_audio_storage_and_diagnostics(text):
     required_fields = (
         "ingress_drop_overflow",
         "ingress_drop_missing_live",
-        "ingress_drop_short_replay",
         "source_flushes",
         "gap_flushes",
         "service_steps_attempted",
@@ -2682,18 +2310,6 @@ def assert_audio_storage_and_diagnostics(text):
     )
     assert "noInterrupts(" not in overrun, (
         "the per-block overrun projection globally masks every target IRQ"
-    )
-
-
-def assert_noload_diagnostics_are_initialized(text):
-    setup = without_comments_and_literals(function_body(text, SETUP_MARKER))
-    clear = "memset(&g_replay_diag, 0, sizeof(g_replay_diag));"
-    assert setup.count(clear) == 1, (
-        "setup() must clear the NOLOAD replay diagnostics exactly once"
-    )
-    assert setup.find(clear) < setup.find("AudioMemory("), (
-        "NOLOAD replay diagnostics must be initialized before audio/runtime "
-        "startup can serve status"
     )
 
 
@@ -3011,19 +2627,19 @@ def assert_dsp_idle_apply_executes_the_decision(text):
         "dsp_idle_apply_service is not declared noinline; producer-isolation "
         "roots on its linked symbol"
     )
-    replay = without_comments_and_literals(
-        function_body(text, "static FLASHMEM bool platform_replay(")
+    driver = without_comments_and_literals(
+        function_body(text, "static FLASHMEM bool platform_service(")
     )
-    assert replay.count("dsp_idle_apply_service(") == 1, (
+    assert driver.count("dsp_idle_apply_service(") == 1, (
         "the service checkpoint does not call dsp_idle_apply_service exactly once"
     )
-    service = replay.find(DSP_IDLE_APPLY_CALL)
+    service = driver.find(DSP_IDLE_APPLY_CALL)
     assert service >= 0, (
         "the service checkpoint must pass dsp_idle_apply_service a fresh "
         "millis(), not the epoch's now_ms: a nested AUDIO pass earlier in the "
         "epoch stamps g_dsp_last_block_ms later, and now - last wraps to due"
     )
-    assert service < replay.find("sample_rate_service(now_ms);"), (
+    assert service < driver.find("sample_rate_service(now_ms);"), (
         "dsp_idle_apply_service must run before sample_rate_service"
     )
 
@@ -3050,7 +2666,7 @@ def assert_dsp_idle_apply_executes_the_decision(text):
         and not enqueue[previous + 1:at].strip()
         and enqueue[max(before_previous, enqueue.rfind("}", 0, previous)) + 1:
                     previous + 1].strip()
-        == "g_clock_live_ready = !replay && g_clock_carrier_ready;"
+        == "g_clock_live_ready = g_clock_carrier_ready;"
     ), (
         "enqueue() stamps g_dsp_last_block_ms somewhere other than directly "
         "after the g_clock_live_ready assignment at the consume point"
@@ -3224,10 +2840,6 @@ POSITIVE_CHECKS = (
         assert_enqueue_refuses_rate_before_dsp,
     ),
     (
-        "a replay's gate-open edge pads to its own primitive-sized floor",
-        assert_replay_gate_open_pads_to_its_own_floor,
-    ),
-    (
         "clock status, clears and unsupported episodes remain observable",
         assert_clock_status_clear_and_episode_contract,
     ),
@@ -3276,16 +2888,20 @@ POSITIVE_CHECKS = (
         assert_ota_seam_composed_under_option,
     ),
     (
-        "the replay path performs no direct SD primitive",
-        assert_replay_path_has_no_direct_sd,
+        "checkpoint 7 performs no direct SD primitive",
+        assert_service_path_has_no_direct_sd,
     ),
     (
-        "the exempt replay card walks are bounded and report truncation",
-        assert_replay_card_walks_are_bounded,
+        "checkpoint 7 runs its services in order, with no replay",
+        assert_service_checkpoint_runs_in_order,
     ),
     (
-        "the clock handover exists and is bounded to the replay path",
-        assert_replay_clock_handover_is_bounded,
+        "setup() pins the input as clock master once",
+        assert_setup_pins_input_master_once,
+    ),
+    (
+        "source_changes counts carrier gained and lost edges",
+        assert_source_changes_count_carrier_edges,
     ),
     (
         "event types are allocated, never renumbered",
@@ -3320,10 +2936,6 @@ POSITIVE_CHECKS = (
         assert_audio_storage_and_diagnostics,
     ),
     (
-        "NOLOAD diagnostics are initialized before runtime startup",
-        assert_noload_diagnostics_are_initialized,
-    ),
-    (
         "the DSP model's origin is the stager's staged fact, not the swap's",
         assert_dsp_model_origin_is_staged_not_assumed,
     ),
@@ -3334,17 +2946,6 @@ POSITIVE_CHECKS = (
     (
         "the flight recorder reports the rate its frames carry",
         assert_recorder_reports_the_streams_rate,
-    ),
-)
-
-
-# Checks whose subject spans more than optical_main.cpp. Run over the
-# concatenated REPLAY_SIZING_SOURCES rather than the one file, because the
-# invariant they assert is precisely that those files agree with each other.
-CROSS_SOURCE_CHECKS = (
-    (
-        "the replay sizing agrees with the SD engine's transfer cap",
-        assert_replay_sizing_matches_the_sd_engine,
     ),
 )
 
@@ -3620,7 +3221,7 @@ def run_audio_cutover_self_test():
         # above the refusal arms.
         ("stamp-braceless-branch",
          "\t\tg_dsp_last_block_ms = millis();\n",
-         "\t\tif (!replay)\n\t\t\tg_dsp_last_block_ms = millis();\n",
+         "\t\tif (!g_clock_live_ready)\n\t\t\tg_dsp_last_block_ms = millis();\n",
          "directly after"),
         ("stamp-at-top",
          "\t\tg_dsp_last_block_ms = millis();\n"
@@ -3666,9 +3267,9 @@ def run_audio_cutover_self_test():
     after_rate = text.replace(
         "\t" + DSP_IDLE_APPLY_CALL + "\n", "", 1
     ).replace(
-        "\tsample_rate_service(now_ms);\n\t/* Memory only",
+        "\tsample_rate_service(now_ms);\n\t/* After the rate service:",
         "\tsample_rate_service(now_ms);\n"
-        "\t" + DSP_IDLE_APPLY_CALL + "\n\t/* Memory only",
+        "\t" + DSP_IDLE_APPLY_CALL + "\n\t/* After the rate service:",
         1,
     )
     assert after_rate.count(DSP_IDLE_APPLY_CALL) == 1, (
@@ -3837,7 +3438,7 @@ def run_audio_cutover_self_test():
         assert_rate_service_orders_safe_gate,
         no_rate_service,
         "audio-cutover/rate-service-after-gate",
-        "settle the source",
+        "update/apply rate truth",
     )
     ingress_gate_removed = text.replace(
         "!g_clock_live_ingress_open",
@@ -3850,48 +3451,25 @@ def run_audio_cutover_self_test():
         "audio-cutover/acquisition-ingress-left-open",
         "discard live blocks",
     )
-    # Phase 4j put the idle DSP apply between the two; the swap keeps it.
-    idle_from = text.find("\treplay_source_service();\n") + len(
-        "\treplay_source_service();\n"
-    )
-    idle_apply_lines = text[
-        idle_from:text.find("\t/* Apply or verify the settled source's", idle_from)
-    ]
-    assert DSP_IDLE_APPLY_CALL in idle_apply_lines, (
-        "audio-cutover/source-after-rate: idle-apply anchor moved"
-    )
-    source_after_rate = text.replace(
-        "\treplay_source_service();\n"
-        + idle_apply_lines +
-        "\t/* Apply or verify the settled source's live plan or exact 48 kHz replay\n"
-        "\t * plan before graph ownership can move. */\n"
-        "\tsample_rate_service(now_ms);",
-        "\tsample_rate_service(now_ms);\n"
-        + idle_apply_lines +
-        "\t/* Apply or verify the settled source's live plan or exact 48 kHz replay\n"
-        "\t * plan before graph ownership can move. */\n"
-        "\treplay_source_service();",
+    # Phase 4i: the gate evaluated before the rate service judges a stale
+    # carrier and plan.
+    gate_before_rate = text.replace(
+        "\tsample_rate_service(now_ms);\n\t/* After the rate service:",
+        "\ttx_gate_service();\n\t/* After the rate service:",
+        1,
+    ).replace(
+        "\ttx_gate_service();\n\tinput_fault_service(now_ms);",
+        "\tsample_rate_service(now_ms);\n\tinput_fault_service(now_ms);",
         1,
     )
-    assert source_after_rate != text, (
-        "audio-cutover/source-after-rate: mutation anchor moved"
+    assert gate_before_rate != text, (
+        "audio-cutover/gate-before-rate: mutation anchor moved"
     )
     _expect_fail(
         assert_rate_service_orders_safe_gate,
-        source_after_rate,
-        "audio-cutover/source-after-rate",
-        "settle the source",
-    )
-    replay_without_ready = text.replace(
-        "!AudioInputSPDIF3::pllLocked() && g_clock_replay_ready;",
-        "!AudioInputSPDIF3::pllLocked();",
-        1,
-    )
-    _expect_fail(
-        assert_rate_service_orders_safe_gate,
-        replay_without_ready,
-        "audio-cutover/replay-without-ready",
-        "before its exact 48 kHz plan",
+        gate_before_rate,
+        "audio-cutover/gate-before-rate",
+        "evaluate the",
     )
     acceptance_reset = (
         "g_clock_relock_reset_nominal_hz !=\n"
@@ -3937,14 +3515,14 @@ def run_audio_cutover_self_test():
         "audio-cutover/acceptance-reset-without-ingest",
         "nothing was ingested",
     )
-    never_ingested = text.replace("g_audio_ingest_since_reset = true;", "", 2)
+    never_ingested = text.replace("g_audio_ingest_since_reset = true;", "", 1)
     _expect_fail(
         assert_rate_service_orders_safe_gate,
         never_ingested,
         "audio-cutover/ingest-never-recorded",
         "never records that words",
     )
-    no_applied_gate = text.replace("!output_plan_ready", "false", 1)
+    no_applied_gate = text.replace("if (!g_clock_plan_applied) {", "if (false) {", 1)
     _expect_fail(
         assert_enqueue_refuses_rate_before_dsp,
         no_applied_gate,
@@ -3961,17 +3539,6 @@ def run_audio_cutover_self_test():
         unpinned,
         "audio-cutover/unpinned-size",
         "exactly 16 KiB",
-    )
-    uncleared_diag = text.replace(
-        "\tmemset(&g_replay_diag, 0, sizeof(g_replay_diag));\n",
-        "",
-        1,
-    )
-    _expect_fail(
-        assert_noload_diagnostics_are_initialized,
-        uncleared_diag,
-        "audio-cutover/uncleared-noload-diag",
-        "must clear",
     )
     # The regression itself: the swap deciding the origin instead of adopting
     # the one the stager staged.
@@ -4075,9 +3642,12 @@ def _synthetic_counter_edges():
     events that predate them, an audio callback, and a loop() that reaches the
     service exactly once. Generated from EVENT_TYPE_VALUES so the fixture cannot
     drift from the contract the checks assert."""
-    enum_body = "".join(
-        f"\t{name} = {value},\n" for name, value in EVENT_TYPE_VALUES.items()
-    )
+    entries = [(value, f"\t{name} = {value},\n")
+               for name, value in EVENT_TYPE_VALUES.items()]
+    # A retired value stays a comment in place of its member, as in the source.
+    entries += [(value, f"\t/* {value} retired ({what}); never reused. */\n")
+                for value, what in RETIRED_EVENT_TYPE_VALUES.items()]
+    enum_body = "".join(line for _, line in sorted(entries, key=lambda e: e[0]))
     statics = "".join(
         f"static uint32_t g_prev_{index};\n"
         for index in range(len(COUNTER_EDGE_TYPES))
@@ -4098,10 +3668,6 @@ def _synthetic_counter_edges():
           "static FLASHMEM void app_set_test_running(void *, bool running)\n"
           "{\n"
           "\trecord_event(AIUS_EVENT_TEST_TONE, current_state(), running ? 1u : 0u);\n"
-          "}\n"
-          "static FLASHMEM void replay_clock_service(void)\n"
-          "{\n"
-          "\trecord_event(AIUS_EVENT_REPLAY_STOP, current_state(), REPLAY_STOP_CARRIER);\n"
           "}\n"
           "static FLASHMEM void sample_rate_service(void)\n"
           "{\n"
@@ -4680,361 +4246,120 @@ static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
         "usb-id/comment-is-not-a-field", "nrst",
     )
 
-    # the replay path performs no direct SD primitive.
-    good_replay = (
-        "static FLASHMEM void replay_refill_service(size_t budget, uint32_t now)\n"
+    # checkpoint 7: no direct SD, services in order.
+    good_service = (
+        "static FLASHMEM bool platform_service(void *, const AiusRuntimeBudget *budget,\n"
+        "                                      uint32_t now_ms)\n"
         "{\n"
-        "\tAiusReplayRefill refill;\n"
-        "\tif (!aius_replay_service_plan_refill(&g_replay_service, budget, &refill))\n"
-        "\t\treturn;\n"
-        "\trequest.kind = AIUS_SD_JOB_REPLAY_REFILL;\n"
-        "\taius_sd_job_start(&g_replay_job, &request, now, 0u);\n"
-        "}\n"
-        "static FLASHMEM bool platform_replay(void *, const AiusRuntimeBudget *b,\n"
-        "                                     uint32_t now)\n"
-        "{\n"
-        "\treplay_refill_service(b->max_rx_bytes, now);\n"
+        "\tif (budget == nullptr ||\n"
+        "\t    budget->checkpoint != AIUS_BOOT_CHECKPOINT_SERVICE)\n"
+        "\t\treturn false;\n"
+        "\tadmission_sd_window_sample();\n"
+        "\tsd_lifecycle_service(now_ms);\n"
+        "\tg_audio_processor.dsp_idle_apply_service(millis());\n"
+        "\tsample_rate_service(now_ms);\n"
+        "\ttx_gate_service();\n"
+        "\tinput_fault_service(now_ms);\n"
+        "\tinput_dark_service(now_ms);\n"
+        "\t(void)aius_recorder_bank_drain(&g_recorder_bank, 1u);\n"
         "\treturn true;\n"
         "}\n"
     )
-    _expect_pass(assert_replay_path_has_no_direct_sd, good_replay, "replay-sd/good")
-
-    # The pre-14c shape: a reader that owns a File and reads it inline. This is
-    # the regression the check exists to prevent, so it must fail on exactly it.
-    legacy_reader = good_replay + (
-        "static FLASHMEM AiusStatus replay_reader_read(void *, uint32_t offset,\n"
-        "                                             uint8_t *buffer, size_t cap)\n"
-        "{\n"
-        "\tif (!g_replay_file.seek(offset)) return AIUS_MALFORMED;\n"
-        "\tint count = g_replay_file.read(buffer, cap);\n"
-        "\treturn count < 0 ? AIUS_MALFORMED : AIUS_OK;\n"
-        "}\n"
+    _expect_pass(assert_service_path_has_no_direct_sd, good_service, "service-sd/good")
+    _expect_fail(
+        assert_service_path_has_no_direct_sd,
+        good_service.replace("\tsd_lifecycle_service(now_ms);\n",
+                             "\tsd_lifecycle_service(now_ms);\n\tSD.exists(\"/x\");\n", 1),
+        "service-sd/direct-primitive", "card primitive directly",
     )
     _expect_fail(
-        assert_replay_path_has_no_direct_sd, legacy_reader, "replay-sd/legacy-reader",
-        "replay_reader_read",
+        assert_service_path_has_no_direct_sd,
+        good_service.replace("\tsd_lifecycle_service(now_ms);\n", "", 1),
+        "service-sd/nothing-scanned", "sd_lifecycle_service",
     )
-    mounted_in_callback = good_replay.replace(
-        "\treplay_refill_service(b->max_rx_bytes, now);\n",
-        "\tg_replay_file = SD.open(g_replay_path, FILE_READ);\n",
-        1,
+    _expect_pass(assert_service_checkpoint_runs_in_order, good_service, "service-order/good")
+    _expect_fail(
+        assert_service_checkpoint_runs_in_order,
+        good_service.replace(
+            "\tg_audio_processor.dsp_idle_apply_service(millis());\n"
+            "\tsample_rate_service(now_ms);\n",
+            "\tsample_rate_service(now_ms);\n"
+            "\tg_audio_processor.dsp_idle_apply_service(millis());\n", 1),
+        "service-order/idle-apply-after-rate", "out of order",
     )
     _expect_fail(
-        assert_replay_path_has_no_direct_sd, mounted_in_callback,
-        "replay-sd/callback-opens", "platform_replay",
-    )
-    # Vacuous-pass guard: a replay path with no card access at all, and no
-    # bounded job either, is not a pass.
-    no_job = good_replay.replace(
-        "\trequest.kind = AIUS_SD_JOB_REPLAY_REFILL;\n", "", 1
+        assert_service_checkpoint_runs_in_order,
+        good_service.replace("\tsd_lifecycle_service(now_ms);\n",
+                             "\tsd_lifecycle_service(now_ms);\n\treplay_refill_service(now_ms);\n", 1),
+        "service-order/replay-back", "names replay",
     )
     _expect_fail(
-        assert_replay_path_has_no_direct_sd, no_job, "replay-sd/no-bounded-job",
-        "AIUS_SD_JOB_REPLAY_REFILL",
-    )
-    # And a check that scans nothing is not a pass either.
-    _expect_fail(
-        assert_replay_path_has_no_direct_sd,
-        "static void unrelated(void) { return; }\n",
-        "replay-sd/nothing-scanned", "platform_replay",
-    )
-    # The two named carve-outs really are exempt, and only they are.
-    exempt_delete = good_replay + (
-        "static FLASHMEM AiusOpticalAppReplayResult app_replay_delete(void *,\n"
-        "                                                             const char *id)\n"
-        "{\n"
-        "\tif (!SD.exists(path)) return AIUS_OPTICAL_APP_REPLAY_NOT_FOUND;\n"
-        "\treturn SD.remove(path) ? AIUS_OPTICAL_APP_REPLAY_OK : AIUS_OPTICAL_APP_REPLAY_FAILED;\n"
-        "}\n"
-    )
-    _expect_pass(
-        assert_replay_path_has_no_direct_sd, exempt_delete, "replay-sd/exempt"
+        assert_service_checkpoint_runs_in_order,
+        good_service.replace("AIUS_BOOT_CHECKPOINT_SERVICE", "AIUS_BOOT_CHECKPOINT_SD", 1),
+        "service-order/wrong-checkpoint", "AIUS_BOOT_CHECKPOINT_SERVICE",
     )
 
-    # the replay sizing agrees with the SD engine's transfer cap.
-    #
-    # The synthetic sources stand in for the four real files, in the shape they
-    # have on disk: the engine's private cap, the replay seam's constants, the
-    # storage slice, the buffer declaration, and the two functions that must not
-    # read the runtime's transport budget.
-    def sizing_sources(engine_cap=512, deliver=512, ring=65536, watermark=32768,
-                       refill=32768, slice_name="AIUS_RUNTIME_STORAGE_TRANSFER",
-                       storage_transfer=512, budget_field=""):
-        return (
-            f"#define {SD_TRANSFER_CAP} {engine_cap}u\n"
-            f"#define AIUS_RUNTIME_STORAGE_TRANSFER {storage_transfer}u\n"
-            f"#define AIUS_REPLAY_WORD_RING_CAPACITY {ring}u\n"
-            f"#define AIUS_REPLAY_START_WATERMARK_WORDS {watermark}u\n"
-            f"#define AIUS_REPLAY_REFILL_MAX_BYTES {refill}u\n"
-            f"#define AIUS_REPLAY_DELIVER_MAX_BYTES {deliver}u\n"
-            f"DMAMEM static uint8_t g_replay_transfer[{slice_name}];\n"
-            "static FLASHMEM void replay_refill_service(uint32_t now_ms)\n"
-            "{\n"
-            f"\tAiusReplayRefill refill;{budget_field}\n"
-            "\tif (!aius_replay_service_plan_refill(&g_replay_service,\n"
-            "\t                                     "
-            "AIUS_REPLAY_REFILL_MAX_BYTES / 2u, &refill))\n"
-            "\t\treturn;\n"
-            "}\n"
-            "static FLASHMEM bool platform_replay(void *ctx, int budget,\n"
-            "                                     uint32_t now_ms)\n"
-            "{\n"
-            "\treplay_refill_service(now_ms);\n"
-            "\treturn true;\n"
-            "}\n"
-        )
-
-    _expect_pass(
-        assert_replay_sizing_matches_the_sd_engine, sizing_sources(),
-        "sizing/good",
-    )
-    # THE FLASHED REGRESSION, in its exact shape: an 8 KB transfer slice against
-    # the engine's 512-byte cap. Every refill job is refused at validation and
-    # the replay produces nothing.
-    _expect_fail(
-        assert_replay_sizing_matches_the_sd_engine,
-        sizing_sources(slice_name="AIUS_REPLAY_REFILL_MAX_BYTES", refill=8192,
-                       deliver=8192, ring=16384, watermark=8192),
-        "sizing/slice-exceeds-engine-cap", "AIUS_SD_FAULT_CAPACITY",
-    )
-    # A slice the service could not accept: a run-time NO_SPACE per chunk.
-    _expect_fail(
-        assert_replay_sizing_matches_the_sd_engine,
-        sizing_sources(deliver=256),
-        "sizing/delivery-smaller-than-slice", "refuse every chunk",
-    )
-    # No room above the watermark for a full plan: every refill silently shrinks.
-    _expect_fail(
-        assert_replay_sizing_matches_the_sd_engine,
-        sizing_sources(watermark=57344),
-        "sizing/plan-cannot-be-full-size", "silently shrunk",
-    )
-    # A modulo per sample on the audio pop path.
-    _expect_fail(
-        assert_replay_sizing_matches_the_sd_engine,
-        sizing_sources(ring=48000, watermark=16384),
-        "sizing/ring-not-power-of-two", "power of two",
-    )
-    # The unit bug: a transport receive quota gating a disk refill.
-    _expect_fail(
-        assert_replay_sizing_matches_the_sd_engine,
-        sizing_sources(budget_field="\n\tsize_t words = budget->max_rx_bytes;"),
-        "sizing/refill-reads-transport-budget", RUNTIME_RX_BUDGET_FIELD,
-    )
-    # Vacuous-pass guards: a missing constant and a missing declaration.
-    _expect_fail(
-        assert_replay_sizing_matches_the_sd_engine,
-        sizing_sources().replace(f"#define {SD_TRANSFER_CAP} 512u\n", "", 1),
-        "sizing/no-engine-cap", SD_TRANSFER_CAP,
-    )
-    _expect_fail(
-        assert_replay_sizing_matches_the_sd_engine,
-        sizing_sources().replace(
-            "DMAMEM static uint8_t g_replay_transfer"
-            "[AIUS_RUNTIME_STORAGE_TRANSFER];\n",
-            "",
-            1,
-        ),
-        "sizing/no-transfer-buffer", "g_replay_transfer",
-    )
-    # A comment naming the cap is not the cap.
-    _expect_fail(
-        assert_replay_sizing_matches_the_sd_engine,
-        sizing_sources(
-            budget_field="\n\t/* bounded by max_rx_bytes */\n"
-                         "\tsize_t words = budget->max_rx_bytes;"
-        ),
-        "sizing/budget-read-not-hidden-by-a-comment", RUNTIME_RX_BUDGET_FIELD,
-    )
-
-    # the exempt replay card walks are bounded and report truncation.
-    good_walks = (
-        "static FLASHMEM size_t http_replay_list_json(uint8_t *body, size_t cap)\n"
+    # setup() pins the input master once.
+    good_pin = (
+        "void setup(void)\n"
         "{\n"
-        "\tunsigned scanned = 0u;\n"
-        "\tbool cut = false;\n"
-        "\twhile (scanned < AIUS_OPTICAL_APP_INDEX_SCAN_MAX) {\n"
-        "\t\tFile entry = directory.openNextFile();\n"
-        "\t\tif (!entry) break;\n"
-        "\t\tscanned++;\n"
-        "\t\tentry.close();\n"
-        "\t}\n"
-        "\tdirectory.close();\n"
-        "\twritten = snprintf((char *)body + length, cap - length,\n"
-        "\t                   \"],\\\"truncated\\\":%s}\", cut ? \"true\" : \"false\");\n"
-        "\treturn length + (size_t)written;\n"
-        "}\n"
-        "static FLASHMEM AiusOpticalAppReplayResult app_replay_delete(void *,\n"
-        "                                                             const char *id)\n"
-        "{\n"
-        "\tif (!SD.exists(path)) return AIUS_OPTICAL_APP_REPLAY_NOT_FOUND;\n"
-        "\treturn SD.remove(path) ? AIUS_OPTICAL_APP_REPLAY_OK :\n"
-        "\t                         AIUS_OPTICAL_APP_REPLAY_FAILED;\n"
-        "}\n"
-    )
-    _expect_pass(assert_replay_card_walks_are_bounded, good_walks, "walks/good")
-
-    # THE DEFECT ITSELF: the pre-fix walk, verbatim in shape. This is the
-    # negative control the bound exists for, so it must fail on exactly it.
-    walk_unbounded = good_walks.replace(
-        "\twhile (scanned < AIUS_OPTICAL_APP_INDEX_SCAN_MAX) {\n",
-        "\tfor (;;) {\n",
-        1,
-    )
-    _expect_fail(
-        assert_replay_card_walks_are_bounded, walk_unbounded,
-        "walks/unbounded", REPLAY_WALK_SCAN_CAP,
-    )
-    # Bounded but silent about it: a short listing that reads as a complete one.
-    walk_no_truncation = good_walks.replace(r"\"truncated\"", r"\"ok\"", 1)
-    _expect_fail(
-        assert_replay_card_walks_are_bounded, walk_no_truncation,
-        "walks/silent-truncation", "truncated",
-    )
-    # A cap named only in a comment is not a cap.
-    walk_comment_cap = good_walks.replace(
-        "\twhile (scanned < AIUS_OPTICAL_APP_INDEX_SCAN_MAX) {\n",
-        "\t/* capped at AIUS_OPTICAL_APP_INDEX_SCAN_MAX */\n\twhile (true) {\n",
-        1,
-    )
-    _expect_fail(
-        assert_replay_card_walks_are_bounded, walk_comment_cap,
-        "walks/comment-is-not-a-cap", REPLAY_WALK_SCAN_CAP,
-    )
-    # Delete is bounded by being a constant; a loop there is a new scan.
-    walk_delete_loop = good_walks.replace(
-        "\tif (!SD.exists(path)) return AIUS_OPTICAL_APP_REPLAY_NOT_FOUND;\n",
-        "\tfor (;;) { if (!SD.exists(path)) break; }\n",
-        1,
-    )
-    _expect_fail(
-        assert_replay_card_walks_are_bounded, walk_delete_loop,
-        "walks/delete-grew-a-loop", REPLAY_DELETE_FUNCTION,
-    )
-    # Vacuous-pass guards: neither function present, and a listing with no walk.
-    _expect_fail(
-        assert_replay_card_walks_are_bounded,
-        "static void unrelated(void) { return; }\n",
-        "walks/nothing-scanned", REPLAY_LIST_FUNCTION,
-    )
-    walk_no_loop = (
-        "static FLASHMEM size_t http_replay_list_json(uint8_t *body, size_t cap)\n"
-        "{\n\treturn 0u;\n}\n"
-        "static FLASHMEM AiusOpticalAppReplayResult app_replay_delete(void *,\n"
-        "                                                             const char *id)\n"
-        "{\n\treturn AIUS_OPTICAL_APP_REPLAY_OK;\n}\n"
-    )
-    _expect_fail(
-        assert_replay_card_walks_are_bounded, walk_no_loop,
-        "walks/no-loop-at-all", "no loop at all",
-    )
-
-    # the clock handover exists and is bounded to the replay path.
-    good_clock = (
-        "FLASHMEM void AiusSpdifInputClock::set_master(bool master)\n"
-        "{\n\tupdate_responsibility = master;\n}\n"
-        "FLASHMEM void AiusSpdifOutputClock::set_master(bool master)\n"
-        "{\n\tupdate_responsibility = master;\n}\n"
-        "static FLASHMEM void replay_source_service(void)\n"
-        "{\n"
-        "\tif ((g_replay_service.source == AIUS_REPLAY_SOURCE_REPLAY ||\n"
-        "\t     g_replay_service.source == AIUS_REPLAY_SOURCE_SWITCHING_TO_REPLAY) &&\n"
-        "\t    AudioInputSPDIF3::pllLocked()) {\n"
-        "\t\treplay_job_cancel();\n"
-        "\t\taius_replay_service_stop(&g_replay_service);\n"
-        "\t\tg_replay_stop_reason = REPLAY_STOP_CARRIER;\n"
-        "\t\trecord_event(3, current_state(), REPLAY_STOP_CARRIER);\n"
-        "\t}\n"
-        "}\n"
-        "static FLASHMEM void replay_clock_service(void)\n"
-        "{\n"
-        "\tconst bool output_drives =\n"
-        "\t\tg_replay_service.source == AIUS_REPLAY_SOURCE_REPLAY &&\n"
-        "\t\t!AudioInputSPDIF3::pllLocked() && g_clock_replay_ready;\n"
-        "\tif (output_drives == AiusSpdifOutputClock::is_master())\n"
-        "\t\treturn;\n"
+        "\tAudioMemory(24);\n"
         "\tnoInterrupts();\n"
-        "\tAiusSpdifOutputClock::set_master(output_drives);\n"
-        "\tAiusSpdifInputClock::set_master(!output_drives);\n"
+        "\tAiusSpdifOutputClock::set_master(false);\n"
+        "\tAiusSpdifInputClock::set_master(true);\n"
         "\tinterrupts();\n"
         "}\n"
-        "static FLASHMEM bool platform_replay(void *, const AiusRuntimeBudget *budget,\n"
-        "                                     uint32_t now_ms)\n"
+    )
+    _expect_pass(assert_setup_pins_input_master_once, good_pin, "master-pin/good")
+    _expect_fail(
+        assert_setup_pins_input_master_once,
+        good_pin.replace("\tnoInterrupts();\n", "", 1),
+        "master-pin/unguarded", "critical section",
+    )
+    _expect_fail(
+        assert_setup_pins_input_master_once,
+        good_pin.replace("\tAiusSpdifInputClock::set_master(true);\n", "", 1),
+        "master-pin/one-sided", "AiusSpdifInputClock::set_master",
+    )
+    _expect_fail(
+        assert_setup_pins_input_master_once,
+        good_pin + (
+            "static FLASHMEM void clock_service(void)\n"
+            "{\n\tAiusSpdifOutputClock::set_master(true);\n}\n"
+        ),
+        "master-pin/second-call-site", "call sites in the file",
+    )
+    _expect_fail(
+        assert_setup_pins_input_master_once,
+        good_pin.replace("AiusSpdifInputClock::set_master(true)",
+                         "AiusSpdifInputClock::set_master(false)", 1),
+        "master-pin/output-master", "the input is the master",
+    )
+
+    # source_changes counts carrier edges.
+    good_gate = (
+        "static FLASHMEM void tx_gate_service(void)\n"
         "{\n"
-        "\treplay_refill_service(budget->max_rx_bytes, now_ms);\n"
-        "\treplay_source_service();\n"
-        "\treplay_clock_service();\n"
-        "\treturn true;\n"
+        "\tconst bool carrier = AudioInputSPDIF3::pllLocked();\n"
+        "\tconst bool open = aius_tx_gate_permitted(carrier, g_clock_live_ready);\n"
+        "\tg_tx_gate_open = open;\n"
+        "\tif (carrier != g_tx_gate_carrier && g_audio_ingress_ready)\n"
+        "\t\tg_audio_ingress.source_changes++;\n"
+        "\tg_tx_gate_carrier = carrier;\n"
         "}\n"
     )
-    _expect_pass(
-        assert_replay_clock_handover_is_bounded, good_clock, "clock/good"
-    )
-    # Unbounded: the handover no longer keys on the replay source, so it could
-    # move the clock for a reason the audio path knows nothing about. Replaced
-    # file-wide, not once -- the reconciler reads the source twice and either
-    # occurrence alone would satisfy a naive presence check.
-    clock_unbounded = good_clock.replace(
-        "AIUS_REPLAY_SOURCE_REPLAY", "g_replay_armed"
+    _expect_pass(assert_source_changes_count_carrier_edges, good_gate, "source-edges/good")
+    _expect_fail(
+        assert_source_changes_count_carrier_edges,
+        good_gate.replace("\t\tg_audio_ingress.source_changes++;\n", "\t\t;\n", 1),
+        "source-edges/uncounted", "does not count a carrier edge",
     )
     _expect_fail(
-        assert_replay_clock_handover_is_bounded, clock_unbounded,
-        "clock/unbounded", "AIUS_REPLAY_SOURCE_REPLAY",
-    )
-    # Would take the clock away from a live carrier, and would never displace a
-    # replay when one arrived.
-    clock_unconditional = good_clock.replace("AudioInputSPDIF3::pllLocked()", "false")
-    _expect_fail(
-        assert_replay_clock_handover_is_bounded, clock_unconditional,
-        "clock/ignores-lock", "pllLocked()",
-    )
-    # Moves the clock but leaves the replay running: a live carrier and a replay
-    # both holding the audio path, which the invariant forbids.
-    clock_keeps_replay = good_clock.replace(
-        "\t\taius_replay_service_stop(&g_replay_service);\n", "", 1
-    )
-    _expect_fail(
-        assert_replay_clock_handover_is_bounded, clock_keeps_replay,
-        "clock/carrier-does-not-stop-replay", "never stops the replay",
-    )
-    # Silent: the replay ends by itself and nothing says why.
-    clock_no_event = good_clock.replace(
-        "\t\trecord_event(3, current_state(), REPLAY_STOP_CARRIER);\n", "", 1
-    )
-    _expect_fail(
-        assert_replay_clock_handover_is_bounded, clock_no_event,
-        "clock/unrecorded-transition", "event ring",
-    )
-    # Half a handover: both peripherals end up driving update_all().
-    clock_one_sided = good_clock.replace(
-        "\tAiusSpdifInputClock::set_master(!output_drives);\n", "", 1
-    )
-    _expect_fail(
-        assert_replay_clock_handover_is_bounded, clock_one_sided,
-        "clock/one-sided", "AiusSpdifInputClock::set_master",
-    )
-    # Torn: a DMA ISR can land between the two stores.
-    clock_unguarded = good_clock.replace("\tnoInterrupts();\n", "", 1)
-    _expect_fail(
-        assert_replay_clock_handover_is_bounded, clock_unguarded,
-        "clock/no-critical-section", "critical section",
-    )
-    # A second call site outside the reconciler -- the widening this check
-    # exists to refuse.
-    clock_second_site = good_clock + (
-        "static FLASHMEM AiusOpticalAppReplayResult app_replay_start(void *,\n"
-        "                                                            const char *id)\n"
-        "{\n\tAiusSpdifOutputClock::set_master(true);\n\treturn ok;\n}\n"
-    )
-    _expect_fail(
-        assert_replay_clock_handover_is_bounded, clock_second_site,
-        "clock/second-call-site", "call sites in the file",
-    )
-    # Dead code: present, correct, and never reached.
-    clock_unreached = good_clock.replace("\treplay_clock_service();\n", "", 1)
-    _expect_fail(
-        assert_replay_clock_handover_is_bounded, clock_unreached,
-        "clock/never-called", "before replay_clock_service()",
+        assert_source_changes_count_carrier_edges,
+        good_gate.replace("\tg_tx_gate_carrier = carrier;\n", "", 1).replace(
+            "\tif (carrier != g_tx_gate_carrier",
+            "\tg_tx_gate_carrier = carrier;\n\tif (carrier != g_tx_gate_carrier", 1),
+        "source-edges/latch-first", "before comparing it",
     )
 
     # counter edges: allocated types, epoch-loop emission, one per epoch.
@@ -5061,6 +4386,20 @@ static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
         assert_event_types_are_allocated_not_renumbered, types_collided,
         "types/collision", "never renumbered or reused",
     )
+    # Phase 4i: the retired value 3 handed to a new type, or REPLAY_STOP back.
+    retired_comment = "\t/* 3 retired (AIUS_EVENT_REPLAY_STOP (Phase 4i)); never reused. */\n"
+    for label, member in (("types/retired-reused", "AIUS_EVENT_HDMI_LOSS"),
+                          ("types/retired-restored", "AIUS_EVENT_REPLAY_STOP")):
+        reused = good_edges.replace(retired_comment, f"\t{member} = 3,\n", 1)
+        assert reused != good_edges, "types fixture lost its retired-value comment"
+        _expect_fail(
+            assert_event_types_are_allocated_not_renumbered,
+            reused.replace(
+                "\trecord_event(AIUS_EVENT_STATE, state, 0);\n",
+                "\trecord_event(AIUS_EVENT_STATE, state, 0);\n"
+                f"\trecord_event({member}, state, 0);\n", 1),
+            label, "retired event type value",
+        )
     # Dead code: the service exists, is correct, and nothing reaches it.
     edges_unreached = good_edges.replace("\tservice_event_edges();\n", "", 1)
     _expect_fail(
@@ -5556,66 +4895,6 @@ static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
         "rx-isr/vector-not-redirected", "redirects the receive DMA vector",
     )
 
-    # the replay gate-open edge pads to its own floor.
-    good_floor = (
-        "#define AIUS_TX_GATE_OPEN_REPLAY_TARGET_FRAMES 768u\n"
-        "#if AIUS_TX_GATE_OPEN_REPLAY_TARGET_FRAMES < AIUS_TX_GATE_OPEN_TARGET_FRAMES\n"
-        "#error \"below\"\n"
-        "#endif\n"
-        "static inline void tx_gate_execute_open(bool replay, bool first_in_unit,\n"
-        "                                        uint32_t unit_frames,\n"
-        "                                        uint32_t block_frames)\n"
-        "{\n"
-        "\tif (!g_tx_gate_open_pending)\n"
-        "\t\treturn;\n"
-        "\tconst uint32_t target_frames =\n"
-        "\t\treplay ? AIUS_TX_GATE_OPEN_REPLAY_TARGET_FRAMES\n"
-        "\t\t       : AIUS_TX_GATE_OPEN_TARGET_FRAMES;\n"
-        "\taius_spdif_tx24_set_level(&g_aius_spdif_tx24, target_frames,\n"
-        "\t                          &dropped, &padded);\n"
-        "}\n"
-        "AiusStatus enqueue(const AiusPcmBlock *block)\n"
-        "{\n"
-        "\tconst bool replay =\n"
-        "\t\tg_replay_service.source == AIUS_REPLAY_SOURCE_REPLAY;\n"
-        "\ttx_gate_execute_open(replay, block->first_in_unit != 0u,\n"
-        "\t                     unit_frames, block->frames);\n"
-        "\treturn AIUS_OK;\n"
-        "}\n"
-    )
-    _expect_pass(
-        assert_replay_gate_open_pads_to_its_own_floor, good_floor, "replay-floor/good"
-    )
-    _expect_fail(
-        assert_replay_gate_open_pads_to_its_own_floor,
-        good_floor.replace(
-            "#if AIUS_TX_GATE_OPEN_REPLAY_TARGET_FRAMES < "
-            "AIUS_TX_GATE_OPEN_TARGET_FRAMES\n#error \"below\"\n#endif\n",
-            "",
-            1,
-        ),
-        "replay-floor/unguarded", "sinking below",
-    )
-    # THE REGRESSION: one floor for both sources.
-    _expect_fail(
-        assert_replay_gate_open_pads_to_its_own_floor,
-        good_floor.replace(
-            "\tconst uint32_t target_frames =\n"
-            "\t\treplay ? AIUS_TX_GATE_OPEN_REPLAY_TARGET_FRAMES\n"
-            "\t\t       : AIUS_TX_GATE_OPEN_TARGET_FRAMES;\n"
-            "\taius_spdif_tx24_set_level(&g_aius_spdif_tx24, target_frames,\n",
-            "\taius_spdif_tx24_set_level(&g_aius_spdif_tx24,\n"
-            "\t                          AIUS_TX_GATE_OPEN_TARGET_FRAMES,\n",
-            1,
-        ),
-        "replay-floor/one-floor", "select the floor by source",
-    )
-    _expect_fail(
-        assert_replay_gate_open_pads_to_its_own_floor,
-        good_floor.replace("\ttx_gate_execute_open(replay, ",
-                           "\ttx_gate_execute_open(false, ", 1),
-        "replay-floor/fact-not-passed", "replay fact",
-    )
 
 
 # --------------------------------------------------------------------------
@@ -5635,26 +4914,21 @@ STORAGE_SOURCE = "src/aius_runtime_storage.cpp"
 OPTICAL_MAIN_SOURCE = "src/optical_main.cpp"
 
 # W2 windowed rows by source function: the storage execute (route_action,
-# which inlines into the W2 row `advance`) and the three raw scans.
+# which inlines into the W2 row `advance`) and the raw scan (the replay
+# listing and delete retired with Phase 4i).
 W2_WINDOWED_SOURCES = frozenset({
     (STORAGE_SOURCE, "route_action"),
-    (OPTICAL_MAIN_SOURCE, "http_replay_list_json"),
-    (OPTICAL_MAIN_SOURCE, "app_replay_delete"),
     (OPTICAL_MAIN_SOURCE, "app_read_directory"),
 })
-# The accepted unwindowed rows: the replay refill (round 1 S3) and the OTA
-# copy into PSRAM (CR-S9). Named so a window there fails with its reason.
+# The accepted unwindowed row: the OTA copy into PSRAM (CR-S9). Named so a
+# window there fails with its reason.
 W2_UNWINDOWED_SOURCES = frozenset({
-    "replay_job_route",
-    "replay_job_advance",
     "ota_copy_staged_to_psram",
 })
 # Every function outside the adapter whose code names SD., File or FsFile
-# is the source of a W2 row (W5): the four raw-access functions.
+# is the source of a W2 row (W5): the two raw-access functions.
 W2_SD_NAMING_SOURCES = frozenset({
     (OPTICAL_MAIN_SOURCE, "ota_copy_staged_to_psram"),
-    (OPTICAL_MAIN_SOURCE, "http_replay_list_json"),
-    (OPTICAL_MAIN_SOURCE, "app_replay_delete"),
     (OPTICAL_MAIN_SOURCE, "app_read_directory"),
 })
 WINDOW_TOKEN = re.compile(
@@ -6109,19 +5383,11 @@ def assert_root_sd_starts_consult_fifo_defer(sources):
 
 def assert_round3_admission_wiring(sources):
     """4f delivery audit round 3. F-B2: bring-up root jobs are exempt from
-    sd_fifo_defer() and a started replay refill is never held; F-S1: a shed
+    sd_fifo_defer(); F-S1: a shed
     SD_START disarms the upload staging it armed; F-S2: the hook tells the
     portable decision whether the consult re-issues the held start; F-S3: the
     mode switch charges the pending SD window sample to the old mode."""
     defs = _clean_definitions(sources[OPTICAL_MAIN_SOURCE])
-    held_advance = sorted(
-        n for n, b in defs.items()
-        if re.search(r"!\s*sd_fifo_defer\s*\(\s*\)\s*\)\s*replay_job_advance\s*\(", b)
-    )
-    assert not held_advance, (
-        "a started replay refill must not consult sd_fifo_defer() (F-B2): "
-        + ", ".join(held_advance)
-    )
     admit = defs.get("aius_runtime_http_admit", "")
     assert re.search(r"\bsd_disarm_shed_staging\s*\(\s*query\s*->\s*sd_job\s*\)",
                      admit), (
@@ -6338,7 +5604,7 @@ def assert_orphan_staging_dropped(sources):
 
 
 HTTP_SERVICE_SOURCE = "src/aius_runtime_network_http.cpp"
-DIRECT_CARD_OPS = ("http_replay_list_json", "app_replay_delete", "app_read_directory")
+DIRECT_CARD_OPS = ("app_read_directory",)
 ROUTE_FILL_WAIT = re.compile(
     r"!\s*sd_start\s*&&\s*aius_optical_app_route_reads_card\s*\(\s*query\s*->\s*request\s*\)"
     r"\s*&&\s*aius_optical_web_fill_route\s*\(\s*&\s*g_web_fill\s*,\s*"
@@ -6352,10 +5618,6 @@ FOLLOW_CARD = re.compile(
     # Phase 4h: the arm may be a block that also sets the card-loss hold.
     r"mounted\s*,\s*storage\s*\.\s*target\s*\.\s*mounts\s*\)\s*\)\s*\{?\s*web_cache_invalidate_all\s*\(\s*\)\s*;"
 )
-REPLAY_FILL_GATE = re.compile(
-    r"if\s*\(\s*g_web_cache\s*\.\s*base\s*!=\s*nullptr\s*&&\s*!\s*g_web_fill_walk\s*\.\s*"
-    r"walk_complete\s*\)\s*return\s+AIUS_OPTICAL_APP_REPLAY_FILL_BUSY\s*;"
-)
 
 
 def assert_fill_route_and_card_wiring(sources):
@@ -6365,8 +5627,8 @@ def assert_fill_route_and_card_wiring(sources):
     dispatch before any transaction step, the admission sends a direct-card
     route through the fill wait (one cancel entry) before 4f's route verdict,
     app_dispatch_end() ends it, and the HTTP canceller is never dropped under a
-    held dispatch. Finding 2: app_replay_start() refuses FILL_BUSY while the
-    cache is present and the walk incomplete, before any replay starts.
+    held dispatch. (Finding 2, the replay start's FILL_BUSY gate, retired
+    with replay in Phase 4i.)
     Finding 6: the walk follows the adapter's trusted mount, and each
     direct-card op clears the driver code first and settles it after."""
     http = _clean_definitions(sources[HTTP_SERVICE_SOURCE])
@@ -6427,72 +5689,6 @@ def assert_fill_route_and_card_wiring(sources):
                          body[first.start():]), (
             f"{name} must settle its driver code through direct_card_settle (4g F6)"
         )
-    start = defs.get("app_replay_start", "")
-    gate = REPLAY_FILL_GATE.search(start)
-    begin = start.find("aius_replay_service_start(")
-    assert gate and -1 < begin and gate.start() < begin, (
-        "app_replay_start must refuse AIUS_OPTICAL_APP_REPLAY_FILL_BUSY while "
-        "g_web_cache.base != nullptr && !g_web_fill_walk.walk_complete, before any "
-        "replay starts (4g F2)"
-    )
-
-
-REPLAY_DELETE_IEC = re.compile(
-    r'snprintf\s*\(\s*path\s*,\s*sizeof\s*\(\s*path\s*\)\s*,\s*'
-    r'"/aius/replays/%s\.iec"\s*,\s*id\s*\)\s*;'
-)
-REPLAY_DELETE_PART_FALLBACK = re.compile(
-    r'if\s*\(\s*!\s*SD\s*\.\s*exists\s*\(\s*path\s*\)\s*\)\s*'
-    r'snprintf\s*\(\s*path\s*,\s*sizeof\s*\(\s*path\s*\)\s*,\s*'
-    r'"/aius/replays/%s\.part"\s*,\s*id\s*\)\s*;'
-)
-
-
-def assert_replay_delete_removes_iec_else_part(sources):
-    """Phase 4i step 1a: app_replay_delete removes <id>.iec when it exists and
-    otherwise <id>.part (an in-flight capture), never both: the .part path is
-    chosen only when the .iec test fails, so an existing .iec leaves a .part
-    untouched. One ProducerSdWindow, one SD.remove, one direct_card_settle
-    after it, and the replay-active refusal ahead of the window."""
-    raw = all_function_definitions(sources[OPTICAL_MAIN_SOURCE]).get(
-        REPLAY_DELETE_FUNCTION, ""
-    )
-    body = without_comments_and_literals(raw)
-    assert raw, f"{REPLAY_DELETE_FUNCTION} not found"
-    iec = REPLAY_DELETE_IEC.search(raw)
-    part = REPLAY_DELETE_PART_FALLBACK.search(raw)
-    assert iec and part and iec.start() < part.start(), (
-        f"{REPLAY_DELETE_FUNCTION} must build the .iec path first and fall back "
-        "to .part only when the .iec does not exist (4i step 1a)"
-    )
-    windows = WINDOW_DECLARATION.findall(body)
-    assert len(windows) == 1, (
-        f"{REPLAY_DELETE_FUNCTION} must hold exactly one ProducerSdWindow, "
-        f"found {len(windows)} (4i step 1a)"
-    )
-    removes = list(re.finditer(r"\bSD\s*\.\s*remove\s*\(", body))
-    settles = list(re.finditer(
-        r"\bdirect_card_settle\s*\(\s*SD\s*\.\s*sdErrorCode\s*\(\s*\)\s*\)", body
-    ))
-    assert len(removes) == 1 and len(settles) == 1, (
-        f"{REPLAY_DELETE_FUNCTION} must make one SD.remove and one "
-        "direct_card_settle (4i step 1a)"
-    )
-    window = WINDOW_DECLARATION.search(body)
-    fallback = body.find("SD.exists", body.find("SD.exists") + 1)
-    assert (window.start() < body.find("SD.exists") < fallback
-            < removes[0].start() < settles[0].start()), (
-        f"{REPLAY_DELETE_FUNCTION}: both removals' card ops must sit inside the "
-        "window, settled by direct_card_settle after the remove (4i step 1a)"
-    )
-    refusal = body.find("AIUS_OPTICAL_APP_REPLAY_ACTIVE")
-    assert (-1 < refusal < window.start()
-            and "AIUS_REPLAY_SOURCE_SWITCHING_TO_REPLAY" in body
-            and "AIUS_REPLAY_SOURCE_REPLAY" in body
-            and re.search(r"\bstrcmp\s*\(\s*id\s*,\s*g_replay_service\s*\.\s*id", body)), (
-        f"{REPLAY_DELETE_FUNCTION} must keep the replay-active refusal before "
-        "the window (4i step 1a)"
-    )
 
 
 FILL_RESUME_START = re.compile(
@@ -6516,9 +5712,8 @@ FILL_CANCEL_COMPLETE = re.compile(
     r"aius_web_cache_fill_resume_offset\s*\(\s*&\s*g_web_cache\s*,\s*rel\s*,\s*strlen\s*\(\s*rel\s*\)"
     r"\s*\)\s*==\s*storage\s*\.\s*job\s*\.\s*end_offset\s*&&\s*aius_web_cache_publish\s*\("
 )
-FILL_REPLAY_PAUSE = re.compile(
-    r"\baius_optical_web_fill_paused\s*\(\s*&\s*g_web_fill\s*,\s*now_ms\s*,\s*"
-    r"web_cache_replay_playing\s*\(\s*\)\s*\)"
+FILL_PAUSE = re.compile(
+    r"\baius_optical_web_fill_paused\s*\(\s*&\s*g_web_fill\s*,\s*now_ms\s*\)"
 )
 FILL_PRESETS_UNREAD = re.compile(
     r"\bbatch\s*\.\s*count\s*=\s*0u?\s*;\s*g_web_fill_walk\s*\.\s*dir_clean\s*=\s*false\s*;"
@@ -6530,8 +5725,8 @@ def assert_fill_resume_pause_and_presets(sources):
     resumes at its next chunk: the start asks the cache for the resume
     offset, a job's first chunk continues the partial (dropped on a size
     change), a cancel keeps the partial and the cursor, and a failed resume
-    restarts the file from 0 without skipping it. Nit A (owner): a playing
-    replay (REPLAY or SWITCHING_TO_REPLAY) pauses the fill start. Nit: a
+    restarts the file from 0 without skipping it. The hold pauses the fill
+    start (nit A's replay pause retired with replay, Phase 4i). Nit: a
     failed subdirectory read leaves the directory unclean, so presets/ is
     never published complete from an unread listing."""
     defs = _clean_definitions(sources[OPTICAL_MAIN_SOURCE])
@@ -6543,16 +5738,11 @@ def assert_fill_resume_pause_and_presets(sources):
         "aius_web_cache_fill_resume_offset(&g_web_cache, rel, strlen(rel)) before "
         "the start (finding 1: resume)"
     )
-    pause = FILL_REPLAY_PAUSE.search(nxt)
+    pause = FILL_PAUSE.search(nxt)
     assert pause and -1 < pause.start() < start and "aius_optical_web_fill_held(" not in nxt, (
         "web_cache_fill_next must gate on aius_optical_web_fill_paused(&g_web_fill, "
-        "now_ms, web_cache_replay_playing()) before the start (nit A: replay pauses)"
+        "now_ms) before the start"
     )
-    playing = defs.get("web_cache_replay_playing", "")
-    for state in ("AIUS_REPLAY_SOURCE_REPLAY", "AIUS_REPLAY_SOURCE_SWITCHING_TO_REPLAY"):
-        assert re.search(rf"\bg_replay_service\s*\.\s*source\s*==\s*{state}\b", playing), (
-            f"web_cache_replay_playing must count {state} (nit A: replay pauses)"
-        )
     assert FILL_PRESETS_UNREAD.search(nxt), (
         "web_cache_fill_next must mark an unread subdirectory unclean: "
         "`batch.count = 0u; g_web_fill_walk.dir_clean = false;` (presets nit)"
@@ -6756,8 +5946,9 @@ def assert_sd_overlay_wiring(sources):
     )
     # D-S9: one BEGIN gate (aius_optical_sd_begin_blocked), consulted by every
     # path that can start a storage BEGIN. The storage-job start sites are a
-    # closed set (a new one fails here until it is gated), the replay job is
-    # the only direct executor, and each is reached through the gate.
+    # closed set (a new one fails here until it is gated), there is no direct
+    # executor since the replay job retired (Phase 4i), and each start is
+    # reached through the gate.
     assert "sd_flush_mounted" in ops, "g_sd_flush_ops must bind sd_flush_mounted"
     assert "aius_optical_sd_begin_blocked(" in defs.get("sd_begin_blocked", "")
     starters = sorted(name for name, body in defs.items()
@@ -6769,12 +5960,11 @@ def assert_sd_overlay_wiring(sources):
     )
     executors = sorted(name for name, body in defs.items()
                        if "aius_sd_teensy_execute(" in body)
-    assert executors == ["replay_job_route"], (
+    assert executors == [], (
         f"direct adapter executors changed ({executors}): gate BEGIN (D-S9)"
     )
     for site, gate in (("sd_lifecycle_service", "sd_step_begin_blocked("),
-                       ("aius_runtime_http_admit", "sd_begin_blocked("),
-                       ("replay_job_route", "sd_replay_begin_blocked(")):
+                       ("aius_runtime_http_admit", "sd_begin_blocked(")):
         assert gate in defs.get(site, ""), (
             f"{site} must consult the BEGIN gate {gate} (D-S9, D-S10, D-N9)"
         )
@@ -6801,8 +5991,6 @@ def assert_sd_overlay_wiring(sources):
         "with BUSY (N2)"
     )
     assert "aius_optical_sd_step_begin_blocked(" in defs.get("sd_step_begin_blocked", "")
-    assert "aius_optical_sd_replay_begin_blocked(" in defs.get(
-        "sd_replay_begin_blocked", "")
     for site in ("aius_optical_sd_flush_start", "aius_optical_sd_idle_step"):
         assert "aius_optical_sd_begin_blocked(" in app_defs.get(site, ""), (
             f"{site} must consult aius_optical_sd_begin_blocked (D-S9)"
@@ -6897,8 +6085,6 @@ def run_sd_overlay_self_test(sources):
          "\t\tconst AiusOpticalSdBeginGate gate = AIUS_OPTICAL_SD_BEGIN_NONE;"),
         ("? AIUS_HTTP_VERDICT_UNAVAILABLE\n\t\t\t               : AIUS_HTTP_VERDICT_BUSY;",
          "? AIUS_HTTP_VERDICT_BUSY\n\t\t\t               : AIUS_HTTP_VERDICT_UNAVAILABLE;"),
-        ("\tif (action->kind == AIUS_SD_ACTION_BEGIN && sd_replay_begin_blocked()) {",
-         "\tif (false) {"),
         ("\t\tend.loss_pending = loss == AIUS_OPTICAL_SD_CARD_PENDING;\n",
          "\t\tend.card_detected = true;\n"),
         ("\taius_sd_teensy_set_mode(target, dma);\n",
@@ -6920,7 +6106,6 @@ def run_sd_overlay_self_test(sources):
 ADMISSION_CHECKS = (
     ("fill-resume-pause-and-presets", assert_fill_resume_pause_and_presets),
     ("fill-route-and-card-wiring", assert_fill_route_and_card_wiring),
-    ("replay-delete-iec-else-part", assert_replay_delete_removes_iec_else_part),
     ("root-sd-starts-consult-fifo-defer", assert_root_sd_starts_consult_fifo_defer),
     ("ota-staging-exempt-before-margin", assert_ota_staging_exempt_before_margin),
     ("single-ownership-predicate", assert_single_ownership_predicate),
@@ -6988,29 +6173,6 @@ def _admission_fixture():
         "static FLASHMEM void direct_card_settle(uint32_t code)\n{\n"
         "\tif (code != 0u && !g_runtime.storage.target.file_open)\n"
         "\t\taius_sd_teensy_invalidate_mount(&g_runtime.storage.target);\n}\n"
-        "static FLASHMEM int app_replay_start(void *, const char *id, bool loop)\n{\n"
-        "\tif (!g_sd_ready)\n\t\treturn AIUS_OPTICAL_APP_REPLAY_FAILED;\n"
-        "\tif (g_web_cache.base != nullptr && !g_web_fill_walk.walk_complete)\n"
-        "\t\treturn AIUS_OPTICAL_APP_REPLAY_FILL_BUSY;\n"
-        "\tif (aius_replay_service_start(&g_replay_service, id, loop) != AIUS_OK)\n"
-        "\t\treturn AIUS_OPTICAL_APP_REPLAY_FAILED;\n"
-        "\treturn AIUS_OPTICAL_APP_REPLAY_OK;\n}\n"
-        "static FLASHMEM size_t http_replay_list_json(uint8_t *b)\n{\n"
-        "\tconst ProducerSdWindow window;\n\tSD.clearError();\n"
-        "\tFile directory = SD.open(\"/aius/replays\");\n"
-        "\tdirectory.close();\n\tdirect_card_settle(SD.sdErrorCode());\n\treturn 0;\n}\n"
-        "static FLASHMEM int app_replay_delete(void *, const char *id)\n{\n"
-        "\tchar path[96];\n"
-        "\tif (strcmp(id, g_replay_service.id) == 0 &&\n"
-        "\t    (g_replay_service.source == AIUS_REPLAY_SOURCE_REPLAY ||\n"
-        "\t     g_replay_service.source == AIUS_REPLAY_SOURCE_SWITCHING_TO_REPLAY))\n"
-        "\t\treturn AIUS_OPTICAL_APP_REPLAY_ACTIVE;\n"
-        "\tsnprintf(path, sizeof(path), \"/aius/replays/%s.iec\", id);\n"
-        "\tconst ProducerSdWindow window;\n\tSD.clearError();\n"
-        "\tif (!SD.exists(path))\n"
-        "\t\tsnprintf(path, sizeof(path), \"/aius/replays/%s.part\", id);\n"
-        "\tconst bool removed = SD.exists(path) && SD.remove(path);\n"
-        "\tdirect_card_settle(SD.sdErrorCode());\n\treturn removed;\n}\n"
         "static FLASHMEM int app_read_directory(void *, const char *p)\n{\n"
         "\tconst ProducerSdWindow window;\n\tSD.clearError();\n"
         "\tFile directory = SD.open(p);\n"
@@ -7075,13 +6237,9 @@ def _admission_fixture():
         "\t\t\t: aius_web_cache_fill_resume(&g_web_cache, rel, n, o, s);\n"
         "\t\tif (!open)\n\t\t\treturn false;\n\t\tg_web_fill_walk.begun = true;\n\t}\n"
         "\treturn aius_web_cache_fill_chunk(&g_web_cache, data, l);\n}\n"
-        "static FLASHMEM bool web_cache_replay_playing(void)\n{\n"
-        "\treturn g_replay_service.source == AIUS_REPLAY_SOURCE_REPLAY ||\n"
-        "\t       g_replay_service.source == AIUS_REPLAY_SOURCE_SWITCHING_TO_REPLAY;\n}\n"
         "static FLASHMEM void web_cache_fill_next(uint32_t now_ms)\n{\n"
         "\tif (g_web_fill_walk.running ||\n"
-        "\t    aius_optical_web_fill_paused(&g_web_fill, now_ms,\n"
-        "\t                                 web_cache_replay_playing()) ||\n"
+        "\t    aius_optical_web_fill_paused(&g_web_fill, now_ms) ||\n"
         "\t    !sd_storage_idle())\n\t\treturn;\n"
         "\tif (web_cache_fill_defer())\n\t\treturn;\n"
         "\tif (app_read_directory(nullptr, path, &batch) != DIR_OK) {\n"
@@ -7092,13 +6250,6 @@ def _admission_fixture():
         "\t\taius_web_cache_fill_resume_offset(&g_web_cache, rel, strlen(rel));\n"
         "\tif (aius_runtime_teensy_start_storage_job(&g_runtime, &request))\n"
         "\t\tg_web_fill_walk.running = true;\n}\n"
-        "static FLASHMEM void replay_job_start(const AiusReplayRefill *r)\n{\n"
-        "\taius_sd_job_start(&g_replay_job, &request, now_ms, 0u);\n}\n"
-        "static FLASHMEM void replay_refill_service(uint32_t now_ms)\n{\n"
-        "\tif (g_replay_job_active) {\n\t\treplay_job_advance(now_ms);\n"
-        "\t\treturn;\n\t}\n"
-        "\tif (!sd_storage_idle() || sd_fifo_defer())\n\t\treturn;\n"
-        "\treplay_job_start(&refill, now_ms);\n}\n"
         "static FLASHMEM void tx_gate_service(void)\n{\n"
         "\tsample.gate_open = g_aius_spdif_tx24.gate_open != 0u ? 1u : 0u;\n"
         "\tsample.carrier = g_tx_gate_carrier ? 1u : 0u;\n}\n"
@@ -7181,10 +6332,6 @@ def run_admission_self_test():
         good, OPTICAL_MAIN_SOURCE, "\tif (sd_fifo_defer())\n\t\treturn;\n", "",
     ), "starts/lifecycle-unguarded", "sd_lifecycle_service")
     _expect_fail(starts, _mutated(
-        good, OPTICAL_MAIN_SOURCE, "!sd_storage_idle() || sd_fifo_defer()",
-        "!sd_storage_idle()",
-    ), "starts/refill-unguarded", "replay_refill_service")
-    _expect_fail(starts, _mutated(
         good, OPTICAL_MAIN_SOURCE,
         "\tif (sd_fifo_defer())\n\t\treturn;\n\tif (sd_start_step(g_sd_step))",
         "\tif (sd_start_step(g_sd_step))\n\t\treturn;\n\tif (sd_fifo_defer())",
@@ -7216,8 +6363,8 @@ def run_admission_self_test():
         "\tif (web_cache_fill_defer())\n\t\treturn;\n\tif (app_read_directory",
         "\tif (app_read_directory",
     ), "g8/fill-start-unguarded", "web_cache_fill_next")
-    # Phase 4g clean-room round: finding 1 (resume), nit A (replay pauses),
-    # the presets nit.
+    # Phase 4g clean-room round: finding 1 (resume), the hold's pause, the
+    # presets nit.
     resume = assert_fill_resume_pause_and_presets
     _expect_fail(resume, _mutated(
         good, OPTICAL_MAIN_SOURCE,
@@ -7245,15 +6392,19 @@ def run_admission_self_test():
         "\t\t                   0u &&\n",
     ), "f1/complete-cancel-unpublished", "last chunk")
     _expect_fail(resume, _mutated(
-        good, OPTICAL_MAIN_SOURCE, "\t                                 web_cache_replay_playing()) ||\n",
-        "\t                                 false) ||\n",
-    ), "nit-a/replay-unpaused", "replay pauses")
+        good, OPTICAL_MAIN_SOURCE,
+        "\t    aius_optical_web_fill_paused(&g_web_fill, now_ms) ||\n", "",
+    ), "hold/unpaused", "aius_optical_web_fill_paused")
     _expect_fail(resume, _mutated(
         good, OPTICAL_MAIN_SOURCE,
-        "\treturn g_replay_service.source == AIUS_REPLAY_SOURCE_REPLAY ||\n"
-        "\t       g_replay_service.source == AIUS_REPLAY_SOURCE_SWITCHING_TO_REPLAY;\n",
-        "\treturn g_replay_service.source == AIUS_REPLAY_SOURCE_REPLAY;\n",
-    ), "nit-a/prebuffering-unpaused", "SWITCHING_TO_REPLAY")
+        "\t    aius_optical_web_fill_paused(&g_web_fill, now_ms) ||\n",
+        "\t    aius_optical_web_fill_paused(&g_web_fill, now_ms, true) ||\n",
+    ), "hold/source-argument", "aius_optical_web_fill_paused")
+    _expect_fail(resume, _mutated(
+        good, OPTICAL_MAIN_SOURCE,
+        "\t    aius_optical_web_fill_paused(&g_web_fill, now_ms) ||\n",
+        "\t    aius_optical_web_fill_held(&g_web_fill, now_ms) ||\n",
+    ), "hold/held-not-paused", "aius_optical_web_fill_paused")
     _expect_fail(resume, _mutated(
         good, OPTICAL_MAIN_SOURCE,
         "\t\t\tbatch.count = 0u;\n\t\t\tg_web_fill_walk.dir_clean = false;\n",
@@ -7350,10 +6501,6 @@ def run_admission_self_test():
     ), "r4/drop-queued-start", "held or queued")
     r3 = assert_round3_admission_wiring
     _expect_fail(r3, _mutated(
-        good, OPTICAL_MAIN_SOURCE, "\t\treplay_job_advance(now_ms);\n",
-        "\t\tif (!sd_fifo_defer())\n\t\t\treplay_job_advance(now_ms);\n",
-    ), "r3/replay-advance-held", "replay_refill_service")
-    _expect_fail(r3, _mutated(
         good, OPTICAL_MAIN_SOURCE,
         "\tif (v == SHED)\n\t\tsd_disarm_shed_staging(query->sd_job);\n", "",
     ), "r3/no-disarm", "F-S1")
@@ -7404,52 +6551,13 @@ def run_admission_self_test():
     ), "f6/follow-ignores-mount", "follow the card")
     _expect_fail(wiring, _mutated(
         good, OPTICAL_MAIN_SOURCE,
-        "\tdirect_card_settle(SD.sdErrorCode());\n\treturn removed;", "\treturn removed;",
-    ), "f6/delete-unsettled", "app_replay_delete")
-    # Phase 4i step 1a: the delete removes .iec, else .part, in one window.
-    part_delete = assert_replay_delete_removes_iec_else_part
-    _expect_fail(part_delete, _mutated(
-        good, OPTICAL_MAIN_SOURCE,
-        "\tif (!SD.exists(path))\n"
-        "\t\tsnprintf(path, sizeof(path), \"/aius/replays/%s.part\", id);\n", "",
-    ), "4i1a/no-part-fallback", "fall back")
-    _expect_fail(part_delete, _mutated(
-        good, OPTICAL_MAIN_SOURCE,
-        "\tif (!SD.exists(path))\n"
-        "\t\tsnprintf(path, sizeof(path), \"/aius/replays/%s.part\", id);\n",
-        "\tsnprintf(path, sizeof(path), \"/aius/replays/%s.part\", id);\n",
-    ), "4i1a/part-clobbers-iec", "fall back")
-    _expect_fail(part_delete, _mutated(
-        good, OPTICAL_MAIN_SOURCE,
-        "\tconst bool removed = SD.exists(path) && SD.remove(path);\n",
-        "\tconst bool removed = SD.exists(path) && SD.remove(path);\n"
-        "\tconst ProducerSdWindow again;\n",
-    ), "4i1a/second-window", "exactly one ProducerSdWindow")
-    _expect_fail(part_delete, _mutated(
-        good, OPTICAL_MAIN_SOURCE,
-        "\tdirect_card_settle(SD.sdErrorCode());\n\treturn removed;",
-        "\treturn removed;",
-    ), "4i1a/unsettled", "one direct_card_settle")
-    _expect_fail(part_delete, _mutated(
-        good, OPTICAL_MAIN_SOURCE,
-        "\t\treturn AIUS_OPTICAL_APP_REPLAY_ACTIVE;\n\tsnprintf(path, sizeof(path), \"/aius/replays/%s.iec\", id);\n",
-        "\tsnprintf(path, sizeof(path), \"/aius/replays/%s.iec\", id);\n",
-    ), "4i1a/refusal-dropped", "replay-active refusal")
+        "\t\tdirect_card_settle(SD.sdErrorCode());\n\t\treturn 1;", "\t\treturn 1;",
+    ), "f6/listing-unsettled", "app_read_directory must settle")
     _expect_fail(wiring, _mutated(
         good, OPTICAL_MAIN_SOURCE,
         "\tconst ProducerSdWindow window;\n\tSD.clearError();\n\tFile directory = SD.open(p);",
         "\tconst ProducerSdWindow window;\n\tFile directory = SD.open(p);",
     ), "f6/listing-stale-code", "app_read_directory")
-    _expect_fail(wiring, _mutated(
-        good, OPTICAL_MAIN_SOURCE,
-        "\tif (g_web_cache.base != nullptr && !g_web_fill_walk.walk_complete)\n"
-        "\t\treturn AIUS_OPTICAL_APP_REPLAY_FILL_BUSY;\n", "",
-    ), "f2/replay-ungated", "FILL_BUSY")
-    _expect_fail(wiring, _mutated(
-        good, OPTICAL_MAIN_SOURCE,
-        "g_web_cache.base != nullptr && !g_web_fill_walk.walk_complete",
-        "!g_web_fill_walk.walk_complete",
-    ), "f2/gates-without-cache", "FILL_BUSY")
 
 
 PRODUCER_YIELD_CHECKS = (
@@ -7491,17 +6599,11 @@ def _producer_yield_fixture():
         "};\n"
         "static FLASHMEM int ota_copy_staged_to_psram(uint8_t *d)\n{\n"
         "\tFile staged = SD.open(\"/x\");\n\treturn 0;\n}\n"
-        "static FLASHMEM size_t http_replay_list_json(uint8_t *b)\n{\n"
-        "\tconst ProducerSdWindow window;\n"
-        "\tFile directory = SD.open(\"/aius/replays\");\n\treturn 0;\n}\n"
-        "static FLASHMEM int app_replay_delete(void *, const char *id)\n{\n"
-        "\tconst ProducerSdWindow window;\n"
-        "\treturn SD.remove(id);\n}\n"
         "static FLASHMEM int app_read_directory(void *, const char *p)\n{\n"
         "\tif (!g_sd_ready)\n\t\treturn 1;\n"
         "\tconst ProducerSdWindow window;\n"
         "\tFile directory = SD.open(p);\n\treturn 0;\n}\n"
-        "static FLASHMEM void replay_job_route(void)\n{\n"
+        "static FLASHMEM void sd_service_step(void)\n{\n"
         "\t/* SD. and File in a comment are not code. */\n"
         "\taius_sd_teensy_execute(&g_runtime.storage.target, action);\n}\n"
         "static FLASHMEM void platform_checkpoint(void *, uint16_t checkpoint)\n{\n"
@@ -7582,11 +6684,6 @@ def run_producer_yield_self_test():
     window = assert_sd_window_only_in_w2_windowed_sources
     _expect_fail(window, _mutated(
         good, OPTICAL_MAIN_SOURCE,
-        "\t/* SD. and File in a comment are not code. */\n",
-        "\tconst ProducerSdWindow window;\n",
-    ), "window/replay-refill", "accepted UNWINDOWED")
-    _expect_fail(window, _mutated(
-        good, OPTICAL_MAIN_SOURCE,
         "\tFile staged = SD.open",
         "\tconst ProducerSdWindow window;\n\tFile staged = SD.open",
     ), "window/ota-copy", "ota_copy_staged_to_psram")
@@ -7597,9 +6694,9 @@ def run_producer_yield_self_test():
     ), "window/scan-lost", "lost their SD window")
     _expect_fail(window, _mutated(
         good, OPTICAL_MAIN_SOURCE,
-        "\tconst ProducerSdWindow window;\n\treturn SD.remove(id);",
-        "\tif (!SD.exists(id))\n\t\treturn 0;\n"
-        "\tconst ProducerSdWindow window;\n\treturn SD.remove(id);",
+        "\tconst ProducerSdWindow window;\n\tFile directory = SD.open(p);",
+        "\tif (!SD.exists(p))\n\t\treturn 0;\n"
+        "\tconst ProducerSdWindow window;\n\tFile directory = SD.open(p);",
     ), "window/declared-late", "before its ProducerSdWindow")
     _expect_fail(window, _mutated(
         good, STORAGE_SOURCE,
@@ -7651,7 +6748,7 @@ def run_producer_yield_self_test():
         "\taius_sd_teensy_execute(&g_runtime.storage.target, action);\n}",
         "\taius_sd_teensy_execute(&g_runtime.storage.target, action);\n"
         "\t(void)SD.exists(\"/aius\");\n}",
-    ), "naming/raw-sd-in-refill", "replay_job_route")
+    ), "naming/raw-sd-in-service", "sd_service_step")
     _expect_fail(naming, _mutated(
         good, "lib/aius_other/src/other.c",
         "int other(void)\n{\n\treturn 0;",
@@ -7730,7 +6827,7 @@ def run_producer_yield_self_test():
         "\taius_sd_teensy_execute(&g_runtime.storage.target, action);\n}",
         "\taius_sd_teensy_execute(&g_runtime.storage.target, action);\n"
         "\t(void)aius_audio_service_run(&g_audio_service, 0u);\n}",
-    ), "visit/bare-call", "replay_job_route")
+    ), "visit/bare-call", "sd_service_step")
     _expect_fail(visit, _mutated(
         good, OPTICAL_MAIN_SOURCE,
         "\t(void)aius_audio_service_run(&g_audio_service, 0u);\n}\n"
@@ -7785,12 +6882,6 @@ def main():
 
     if args.group in ("positive", "all"):
         run_checks("positive", POSITIVE_CHECKS, text)
-        # Grouped with the positive checks because it asserts a property the
-        # file must HAVE, but given its own source set: its whole point is that
-        # optical_main.cpp alone cannot state it.
-        run_checks(
-            "cross-source", CROSS_SOURCE_CHECKS, read_replay_sizing_sources()
-        )
         # The 24-bit output path's other two files, each read on its own: the
         # claim is that ours includes the snapshot and changes nothing in it, so
         # neither file can be checked through the other.

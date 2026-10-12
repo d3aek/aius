@@ -76,14 +76,10 @@ def sample(elapsed, **status_args):
     return {"elapsed_s": elapsed, "status": make_status(**status_args)}
 
 
-def transition_fixture(with_replay=True):
-    """The transitions stimulus as status samples + events.
-
-    `with_replay=False` is the aplay-driven stimulus that never cuts the
-    carrier: three phases, 48 -> 44.1 -> 48, and no loss->replay leg. Both
-    shapes carry the same dark-gap artifacts (one unsupported episode and
-    one underrun burst per rate change), so the no-replay fixture is what
-    the analyzer must accept against `expected_phases` of three labels."""
+def transition_fixture():
+    """The transitions stimulus as status samples + events: the aplay-driven
+    stimulus that never cuts the carrier, three phases 48 -> 44.1 -> 48, each
+    rate change carrying one unsupported episode and one underrun burst."""
     samples = []
     events = []
     output_blocks = 0
@@ -92,33 +88,26 @@ def transition_fixture(with_replay=True):
     unsupported = 0
     underruns = 0
     elapsed = 0
-    phases = [
-        (48000, False),
-        (44100, False),
-        (48000, False),
-    ]
-    if with_replay:
-        phases.append((48000, True))
+    phases = [48000, 44100, 48000]
     unsupported_details = (40000, 42000)
-    for phase_index, (rate, replay) in enumerate(phases):
+    for phase_index, rate in enumerate(phases):
         if phase_index:
-            if phase_index <= 2:
-                unsupported += 1
-                events.append({
-                    "sequence": len(events) + 1,
-                    "uptime_ms": elapsed * 1000,
-                    "type": 12,
-                    "state": 3,
-                    "detail": unsupported_details[phase_index - 1],
-                })
+            unsupported += 1
+            events.append({
+                "sequence": len(events) + 1,
+                "uptime_ms": elapsed * 1000,
+                "type": 12,
+                "state": 3,
+                "detail": unsupported_details[phase_index - 1],
+            })
             underruns += 128
             dark = sample(
-                elapsed, rate=phases[phase_index - 1][0],
+                elapsed, rate=phases[phase_index - 1],
                 output_blocks=output_blocks)
             dark["status"]["tx_gate"]["open"] = 0
             dark["status"]["clock"].update({
                 "carrier_ready": False,
-                "state": "unsupported" if phase_index <= 2 else "unlocked",
+                "state": "unsupported",
                 "unsupported_episodes": unsupported,
                 "tx_underrun_frames": underruns,
                 "rate_changes": changes,
@@ -128,15 +117,14 @@ def transition_fixture(with_replay=True):
             samples.append(dark)
             elapsed += 1
             resets += 1
-            if phase_index <= 2:
-                changes += 1
-                events.append({
-                    "sequence": len(events) + 1,
-                    "uptime_ms": elapsed * 1000,
-                    "type": 11,
-                    "state": 3,
-                    "detail": rate,
-                })
+            changes += 1
+            events.append({
+                "sequence": len(events) + 1,
+                "uptime_ms": elapsed * 1000,
+                "type": 11,
+                "state": 3,
+                "detail": rate,
+            })
         for _ in range(2):
             output_blocks += 1
             entry = sample(
@@ -148,14 +136,6 @@ def transition_fixture(with_replay=True):
             })
             entry["status"]["audio_diag"][
                 "service_requested_resets"] = resets
-            if replay:
-                entry["status"]["clock"].update({
-                    "carrier_locked": False,
-                    "carrier_ready": False,
-                    "output_rate_millihz": 48000000,
-                    "master": "output",
-                    "state": "replay",
-                })
             samples.append(entry)
             elapsed += 1
     return samples, events
@@ -429,10 +409,10 @@ class AnalyzerTests(unittest.TestCase):
         }, {"old_rate_output_frames": 0})
         self.assertEqual(result["verdict"], "pass")
         self.assertEqual(
-            result["metrics"]["transition_reset_deltas"], [1, 1, 1])
+            result["metrics"]["transition_reset_deltas"], [1, 1])
         self.assertEqual(
             result["metrics"]["counter_deltas"][
-                "clock.tx_underrun_frames"], 384)
+                "clock.tx_underrun_frames"], 256)
         self.assertEqual(
             result["metrics"]["counter_deltas"][
                 "clock.unsupported_episodes"], 2)
@@ -514,12 +494,11 @@ class AnalyzerTests(unittest.TestCase):
         self.assertIn("external-observation", codes)
         self.assertNotIn("old-rate-output", codes)
 
-    def test_transitions_accept_the_declared_no_replay_sequence(self):
-        # F13 + expected_phases: the aplay stimulus drives 48 -> 44.1 -> 48
-        # and never cuts the carrier, so there is no replay leg. Both
-        # transition windows are live, so the dark unsupported episode of
-        # the SECOND one is attributed rather than reported unattributed.
-        samples, events = transition_fixture(with_replay=False)
+    def test_transitions_accept_the_declared_sequence(self):
+        # The aplay stimulus drives 48 -> 44.1 -> 48. Both transition
+        # windows are live, so the dark unsupported episode of the SECOND
+        # one is attributed rather than reported unattributed.
+        samples, events = transition_fixture()
         result = BENCH.analyze_samples(samples, events, "transitions", {
             "minimum_duration_s": 0,
             "settle_s": 0,
@@ -542,53 +521,23 @@ class AnalyzerTests(unittest.TestCase):
             result["metrics"]["counter_deltas"][
                 "clock.unsupported_episodes"], 2)
 
-    def test_transitions_no_replay_run_still_fails_the_default_sequence(self):
-        # Without the option the analyzer keeps asserting the replay leg, so
-        # the same run is a sequence failure: the default is unchanged.
-        samples, events = transition_fixture(with_replay=False)
-        result = BENCH.analyze_samples(samples, events, "transitions", {
-            "minimum_duration_s": 0,
-            "settle_s": 0,
-            "phase_samples": 2,
-            "max_follow_error_millihz": 1000,
-        }, {"old_rate_output_frames": 0})
-        self.assertEqual(result["verdict"], "fail")
-        self.assertIn("transition-sequence",
-                      {failure["code"] for failure in result["failures"]})
-        self.assertEqual(result["metrics"]["expected_phase_sequence"],
-                         ["48000", "44100", "48000", "replay"])
-
-    def test_transitions_reject_unsupported_episode_before_replay(self):
-        # The window leading INTO replay is not a live rate transition, so a
-        # dark unsupported episode there is still unattributed -- the F13 fix
-        # widens attribution to real live windows only.
+    def test_transitions_default_sequence_is_the_three_aplay_phases(self):
         samples, events = transition_fixture()
-        for entry in samples[8:]:
-            entry["status"]["clock"]["unsupported_episodes"] += 1
-        events.append({
-            "sequence": len(events) + 1,
-            "uptime_ms": 8000,
-            "type": 12,
-            "state": 3,
-            "detail": 40000,
-        })
         result = BENCH.analyze_samples(samples, events, "transitions", {
             "minimum_duration_s": 0,
             "settle_s": 0,
             "phase_samples": 2,
             "max_follow_error_millihz": 1000,
         }, {"old_rate_output_frames": 0})
-        codes = {failure["code"] for failure in result["failures"]}
-        self.assertIn("transition-unattributed-unsupported", codes)
-        self.assertNotIn("transition-open-gate-unsupported", codes)
-        self.assertEqual(result["metrics"]["live_transition_windows"],
-                         [(1, 3), (4, 6)])
+        self.assertEqual(result["verdict"], "pass", result["failures"])
+        self.assertEqual(result["metrics"]["expected_phase_sequence"],
+                         ["48000", "44100", "48000"])
 
     def test_transitions_report_event_overflows_without_gating_them(self):
         # Plan defect F8: an event_overflows-only harmful-counter failure is
         # the capture tool's poll cadence, not a board fault. Reported in
         # transitions, harmful everywhere else.
-        samples, events = transition_fixture(with_replay=False)
+        samples, events = transition_fixture()
         for entry in samples[3:]:
             entry["status"]["event_overflows"] = 10
         result = BENCH.analyze_samples(samples, events, "transitions", {
@@ -640,7 +589,7 @@ class AnalyzerTests(unittest.TestCase):
                       {failure["code"] for failure in result["failures"]})
 
     def test_expected_phases_option_is_validated(self):
-        samples, events = transition_fixture(with_replay=False)
+        samples, events = transition_fixture()
         options = {
             "minimum_duration_s": 0,
             "settle_s": 0,
@@ -648,8 +597,8 @@ class AnalyzerTests(unittest.TestCase):
             "max_follow_error_millihz": 1000,
         }
         rejected = (
-            ["48000", "replay"],          # no live rate transition
-            ["replay", "48000", "44100"],  # replay is not the final phase
+            ["48000"],                     # no live rate transition
+            ["48000", "replay"],           # replay is no longer a label
             [],                            # empty
             ["48000", "96000"],            # label outside the supported set
         )
@@ -916,7 +865,7 @@ class ExpectedPhasesCliTests(unittest.TestCase):
         return options
 
     def _evidence(self, directory, expected_phases=None):
-        samples, events = transition_fixture(with_replay=False)
+        samples, events = transition_fixture()
         path = pathlib.Path(directory) / "transitions.jsonl"
         evidence_file(
             path, samples, scenario="transitions",
@@ -943,15 +892,15 @@ class ExpectedPhasesCliTests(unittest.TestCase):
             code, stdout, stderr = self.run_main([
                 "analyze", "transitions", "--evidence", str(path),
             ])
-        self.assertEqual(code, 1, stderr)
+        self.assertEqual(code, 0, stderr)
         result = json.loads(stdout)
-        self.assertIn("transition-sequence",
-                      {failure["code"] for failure in result["failures"]})
+        self.assertEqual(result["metrics"]["expected_phase_sequence"],
+                         ["48000", "44100", "48000"])
 
     def test_expected_phases_flag_overrides_stored_metadata(self):
         with tempfile.TemporaryDirectory() as directory:
             path = self._evidence(
-                directory, ["48000", "44100", "48000", "replay"])
+                directory, ["48000", "44100", "32000"])
             code, stdout, stderr = self.run_main([
                 "analyze", "transitions", "--evidence", str(path),
                 "--expected-phases", "48000,44100,48000",

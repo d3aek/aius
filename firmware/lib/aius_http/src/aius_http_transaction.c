@@ -188,7 +188,9 @@ static FLASHMEM bool sd_request_fields_valid(const AiusSdJobRequest *request)
 	bool target = request->target_path != NULL;
 	bool temp = request->temp_path != NULL;
 	bool backup = request->backup_path != NULL;
-	if ((unsigned)request->kind > (unsigned)AIUS_SD_JOB_REPLAY_REFILL ||
+	/* Kind 6 is retired (Phase 4i) and CACHE_FILL (7) is parent-driven, so
+	 * no kind past DELETE is ever an HTTP request. */
+	if ((unsigned)request->kind > (unsigned)AIUS_SD_JOB_DELETE ||
 	    (unsigned)request->install_mode >
 		    (unsigned)AIUS_SD_INSTALL_STORE)
 		return false;
@@ -233,7 +235,6 @@ static FLASHMEM bool sd_request_fields_valid(const AiusSdJobRequest *request)
 		return request->install_mode == AIUS_SD_INSTALL_REPLACE &&
 		       target && !temp && !backup && request->content_type != NULL &&
 		       !request->publish;
-	case AIUS_SD_JOB_REPLAY_REFILL:
 	case AIUS_SD_JOB_CACHE_FILL: /* parent-driven fill, never an HTTP request */
 		return false;
 	case AIUS_SD_JOB_UPLOAD:
@@ -759,8 +760,7 @@ static FLASHMEM void transport_fault(AiusHttpTransaction *transaction, uint32_t 
 static FLASHMEM bool streamed_request(const AiusHttpRequest *request)
 {
 	return request->method == AIUS_HTTP_PUT &&
-	       (request->route == AIUS_HTTP_ROUTE_SD_FILE ||
-	        request->route == AIUS_HTTP_ROUTE_SD_REPLAY);
+	       request->route == AIUS_HTTP_ROUTE_SD_FILE;
 }
 
 static FLASHMEM size_t find_header_end(const uint8_t *data, size_t length,
@@ -841,7 +841,6 @@ static FLASHMEM void discard_request_slices(AiusHttpTransaction *transaction)
 {
 	transaction->parsed_request.body = NULL;
 	transaction->parsed_request.resource = NULL;
-	transaction->parsed_request.replay_id = NULL;
 	transaction->parsed_request.sd_auth = NULL;
 }
 

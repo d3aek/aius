@@ -26,7 +26,7 @@ the deployed board at `http://192.0.2.66`, driven by a real 5.1 source; see
   [`firmware/src/aius_network_teensy.cpp`](../../firmware/src/aius_network_teensy.cpp)).
   The device is a bench instrument on a trusted LAN.
 - The real URLs are `http://<device>/sd/www/index.html`,
-  `.../classic.html`, `.../replays.html`, `.../status.html` and `.../upgrade.html`. The site root
+  `.../classic.html`, `.../status.html` and `.../upgrade.html`. The site root
   `/` is a small built-in fallback page compiled into flash
   ([`firmware/src/http_home_page.cpp`](../../firmware/src/http_home_page.cpp))
   that links into the SD tree and reports when no card is mounted.
@@ -40,10 +40,10 @@ the deployed board at `http://192.0.2.66`, driven by a real 5.1 source; see
 - **Reads are public; control routes are auth-gated.** Every mutating request
   carries `X-Aius-SD-Auth`, the 16 hexadecimal characters printed by the
   physical USB command `AIUS AUTH`. That covers `PUT /api/dsp/config`, the
-  replay start/stop/delete verbs, the replay and OTA uploads, the OTA
+  the OTA upload, the OTA
   verify/arm/abort/activate verbs, the SD asset writes, and
   `POST /api/start|stop|clear|reboot|measure/start`. Polling routes
-  (`/api/status`, `/api/meters`, `/api/replays*`, `/api/ota`) carry nothing, and
+  (`/api/status`, `/api/meters`, `/api/ota`) carry nothing, and
   the pages never attach the header to a `GET`. The token is a physical-access
   bootstrap credential, not an authorization boundary — for firmware
   replacement, the image signature is what makes the surface defensible. Pages
@@ -125,49 +125,6 @@ model. Nothing in either view is resizable — there are no cell handles and no
 per-panel geometry to restore — and a phone renders the same single column a
 desktop does, with the four canvases trimmed below 651 px of viewport width.
 
-## Replay manager
-
-![The Aius replay manager playing a capture: the playback grid shows position,
-queue fill and the DTS input classifier, the library lists four captures with
-one incomplete, and the live processing card draws the meter
-envelope.](images/replays.png)
-
-`replays.html` + `replays.js` + `replays.css`. Uploads IEC 61937 captures to the
-card and feeds them through the same bitstream decoder, DSP, limiter and meter
-path as the optical input — so a capture can stand in for a source that is not
-on the bench.
-
-Reads:
-
-- `GET /api/replays` for the library listing, never on a timer: once at load,
-  after a start or delete, when the tab becomes visible and on Refresh. It walks
-  the card, so it cancels a web-cache fill in flight (Phase 4g).
-- `GET /api/replays/status` at 1 Hz for the playback grid.
-- `GET /api/meters` at 250 ms for the waveform and output levels.
-
-Writes:
-
-- `POST /api/replays/start` and `POST /api/replays/stop`.
-- `DELETE /api/replays` to remove a capture, behind a confirm.
-- `PUT /sd/replays/<id>` for the upload, one 4096-byte `Content-Range` chunk per
-  request; every chunk but the last answers `next_offset`.
-
-Non-obvious:
-
-- An incomplete `.part` capture serves its size as **both** `bytes` and
-  `upload_next_offset`, so the device cannot state the total the operator was
-  aiming at. The row therefore says how much is on the card rather than claiming
-  a fraction, unless this page session started that upload itself.
-- *Play* is disabled on an incomplete capture — its words stop mid-stream.
-  Re-uploading the same ID resumes from where the card left off.
-- The selected replay is page state, not device state, so the 5-second library
-  refresh cannot wipe a choice mid-gesture. The device's active replay only ever
-  seeds an empty selection.
-- A card holding more replays than one listing can carry flips the library pill
-  to `truncated` and says the list is incomplete.
-- Underruns are the one counter here that means the audio broke, and are
-  highlighted once non-zero.
-
 ## Device status
 
 ![The Aius device status page with a 5.1 AC-3 optical carrier locked: the audio
@@ -184,8 +141,9 @@ Reads `GET /api/status` at 1 Hz. Writes nothing.
 Non-obvious:
 
 - **The input source is the page's own derivation, not a device field.** The
-  page derives it as carrier → *optical carrier*, else the transmit gate's
-  replay term → *replay*, else *none*.
+  page derives it as carrier → *optical carrier*, else *none*. The Live
+  processing card (meter envelope and output levels, fed by `GET /api/meters`)
+  lives on this page.
 - **The configuration card is two unrelated files, and saying so is the point.**
   The first two rows are `/aius/dsp.json` — the model the DSP editor writes,
   plus `model_origin`, which is the only field that separates an editor apply
@@ -222,17 +180,6 @@ Non-obvious:
   beside a confident-looking pill was the failure mode this replaced.
 - `tx_gate` is latched once per epoch, so the gate terms describe the epoch the
   snapshot belongs to.
-
-![The same page with no optical carrier and a replay feeding the transmit gate:
-the input source reads replay, the carrier reads absent, the sample rate is
-withheld and the gate's replay term reads running.](images/status-replay.png)
-
-The second capture is the same page against the same board with its carrier
-dropped and a replay running — the case that exercises the derivation above. The
-input source reads `replay`, the optical carrier reads `absent`, the sample rate
-reads `-- (no carrier)` rather than inventing a zero, and the gate's replay term
-reads `running`. Only the audio-path card changes; the configuration, network,
-storage and board cards read the same live board as the first capture.
 
 ## Firmware upgrade
 
@@ -307,20 +254,14 @@ is what the running firmware served at capture time.
 The board decodes and downmixes a 5.1 surround source, so the meter-driven pages
 need one playing. The **DSP editor** and the carrier-locked **status** capture
 were driven by a real 5.1 AC-3 carrier: the reproducible sample pack from
-[`generate.sh`](../../firmware/tools/replay_samples/generate.sh) (the `_ac3.iec`
+[`generate.sh`](../../firmware/tools/iec_fixtures/generate.sh) (the `_ac3.iec`
 IEC 61937 form) played out an ESI U24XL's optical S/PDIF into the board's TOSLINK
 input with `aplay` at unity mixer, so the board locks a genuine AC-3 carrier and
 every input channel reads live.
 
-The **replay manager** and the no-carrier **status** capture show the replay
-path instead, driven by the on-card DTS replay `cinematic_program_51` with the
-U24 carrier dropped
-([`u24_carrier.py`](../../firmware/tools/rate_gate_capture/u24_carrier.py)
-`drop`). The board serves the SD-hosted UI and the replay stream from the one
-card, so a running replay returns `503 sd_busy` for a page's own CSS and JS while
-it streams. Each of these two pages was therefore loaded with the replay stopped
-— the card free — and the replay started once the assets had cached, so the
-meters populate from the in-memory `/api/meters` without another SD read.
+The replay manager page and its no-carrier status capture were retired with
+replay (aius-sample-rate-following Phase 4i, 2026-10-12); the live captures here
+are all carrier-driven.
 
 `images/dsp-editor-hero.png` is not one of the six page captures: it is the
 README's hero, the same dashboard clipped between two measured element edges —

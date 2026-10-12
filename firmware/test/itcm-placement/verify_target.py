@@ -201,13 +201,19 @@ EXPECTED_LDF_LIBS = frozenset({
     "aius_json",
     "aius_pipeline",
     "aius_recorder",
-    "aius_replay",
     "aius_sd_overlay",
     "aius_usb_control",
     # The PSRAM web cache (Phase 4g): resolved by LDF in every optical env,
     # gated (every definition FLASHMEM, no `.text`), never allowlisted.
     "aius_web_cache",
 })
+
+# Libraries retired from the firmware (Phase 4i: replay). A link that still
+# carries one fails outright, whatever its ITCM: the removal is the contract.
+RETIRED_LDF_LIBS = frozenset({"aius_replay"})
+
+# No linked symbol of a retired feature may survive in an optical image.
+RETIRED_SYMBOL_PATTERN = re.compile(r"replay", re.IGNORECASE)
 
 # LDF libraries permitted to emit `.text`. ADDING AN ENTRY HERE REMOVES THE WHOLE
 # LIBRARY FROM THE GATE, present sources and future ones alike -- it is not a
@@ -231,7 +237,6 @@ ITCM_ALLOWED_LDF_LIBS = {
     "aius_a52": "duplicate of the build_src_filter aius_a52 objects",
     "aius_iec61937": "duplicate of the build_src_filter aius_iec61937 object",
     "aius_pipeline": "duplicate of the build_src_filter aius_pipeline object",
-    "aius_replay": "duplicate of the build_src_filter aius_replay object",
     # 3. Linked out of the archive and genuinely emitting ITCM today. These
     #    predate the placement contract and were never under any check; the entry
     #    records that, and removing one is the unit of work that brings a library
@@ -809,6 +814,49 @@ def verify_flash_pinned_residency(build_dir: Path, readelf: str) -> int:
     return verify_flash_pinned_symbols(parse_function_symbols(result.stdout))
 
 
+def parse_symbol_names(output: str) -> list[str]:
+    """Every named symbol from `readelf -sW` on the linked ELF, any type."""
+    names: list[str] = []
+    for line in output.splitlines():
+        parts = line.split()
+        if len(parts) < 8 or not parts[0][:-1].isdigit() or not parts[0].endswith(":"):
+            continue
+        names.append(parts[7])
+    return names
+
+
+def verify_no_retired_symbols(names: Iterable[str]) -> int:
+    """Phase 4i: no symbol of the linked image names replay."""
+    names = list(names)
+    offenders = sorted({n for n in names if RETIRED_SYMBOL_PATTERN.search(n)})
+    if offenders:
+        raise VerificationError(
+            "retired-feature symbols are in the linked image: "
+            + ", ".join(offenders)
+        )
+    return len(names)
+
+
+def verify_no_retired_symbols_in_build(build_dir: Path, readelf: str) -> int:
+    elf = build_dir / "firmware.elf"
+    if not elf.exists():
+        raise VerificationError(f"linked image not found: {elf}")
+    result = subprocess.run(
+        [readelf, "-sW", str(elf)],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    return verify_no_retired_symbols(parse_symbol_names(result.stdout))
+
+
+def _retired_symbols_summary(checked: int) -> str:
+    return (
+        "retired-feature symbols: PASS "
+        f"({checked} symbols in the linked image, none names replay)"
+    )
+
+
 def group_ldf_objects(paths: Iterable[str]) -> dict[str, list[str]]:
     """LDF-shaped object paths grouped by library name.
 
@@ -833,6 +881,12 @@ def verify_ldf_libraries(paths: Iterable[str], read) -> tuple[int, int]:
     an unreviewed library has no annotated definitions for them to be copies of.
     """
     groups = group_ldf_objects(paths)
+    retired = sorted(RETIRED_LDF_LIBS & set(groups))
+    if retired:
+        raise VerificationError(
+            f"retired LDF libraries are in the link: {retired}; a retired "
+            "library must not be linked into any optical image"
+        )
     missing = sorted(EXPECTED_LDF_LIBS - set(groups))
     if missing:
         raise VerificationError(
@@ -1091,6 +1145,9 @@ def verify_cold_placement(source, target, env) -> None:
         verify_producer_yield_object(build_dir, readelf)
     ))
     print(_ldf_summary(*verify_ldf_libraries_in_build(build_dir, readelf)))
+    print(_retired_symbols_summary(
+        verify_no_retired_symbols_in_build(build_dir, readelf)
+    ))
     print(_dark_window_summary(
         verify_dark_window_residency(build_dir, readelf)
     ))
@@ -1164,6 +1221,14 @@ def _main(argv: list[str]) -> int:
         print(f"LDF-library ITCM placement: FAIL: {error}", file=sys.stderr)
         return 1
     print(_ldf_summary(*ldf))
+    try:
+        retired_checked = verify_no_retired_symbols_in_build(
+            build_dir, args.readelf
+        )
+    except (OSError, subprocess.CalledProcessError, VerificationError) as error:
+        print(f"retired-feature symbols: FAIL: {error}", file=sys.stderr)
+        return 1
+    print(_retired_symbols_summary(retired_checked))
     try:
         dark = verify_dark_window_residency(build_dir, args.readelf)
     except (OSError, subprocess.CalledProcessError, VerificationError) as error:

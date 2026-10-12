@@ -59,7 +59,7 @@ sketch).
 Gate 5 of [`aius-sample-rate-following.md`](../../../docs/plans/aius-sample-rate-following.md)
 (§Acceptance › Device, item 5) is encoded 44.1 kHz AC-3 INTO the board's
 receiver: carrier, decoder and output nominal rates must agree with no
-mismatch or refusal. The board's replays are its output side, so the stimulus
+mismatch or refusal. The board only produces output, so the stimulus
 is host-side and this generator produces it. It is not a corpus vector: the
 output is ~23 MB for 130 s and is written to session scratch, never committed.
 
@@ -71,7 +71,7 @@ output is ~23 MB for 130 s and is written to session scratch, never committed.
   and wraps the 16-bit little-endian wire words as a 2-channel 16-bit PCM WAV
   at the link rate. `--keep-intermediates` also writes `X.ac3` (raw
   elementary stream) and `X.iec` (raw spdif words) for the parser-backed
-  oracles (`../../test/replay-samples/test_replay_samples.c` takes a
+  oracles (`../../test/iec-fixtures/test_iec_fixtures.c` takes a
   48 kHz 5.1 pair). `--inspect X.wav` re-reads a stream and reports its
   burst count, data type and period. Exit codes: 1 ffmpeg failed, 2 stream
   refused (odd byte count, truncated final 6144-byte period, wrong data

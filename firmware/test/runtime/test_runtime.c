@@ -50,7 +50,7 @@ static const BudgetCase budget_cases[] = {
 	 1u, 256u, 512u, 2u},
 	{"budget.udp", AIUS_BOOT_CHECKPOINT_UDP,
 	 1u, 532u, 532u, 2u},
-	{"budget.replay", AIUS_BOOT_CHECKPOINT_REPLAY,
+	{"budget.service", AIUS_BOOT_CHECKPOINT_SERVICE,
 	 1u, 2048u, 0u, 0u},
 	{"budget.sd", AIUS_BOOT_CHECKPOINT_SD,
 	 1u, 512u, 512u, 0u},
@@ -173,7 +173,7 @@ static const uint16_t normal_order[] = {
 	AIUS_BOOT_CHECKPOINT_NETWORK,
 	AIUS_BOOT_CHECKPOINT_HTTP,
 	AIUS_BOOT_CHECKPOINT_UDP,
-	AIUS_BOOT_CHECKPOINT_REPLAY,
+	AIUS_BOOT_CHECKPOINT_SERVICE,
 	AIUS_BOOT_CHECKPOINT_AUDIO,
 	AIUS_BOOT_CHECKPOINT_SD,
 	/* Second AUDIO pass after SD (output-jitter Phase B): the transmit ring

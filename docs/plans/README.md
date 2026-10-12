@@ -41,7 +41,7 @@ after its phase lands sends the next reader to redo finished work.
   - firmware implementation plus host tooling
 - **[Aius OTA firmware upgrade](aius-ota-upgrade.md)**, 2026-08-01.
   - HTTP-pushed firmware upgrade with watchdog fallback
-  - resumable chunked staging, reused from replay uploads
+  - resumable chunked staging, first built for replay uploads (since retired)
   - the record that hardware A/B selection is gated behind an unblown OTP fuse
 - **[Aius DTS capability gate](aius-capability-gate.md)**, 2026-08-04. The
   software-first milestone.
@@ -54,7 +54,9 @@ after its phase lands sends the next reader to redo finished work.
   - validated DSP config reads and writes, persisted to SD
   - edits applied at the block boundary, plus a meters endpoint
   - SD-hosted DSP editor with OpenAPI coverage
-- **[Aius SD replay manager](aius-replay-manager.md)**, 2026-08-04.
+- **[Aius SD replay manager](aius-replay-manager.md)**, 2026-08-04. Retired
+  2026-10-12 by [`aius-sample-rate-following.md`](aius-sample-rate-following.md)
+  Phase 4i.
   - SD-hosted replay of IEC 61937/DTS captures
   - upload, list, start, stop, loop and delete without reflashing
   - a device service that survives page navigation
@@ -81,7 +83,7 @@ after its phase lands sends the next reader to redo finished work.
   2026-07-29; live-TV and listening gates closed 2026-09-04).
   - AC-3 (Dolby Digital) decode over a liba52 fork, alongside DTS Core
   - decode moved off the audio ISR (defect 31)
-  - replay, channel identity and 32/44.1/48 kHz integration
+  - channel identity and 32/44.1/48 kHz integration (replay integration since retired)
 - **[Aius end-to-end audio latency](aius-e2e-latency.md)**, 2026-09-04.
   - causal latency measured through the physical optical loop
   - PCM bypass, PCM with DSP, DTS Core and AC-3 rows

@@ -1,5 +1,5 @@
 /* lib/aius_json contract: the one JSON cursor lib/aius_config,
- * lib/aius_dsp_config and src/aius_optical_app.cpp's replay body reader share.
+ * lib/aius_dsp_config and src/aius_optical_app.cpp's measure body reader share.
  *
  * The three callers' own suites prove their schemas. This one drives the
  * primitives directly, because a primitive kit's contract is finer than any one
@@ -7,7 +7,7 @@
  * forms exist precisely so the callers can differ, which is the pair of
  * distinctions most at risk of being "simplified" into one.
  *
- * Allocation-freedom is a contract, not an implementation detail (the replay
+ * Allocation-freedom is a contract, not an implementation detail (the measure
  * body reader runs in the epoch loop), so the suite links --wrap over the libc
  * allocators and asserts zero allocations across a full sweep of the kit.
  */
@@ -260,7 +260,7 @@ static void test_match_and_literal(void)
 
 	/* The distinction the two callers need. `truex` is a literal followed by
 	 * junk: the config parsers reject it here, on the value boundary; the
-	 * replay body reader lets its object grammar reject it at the next
+	 * measure body reader lets its object grammar reject it at the next
 	 * structural character, so its match must succeed. */
 	AiusJsonCursor trailing_match = over("truex");
 	check(aius_json_match(&trailing_match, "true"),

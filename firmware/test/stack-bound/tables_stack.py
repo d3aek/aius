@@ -32,9 +32,9 @@ DMA_CITE = ("cores/teensy4/DMAChannel.h", 514, "_VectorsRam[channel + IRQ_DMA_CH
 EPOCH = [("loop", None, "call"), ("aius_runtime_teensy_epoch", RT, "call"), ("aius_runtime_epoch", None, "call"),
          ("_ZN12_GLOBAL__N_1L15runtime_serviceEPvPK17AiusRuntimeBudget", RT,
           "indirect: ops.service, aius_runtime_teensy.cpp:237")]
-# runtime_service > runtime->platform.replay (platform_replay, optical_main.cpp:9645)
-REPLAY = EPOCH + [("_ZL15platform_replayPvPK17AiusRuntimeBudgetm", MAIN,
-                   "indirect: ops.replay, optical_main.cpp:9645")]
+# runtime_service > runtime->platform.service (platform_service, optical_main.cpp)
+SERVICE = EPOCH + [("_ZL16platform_servicePvPK17AiusRuntimeBudgetm", MAIN,
+                    "indirect: ops.service, optical_main.cpp")]
 # runtime_service > aius_runtime_http_service > dispatch_route (Phase 4g: the
 # fresh and the held DISPATCH share it) > aius_optical_app_http_dispatch > app op
 HTTP = EPOCH + [("aius_runtime_http_service", None, "call"),
@@ -65,19 +65,17 @@ SETTINGS_OPS = ("names", [(n, MAIN) for n in [
     "_ZL22settings_carve_presentPv", "_ZL17settings_shadowedPv23AiusOpticalSettingsFile",
     "_ZL13settings_loadPv23AiusOpticalSettingsFilePKhjb", "_ZL22settings_target_failedPv23AiusOpticalSettingsFile",
     "_ZL20settings_put_restorePv23AiusOpticalSettingsFilePKhj", "_ZL15settings_decideb25AiusOpticalSettingsBackup"]])
-FLUSH_START = REPLAY + [("aius_optical_sd_idle_step", APP, "call"), ("aius_optical_sd_flush_start", APP, "call"),
+FLUSH_START = SERVICE + [("aius_optical_sd_idle_step", APP, "call"), ("aius_optical_sd_flush_start", APP, "call"),
                         ("_ZL18sd_flush_start_jobPvmP21AiusOpticalSdFlushJob", MAIN,
                          "indirect: ops->start, g_sd_flush_ops")]
 
 CHAINS = [
-    Chain("storage execute (replay root job)", REPLAY + [
+    Chain("storage execute (service root job)", SERVICE + [
         ("aius_runtime_teensy_start_storage_job", RT, "call"),
         ("aius_runtime_storage_start_root_job", None, "call"), ADVANCE]),
     Chain("storage execute (storage service)", EPOCH + [
         ("aius_runtime_storage_service", None, "call"), ADVANCE]),
     Chain("HTTP app_read_directory", HTTP + [("_ZL18app_read_directoryPvPKcP22AiusOpticalAppDirBatch", MAIN, APP_OP)]),
-    Chain("HTTP app_write_replay_list", HTTP + [("_ZL21app_write_replay_listPvPhj", MAIN, APP_OP)]),
-    Chain("HTTP app_replay_delete", HTTP + [("_ZL17app_replay_deletePvPKc", MAIN, APP_OP)]),
     # Phase 4f: the status render yields after every append (status_append
     # in optical_main.cpp, diag_append in aius_runtime_storage.cpp's sd_diag
     # section), so its deepest path runs to the yield point and a nested pass.
@@ -85,8 +83,8 @@ CHAINS = [
           HTTP + [("_ZL16app_write_statusPvPhj", MAIN, APP_OP)], hook=YIELD_POINT),
     # Phase 4g: the fill walk's directory scan, from the SD lifecycle pass
     # (sd_lifecycle_service and, since the 4h seam move, web_cache_fill_next
-    # inlined into platform_replay).
-    Chain("fill walk app_read_directory", REPLAY + [
+    # inlined into platform_service).
+    Chain("fill walk app_read_directory", SERVICE + [
         ("_ZL18app_read_directoryPvPKcP22AiusOpticalAppDirBatch", MAIN, "call")]),
     # Phase 4g: the cache-served body's send loop, a yield point every 8
     # chunks under write_body_chunk's 512 B copy buffer.
@@ -136,11 +134,11 @@ CHAINS = [
         ("aius_runtime_storage_start_root_job", None, "call"), ADVANCE,
         ("aius_runtime_storage_root_input", MAIN, "call")], full=True),
     # Q2 re-put (D1): the overlay's service step (sd_lifecycle_service,
-    # inlined into platform_replay) re-serialises dsp.json through
+    # inlined into platform_service) re-serialises dsp.json through
     # sd_overlay_reput > http_dsp_config_json and puts it; its charge stays
     # under the deepest hook path.
     Chain("4h Q2 re-put aius_sd_overlay_service",
-          REPLAY + [("aius_sd_overlay_service", "aius_sd_overlay.c.o", "call")],
+          SERVICE + [("aius_sd_overlay_service", "aius_sd_overlay.c.o", "call")],
           full=True, under_hook_paths=True),
     # H10 restore's one-shot put (D6), under platform_publish_config.
     Chain("4h H10 restore put", EPOCH + [
@@ -149,7 +147,6 @@ CHAINS = [
         ("aius_optical_settings_publish", APP, "call"),
         ("_ZL20settings_put_restorePv23AiusOpticalSettingsFilePKhj", MAIN, "indirect: g_settings_ops")],
         full=True),
-    Chain("unwindowed replay_job_advance", REPLAY + [("_ZL18replay_job_advancem", MAIN, "call")], unwindowed=True),
     Chain("unwindowed ota_copy_staged_to_psram",
           [("loop", None, "call"), ("_ZL24ota_copy_staged_to_psramPhm", MAIN, "call")], unwindowed=True),
 ]
@@ -161,13 +158,13 @@ EXTRA_SITES = [
     # aius_runtime_epoch's ops calls (aius_runtime.c), the ops table
     # aius_runtime_teensy.cpp binds (runtime_service among them).
     SiteRow("aius_runtime_epoch", None, 14, ("taken_by", r"aius_runtime_teensy\.cpp\.o")),
-    # runtime_service's runtime->platform calls (platform_replay and the
+    # runtime_service's runtime->platform calls (platform_service and the
     # other platform ops optical_main.cpp registers).
     SiteRow("_ZN12_GLOBAL__N_1L15runtime_serviceEPvPK17AiusRuntimeBudget", RT, 2,
             ("taken_by", r"optical_main\.cpp\.o")),
     # The dispatcher's platform ops and seams, all registered by
     # optical_main.cpp (g_app_ops, g_web_cache_seam, the overlay put seam).
-    SiteRow("aius_optical_app_http_dispatch", APP, 73, ("taken_by", r"optical_main\.cpp\.o")),
+    SiteRow("aius_optical_app_http_dispatch", APP, 57, ("taken_by", r"optical_main\.cpp\.o")),
     # response.body_chunk, set by aius_optical_app.cpp's body sources.
     SiteRow("_ZN12_GLOBAL__N_1L16write_body_chunkEP22AiusRuntimeNetworkHttpPK14AiusHttpAction",
             "aius_runtime_network_http.cpp.o", 1, ("taken_by", r"aius_optical_app\.cpp\.o")),
@@ -233,13 +230,13 @@ EXTRA_SITES = [
         "_ZL18sd_flush_put_beginPvPKcjm"]])),
     SiteRow("aius_optical_sd_flush_put_abort", APP, 1, ("names", [("_ZL18sd_flush_put_abortPv", MAIN)])),
     # D-S9, D-S10: the BEGIN gate's ops (mounted, playback, present, held);
-    # its DAT3 half moved into the replay gate (mounted, playback,
+    # its DAT3 half moved into the no-card gate (mounted, playback,
     # card_detected, note_card_lost).
     SiteRow("aius_optical_sd_begin_blocked", APP, 4,
             ("names", [(n, MAIN) for n in [
                 "_ZL16sd_flush_mountedPv", "_ZL17sd_flush_playbackPv", "_ZL16sd_flush_presentPv",
                 "_ZL13sd_flush_heldPv"]])),
-    SiteRow("aius_optical_sd_replay_begin_blocked", APP, 4,
+    SiteRow("aius_optical_sd_no_card_begin_blocked", APP, 4,
             ("names", [(n, MAIN) for n in [
                 "_ZL16sd_flush_mountedPv", "_ZL17sd_flush_playbackPv", "_ZL22sd_flush_card_detectedPv",
                 "_ZL23sd_flush_note_card_lostPv"]])),

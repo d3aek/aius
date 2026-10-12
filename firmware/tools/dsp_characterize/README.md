@@ -84,7 +84,7 @@ with every other channel's arrival unmoved and the config restored to the
 default 0 afterwards.
 
 Caveat recorded: `channel_impulse_51` still carries the pre-2026-07-28
-input-rotation defect (the replay_samples README documents it; only
+input-rotation defect (the iec_fixtures README documents it; only
 `channel_id_51` was regenerated), so its channel LABELS are permuted one
 slot. The differential method is immune — a shifted arrival is surround
 content whatever its label — but the pack deserves regeneration before

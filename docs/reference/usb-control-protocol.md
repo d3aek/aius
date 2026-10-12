@@ -146,7 +146,7 @@ lost, `3` stack start, `4` DHCP start, `5` listener, `6` UDP, `7` socket,
 `AIUS_BOOT_CHECKPOINT_*` values in
 [`aius_boot.h`](../../firmware/lib/aius_boot/include/aius_boot.h): `0` reset
 capture, `1` USB RX,
-`2` USB TX, `3` metrics, `4` network, `5` HTTP, `6` UDP, `7` replay, `8` SD,
+`2` USB TX, `3` metrics, `4` network, `5` HTTP, `6` UDP, `7` service, `8` SD,
 `9` audio, `10` epoch complete. Only `10` marks a completed epoch; any other
 value on a watchdog reset is an early reset. (An earlier revision of this
 table predated the audio checkpoint and listed `9` as epoch complete.)

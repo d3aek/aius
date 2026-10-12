@@ -25,9 +25,9 @@ def fixture(environment=ENV):
         9: (".bss", 0x20020000, 0x22000),
         11: (".bss.dma", 0x202000A0, 0x5FDE0),
         12: (".bss.aius_staging", 0x2025FE80, 0),
-        # ITCM high-water 183,708 B of 6 x 32 KiB: 12,900 B free (post-4f).
-        13: (".text.itcm", 0x0, 183704),
-        14: (".fini", 0x2CD98, 4),
+        # ITCM high-water 183,324 B of 6 x 32 KiB: 13,284 B free (post-4i).
+        13: (".text.itcm", 0x0, 183320),
+        14: (".fini", 0x2CC18, 4),
     }
     symbols = [
         verify.Symbol(
@@ -41,7 +41,7 @@ def fixture(environment=ENV):
         verify.Symbol(verify.OCRAM_END - floor, 0, 12, "_heap_start"),
         verify.Symbol(verify.OCRAM_END, 0, None, "_heap_end"),
         verify.Symbol(6, 0, None, "_itcm_block_count"),
-        verify.Symbol(0x20049560, 0, 18, "_ebss"),
+        verify.Symbol(0x200494c0, 0, 18, "_ebss"),
         verify.Symbol(0x20007800, 704, 14, "_VectorsRam"),
     ]
     return sections, symbols
@@ -61,10 +61,10 @@ def main():
     # in OPTICAL_IMAGE_ENVS has one, and each passes exactly on it.
     assert set(verify.OCRAM_FREE_FLOORS) == set(verify.OPTICAL_IMAGE_ENVS)
     assert verify.OCRAM_FREE_FLOORS == {
-        "teensy41-optical": 131776,
-        "teensy41-optical-slot-a": 131744,
-        "teensy41-optical-slot-b": 131744,
-        "teensy41-optical-fault": 131776,
+        "teensy41-optical": 264768,
+        "teensy41-optical-slot-a": 264736,
+        "teensy41-optical-slot-b": 264736,
+        "teensy41-optical-fault": 264768,
     }
     for environment, floor in verify.OCRAM_FREE_FLOORS.items():
         assert floor >= verify.OCRAM_LINK_FLOOR_BYTES
@@ -124,13 +124,13 @@ def main():
     )
     expect_failure(sections, low_headroom, "below its committed")
 
-    # Canonical RAM1 budgets: the post-4h link (slot-a, 2026-10-11) sits
-    # at its own figures (the fixture ITCM is 4g's 12,900 B, above it).
+    # Canonical RAM1 budgets: the post-4i link (slot-a, 2026-10-12) sits
+    # exactly on its own figures.
     assert verify.canonical_budgets(sections, symbols) == (
-        12900, 0x20049560, 0x20007800
+        13284, 0x200494c0, 0x20007800
     )
-    assert verify.ITCM_FREE_FLOOR_BYTES == 12708
-    assert verify.DTCM_EBSS_CEILING == 0x20049560
+    assert verify.ITCM_FREE_FLOOR_BYTES == 13284
+    assert verify.DTCM_EBSS_CEILING == 0x200494c0
     assert verify.VECTORS_RAM_ADDRESS == 0x20007800
 
     def with_symbol(name, value):

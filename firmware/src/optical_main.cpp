@@ -42,8 +42,9 @@ extern "C" {
 	#include "aius_dsp_config.h"
 }
 #include "AiusPollProbe.h"
-#include "aius_replay.h"
-#include "aius_tx_gate.h"
+/* Direct, now that aius_replay.h no longer carries it (Phase 4i);
+ * aius_pipeline.h is in the extern "C" block above. */
+#include "aius_codec.h"
 #include "aius_optical_config.h"
 #include "aius_ota_public_key.h"
 #include "aius_auth.h"
@@ -127,6 +128,7 @@ extern "C" const uint8_t _flashimagelen;
 #include "../lib/aius_audio/src/aius_spdif_tx24.h"
 #include "../lib/aius_audio/src/aius_spdif_rx.h"
 #include "../lib/aius_audio/src/aius_tx_governor.h"
+#include "../lib/aius_audio/src/aius_tx_gate.h"
 /* Phase-corrected ring-fill sensor (aius-sample-rate-following Phase 3). Its
  * non-trivial entry points are cold; the tap below reaches it only through
  * FLASHMEM, noinline wrappers so no inlined copy lands in default .text. */
@@ -159,14 +161,14 @@ extern "C" const uint8_t _flashimagelen;
 #define AIUS_BUILD_ID 0u
 #endif
 
-/* THE BOOT/REPLAY CLOCK AND GENERATED DEFAULT ARE FORCED TO AGREE.
+/* THE BOOT CLOCK AND GENERATED DEFAULT ARE FORCED TO AGREE.
  *
  * AudioStream.h defaults AUDIO_SAMPLE_RATE_EXACT to 44100.0f behind an #ifndef,
  * and config_spdif3() (output_spdif3.cpp) derives the whole S/PDIF transmit clock
  * tree from that macro at boot. PCM and both decoders now carry runtime nominal
  * rates, while apply_config() derives filters and meters from each accepted
- * stream. The generated model and replay format remain 48 kHz, so the boot
- * default must remain equal to those two compile-time contracts.
+ * stream. The generated model remains 48 kHz, so the boot default must
+ * remain equal to that compile-time contract.
  *
  * With the default left in place those two disagreed by 8.1 % and NOTHING
  * observed it: the graph's producer and its consumer are both driven by the same
@@ -174,8 +176,8 @@ extern "C" const uint8_t _flashimagelen;
  * and the only symptom was audio playing ~1.4 semitones flat. There is no
  * resampler anywhere in this path to absorb the difference.
  *
- * The compile-time equality continues to protect boot and replay. Live optical
- * plans are reconciled separately before the physical gate may open. */
+ * The compile-time equality continues to protect boot. Live optical plans
+ * are reconciled separately before the physical gate may open. */
 static_assert((uint32_t)AUDIO_SAMPLE_RATE_EXACT == AIUS_OPTICAL_SAMPLE_RATE_HZ,
 	"the Teensy audio engine clock (AUDIO_SAMPLE_RATE_EXACT, set in "
 	"platformio.ini) must equal the configured DSP sample rate "
@@ -224,9 +226,6 @@ static_assert(alignof(AiusRuntimeTeensy) <= 32u,
 static AiusRuntimeTeensy &g_runtime =
 	*::new (static_cast<void *>(g_runtime_storage)) AiusRuntimeTeensy;
 
-DMAMEM static AiusReplayService g_replay_service;
-static char g_replay_path[96];
-
 /* The audio software ISR publishes exact 256-word engine chunks here; AUDIO
  * consumes them. Storage is OCRAM, while cursors and diagnostics stay in DTCM
  * because the boot ROM scribbles DMAMEM at reset. */
@@ -240,14 +239,11 @@ static AiusAudioIngress g_audio_ingress;
 static AiusAudioService g_audio_service;
 static bool g_audio_ingress_ready;
 static bool g_audio_service_ready;
-static AiusReplaySource g_audio_ingress_source =
-	AIUS_REPLAY_SOURCE_OPTICAL;
-/* Epoch-owned reset request. Replay start and a debounced carrier relock each
- * advance it; AUDIO acknowledges the exact value through AiusAudioService. */
+/* Epoch-owned reset request. A debounced carrier relock advances it;
+ * AUDIO acknowledges the exact value through AiusAudioService. */
 static uint32_t g_audio_reset_sequence;
-/* True once live or replay words may have entered the ingress since the last
- * reset request: set where live ingress opens and while replay feeds, cleared
- * by request_audio_reset(). Nominal acceptance reads it to skip re-typing a
+/* True once live words may have entered the ingress since the last reset
+ * request: set where live ingress opens, cleared by request_audio_reset(). Nominal acceptance reads it to skip re-typing a
  * pipeline nothing has been ingested into (owner decision (b), 2026-09-03: an
  * aplay blip whose quiesce fired on an unsupported measured rate lost its
  * relock credit and paid a second reset at acceptance; a real source rate
@@ -322,13 +318,13 @@ static FLASHMEM void stack_scan(uint32_t now_ms)
 		g_stack_free_min_bytes = free_bytes;
 }
 
-/* Phase 4e SD window for the three raw scans (app_read_directory,
- * http_replay_list_json, app_replay_delete): declared first in the function,
+/* Phase 4e SD window for the raw scan (app_read_directory; the replay
+ * listing and delete retired with Phase 4i): declared first in the function,
  * so it opens before the first SD.open and closes after the last File
  * destructor on every return path. always_inline keeps both halves inside
  * the scan's own FLASHMEM body (an out-of-line COMDAT copy would land in
- * ITCM). Never used around the replay refill or ota_copy_staged_to_psram,
- * the accepted unwindowed SD roots. */
+ * ITCM). Never used around ota_copy_staged_to_psram, the accepted
+ * unwindowed SD root. */
 struct ProducerSdWindow {
 	__attribute__((always_inline)) ProducerSdWindow()
 	{
@@ -392,7 +388,6 @@ static bool g_clock_carrier_ready;
 static bool g_clock_desired_plan_valid;
 static bool g_clock_plan_applied;
 static bool g_clock_dark_transition_pending;
-static bool g_clock_replay_ready;
 static bool g_clock_apply_attempted;
 static bool g_clock_fault_episode;
 static bool g_clock_live_ready;
@@ -407,14 +402,40 @@ static bool g_clock_stream_unsupported_episode;
 static uint32_t g_clock_relock_reset_nominal_hz;
 static bool g_tx_gate_open;    /* latched decision, .bss = closed */
 static bool g_tx_gate_carrier; /* latched checkpoint-7 carrier input */
-static bool g_tx_gate_replay;  /* never re-derived at request time */
 
 static FLASHMEM void tx_gate_actuate(bool open);
-static inline void tx_gate_execute_open(bool replay, bool first_in_unit,
+static inline void tx_gate_execute_open(bool first_in_unit,
                                         uint32_t unit_frames,
                                         uint32_t block_frames);
-static FLASHMEM bool clock_output_is_master(void);
-static FLASHMEM bool clock_input_is_master(void);
+/* update_responsibility is `protected static` on both peripherals
+ * (input_spdif3.h, output_spdif3.h), so a DERIVED CLASS -- never an object --
+ * is what reaches it; [class.protected]'s "through an object of the derived
+ * type" restriction applies to non-static members only. Private inheritance and
+ * a deleted default constructor because these are access shims, not audio
+ * nodes: neither is an AudioStream anyone may connect, and constructing one
+ * would call the base begin() a second time and re-run config_spdif3().
+ * setup() pins the input as master once (Phase 4i: live input is the only
+ * source, so nothing hands the graph to the output any more); clk_regs reads
+ * both flags as a camera.
+ *
+ * Defined out-of-line, and FLASHMEM on both the declaration and the
+ * definition, for the reason AiusAudioProcessor::apply_config() records: an
+ * in-body definition is implicitly inline (vague linkage), which conflicts
+ * with the plain FLASHMEM free functions sharing .flashmem, and a COMDAT copy
+ * of one in .text would fail the hot-object ITCM guard by name. */
+class AiusSpdifInputClock : private AudioInputSPDIF3 {
+public:
+	AiusSpdifInputClock(void) = delete;
+	static FLASHMEM bool is_master(void);
+	static FLASHMEM void set_master(bool master);
+};
+
+class AiusSpdifOutputClock : private AudioOutputSPDIF3 {
+public:
+	AiusSpdifOutputClock(void) = delete;
+	static FLASHMEM bool is_master(void);
+	static FLASHMEM void set_master(bool master);
+};
 
 /* THE BOOT LOTTERY'S FIX (open-work register §Open defects — runtime,
  * convicted 2026-08-02 on the instrumented e6417b428 reproducer). The
@@ -488,159 +509,6 @@ static inline void close_stream_rate_gate(void)
 	if (g_tx_gate_open)
 		tx_gate_actuate(false);
 	g_tx_gate_open = false;
-}
-
-/* ------------------------------------------------------------------ */
-/* Replay refill -- Phase 14c                                          */
-/*                                                                     */
-/* The replay used to own an SD `File` and read it synchronously from   */
-/* inside the refill call. Two things were wrong with that. It spent a  */
-/* second blocking SD primitive in an epoch whose contract is one; and  */
-/* -- worse -- every portable SD job begins at AIUS_SD_PHASE_BEGIN,     */
-/* whose adapter action calls SD.begin(BUILTIN_SDCARD), so any config   */
-/* PUT, download or probe re-mounted the volume underneath that open    */
-/* handle. Refusing POST /api/replays/start was the interim answer.     */
-/*                                                                     */
-/* Both are structural now, not ordering. The replay's read position is */
-/* a byte OFFSET held by the portable service, never a handle, and the  */
-/* read is an AIUS_SD_JOB_REPLAY_REFILL job that opens and closes       */
-/* inside itself. The job runs through the storage service's own        */
-/* AiusSdTeensy adapter, which is therefore still the single owner of   */
-/* the only card handle in the firmware: a foreign handle no longer     */
-/* exists for a mount to happen underneath, and the adapter's file_open */
-/* guard would reject a BEGIN that tried.                               */
-/*                                                                     */
-/* One primitive per epoch, total, is kept the same way the SD          */
-/* lifecycle keeps it: this job starts only when the storage service is */
-/* completely idle (sd_storage_idle()), sd_job_active() reports it so   */
-/* the dispatcher keeps SD routes off the card while it runs, and       */
-/* sd_lifecycle_service() yields to it for the same reason. A refusal   */
-/* is free -- the plan is abandoned and re-made next epoch.             */
-/*                                                                     */
-/* Every definition below carries FLASHMEM on the definition itself:    */
-/* the driver runs once per epoch, never per audio block.               */
-/* ------------------------------------------------------------------ */
-
-/* The refill job and its own transfer slice. The storage service's buffer
- * belongs to the storage service's job; sharing it would couple two jobs that
- * are deliberately only serialized, not merged. DMAMEM for the same reason the
- * runtime is there: ~1.2 kB has no business in the 25 kB DTCM locals zone. */
-DMAMEM static AiusSdJob g_replay_job;
-/* 512 BYTES BECAUSE THE ENGINE SAYS SO, and this is the sentence that cost a
- * flash. aius_sd_job_init() takes this capacity as the job's per-primitive read
- * length, and aius_sd.c's validate_request() refuses any job whose capacity
- * exceeds AIUS_SD_MAX_TRANSFER (512) with AIUS_SD_FAULT_CAPACITY -- BEFORE the
- * first action is emitted, so the job never mounts, never opens and never reads
- * a byte. An attempt to read a whole refill in one primitive by sizing this
- * array to 8 KB therefore did not slow the replay down, it killed it outright:
- * every refill was rejected at validation, the service went to ERROR on the
- * first one, and plan_refill() never asks again from ERROR.
- *
- * AIUS_SD_MAX_TRANSFER is private to aius_sd.c, so the compiler cannot see it
- * from here. The two guards that remain are the ones it CAN see, plus the
- * cross-library text check in test/optical-cutover, which reads the engine's
- * own #define and fails when this array outgrows it. */
-DMAMEM static uint8_t g_replay_transfer[AIUS_RUNTIME_STORAGE_TRANSFER];
-/* The slice is what one AIUS_SD_ACTION_OUTPUT carries, and the replay service
- * decodes a delivery in one batch out of a fixed scratch array. Keep the two
- * bounds in lockstep at compile time rather than discovering a widened transfer
- * slice as a run-time NO_SPACE that faults the refill. */
-static_assert(sizeof(g_replay_transfer) <= AIUS_REPLAY_DELIVER_MAX_BYTES,
-	"a refill chunk must fit the replay service's delivery bound");
-/* And the bound the flashed regression walked straight past: the replay job's
- * transfer slice is the SAME primitive every other consumer spends, so it is
- * held to the same number rather than to a private one. AIUS_RUNTIME_STORAGE_
- * TRANSFER is already asserted equal to AIUS_HTTP_SD_CAPACITY_MAX, so this ties
- * all three to one value. */
-static_assert(sizeof(g_replay_transfer) <= AIUS_RUNTIME_STORAGE_TRANSFER,
-	"the replay job spends the same bounded SD primitive as every other "
-	"consumer; a bigger one is refused by the engine at validation");
-/* The adapter result awaiting delivery to the job, exactly as the storage
- * service retains its own: one primitive per epoch means the event produced by
- * this epoch's action is consumed by the next epoch's step. */
-static AiusSdEvent g_replay_job_event;
-static bool g_replay_job_event_present;
-static bool g_replay_job_active;
-/* The job outlived the selection that asked for it (a new start, or a stop), so
- * its remaining chunks are acknowledged and dropped and its terminal state is
- * not reported to the service. */
-static bool g_replay_job_cancelling;
-static bool g_replay_job_size_published;
-
-/* THE REFILL JOB'S OWN DIAGNOSTICS, because nothing else has them.
- *
- * The refill runs on g_replay_job, not on the storage service's job, so its
- * failures never reach AiusRuntimeStorage's `last_failure` and never appear in
- * sd_diag. When the first live loop-boundary fault landed, sd_diag showed
- * driver_faults going 1 -> 2 and a `last_failure` still describing a CONFIG_LOAD
- * from boot: the count moved and the record did not, so the one fault anyone
- * wanted was the one fault nobody could see.
- *
- * The adapter's own duration figures have the same problem in the other
- * direction. `longest_primitive_us` is a single running maximum across every
- * primitive from every job, with no attribution: a 1,016,348 us reading proves
- * something blocked for a second and says nothing about which action, which job
- * or when. So this file times its own primitives, around its own call into the
- * adapter, and keeps the worst one WITH the action that caused it.
- *
- * All of it lives here rather than in the storage service because the storage
- * service is not this job's owner and src/aius_runtime_storage.* is outside this
- * change's surface. Served as a `replay_diag` object beside `sd_diag` on
- * GET /api/status. Everything below is a store on a path that runs at most once
- * per epoch; nothing is sampled per audio block. */
-typedef struct {
-	uint32_t jobs;          /* refill jobs started */
-	uint32_t faults;        /* refill jobs that ended in FAIL */
-	uint32_t mounts;        /* AIUS_SD_ACTION_BEGIN performed by the refill */
-	uint32_t last_primitive_us;
-	uint32_t longest_primitive_us;
-	uint8_t longest_action;   /* AiusSdActionKind of the worst primitive */
-	uint8_t last_fault;       /* AiusSdFault of the last failed job */
-	uint8_t last_fault_phase; /* AiusSdPhase it landed in -- which primitive */
-	uint8_t last_fault_action;
-	uint32_t last_fault_driver;
-	uint32_t last_fault_offset_bytes;
-	uint32_t last_fault_at_ms;
-	uint32_t last_fault_loops;
-} ReplayJobDiag;
-/* DMAMEM like the job and the service it describes: a diagnostic record has no
- * claim on the DTCM free-for-locals zone, which is the bank §Deciding principle
- * names as scarcest. Written once per epoch at most, read by the status route.
- * .bss.dma is NOLOAD, so setup() must clear this before the first status read. */
-DMAMEM static ReplayJobDiag g_replay_diag;
-
-/* Why the current selection is not playing, so /api/replays/status can tell a
- * replay the operator stopped from one a carrier displaced (replay_clock_service
- * below). Without it both read as plain `stopped`, which is the same class of
- * silent ambiguity as a replay that reports `playing` and processes no blocks.
- * One byte, not an enum object: a plain `enum` would be int-sized in .bss, and
- * DTCM is the bank the deciding principle names as scarcest. */
-typedef enum {
-	REPLAY_STOP_NONE = 0, /* never stopped, or a selection is live */
-	REPLAY_STOP_REQUEST,  /* DELETE-ish: the operator asked, via app_replay_stop */
-	REPLAY_STOP_CARRIER,  /* the optical input came up and took the audio path */
-	/* The card failed AIUS_REPLAY_REFILL_FAULT_LIMIT refills in a row. Its own
-	 * reason because it is the one ending an operator cannot infer: a single
-	 * fault is now survivable, so reaching this means the card stopped
-	 * answering rather than hiccupped. Appended, so no value moves. */
-	REPLAY_STOP_FAULT
-} ReplayStopReason;
-static uint8_t g_replay_stop_reason;
-
-/* Reported when the service refuses a delivered chunk, which can only mean the
- * job and the service disagree about the read position. Distinct from the
- * adapter's own faults so the two are told apart in a job result. */
-#define AIUS_REPLAY_DELIVER_REJECT_FAULT UINT32_C(0x52504C59)
-
-/* Abandons an in-flight refill without waiting for it. Memory only, so it is
- * legal from the dispatcher: the job drains through its own CLOSE over the next
- * epochs while the service already belongs to the new selection. */
-static FLASHMEM void replay_job_cancel(void)
-{
-	if (!g_replay_job_active)
-		return;
-	g_replay_job_cancelling = true;
-	aius_sd_job_cancel(&g_replay_job);
 }
 
 /* Entropy for the temporary and backup file names the dispatcher builds, mixed
@@ -859,7 +727,7 @@ static AiusMeasureCapture g_measure_capture;
 /* one bool test in enqueue() (the runtime meters_active field), and  */
 /* epoch service returns on the same latch.                            */
 /* ------------------------------------------------------------------ */
-/* AUDIO may commit eight output steps after REPLAY already drained for this
+/* AUDIO may commit eight output steps after SERVICE already drained for this
  * epoch. Eight slots make that exact burst gap-free. Removing the prior 16 KiB
  * OCRAM staging offsets the new 16 KiB ingress ring and preserves the linker's
  * 128 KiB NativeEthernet heap floor. */
@@ -1081,7 +949,8 @@ static char g_auth_token[AIUS_AUTH_TOKEN_STORAGE_SIZE];
  *    1  STATE                 the S/PDIF lock or pipeline classification moved.
  *                             `state` carries the new value; detail is 0.
  *    2  TEST_TONE             the test tone was toggled. detail 1 running, 0 not.
- *    3  REPLAY_STOP           a replay ended by itself. detail is the stop reason.
+ *    3  (retired)             was REPLAY_STOP; replay left in Phase 4i. Never
+ *                             reused, so no later value moves.
  *
  * 4..10 are counter edges, emitted by service_event_edges() at the bottom of this
  * file. Each says "a counter the status payload already carries advanced", with
@@ -1149,7 +1018,7 @@ static char g_auth_token[AIUS_AUTH_TOKEN_STORAGE_SIZE];
 enum AiusEventType : uint8_t {
 	AIUS_EVENT_STATE = 1,
 	AIUS_EVENT_TEST_TONE = 2,
-	AIUS_EVENT_REPLAY_STOP = 3,
+	/* 3 retired (REPLAY_STOP, Phase 4i); never reused. */
 	AIUS_EVENT_OVERRUN = 4,
 	AIUS_EVENT_NETWORK_DROP = 5,
 	AIUS_EVENT_NETWORK_BUDGET = 6,
@@ -1401,19 +1270,14 @@ static FLASHMEM const char *sd_filesystem(void)
  * The dispatcher checks this before it admits a store, so the two store
  * adapters' own checks below are the second line of defence against a job that
  * starts between the dispatcher's check and theirs. */
-/* Whether the card is spoken for. The replay refill job is included because it
- * holds the shared adapter's file open across the epochs it spans: while it
- * does, an SD route admitted at checkpoint 5 would reach checkpoint 8 and start
- * a job whose BEGIN the adapter must reject. A 503 sd_busy the client retries is
- * the coherent answer, and it is the answer this callback already gives for a
- * root-initiated lifecycle job. */
+/* Whether the card is spoken for: an HTTP job, a drain or a root-initiated
+ * lifecycle job. A 503 sd_busy the client retries is the coherent answer. */
 static FLASHMEM bool sd_job_active(void)
 {
 	const AiusRuntimeStorage &storage = g_runtime.storage;
 
 	return storage.http_owned || storage.draining ||
-	       storage.root_state == AIUS_RUNTIME_STORAGE_ROOT_RUNNING ||
-	       g_replay_job_active;
+	       storage.root_state == AIUS_RUNTIME_STORAGE_ROOT_RUNNING;
 }
 
 /* Phase 4g: the PSRAM web cache (aius-sample-rate-following.md G1 to G10).
@@ -1458,8 +1322,7 @@ static FLASHMEM bool web_cache_fill_in_flight(void)
 static FLASHMEM bool sd_job_active_for_http(void)
 {
 	return sd_job_active() &&
-	       !(web_cache_fill_in_flight() && !g_runtime.storage.draining &&
-	         !g_replay_job_active);
+	       !(web_cache_fill_in_flight() && !g_runtime.storage.draining);
 }
 
 /* G9: the one cancel entry (an HTTP SD request here, 4h's flush start and
@@ -1629,8 +1492,8 @@ static FLASHMEM void web_cache_invalidate_job(const AiusSdJob *job)
 	web_cache_walk_reset();
 }
 
-/* Audit finding 6: a direct card op (the /sd/ index, the replay listing and
- * delete, the fill walk's directory read) ended with the driver's error code
+/* Audit finding 6: a direct card op (the /sd/ index, the fill walk's
+ * directory read) ended with the driver's error code
  * `code`, cleared before its first primitive. Nonzero is the card failing, the
  * class the adapter answers by dropping its trusted mount (4e; a not-found
  * open leaves 0 and keeps it). The adapter never sees these ops, so the mount
@@ -1894,34 +1757,12 @@ static volatile uint32_t g_audio_update_max_cycles;
 #ifndef AIUS_TX_GATE_OPEN_TARGET_FRAMES
 #define AIUS_TX_GATE_OPEN_TARGET_FRAMES 256u
 #endif
-/* THE REPLAY GATE-OPEN FLOOR (register: "Replay start can open the gate on
- * an empty ring", 2026-09-03). The live target above is sized for the epoch
- * jitter of a producer that never blocks; a replay's producer is the SD
- * refill at checkpoint 7, and every refill job spends OPEN_READ (8.3 ms
- * measured) and READ (6.3 ms) primitives on the card two checkpoints before
- * AUDIO enqueues. Mid-replay the ring rides those out only because the
- * PCM-confirm backlog happened to leave it at 384-768 frames; at the first
- * replay block the Phase-F pad plus that block is 256 frames = 5.3 ms, so
- * whether the next epoch's primitive underruns is the phase between the
- * gate-open edge and the job's next OPEN_READ (1 run in 3 live). A replay
- * has no lip-sync to protect, so its floor is sized to the primitive, not
- * to latency: 768 frames = 16 ms covers the 8.3 ms open with the same ~2x
- * margin the live target keeps over its jitter. Selected at the same
- * pre-commit instant (tx_gate_execute_open), so a replay→live relock still
- * trims back to the live target. */
-#ifndef AIUS_TX_GATE_OPEN_REPLAY_TARGET_FRAMES
-#define AIUS_TX_GATE_OPEN_REPLAY_TARGET_FRAMES 768u
-#endif
-#if AIUS_TX_GATE_OPEN_REPLAY_TARGET_FRAMES < AIUS_TX_GATE_OPEN_TARGET_FRAMES
-#error "the replay gate-open floor must not be below the live target"
-#endif
 #ifndef AIUS_TX_GOVERNOR_WINDOW_FRAMES
 #define AIUS_TX_GOVERNOR_WINDOW_FRAMES 192000u
 #endif
 #ifndef AIUS_TX_GOVERNOR_DEADBAND_FRAMES
 #define AIUS_TX_GOVERNOR_DEADBAND_FRAMES 256u
 #endif
-static bool g_tx_governor_replay_prev;       /* source of the last governed block */
 static AiusTxGovernor g_tx_governor;         /* .bss; the zero window_min can
                                               * only make the FIRST window
                                               * decide "no trim" -- harmless,
@@ -1979,9 +1820,9 @@ static FLASHMEM __attribute__((noinline)) void tx_fill_sensor_reset_trim(void)
 }
 
 /* Pre-commit tap: faults, hold, sample. Returns true when the block was held
- * (gate closed, carrier lost or replay) so the post-commit call is skipped. */
+ * (gate closed or carrier lost) so the post-commit call is skipped. */
 static FLASHMEM __attribute__((noinline)) bool
-tx_fill_sensor_pre(bool carrier_present, bool replay)
+tx_fill_sensor_pre(bool carrier_present)
 {
 	static const AiusTxFillReader reader PROGMEM = {
 		nullptr, tx_fill_reader_fills, tx_fill_reader_level,
@@ -1992,7 +1833,7 @@ tx_fill_sensor_pre(bool carrier_present, bool replay)
 		g_aius_tx_fill_witness.missed_fills);
 	if (aius_tx_fill_sensor_hold(&g_tx_fill_sensor,
 	                             g_aius_spdif_tx24.gate_open != 0u,
-	                             carrier_present, replay))
+	                             carrier_present))
 		return true;
 	(void)aius_tx_fill_sensor_sample(&g_tx_fill_sensor, &reader);
 	return false;
@@ -2092,7 +1933,7 @@ static inline void tx_missed_fill_observe(void)
  * watermarks that between them attribute an audible underrun burst:
  *
  * - SIS error latch: the SPDIF peripheral's sticky BITERR/SYMERR/LOCKLOSS/
- *   RxFIFO flags, polled once per REPLAY epoch, counted per class, stamped,
+ *   RxFIFO flags, polled once per SERVICE epoch, counted per class, stamped,
  *   and W1C-cleared (write to SPDIF_SIC, the clear view at the same offset)
  *   so each event is attributable to its poll window instead of "since
  *   boot". A field pop with a same-window BITERR/SYMERR is physical-layer;
@@ -2107,7 +1948,7 @@ static inline void tx_missed_fill_observe(void)
  *   acquits the firmware side.
  * - Dark-interval record + gate-closed watermark (aius-input-recovery
  *   Phase 1, lib/aius_audio/src/aius_input_dark.h): the region the
- *   production-gap watermark discards by design. Stepped once per REPLAY
+ *   production-gap watermark discards by design. Stepped once per SERVICE
  *   epoch by input_dark_service() from state the epoch already latches;
  *   observe-only, nothing reads it back to act. Per gate-ladder phase it
  *   times each gate-closed run (max / over-count / last / last-at, the
@@ -2295,7 +2136,7 @@ public:
 	 * the consume point for AIUS_DSP_IDLE_APPLY_MS. A member because it
 	 * builds at the private g_applied_stream_rate_hz; noinline because
 	 * producer-isolation roots on its linked symbol (a once-called helper
-	 * would inline into the yielding platform_replay). */
+	 * would inline into the yielding platform_service). */
 	__attribute__((noinline)) FLASHMEM void
 	dsp_idle_apply_service(uint32_t now_ms);
 
@@ -2324,35 +2165,7 @@ protected:
 		}
 		audio_block_t *left = receiveReadOnly(0);
 		audio_block_t *right = receiveReadOnly(1);
-		const AiusReplaySource source =
-			g_replay_service.source == AIUS_REPLAY_SOURCE_REPLAY
-				? AIUS_REPLAY_SOURCE_REPLAY
-				: AIUS_REPLAY_SOURCE_OPTICAL;
-		if (g_audio_ingress_ready && source != g_audio_ingress_source) {
-			aius_audio_ingress_record_source_change(&g_audio_ingress);
-			g_audio_ingress_source = source;
-		}
-		if (g_audio_ingress_ready && source == AIUS_REPLAY_SOURCE_REPLAY) {
-			uint16_t *slot = nullptr;
-			if (aius_audio_ingress_reserve(&g_audio_ingress, &slot) ==
-			    AIUS_OK) {
-				const size_t count = aius_replay_service_pop_words(
-					&g_replay_service, slot,
-					AIUS_AUDIO_INGRESS_CHUNK_WORDS);
-				if (count == AIUS_AUDIO_INGRESS_CHUNK_WORDS) {
-					(void)aius_audio_ingress_commit(&g_audio_ingress);
-					aius_producer_yield_note_pend(ARM_DWT_CYCCNT);
-				} else
-					aius_audio_ingress_cancel_gap(
-						&g_audio_ingress,
-						AIUS_AUDIO_INGRESS_GAP_SHORT_REPLAY);
-			} else {
-				(void)aius_replay_service_discard_words(
-					&g_replay_service,
-					AIUS_AUDIO_INGRESS_CHUNK_WORDS);
-			}
-		} else if (g_audio_ingress_ready &&
-		           !g_clock_live_ingress_open) {
+		if (g_audio_ingress_ready && !g_clock_live_ingress_open) {
 			/* Deliberate acquisition quiescence: release the AudioStream
 			 * blocks without publishing and without recording a gap. The
 			 * pending reset owns discontinuity accounting once, while the
@@ -2531,15 +2344,8 @@ private:
 			return AIUS_REFUSED;
 		}
 		g_clock_stream_unsupported_episode = false;
-		const bool replay =
-			g_replay_service.source == AIUS_REPLAY_SOURCE_REPLAY;
-		const uint32_t expected_rate_hz =
-			replay ? AIUS_OPTICAL_SAMPLE_RATE_HZ
-			       : g_clock_nominal_rate_hz;
-		const bool output_plan_ready =
-			replay ? g_clock_replay_ready
-			       : g_clock_plan_applied;
-		if (!output_plan_ready) {
+		const uint32_t expected_rate_hz = g_clock_nominal_rate_hz;
+		if (!g_clock_plan_applied) {
 			close_stream_rate_gate();
 			return AIUS_NO_SPACE;
 		}
@@ -2548,7 +2354,7 @@ private:
 			close_stream_rate_gate();
 			return AIUS_REFUSED;
 		}
-		g_clock_live_ready = !replay && g_clock_carrier_ready;
+		g_clock_live_ready = g_clock_carrier_ready;
 		/* The consume point. Every block that reaches it stamps the idle
 		 * clock, applying or not, so the idle arm
 		 * (dsp_idle_apply_service) stays out while blocks flow and this
@@ -2648,16 +2454,13 @@ private:
 		 * the level it sets is the standing floor every later commit lands
 		 * on (aius-output-jitter Phase F). Before the governor tap, so the
 		 * governor's first window sample is the set floor, not the
-		 * pre-open residue. The source picks the floor: a replay's is
-		 * sized to the SD primitive its producer blocks on.
+		 * pre-open residue.
 		 *
 		 * A live open lands only at a unit start (aius-sample-rate-following
 		 * Phase 4, Open only at a unit start), capped at one unit of
 		 * committed frames since the arm. The production unit is the
 		 * sensor's: PCM = the block, a compressed burst = its IEC 61937
-		 * repetition period by Pc (aius_tx_fill_unit_frames). A replay
-		 * block's first_in_unit is ignored: a replay opens on its first
-		 * block, as before. */
+		 * repetition period by Pc (aius_tx_fill_unit_frames). */
 		const bool compressed =
 			g_pipeline != nullptr &&
 			aius_pipeline_classification(g_pipeline) ==
@@ -2665,13 +2468,12 @@ private:
 		const uint32_t unit_frames = aius_tx_fill_unit_frames(
 			compressed ? aius_pipeline_codec_pc(g_pipeline) : 0u,
 			block->frames, compressed ? 0 : 1);
-		tx_gate_execute_open(replay, block->first_in_unit != 0u,
+		tx_gate_execute_open(block->first_in_unit != 0u,
 		                     unit_frames, block->frames);
 		/* Ring-fill sensor, pre-commit sample (same instant as the governor's
-		 * level read). Held blocks (gate closed, carrier lost, replay) reset
-		 * it and skip the post-commit call below. */
-		const bool fill_held =
-			tx_fill_sensor_pre(g_clock_carrier_ready, replay);
+		 * level read). Held blocks (gate closed, carrier lost) reset it and
+		 * skip the post-commit call below. */
+		const bool fill_held = tx_fill_sensor_pre(g_clock_carrier_ready);
 #if AIUS_TX_GOVERNOR_ENABLED
 		/* Latency-governor tap (aius-output-jitter Phase E): the ring level
 		 * BEFORE this block is staged is the standing floor sample the
@@ -2683,19 +2485,8 @@ private:
 		 * step's few compares. The skip is audible by contract (one splice,
 		 * accepted over a standing multi-tens-of-ms lag); the counters on
 		 * the clock document are the acceptance instruments. */
-		/* The target follows the source: a replay's floor is the replay
-		 * gate-open target (the SD-refill margin), so a clean replay is
-		 * never trimmed toward the live 128. A source edge voids the
-		 * window so neither source's samples judge the other. */
-		if (replay != g_tx_governor_replay_prev) {
-			g_tx_governor_replay_prev = replay;
-			aius_tx_governor_reset(&g_tx_governor,
-			                       g_aius_spdif_tx24.underruns);
-		}
 		const uint32_t governor_excess = aius_tx_governor_step(
-			&g_tx_governor,
-			replay ? AIUS_TX_GATE_OPEN_REPLAY_TARGET_FRAMES
-			       : AIUS_TX_GATE_OPEN_TARGET_FRAMES,
+			&g_tx_governor, AIUS_TX_GATE_OPEN_TARGET_FRAMES,
 			AIUS_TX_GOVERNOR_DEADBAND_FRAMES,
 			AIUS_TX_GOVERNOR_WINDOW_FRAMES,
 			aius_spdif_tx24_level(&g_aius_spdif_tx24),
@@ -2981,9 +2772,9 @@ FLASHMEM void AiusAudioProcessor::begin_pipeline(void)
 	aius_spdif_tx24_begin();
 	/* And the receive DMA interrupt: the snapshot's copy loop writes past the
 	 * block pair when two halves land between update() calls, which is what
-	 * the storming unlocked receiver does while replay drives the graph
-	 * (lib/aius_audio/src/aius_spdif_rx.h; register: RX pool corruption
-	 * under replay). Same placement reason as the transmit hook. */
+	 * the storming unlocked receiver does (lib/aius_audio/src/aius_spdif_rx.h;
+	 * register: RX pool corruption, first seen while the retired replay drove
+	 * the graph). Same placement reason as the transmit hook. */
 	aius_spdif_rx_begin();
 	aius_audio_clock_initialize();
 	/* The boot-lottery gate: cross-check the S/PDIF engine against the
@@ -3116,7 +2907,8 @@ static AiusAudioProcessor g_audio_processor;
  *
  * update_setup() still ran inside begin(), so the clock-responsibility contract
  * is untouched: g_spdif_in is constructed above and claims it first,
- * g_spdif_out gets false, and replay_clock_service() moves it as before. */
+ * g_spdif_out gets false, and the input keeps it: setup() pins the input as
+ * master once (Phase 4i). */
 static AudioOutputSPDIF3 g_spdif_out;
 static AudioConnection g_spdif_left(g_spdif_in, 0, g_audio_processor, 0);
 static AudioConnection g_spdif_right(g_spdif_in, 1, g_audio_processor, 1);
@@ -3125,13 +2917,13 @@ static AudioConnection g_spdif_right(g_spdif_in, 1, g_audio_processor, 1);
  *
  * The final product holds the transmitter dark electronically (TX_ENABLE into
  * the 1G126's OE); the bench build, wired jack-direct, enforces the same
- * policy -- no input carrier and no replay, no output carrier -- by routing
+ * policy -- no input carrier, no output carrier -- by routing
  * pad 14 away from SPDIF_OUT. The predicate lives in aius_tx_gate.h so the
  * carrier firmware later drives pad 39 from the identical boolean.
  *
  * THE ACTUATOR IS THE PAD MUX, NOT THE PERIPHERAL. SPDIF3, its PLL, the
  * transmit DMA and the tx24 ring all keep running into a dark pad (the same
- * drain the on-stop analysis at replay stop describes), so opening the gate
+ * drain a carrier loss leaves), so opening the gate
  * is one register store with no peripheral state to rebuild. Dark is GPIO
  * driven-low via direct register writes -- data first, then direction, then
  * mux -- because the OTJ-5's Vin low is "LED off". Bare pinMode() is
@@ -3171,14 +2963,7 @@ static AudioConnection g_spdif_right(g_spdif_in, 1, g_audio_processor, 1);
  * Now the open edge only ARMS a pending open here; enqueue() executes it at
  * its pre-commit instant, setting the ring to exactly the target (trim down
  * or pad up with silence -- both unheard, the pad is still dark) before this
- * block commits, so the floor every later commit lands on IS the target.
- *
- * 2026-09-03: the target is per source. A replay's producer is the SD refill
- * job, whose OPEN_READ / READ primitives (8.3 / 6.3 ms measured) block the
- * epoch two checkpoints before AUDIO; the live target's one block of margin
- * lost that race 1 run in 3 at replay start. enqueue() passes its own
- * `replay` fact and the open pads to AIUS_TX_GATE_OPEN_REPLAY_TARGET_FRAMES
- * instead (rationale at the macro). */
+ * block commits, so the floor every later commit lands on IS the target. */
 static uint32_t g_tx_gate_open_trims;          /* .bss = 0 */
 static uint32_t g_tx_gate_open_trimmed_frames; /* .bss = 0 */
 /* millis() at the last gate-open trim, the same "place it in time" the governor
@@ -3257,24 +3042,21 @@ static FLASHMEM void tx_gate_actuate(bool open)
  * pad loop is 7 Thumb-2 instructions per frame, so the section is about 7
  * cycles per padded frame plus the 96-byte ITCM accessor call and a few
  * flash cache-line fills: about 3 to 5 us for a live open's worst 256 frames
- * (target 128 from empty plus the pending half), about 9 to 11 us for a
- * replay's 768, at 600 MHz. A trimming open runs no loop. */
-static inline void tx_gate_execute_open(bool replay, bool first_in_unit,
+ * (target 128 from empty plus the pending half), at 600 MHz. A trimming
+ * open runs no loop. */
+static inline void tx_gate_execute_open(bool first_in_unit,
                                         uint32_t unit_frames,
                                         uint32_t block_frames)
 {
 	if (!g_tx_gate_open_pending)
 		return;
-	if (!replay &&
-	    aius_tx_fill_open_decide(first_in_unit,
-	                             g_tx_gate_open_committed_since_arm,
-	                             unit_frames) == AIUS_TX_FILL_OPEN_WAIT) {
+	if (aius_tx_fill_open_decide(first_in_unit,
+	                         g_tx_gate_open_committed_since_arm,
+	                         unit_frames) == AIUS_TX_FILL_OPEN_WAIT) {
 		g_tx_gate_open_committed_since_arm += block_frames;
 		return;
 	}
-	const uint32_t floor_frames =
-		replay ? AIUS_TX_GATE_OPEN_REPLAY_TARGET_FRAMES
-		       : AIUS_TX_GATE_OPEN_TARGET_FRAMES;
+	const uint32_t floor_frames = AIUS_TX_GATE_OPEN_TARGET_FRAMES;
 	uint32_t dropped;
 	uint32_t padded;
 	uint32_t dma_half;
@@ -3283,8 +3065,7 @@ static inline void tx_gate_execute_open(bool replay, bool first_in_unit,
 	const bool boundary_pending =
 		aius_spdif_tx24_dma_read_position(&dma_half,
 		                                  &dma_offset_frames) != 0u;
-	/* A replay has no setpoint to protect: only a live open pads the half. */
-	const bool pad_pending = !replay && boundary_pending;
+	const bool pad_pending = boundary_pending;
 	/* The selected floor, plus the late ISR's half when pending; the level
 	 * after the unmask is the floor either way. */
 	const uint32_t target_frames =
@@ -3303,9 +3084,8 @@ static inline void tx_gate_execute_open(bool replay, bool first_in_unit,
 	padded -= pending_padded;
 	g_tx_gate_open_pending = false;
 	g_tx_gate_open_pending_padded_frames += pending_padded;
-	/* A replay has no live setpoint: the fill loop never emits for it. */
-	g_clock_fill_setpoint_frames = replay ? 0u : setpoint_frames;
-	g_clock_fill_open_boundary_pending = !replay && boundary_pending;
+	g_clock_fill_setpoint_frames = setpoint_frames;
+	g_clock_fill_open_boundary_pending = boundary_pending;
 	if (dropped != 0u) {
 		g_tx_gate_open_trims++;
 		g_tx_gate_open_trimmed_frames += dropped;
@@ -3486,8 +3266,8 @@ static void sd_disarm_shed_staging(const AiusSdJobRequest *job);
 
 /* F11, CR-B1: the one place ownership is derived. The ring's own gate flag
  * (set at the executed open, cleared at close; fill() counts underruns under
- * it) with the latched carrier: with the carrier locked the gate opens only
- * on live input, so flag set and carrier unlocked is a replay. */
+ * it) with the latched carrier: live input is the only source, so the pair
+ * set means live input owns the ring. */
 static FLASHMEM bool live_owns_ring(void)
 {
 	return g_aius_spdif_tx24.gate_open != 0u && g_tx_gate_carrier;
@@ -3557,8 +3337,8 @@ extern "C" FLASHMEM AiusHttpAdmitVerdict aius_runtime_http_admit(
 			web_cache_fill_cancel();
 		return AIUS_HTTP_VERDICT_DEFER;
 	}
-	/* Audit finding 3: a route that reads the card directly (the /sd/ index,
-	 * the replay listing and delete) takes the same wait at the DISPATCH arm,
+	/* Audit finding 3: a route that reads the card directly (the /sd/ index)
+	 * takes the same wait at the DISPATCH arm,
 	 * which holds the dispatch while this DEFERs; its end is
 	 * app_dispatch_end() (or a shed below). */
 	if (!sd_start && aius_optical_app_route_reads_card(query->request) &&
@@ -3599,8 +3379,8 @@ static FLASHMEM uint32_t admission_shed_total(void)
 	return total;
 }
 
-/* F2: in FIFO mode, hold a root SD job's start (the lifecycle start site and
- * the replay refill start) one epoch while live input owns the ring and the
+/* F2: in FIFO mode, hold a root SD job's start (the lifecycle start site)
+ * one epoch while live input owns the ring and the
  * FIFO start cost exceeds the margin; false whenever live_owns_ring() is
  * false. OTA staging and HTTP jobs never come here (F9). Only the start is
  * held: a started job steps every epoch to its end, which in FIFO may cost a
@@ -4052,24 +3832,6 @@ static FLASHMEM bool http_net_diag_generation(char *output, size_t capacity,
  * rate; the DHCP-state and frame-counter reads cost a descriptor lookup and two
  * register reads respectively, and none of the three touches a socket, waits,
  * or runs anywhere near the audio path. */
-/* The refill job's diagnostics (see ReplayJobDiag). Every field is attribution
- * the adapter's single running maximum and the storage service's single failure
- * record could not carry:
- *
- *   longest_primitive_us + longest_action   WHICH card action blocked longest
- *   last_fault{,_phase,_action,_driver}     WHICH primitive failed, and why
- *   last_fault_offset_bytes + _loops        WHERE in the file, and on which lap
- *   mounts                                  REAL remounts this job caused
- *   mount_reuses                            BEGINs the adapter answered from
- *                                           its cached mount (adapter-global)
- *
- * The first run of this block is what identified the defect it now measures:
- * longest_action came back AIUS_SD_ACTION_BEGIN with mounts equal to jobs, which
- * said the 1.02 s stall was the per-job remount and not a read.
- *
- * `fault_phase` is the load-bearing one: a terminal FAILED has already moved
- * `phase` on to the cleanup arm, so without the latched copy an open failure and
- * a read failure are indistinguishable after the fact. */
 /* AUDIO checkpoint diagnostics. Producer-owned ingress fields are copied under
  * the same brief mask used by the legacy overrun projection; service, pipeline
  * and epoch counters are main-thread-owned. */
@@ -4102,7 +3864,6 @@ static FLASHMEM bool http_audio_diag_json(char *output, size_t capacity,
 		"\"ingress_dropped_words\":%lu,"
 		"\"ingress_drop_overflow\":%lu,"
 		"\"ingress_drop_missing_live\":%lu,"
-		"\"ingress_drop_short_replay\":%lu,"
 		"\"source_changes\":%lu,"
 		"\"source_flushes\":%lu,"
 		"\"source_flush_words\":%lu,"
@@ -4157,8 +3918,6 @@ static FLASHMEM bool http_audio_diag_json(char *output, size_t capacity,
 			AIUS_AUDIO_INGRESS_GAP_OVERFLOW],
 		(unsigned long)ingress.dropped_by_cause[
 			AIUS_AUDIO_INGRESS_GAP_MISSING_LIVE],
-		(unsigned long)ingress.dropped_by_cause[
-			AIUS_AUDIO_INGRESS_GAP_SHORT_REPLAY],
 		(unsigned long)ingress.source_changes,
 		(unsigned long)ingress.source_flushes,
 		(unsigned long)ingress.source_flush_words,
@@ -4206,10 +3965,7 @@ static FLASHMEM bool http_clock_json(char *output, size_t capacity,
 	                                 size_t *length)
 {
 	AiusAudioIngressDiag ingress;
-	const bool output_master = clock_output_is_master();
-	const uint32_t status_nominal_rate_hz =
-		output_master ? AIUS_OPTICAL_SAMPLE_RATE_HZ
-		              : g_clock_nominal_rate_hz;
+	const uint32_t status_nominal_rate_hz = g_clock_nominal_rate_hz;
 	int32_t trim_ppm = 0;
 	if (status_nominal_rate_hz != 0u) {
 		const int64_t nominal_millihz =
@@ -4220,7 +3976,6 @@ static FLASHMEM bool http_clock_json(char *output, size_t capacity,
 			INT64_C(1000000) / nominal_millihz);
 	}
 	const char *state =
-		output_master ? "replay" :
 		g_clock_fault_episode ? "fault" :
 		!g_tx_gate_carrier ? "unlocked" :
 		g_clock_carrier_unsupported ? "unsupported" :
@@ -4272,7 +4027,6 @@ static FLASHMEM bool http_clock_json(char *output, size_t capacity,
 		"\"tx_missed_fill_flexspi2_intr\":\"0x%08lX\","
 		"\"tx_missed_fill_flexspi2_sts1\":\"0x%08lX\","
 		"\"gate_open_target_frames\":%lu,"
-		"\"gate_open_replay_target_frames\":%lu,"
 		"\"gate_open_trims\":%lu,"
 		"\"gate_open_trimmed_frames\":%lu,"
 		"\"gate_open_last_trim_at_ms\":%lu,"
@@ -4313,7 +4067,8 @@ static FLASHMEM bool http_clock_json(char *output, size_t capacity,
 		(unsigned long)status_nominal_rate_hz,
 		(unsigned long)g_clock_stream_rate_hz,
 		(unsigned long)g_clock_output_rate_millihz,
-		(long)trim_ppm, output_master ? "output" : "input", state,
+		/* master: a constant "input" since Phase 4i, kept for clients. */
+		(long)trim_ppm, "input", state,
 		(unsigned long)g_clock_rate_changes,
 		(unsigned long)g_clock_trim_updates,
 		(unsigned long)g_clock_trim_last_at_ms,
@@ -4341,7 +4096,6 @@ static FLASHMEM bool http_clock_json(char *output, size_t capacity,
 		(unsigned long)g_aius_tx_missed_fill_flexspi[1],
 		(unsigned long)g_aius_tx_missed_fill_flexspi[2],
 		(unsigned long)AIUS_TX_GATE_OPEN_TARGET_FRAMES,
-		(unsigned long)AIUS_TX_GATE_OPEN_REPLAY_TARGET_FRAMES,
 		(unsigned long)g_tx_gate_open_trims,
 		(unsigned long)g_tx_gate_open_trimmed_frames,
 		(unsigned long)g_tx_gate_open_last_trim_at_ms,
@@ -4453,8 +4207,8 @@ static FLASHMEM bool http_clock_regs_json(char *output, size_t capacity,
 		(unsigned long)CCM_ANALOG_MISC2,
 		(unsigned long)CCM_CDCDR,
 		(unsigned long)CCM_CCGR5,
-		clock_input_is_master() ? 1u : 0u,
-		clock_output_is_master() ? 1u : 0u,
+		AiusSpdifInputClock::is_master() ? 1u : 0u,
+		AiusSpdifOutputClock::is_master() ? 1u : 0u,
 		(unsigned long)g_aius_spdif_tx24.fills,
 		(unsigned long)g_clock_engine_relocks);
 }
@@ -4858,48 +4612,6 @@ static FLASHMEM bool http_stall_diag_json(char *output, size_t capacity,
 		(unsigned long)g_stall_flexspi2_sts1);
 }
 
-static FLASHMEM bool http_replay_diag_json(char *output, size_t capacity,
-	                                       size_t *length)
-{
-	/* PROGMEM: flash, not DTCM .rodata (see http_input_diag_json). */
-	static const char format_replay_diag[] PROGMEM =
-		",\"replay_diag\":{\"jobs\":%lu,\"faults\":%lu,"
-		"\"mounts\":%lu,\"mount_reuses\":%lu,"
-		"\"consecutive_faults\":%lu,"
-		"\"last_primitive_us\":%lu,"
-		"\"longest_primitive_us\":%lu,"
-		"\"longest_action\":%u,\"last_fault\":%u,"
-		"\"last_fault_phase\":%u,"
-		"\"last_fault_action\":%u,"
-		"\"last_fault_driver\":%lu,"
-		"\"last_fault_offset_bytes\":%lu,"
-		"\"last_fault_loops\":%lu,"
-		"\"last_fault_at_ms\":%lu}";
-	return status_append(output, capacity, length,
-	                        format_replay_diag,
-	                        (unsigned long)g_replay_diag.jobs,
-	                        (unsigned long)g_replay_diag.faults,
-	                        (unsigned long)g_replay_diag.mounts,
-	                        /* Adapter-global, not replay-scoped: every
-	                         * consumer's BEGINs share one cache, and a
-	                         * per-job attribution would claim a precision
-	                         * this counter does not have. */
-	                        (unsigned long)
-					g_runtime.storage.target.mount_reuses,
-	                        (unsigned long)g_replay_service.refill_faults,
-	                        (unsigned long)g_replay_diag.last_primitive_us,
-	                        (unsigned long)g_replay_diag.longest_primitive_us,
-	                        (unsigned)g_replay_diag.longest_action,
-	                        (unsigned)g_replay_diag.last_fault,
-	                        (unsigned)g_replay_diag.last_fault_phase,
-	                        (unsigned)g_replay_diag.last_fault_action,
-	                        (unsigned long)g_replay_diag.last_fault_driver,
-	                        (unsigned long)
-					g_replay_diag.last_fault_offset_bytes,
-	                        (unsigned long)g_replay_diag.last_fault_loops,
-	                        (unsigned long)g_replay_diag.last_fault_at_ms);
-}
-
 /* The boot-configuration fuse word, hex-encoded with its two decoded fields.
  *
  * This is prerequisite 4 of docs/plans/aius-ota-upgrade.md brought within reach
@@ -5035,8 +4747,8 @@ static FASTRUN void reset_application(void)
 /*                                                                     */
 /* DURABLE STAGING. The chunk path writes each staged CONTAINER chunk   */
 /* to /aius/ota-staged.img through the existing bounded SD job engine   */
-/* (aius_optical_app.cpp ota_image_chunk, mirroring the replay          */
-/* APPEND_PART upload). At activation, BEFORE the dark window,          */
+/* (aius_optical_app.cpp ota_image_chunk, an APPEND_PART upload).     */
+/* At activation, BEFORE the dark window,          */
 /* service_ota_activation() copies the whole image SD->PSRAM            */
 /* (ota_copy_staged_to_psram, skipping the 256-byte header) and         */
 /* aius_ota_activate_begin() re-runs SHA-256 + Ed25519 over that PSRAM  */
@@ -6664,7 +6376,7 @@ static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
 		dsp_apply_pending ? g_pending_dsp_origin : g_dsp_model_origin;
 	/* PROGMEM: flash, not DTCM .rodata (see http_input_diag_json). */
 	static const char format_status[] PROGMEM =
-		"{\"version\":%u,\"state\":%u,\"carrier\":%u,\"format\":%u,\"sample_rate\":%lu,\"blocks\":%lu,\"overruns\":%lu,\"source\":\"%s\",\"model_origin\":\"%s\",\"dsp_config_pending\":%u,\"dsp_staged_generation\":%lu,\"sd_present\":%u,\"sd_filesystem\":\"%s\",\"sd_total_bytes\":%llu,\"sd_used_bytes\":%llu,\"sd_free_bytes\":%llu,\"config_valid\":%u,\"config_error_code\":%u,\"config_error\":\"%s\",\"config_error_count\":%lu,\"network_mode\":\"%s\",\"ip\":\"%u.%u.%u.%u\",\"link\":%u,\"network_restarts\":%lu,\"dhcp_pending\":%u,\"dhcp_discovers\":%lu,\"dhcp_updates\":%lu,\"reset_source\":%lu,\"http_server_rebinds\":%lu,\"cpu_temp_c\":%.2f,\"cpu_temp_valid\":%u,\"cpu_temp_max_c\":%.2f,\"cpu_temp_age_ms\":%lu,\"build_revision\":\"%s\",\"build_utc\":\"%s\",\"event_sequence\":%lu,\"event_overflows\":%lu,\"network_drops\":%lu,\"network_budget_overruns\":%lu,\"http_requests\":%lu,\"http_rejections\":%lu,\"http_client_drops\":%lu,\"http_service_overruns\":%lu,\"network_state\":%u,\"recovery_safe\":%u,\"network_last_fault\":%u,\"last_checkpoint\":%u,\"network_generation\":%lu,\"boot_generation\":%lu,\"watchdog_early_resets\":%u,\"loop_epoch\":%lu,\"psram_mb\":%u,\"psram_pad2_mb\":%u,\"tx_gate\":{\"open\":%u,\"carrier_locked\":%u,\"replay_running\":%u}";
+		"{\"version\":%u,\"state\":%u,\"carrier\":%u,\"format\":%u,\"sample_rate\":%lu,\"blocks\":%lu,\"overruns\":%lu,\"source\":\"%s\",\"model_origin\":\"%s\",\"dsp_config_pending\":%u,\"dsp_staged_generation\":%lu,\"sd_present\":%u,\"sd_filesystem\":\"%s\",\"sd_total_bytes\":%llu,\"sd_used_bytes\":%llu,\"sd_free_bytes\":%llu,\"config_valid\":%u,\"config_error_code\":%u,\"config_error\":\"%s\",\"config_error_count\":%lu,\"network_mode\":\"%s\",\"ip\":\"%u.%u.%u.%u\",\"link\":%u,\"network_restarts\":%lu,\"dhcp_pending\":%u,\"dhcp_discovers\":%lu,\"dhcp_updates\":%lu,\"reset_source\":%lu,\"http_server_rebinds\":%lu,\"cpu_temp_c\":%.2f,\"cpu_temp_valid\":%u,\"cpu_temp_max_c\":%.2f,\"cpu_temp_age_ms\":%lu,\"build_revision\":\"%s\",\"build_utc\":\"%s\",\"event_sequence\":%lu,\"event_overflows\":%lu,\"network_drops\":%lu,\"network_budget_overruns\":%lu,\"http_requests\":%lu,\"http_rejections\":%lu,\"http_client_drops\":%lu,\"http_service_overruns\":%lu,\"network_state\":%u,\"recovery_safe\":%u,\"network_last_fault\":%u,\"last_checkpoint\":%u,\"network_generation\":%lu,\"boot_generation\":%lu,\"watchdog_early_resets\":%u,\"loop_epoch\":%lu,\"psram_mb\":%u,\"psram_pad2_mb\":%u,\"tx_gate\":{\"open\":%u,\"carrier_locked\":%u}";
 	size_t length = 0u;
 	if (!status_append((char *)body, capacity, &length,
 		format_status,
@@ -6725,8 +6437,7 @@ static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
 		/* The LATCHED checkpoint-7 decision and inputs, never re-derived
 		 * here: re-reading pllLocked() at request time could disagree with
 		 * the pad within one poll. */
-		g_tx_gate_open ? 1u : 0u, g_tx_gate_carrier ? 1u : 0u,
-		g_tx_gate_replay ? 1u : 0u))
+		g_tx_gate_open ? 1u : 0u, g_tx_gate_carrier ? 1u : 0u))
 		return 0;
 	/* The diagnostic object joins the same body rather than a second route:
 	 * it is read beside link, ip and network_state, and a separate route would
@@ -6812,16 +6523,6 @@ static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
 		                   flush.drained ? "true" : "false"))
 			return 0;
 	}
-	/* The refill job's own record, BESIDE sd_diag rather than inside it. The
-	 * two are different job streams with different owners: sd_diag belongs to
-	 * AiusRuntimeStorage, which never sees g_replay_job, so a refill fault has
-	 * always been absent from it -- visible only as driver_faults ticking while
-	 * `last_failure` described something else entirely. Folding this into that
-	 * object would mean writing src/aius_runtime_storage.*, and conflating two
-	 * job streams in one `last_failure` would make the next fault as hard to
-	 * attribute as this one was. */
-	if (!http_replay_diag_json((char *)body, capacity, &length))
-		return 0;
 	if (!http_audio_diag_json((char *)body, capacity, &length))
 		return 0;
 	if (!http_clock_json((char *)body, capacity, &length))
@@ -6998,155 +6699,6 @@ static FLASHMEM size_t http_home_page(uint8_t *body, size_t capacity)
 	return aius_http_home_page((char *)body, capacity, AIUS_BUILD_GIT_REV, AIUS_BUILD_UTC);
 }
 
-static FLASHMEM size_t http_replay_status_json(uint8_t *body, size_t capacity)
-{
-	AiusReplayStatus replay = {};
-	(void)aius_replay_service_status(&g_replay_service, &replay);
-	const char *state = replay.state == AIUS_REPLAY_PLAYING ? "playing" :
-		replay.state == AIUS_REPLAY_PREBUFFERING ? "prebuffering" :
-		replay.state == AIUS_REPLAY_EOF ? "eof" :
-		replay.state == AIUS_REPLAY_ERROR ? "error" : "stopped";
-	const char *klass = replay.decoder.classification == AIUS_PIPELINE_DTS ? "dts" :
-		replay.decoder.classification == AIUS_PIPELINE_PCM ? "pcm" : "unknown";
-	/* Served alongside `state` rather than folded into it: `stopped` is the
-	 * portable service's own vocabulary and stays exactly what it was, while
-	 * this says who stopped it. A client that never looks reads the same
-	 * document it read before. */
-	const char *stop_reason =
-		g_replay_stop_reason == REPLAY_STOP_CARRIER ? "carrier" :
-		g_replay_stop_reason == REPLAY_STOP_REQUEST ? "request" :
-		g_replay_stop_reason == REPLAY_STOP_FAULT ? "fault" : "none";
-	/* PROGMEM: flash, not DTCM .rodata (see http_input_diag_json). */
-	static const char format_replay_status[] PROGMEM =
-		"{\"ok\":true,\"state\":\"%s\",\"stop_reason\":\"%s\",\"id\":\"%s\",\"file_bytes\":%lu,\"offset_bytes\":%lu,\"duration_seconds\":%.3f,\"loop\":%s,\"loops_completed\":%lu,\"queue_words\":%lu,\"watermark_words\":%lu,\"underruns\":%lu,\"input_class\":\"%s\",\"decoder_errors\":%lu,\"refill_faults\":%lu}";
-	int length = snprintf((char *)body, capacity,
-		format_replay_status,
-		state, stop_reason, replay.id, (unsigned long)replay.file_bytes,
-		(unsigned long)replay.offset_bytes, replay.duration_seconds,
-		replay.loop ? "true" : "false", (unsigned long)replay.loops_completed,
-		(unsigned long)replay.queue_words, (unsigned long)replay.watermark_words,
-		(unsigned long)replay.underruns, klass, (unsigned long)replay.decoder_errors,
-		(unsigned long)replay.refill_faults);
-	return length < 0 || (size_t)length >= capacity ? 0u : (size_t)length;
-}
-
-/* Longest tail this serializer can emit, held back from the row loop so the
- * truncation verdict can ALWAYS be stated: `],"truncated":false}` plus its NUL
- * is 21 bytes. A listing that could not say whether it was complete would be
- * exactly the wrong answer this bound exists to prevent. */
-#define REPLAY_LIST_TAIL_RESERVE 24u
-
-/* GET /api/replays. Raw SD access, like app_read_directory() below and for the
- * same reason: the portable engine has no directory job kind, so there is
- * nothing bounded to drive the enumeration onto. It is therefore held to the
- * two rules app_read_directory() already establishes, and the Phase 14d audit
- * found it holding neither (open defect 6).
- *
- * BOUNDED. At most AIUS_OPTICAL_APP_INDEX_SCAN_MAX raw reads, so one epoch's
- * enumeration costs a constant rather than however many files the card happens
- * to hold. What this replaces is a `for (;;) openNextFile()` that ran to the end
- * of an unknown directory inside a single epoch -- the most plausible
- * unexplained 8 s watchdog reset in the image, since a large replays directory
- * makes that walk arbitrarily long and the SD library is uncancellable.
- *
- * GATED. The dispatcher calls this only when app_sd_busy() is false
- * (aius_optical_app.cpp), so it can never touch the volume while a job owns it
- * -- refill, upload, download or probe. A refused call answers 503 sd_busy: the
- * distinguishable, already-documented refusal every other SD route uses, and a
- * refusal rather than a stale or partial answer.
- *
- * HONEST WHEN IT STOPS EARLY. Either bound -- the scan cap or the response
- * buffer -- reports "truncated":true, and the tail is reserved before the first
- * row so that verdict can always be written. A truncated listing is never
- * mistakable for a complete one. */
-static FLASHMEM size_t http_replay_list_json(uint8_t *body, size_t capacity)
-{
-	const ProducerSdWindow window;
-	if (!g_sd_ready) return (size_t)snprintf((char *)body, capacity,
-		"{\"ok\":false,\"error\":\"sd_unavailable\"}");
-	SD.clearError();
-	File directory = SD.open("/aius/replays");
-	if (!directory || !directory.isDirectory()) {
-		if (directory) directory.close();
-		direct_card_settle(SD.sdErrorCode());
-		return (size_t)snprintf((char *)body, capacity,
-			"{\"ok\":true,\"files\":[],\"truncated\":false}");
-	}
-	size_t length = 0u;
-	int written = snprintf((char *)body, capacity, "{\"ok\":true,\"files\":[");
-	if (written < 0 ||
-	    (size_t)written + REPLAY_LIST_TAIL_RESERVE >= capacity) {
-		directory.close();
-		return 0u;
-	}
-	length = (size_t)written;
-	/* Everything the rows may spend, with the tail already deducted. */
-	const size_t row_limit = capacity - REPLAY_LIST_TAIL_RESERVE;
-	bool first = true;
-	bool truncated = false;
-	unsigned scanned = 0u;
-	while (scanned < AIUS_OPTICAL_APP_INDEX_SCAN_MAX) {
-		File entry = directory.openNextFile();
-		if (!entry) break;
-		scanned++;
-		if (!entry.isDirectory()) {
-			const char *name = entry.name();
-			const char *base = strrchr(name, '/');
-			base = base == nullptr ? name : base + 1;
-			size_t name_length = strlen(base);
-			bool complete = name_length > 4u &&
-				memcmp(base + name_length - 4u, ".iec", 4u) == 0;
-			bool partial = name_length > 5u &&
-				memcmp(base + name_length - 5u, ".part", 5u) == 0;
-			if (complete || partial) {
-				size_t suffix = complete ? 4u : 5u;
-				size_t id_length = name_length - suffix;
-				if (id_length <= AIUS_HTTP_MAX_REPLAY_ID) {
-					char duration[24];
-					snprintf(duration, sizeof(duration), complete ? "%.3f" : "null",
-					         complete ? (double)entry.size() / 192000.0 : 0.0);
-					written = snprintf((char *)body + length, row_limit - length,
-						"%s{\"id\":\"%.*s\",\"bytes\":%lu,\"duration_seconds\":%s,\"upload_next_offset\":%lu,\"complete\":%s,\"active\":%s}",
-						first ? "" : ",", (int)id_length, base,
-						(unsigned long)entry.size(), duration,
-						(unsigned long)entry.size(), complete ? "true" : "false",
-						(strlen(g_replay_service.id) == id_length &&
-						 memcmp(base, g_replay_service.id, id_length) == 0 && complete) ?
-						"true" : "false");
-					/* Out of room is a truncation, not a 500: the rows
-					 * already written are correct and the tail says the
-					 * listing stopped early. */
-					if (written < 0 ||
-					    (size_t)written >= row_limit - length) {
-						truncated = true;
-						entry.close();
-						break;
-					}
-					length += (size_t)written;
-					first = false;
-				}
-			}
-		}
-		entry.close();
-	}
-	/* Stopped on the scan cap rather than at the end of the directory: one
-	 * further read says whether anything was left behind, exactly as
-	 * app_read_directory() decides its own `more`. */
-	if (!truncated && scanned >= AIUS_OPTICAL_APP_INDEX_SCAN_MAX) {
-		File extra = directory.openNextFile();
-		if (extra) {
-			truncated = true;
-			extra.close();
-		}
-	}
-	directory.close();
-	direct_card_settle(SD.sdErrorCode());
-	written = snprintf((char *)body + length, capacity - length,
-	                   "],\"truncated\":%s}", truncated ? "true" : "false");
-	if (written < 0 || (size_t)written >= capacity - length) return 0u;
-	return length + (size_t)written;
-}
-
 /* ------------------------------------------------------------------ */
 /* AiusOpticalApp adapters -- Phase 14 slices S1 and S2b               */
 /*                                                                     */
@@ -7228,7 +6780,7 @@ static FLASHMEM size_t http_status_brief_json(uint8_t *body, size_t capacity)
 		return 0;
 	/* PROGMEM: flash, not DTCM .rodata (4e §Memory, the .data cliff). */
 	static const char format_brief[] PROGMEM =
-		"{\"carrier\":%u,\"state\":%u,\"sample_rate\":%lu,\"pipeline_diag\":{\"codec_pc\":%u},\"tx_gate\":{\"open\":%u,\"replay_running\":%u},"
+		"{\"carrier\":%u,\"state\":%u,\"sample_rate\":%lu,\"pipeline_diag\":{\"codec_pc\":%u},\"tx_gate\":{\"open\":%u},"
 		"\"sd_flush\":{\"dirty\":%lu,\"held\":%s,\"failures\":%lu,\"last_fault\":\"%s\",\"drained\":%s}}";
 	/* Phase 4h: sd_flush carries dirty, held, failures, last_fault and
 	 * drained (D-S3: nothing dirty, flushing or tombstoned; true with no
@@ -7239,7 +6791,7 @@ static FLASHMEM size_t http_status_brief_json(uint8_t *body, size_t capacity)
 		status[3] & 1u, status[2],
 		(unsigned long)aius_net_get_u32(status + 25),
 		(unsigned)g_audio_processor.pipeline_codec_pc(),
-		g_tx_gate_open ? 1u : 0u, g_tx_gate_replay ? 1u : 0u,
+		g_tx_gate_open ? 1u : 0u,
 		(unsigned long)flush.dirty, flush.held ? "true" : "false",
 		(unsigned long)flush.failures,
 		sd_overlay_fault_name(flush.last_fault),
@@ -7287,18 +6839,6 @@ static FLASHMEM size_t app_write_dsp_config(void *, uint8_t *body, size_t capaci
 static FLASHMEM size_t app_write_meters(void *, uint8_t *body, size_t capacity)
 {
 	return http_meters_json(body, capacity);
-}
-
-static FLASHMEM size_t app_write_replay_status(void *, uint8_t *body,
-                                               size_t capacity)
-{
-	return http_replay_status_json(body, capacity);
-}
-
-static FLASHMEM size_t app_write_replay_list(void *, uint8_t *body,
-                                             size_t capacity)
-{
-	return http_replay_list_json(body, capacity);
 }
 
 /* Validate and stage; write nothing. The dispatcher persists the accepted bytes
@@ -7393,105 +6933,6 @@ static FLASHMEM AiusOpticalAppStoreResult app_store_dsp_config(
 	g_sd_commit_target = SD_COMMIT_DSP_MODEL;
 	g_sd_commit_writing = false;
 	return AIUS_OPTICAL_APP_STORE_ACCEPTED;
-}
-
-/* POST /api/replays/start, restored by Phase 14c. Memory only: it selects the
- * replay, records the path the refill job will open, and returns. No file is
- * opened, no byte is read and nothing waits, so the dispatcher's "touches no SD
- * primitive and never delays" contract holds.
- *
- * WHAT THE ROUTE ANSWERS. OK maps to the dispatcher's existing 200
- * {"ok":true,"state":"prebuffering","id":"..."} (aius_optical_app.cpp), which
- * is now literally true rather than a claim about a ring that was already full:
- * the ring reaches its watermark over the following epochs and GET
- * /api/replays/status reports the progression prebuffering -> playing. Until it
- * does, the audio path keeps taking optical input, because it gates on
- * SOURCE_REPLAY (AiusAudioProcessor::update) and start publishes only
- * SWITCHING_TO_REPLAY.
- *
- * WHAT IT NO LONGER ANSWERS. 404 replay_not_found is unreachable from here: the
- * file's existence is a property only the card can report, and asking would be
- * the very SD primitive this callback must not perform. A missing or unreadable
- * file now fails the first refill job instead, and surfaces as state "error" on
- * the status route. The dispatcher's 404 arm stays for app_replay_delete(),
- * which does still stat the card. */
-static FLASHMEM AiusOpticalAppReplayResult app_replay_start(void *,
-                                                            const char *id,
-                                                            bool loop)
-{
-	int written;
-
-	/* The live input always owns the audio path (replay_clock_service), so a
-	 * start against a carrier would be admitted and then reversed at the next
-	 * checkpoint. Refuse it here instead, with its own status. */
-	if (AudioInputSPDIF3::pllLocked())
-		return AIUS_OPTICAL_APP_REPLAY_CARRIER_PRESENT;
-	if (!g_sd_ready || !aius_replay_id_is_valid(id))
-		return AIUS_OPTICAL_APP_REPLAY_FAILED;
-	/* Phase 4g (owner, audit finding 2): replay is a test facility, and one
-	 * started during the fill walk lost the card at every file boundary. With
-	 * the cache present, no start until the walk is complete (status
-	 * www_cache.fill_complete); an 8 MiB fitment (no cache) never gates. */
-	if (g_web_cache.base != nullptr && !g_web_fill_walk.walk_complete)
-		return AIUS_OPTICAL_APP_REPLAY_FILL_BUSY;
-	written = snprintf(g_replay_path, sizeof(g_replay_path),
-	                   "/aius/replays/%s.iec", id);
-	if (written <= 0 || (size_t)written >= sizeof(g_replay_path))
-		return AIUS_OPTICAL_APP_REPLAY_FAILED;
-	/* Any refill still running belongs to the previous selection. */
-	replay_job_cancel();
-	if (aius_replay_service_start(&g_replay_service, id, loop) != AIUS_OK)
-		return AIUS_OPTICAL_APP_REPLAY_FAILED;
-	/* Every replay classifies its own stream. AUDIO consumes the request in
-	 * epoch context; the later effective-source transition is independently
-	 * generation-tagged by update(). */
-	request_audio_reset();
-	g_replay_stop_reason = REPLAY_STOP_NONE;
-	return AIUS_OPTICAL_APP_REPLAY_OK;
-}
-
-/* SWITCHING_TO_REPLAY joins REPLAY in the active test because 14c made
- * prebuffering an observable state that outlives the start call: a delete
- * admitted during it would remove the file underneath the refill job that is
- * reading it. Before 14c, start returned already playing, so the window did not
- * exist.
- *
- * At most three card primitives (two exists, one remove), all constants -- there
- * is no walk here to cap. What the Phase 14d audit found missing was the
- * exclusion: this ran while an SD job could own the volume. The dispatcher now
- * calls it only when app_sd_busy() is false (aius_optical_app.cpp), the same
- * gate app_read_directory() has always had, and a refused call answers
- * 503 sd_busy rather than a wrong 404. */
-static FLASHMEM AiusOpticalAppReplayResult app_replay_delete(void *,
-                                                             const char *id)
-{
-	char path[96];
-	if (strcmp(id, g_replay_service.id) == 0 &&
-	    (g_replay_service.source == AIUS_REPLAY_SOURCE_REPLAY ||
-	     g_replay_service.source == AIUS_REPLAY_SOURCE_SWITCHING_TO_REPLAY))
-		return AIUS_OPTICAL_APP_REPLAY_ACTIVE;
-	snprintf(path, sizeof(path), "/aius/replays/%s.iec", id);
-	const ProducerSdWindow window;
-	SD.clearError();
-	/* An in-flight capture is <id>.part until its rename; the .iec wins when
-	 * both exist, and the .part is then left alone. */
-	if (!SD.exists(path))
-		snprintf(path, sizeof(path), "/aius/replays/%s.part", id);
-	const AiusOpticalAppReplayResult result =
-		!SD.exists(path) ? AIUS_OPTICAL_APP_REPLAY_NOT_FOUND
-		: SD.remove(path) ? AIUS_OPTICAL_APP_REPLAY_OK
-		                  : AIUS_OPTICAL_APP_REPLAY_FAILED;
-	direct_card_settle(SD.sdErrorCode());
-	return result;
-}
-
-/* Stop is memory only for the same reason start is: the in-flight refill is
- * cancelled, not waited on, and drains through its own CLOSE. */
-static FLASHMEM void app_replay_stop(void *)
-{
-	replay_job_cancel();
-	aius_replay_service_stop(&g_replay_service);
-	g_replay_stop_reason = REPLAY_STOP_REQUEST;
 }
 
 static FLASHMEM void app_set_test_running(void *, bool running)
@@ -7705,12 +7146,11 @@ static FLASHMEM uint32_t app_upload_id(void *)
 	return sd_job_id();
 }
 
-/* Directory enumeration for GET /sd/<dir>/. Raw SD access, like
- * http_replay_list_json above it and for the same reason: the portable engine
- * has no directory job kind, so there is nothing bounded to drive. Two things
+/* Directory enumeration for GET /sd/<dir>/. Raw SD access, because the
+ * portable engine has no directory job kind, so there is nothing bounded to drive. Two things
  * keep it honest until one exists. The dispatcher calls this only when
- * app_sd_busy() is false, so it cannot run while a job holds the volume -- a
- * gate the replay listing does not have. And the scan is capped at
+ * app_sd_busy() is false, so it cannot run while a job holds the volume.
+ * And the scan is capped at
  * AIUS_OPTICAL_APP_INDEX_SCAN_MAX reads rather than running to the end of an
  * unknown directory, so the epoch stays bounded even on a large card.
  *
@@ -7827,13 +7267,8 @@ const AiusOpticalApp g_aius_optical_app = {
 	app_write_events,
 	app_write_dsp_config,
 	app_write_meters,
-	app_write_replay_status,
-	app_write_replay_list,
 	app_store_public_config,
 	app_store_dsp_config,
-	app_replay_start,
-	app_replay_delete,
-	app_replay_stop,
 	app_set_test_running,
 	app_clear_counters,
 	app_request_reboot,
@@ -8065,7 +7500,7 @@ DMAMEM static AiusMeasureAnalysis g_measure_analysis_r;
  * cold boot, and .bss zeroing is what guarantees that. ~600 B. */
 typedef struct {
 	bool started;              /* a session exists (live or retired) */
-	char vector_id[AIUS_REPLAY_MAX_ID_LENGTH + 1u];
+	char vector_id[AIUS_OPTICAL_APP_VECTOR_ID_STORAGE];
 	double f0_l_hz;
 	double f0_r_hz;
 	double probes_hz[AIUS_MEASURE_PROBES_MAX];
@@ -8080,10 +7515,10 @@ typedef struct {
 static MeasureSession g_measure_session;
 
 /* The stall watch's bounds, wall-clock rather than epoch-count so they do not
- * drift with epoch rate. ARMED tolerates the operator gap between POST
- * /api/measure/start and POST /api/replays/start (arm-then-start is the
- * natural order; replay start includes an SD prebuffer); CAPTURING only ever
- * stalls when the replay stopped underneath the capture; CANCELLING is the
+ * drift with epoch rate. ARMED tolerates the gap between POST
+ * /api/measure/start and the stimulus reaching the input (the U24 render is
+ * started first, but a gate open can trail it); CAPTURING only ever
+ * stalls when the stimulus stopped underneath the capture; CANCELLING is the
  * reclaim bound -- blocks unchanged this long after the token means the AUDIO
  * producer is provably not running (the one case the epoch may reclaim). */
 static constexpr uint32_t MEASURE_ARM_STALL_MS = 10000u;
@@ -8161,7 +7596,7 @@ static FLASHMEM void measure_epoch_service(uint32_t now_ms)
 	case AIUS_MEASURE_CAPTURING:
 	case AIUS_MEASURE_CANCELLING: {
 		/* The stall watch. Only the epoch side can time out a capture the
-		 * AUDIO producer is not feeding -- with no replay running enqueue() never
+		 * AUDIO producer is not feeding -- with no carrier enqueue() never
 		 * executes (the race the one-writer machine exists to close). */
 		const uint32_t blocks = g_audio_processor.block_count();
 		if (blocks != s.watch_blocks) {
@@ -8271,7 +7706,7 @@ static FLASHMEM bool measure_figures_json(char *output, size_t capacity,
  * resolvable floors beside them, as the design requires ("the figures, each
  * with its resolvable floor, and the vector id they were measured against").
  * The floors are properties of the 16-bit STIMULUS, not of the analysis:
- * THD+N and SNR bottom out at the replay vectors' quantization floor
+ * THD+N and SNR bottom out at the 16-bit vectors' quantization floor
  * (~-96 dB; the analysis itself proves ~-140 dB on 24-bit synthesis), Goertzel
  * harmonic THD stays usable to ~-95 dBc, and the -140 dB inter-stage floor is
  * not verifiable on-device by any 16-bit transport -- it stays host-proven.
@@ -9122,7 +8557,7 @@ static FLASHMEM bool sd_storage_idle(void)
 	return !storage.http_owned && !storage.http_authority &&
 	       !storage.http_event_present && !storage.draining &&
 	       storage.root_state != AIUS_RUNTIME_STORAGE_ROOT_RUNNING &&
-	       !g_runtime.storage_action_present && !g_replay_job_active;
+	       !g_runtime.storage_action_present;
 }
 
 /* Memory only: builds the step's request and hands it to the runtime. Every
@@ -9701,8 +9136,8 @@ static FLASHMEM bool sd_flush_drained(void)
 }
 
 /* D-S9: the one BEGIN gate (aius_optical_sd_begin_blocked), for the paths
- * this file starts: the lifecycle's root steps, HTTP SD_START admission and
- * the replay job's BEGIN (the flush and fill starts take it in the seam). */
+ * this file starts: the lifecycle's root steps and HTTP SD_START admission
+ * (the flush and fill starts take it in the seam). */
 static FLASHMEM AiusOpticalSdBeginGate sd_begin_blocked(uint32_t now_ms)
 {
 	return aius_optical_sd_begin_blocked(&g_sd_flush, &g_sd_flush_ops, now_ms);
@@ -9712,11 +9147,6 @@ static FLASHMEM bool sd_step_begin_blocked(uint32_t now_ms)
 {
 	return aius_optical_sd_step_begin_blocked(&g_sd_flush, &g_sd_flush_ops,
 	                                          now_ms);
-}
-
-static FLASHMEM bool sd_replay_begin_blocked(void)
-{
-	return aius_optical_sd_replay_begin_blocked(&g_sd_flush, &g_sd_flush_ops);
 }
 
 static FLASHMEM bool sd_freeze_active(void)
@@ -9964,18 +9394,9 @@ static FLASHMEM void web_cache_fill_settle(uint32_t now_ms)
 	}
 }
 
-/* Owner (closure nit A): a playing replay pauses the fill, SWITCHING_TO_REPLAY
- * (prebuffering, its refill already reading the card) included, so replay and
- * fill never share the card in either order. */
-static FLASHMEM bool web_cache_replay_playing(void)
-{
-	return g_replay_service.source == AIUS_REPLAY_SOURCE_REPLAY ||
-	       g_replay_service.source == AIUS_REPLAY_SOURCE_SWITCHING_TO_REPLAY;
-}
-
 /* Starts the next fill file: one CACHE_FILL root job per file (G6), only
  * with the cache present, the card ready, the volume idle, the hold lapsed
- * (G9), no replay playing (nit A) and the G8 gate open. Each call reads at most one directory (a
+ * (G9) and the G8 gate open. Each call reads at most one directory (a
  * windowed app_read_directory() scan) and starts at most one job; the job's
  * primitives run at checkpoint 8, one per epoch. Files already cached, names
  * the listing would not link and paths over AIUS_WEB_CACHE_PATH_MAX are
@@ -9989,8 +9410,7 @@ static FLASHMEM void web_cache_fill_next(uint32_t now_ms)
 	if (g_web_cache.base == nullptr || !g_sd_ready || g_sd_flush.frozen ||
 	    !g_web_fill_walk.ready_seen || g_web_fill_walk.walk_complete ||
 	    g_web_fill_walk.running ||
-	    aius_optical_web_fill_paused(&g_web_fill, now_ms,
-	                                 web_cache_replay_playing()) ||
+	    aius_optical_web_fill_paused(&g_web_fill, now_ms) ||
 	    !sd_storage_idle())
 		return;
 	/* G8: the fill start site consults sd_fifo_defer(). */
@@ -10193,15 +9613,9 @@ static FLASHMEM void sd_lifecycle_service(uint32_t now_ms)
 		 * start. pllLocked() is the current-instant carrier signal and
 		 * precedes every carrier-driven open by at least the classify
 		 * window (tens of ms), while a probe started against a dark
-		 * carrier finishes its two primitives within ~2 epochs. A
-		 * replay-driven open at the start edge CAN coincide with a
-		 * just-started probe, harmlessly: the probe's root job blocks
-		 * the first refill (sd_storage_idle()), so the replay is
-		 * necessarily still in its PREBUFFERING silence-carrier phase
-		 * while any probe primitive runs -- no program material is at
-		 * risk -- and once open, the gate latch defers all subsequent
-		 * probes. (Delivery-audit finding, aius-output-jitter.md
-		 * Phase C.)
+		 * carrier finishes its two primitives within ~2 epochs. Once
+		 * open, the gate latch defers all subsequent probes.
+		 * (Delivery-audit finding, aius-output-jitter.md Phase C.)
 		 *
 		 * FIRST BRING-UP IS EXEMPT (open-work register 2026-08-16,
 		 * fixed with aius-ota-resilience.md Phase 4): on a boot with the
@@ -10277,399 +9691,6 @@ static FLASHMEM bool platform_publish_config(void *, const uint8_t *data,
 	}
 }
 
-/* Builds one event for the refill job, in the adapter's own shape. */
-static FLASHMEM AiusSdEvent replay_job_make_event(AiusSdEventKind kind,
-                                                  uint64_t action_id,
-                                                  uint32_t fault)
-{
-	AiusSdEvent event;
-
-	memset(&event, 0, sizeof(event));
-	event.kind = kind;
-	event.action_id = action_id;
-	event.fault = fault;
-	return event;
-}
-
-/* The refill job's action sink, and the counterpart of the storage service's
- * route_action(). Only two action kinds are handled here rather than executed:
- * the download chunk, which is the whole point of the job and goes to the
- * replay service instead of to an HTTP client, and the terminal pair. Everything
- * else is exactly one adapter primitive, whose result is retained for the next
- * epoch's step. */
-static FLASHMEM void replay_job_route(const AiusSdAction *action)
-{
-	/* Phase 4h D-S9, D-S10: the replay job's own BEGIN is blocked only while
-	 * DAT3 reads no card (a real pull: the job fails as a driver fault with
-	 * no card touch and the replay stops); never by the remount schedule, so
-	 * a transient fault remounts at once as before 4h. */
-	if (action->kind == AIUS_SD_ACTION_BEGIN && sd_replay_begin_blocked()) {
-		g_replay_job_event = replay_job_make_event(
-			AIUS_SD_EVENT_FAULT, action->action_id,
-			AIUS_SD_TEENSY_DRIVER_FAULT);
-		g_replay_job_event_present = true;
-		return;
-	}
-	switch (action->kind) {
-	case AIUS_SD_ACTION_NONE:
-	case AIUS_SD_ACTION_COMPLETE:
-	case AIUS_SD_ACTION_FAIL:
-		return;
-
-	case AIUS_SD_ACTION_OUTPUT: {
-		/* A cancelled job's chunk is acknowledged and dropped: the
-		 * service has already moved on to another selection, and
-		 * delivering into it would be the stale read the offset check
-		 * exists to refuse. */
-		const bool taken =
-			!g_replay_job_cancelling &&
-			aius_replay_service_deliver(
-				&g_replay_service, (uint32_t)action->offset,
-				action->buffer, action->length) == AIUS_OK;
-
-		g_replay_job_event = replay_job_make_event(
-			taken || g_replay_job_cancelling ? AIUS_SD_EVENT_OK :
-			                                   AIUS_SD_EVENT_FAULT,
-			action->action_id,
-			taken || g_replay_job_cancelling ?
-				0u : AIUS_REPLAY_DELIVER_REJECT_FAULT);
-		g_replay_job_event_present = true;
-		return;
-	}
-
-	default:
-		break;
-	}
-
-	/* The one SD primitive this epoch, through the storage service's adapter
-	 * -- the single owner of the only card handle in the firmware.
-	 *
-	 * Timed here rather than read from the adapter because the adapter keeps
-	 * ONE running maximum across every job it serves and does not say which
-	 * action set it. That is how a 1.02 s primitive at a loop boundary stayed
-	 * unattributable: the number was real and named nothing. Two micros() reads
-	 * on a path that already blocks on the card. */
-	const uint32_t mounts_before = g_runtime.storage.target.mounts;
-	const uint32_t started_us = micros();
-	g_replay_job_event =
-		aius_sd_teensy_execute(&g_runtime.storage.target, action);
-	const uint32_t elapsed_us = micros() - started_us;
-	g_replay_job_event_present = true;
-
-	/* REAL mounts, not BEGIN actions. Counting the action was right when
-	 * every BEGIN mounted; now that the adapter answers a BEGIN from a
-	 * cached mount, counting actions would report one per job forever and
-	 * hide the whole point of the change. The adapter's own counter only
-	 * moves when SD.begin() actually ran, so its delta is the honest
-	 * refill-attributed figure. */
-	g_replay_diag.mounts +=
-		g_runtime.storage.target.mounts - mounts_before;
-	g_replay_diag.last_primitive_us = elapsed_us;
-	if (elapsed_us > g_replay_diag.longest_primitive_us) {
-		g_replay_diag.longest_primitive_us = elapsed_us;
-		g_replay_diag.longest_action = (uint8_t)action->kind;
-	}
-}
-
-/* Does routing this action cost the epoch's one SD primitive?
- *
- * OUTPUT hands an already-read buffer to the replay service (a memcpy into the
- * ring); COMPLETE and FAIL are bookkeeping; NONE is nothing. Every other action
- * this job can emit -- BEGIN, OPEN_READ, FILE_SIZE, SEEK, READ, CLOSE -- goes
- * through aius_sd_teensy_execute() and blocks on the card. */
-static FLASHMEM bool replay_action_spends_primitive(AiusSdActionKind kind)
-{
-	return kind != AIUS_SD_ACTION_OUTPUT &&
-	       kind != AIUS_SD_ACTION_COMPLETE &&
-	       kind != AIUS_SD_ACTION_FAIL &&
-	       kind != AIUS_SD_ACTION_NONE;
-}
-
-/* The most steps one epoch may take. The machine can only ever put ONE
- * memory-only action (an OUTPUT) in front of a primitive, so two is the real
- * maximum and this is slack; it exists so a machine change can never turn this
- * loop into an unbounded one. Falling out of the loop is harmless -- the next
- * epoch resumes exactly where this one stopped. */
-#define REPLAY_JOB_STEPS_PER_EPOCH 4u
-
-/* One bounded job advance: SPEND AT MOST ONE SD PRIMITIVE, but do not spend the
- * epoch on a step that touches no card.
- *
- * The bound this keeps is unchanged and is the one that matters: an epoch
- * blocks on the card at most once, so the worst case the watchdog must absorb
- * is one primitive, exactly as §Bounded SD job ABI requires. What changed is
- * what a step that performs NO primitive costs. It used to cost a whole epoch,
- * because the loop advanced the job once per epoch regardless: a refill of N
- * bytes cost 6 + 2 * N/512 epochs, of which N/512 were AIUS_SD_ACTION_OUTPUT --
- * a memcpy into the ring, paid for at the price of a card transaction. That is
- * why the refill ran at 65 % of realtime with the DSP at 6 % of budget: at 512
- * bytes per primitive the seam needs ~375 reads per second to sustain 192 kB/s,
- * and there are only ~672 epochs in a second to spend.
- *
- * Stepping until a primitive has actually been spent removes exactly the epochs
- * that were doing no I/O and changes nothing about blocking time. A refill now
- * costs 6 + N/512 epochs. Everything else about the seam -- the plan/deliver
- * contract, the offset checks, the cancellation drain -- is untouched. */
-static FLASHMEM void replay_job_advance(uint32_t now_ms)
-{
-	for (unsigned step = 0u; step < REPLAY_JOB_STEPS_PER_EPOCH; step++) {
-		AiusSdAction action;
-		AiusSdEvent event;
-
-		if (g_replay_job_event_present) {
-			event = g_replay_job_event;
-			g_replay_job_event_present = false;
-			memset(&g_replay_job_event, 0,
-			       sizeof(g_replay_job_event));
-		} else {
-			event = replay_job_make_event(AIUS_SD_EVENT_NONE, 0u,
-			                              0u);
-		}
-
-		memset(&action, 0, sizeof(action));
-		aius_sd_job_step(&g_replay_job, now_ms, event, &action);
-		replay_job_route(&action);
-
-		/* The job's own FILE_SIZE is the only place the service can
-		 * learn how long the file is, now that nothing else stats the
-		 * card. Published once per job; an odd or shrinking size is
-		 * refused by the service, which then falls back to finding the
-		 * end from a short refill. */
-		if (!g_replay_job_size_published && !g_replay_job_cancelling &&
-		    g_replay_job.captured_size != 0u &&
-		    g_replay_job.captured_size <= UINT32_MAX) {
-			(void)aius_replay_service_set_file_bytes(
-				&g_replay_service,
-				(uint32_t)g_replay_job.captured_size);
-			g_replay_job_size_published = true;
-		}
-
-		if (action.kind == AIUS_SD_ACTION_COMPLETE ||
-		    action.kind == AIUS_SD_ACTION_FAIL) {
-			/* Latched BEFORE the service is told, and before the
-			 * job is reused, because everything that attributes the
-			 * failure lives on the job and is gone next epoch. This
-			 * is the record sd_diag could not hold: the phase names
-			 * which primitive failed, and the offset and lap number
-			 * say where in the file it happened -- which is how a
-			 * fault that only ever appears at a loop boundary
-			 * becomes a fact rather than a suspicion. */
-			if (action.kind == AIUS_SD_ACTION_FAIL &&
-			    !g_replay_job_cancelling) {
-				g_replay_diag.faults++;
-				g_replay_diag.last_fault =
-					(uint8_t)g_replay_job.last_fault;
-				g_replay_diag.last_fault_phase =
-					(uint8_t)g_replay_job.fault_phase;
-				g_replay_diag.last_fault_action =
-					(uint8_t)g_replay_job.outstanding_action;
-				g_replay_diag.last_fault_driver =
-					g_replay_job.last_driver_fault;
-				g_replay_diag.last_fault_offset_bytes =
-					g_replay_service.offset_bytes;
-				g_replay_diag.last_fault_loops =
-					g_replay_service.loops_completed;
-				g_replay_diag.last_fault_at_ms = now_ms;
-			}
-			/* Terminal: the handle is closed and the card is free
-			 * again. A cancelled job reports nothing -- its
-			 * selection no longer exists. */
-			if (!g_replay_job_cancelling)
-				aius_replay_service_refill_complete(
-					&g_replay_service,
-					action.kind ==
-						AIUS_SD_ACTION_COMPLETE);
-			/* A fault run that reached the service's limit ends the
-			 * replay, and says so the way a carrier does: its own
-			 * reason on the status route and a transition in the
-			 * event ring, rather than a silent `stopped`. Read after
-			 * refill_complete(), which is what applies the limit. */
-			if (!g_replay_job_cancelling &&
-			    g_replay_service.state == AIUS_REPLAY_ERROR &&
-			    g_replay_stop_reason != REPLAY_STOP_FAULT) {
-				g_replay_stop_reason = REPLAY_STOP_FAULT;
-				record_event(AIUS_EVENT_REPLAY_STOP,
-				             current_state(),
-				             REPLAY_STOP_FAULT);
-			}
-			g_replay_job_active = false;
-			g_replay_job_cancelling = false;
-			g_replay_job_size_published = false;
-			g_replay_job_event_present = false;
-			memset(&g_replay_job_event, 0,
-			       sizeof(g_replay_job_event));
-			return;
-		}
-		/* NONE means the machine emitted nothing to perform, so routing
-		 * retained no event and another step would emit NONE again. */
-		if (action.kind == AIUS_SD_ACTION_NONE)
-			return;
-		/* The epoch's one card transaction has been spent. */
-		if (replay_action_spends_primitive(action.kind))
-			return;
-	}
-}
-
-/* Memory only: the request is the planned range, against the path
- * app_replay_start() built. The engine clamps the range to the file's real
- * length for AIUS_SD_JOB_REPLAY_REFILL, so a plan that runs past the end
- * completes short rather than faulting -- which is how the service finds EOF. */
-static FLASHMEM void replay_job_start(const AiusReplayRefill *refill,
-                                      uint32_t now_ms)
-{
-	AiusSdJobRequest request;
-
-	memset(&request, 0, sizeof(request));
-	request.kind = AIUS_SD_JOB_REPLAY_REFILL;
-	request.target_path = g_replay_path;
-	request.total = refill->byte_count;
-	request.initial_offset = refill->offset_bytes;
-	g_replay_diag.jobs++;
-	g_replay_job_active = true;
-	g_replay_job_cancelling = false;
-	g_replay_job_size_published = false;
-	g_replay_job_event_present = false;
-	memset(&g_replay_job_event, 0, sizeof(g_replay_job_event));
-	aius_sd_job_start(&g_replay_job, &request, now_ms, 0u);
-}
-
-/* One replay refill pass, at checkpoint 7. Spends at most one SD primitive.
- *
- * A running job is advanced. Otherwise the service is asked whether it wants a
- * read -- the call that also settles the drained-EOF transition, so it is made
- * every epoch -- and the plan is turned into a job only if the storage service
- * is completely idle. It is not idle when an HTTP action admitted at checkpoint
- * 5 is waiting for checkpoint 8, which is what keeps a refill from preempting a
- * route, and the abandoned plan costs nothing.
- *
- * IT NO LONGER TAKES THE RUNTIME BUDGET, and that is a fix rather than a
- * simplification. It used to be called as
- * `replay_refill_service(budget->max_rx_bytes, ...)` and to pass that straight
- * into plan_refill()'s `budget_words`, so a field named and documented in BYTES
- * (and consumed as bytes at the UDP checkpoint, :2412) was read as WORDS here
- * and nowhere else. The replay row's 2,048 therefore silently capped every plan
- * at 4,096 bytes, invisibly to this seam's own constants -- which is how a
- * refill sized for 32 KB and a slice sized for 8 KB could both be "right" and
- * still disagree with the thing that gated them.
- *
- * A network receive quota is the wrong bound for a disk read in any case. The
- * refill's real bounds are AIUS_REPLAY_REFILL_MAX_BYTES and the ring's own free
- * space, both of which plan_refill() already applies, and the per-epoch cost is
- * fixed at one SD primitive whatever the plan size is -- a larger plan spans
- * more epochs, it does not make any epoch longer. So the quota is taken from
- * the seam that owns it. See lib/aius_runtime/include/aius_runtime.h for the
- * unit contract this leaves behind. */
-static FLASHMEM void replay_refill_service(uint32_t now_ms)
-{
-	AiusReplayRefill refill;
-
-	/* Phase 4f F2: the refill is a root job, so its start consults
-	 * sd_fifo_defer(); once started it runs to its end (a root job is held
-	 * only at its start gate). During a replay live input does not own the
-	 * ring (F11), so this never holds a refill in practice. */
-	if (g_replay_job_active) {
-		replay_job_advance(now_ms);
-		return;
-	}
-	if (!aius_replay_service_plan_refill(&g_replay_service,
-	                                     AIUS_REPLAY_REFILL_MAX_BYTES / 2u,
-	                                     &refill))
-		return;
-	if (!sd_storage_idle() || sd_fifo_defer()) {
-		aius_replay_service_abandon_refill(&g_replay_service);
-		return;
-	}
-	replay_job_start(&refill, now_ms);
-	replay_job_advance(now_ms);
-}
-
-/* ------------------------------------------------------------------ */
-/* Replay clock handover                                               */
-/*                                                                     */
-/* AudioStream::update_setup() grants update responsibility to the     */
-/* FIRST claimant, and g_spdif_in is constructed above g_spdif_out, so */
-/* the INPUT holds it. input_spdif3.cpp drives AudioStream::update_all */
-/* from its DMA ISR, and that DMA is clocked by the incoming carrier.  */
-/* With the optical input unsoldered there is no carrier, so that ISR  */
-/* never fires, update_all() is never called, AiusAudioProcessor::     */
-/* update() never runs, and a replay reports `playing` while processing */
-/* exactly zero blocks -- no underruns, no overruns, nothing.          */
-/*                                                                     */
-/* The transmitter has no such dependency, which is what makes a       */
-/* runtime fix possible. config_spdif3() (output_spdif3.cpp) points    */
-/* SPDIF0_CLK_ROOT at PLL4 -- CCM_CDCDR_SPDIF0_CLK_SEL(0), the audio   */
-/* PLL set_audioClock() programs three lines earlier -- and sets       */
-/* SPDIF_STC_TXCLK_SOURCE(1), so the tx bit clock is that PLL divided  */
-/* down. SPDIF_SCR_TXSEL(5) is "Tx normal operation", not the          */
-/* 1:feed-through-from-SPDIFIN mode, so the tx DATAPATH is not slaved  */
-/* to the receiver either. The dependency in fact runs the other way:  */
-/* SPDIF_SRPC_CLKSRC_SEL(1) makes the RECEIVER fall back to tx_clk     */
-/* whenever its DPLL is unlocked. The tx DMA is triggered by           */
-/* DMAMUX_SOURCE_SPDIF_TX over a 4 * AUDIO_BLOCK_SAMPLES int32 buffer  */
-/* with INTHALF | INTMAJOR, i.e. one interrupt every                   */
-/* AUDIO_BLOCK_SAMPLES frames -- exactly the rx side's rate. So the    */
-/* transmit DMA ISR (ours since the 24-bit path landed; see            */
-/* lib/aius_audio/src/aius_spdif_tx24.h) already runs at the audio     */
-/* block rate with no input present; it simply declines to call        */
-/* update_all(). Replacing the handler changed nothing here: the same  */
-/* DMA channel, the same trigger, the same rate, the same             */
-/* update_responsibility test at the bottom of the handler.           */
-/*                                                                     */
-/* THE LIVE INPUT ALWAYS OWNS THE AUDIO PATH. Replay is strictly the   */
-/* fallback for a board with no carrier, so production is unchanged:   */
-/* the input remains clock master for passthrough, the handover is     */
-/* refused while the receiver's DPLL is locked, and a carrier arriving */
-/* mid-replay STOPS the replay and takes the clock back in the same    */
-/* epoch -- reported as stop_reason "carrier" on                       */
-/* GET /api/replays/status and as a type-3 event on /api/events, so a  */
-/* replay that ends by itself is never an unexplained `stopped`.       */
-/* See replay_clock_service() below.                                   */
-/*                                                                     */
-/* ON STOP the clock goes back to the input, deliberately. With no     */
-/* carrier that means the graph stops again: `blocks` and `overruns`   */
-/* freeze at their final values, and the transmitter -- whose ISR      */
-/* keeps running -- drains the 24-bit ring to empty and then writes    */
-/* zeros, so the optical output carries digital silence. That is the   */
-/* same idle state the board boots into with nothing plugged in, and   */
-/* it is the right one: a passthrough device with no source has        */
-/* nothing to pass through. Nothing leaks across the transition -- the */
-/* ring holds only committed frames and AudioInputSPDIF3::update()     */
-/* releases the pair it allocates each pass while block_offset stays 0.*/
-/* The drain-to-idle silence is heard but NOT counted: the stop closes */
-/* the TX gate in the same epoch, and since output-jitter Phase D the  */
-/* underrun counter is a gate-open glitch metric -- closed-gate        */
-/* substitution is idle by definition. (The vendor path's block_silent */
-/* substitution counted nothing under any gate.)                       */
-/* ------------------------------------------------------------------ */
-
-/* update_responsibility is `protected static` on both peripherals
- * (input_spdif3.h, output_spdif3.h), so a DERIVED CLASS -- never an object --
- * is what reaches it; [class.protected]'s "through an object of the derived
- * type" restriction applies to non-static members only. Private inheritance and
- * a deleted default constructor because these are access shims, not audio
- * nodes: neither is an AudioStream anyone may connect, and constructing one
- * would call the base begin() a second time and re-run config_spdif3().
- *
- * Defined out-of-line, and FLASHMEM on both the declaration and the definition,
- * for the reason AiusAudioProcessor::apply_config() records above: an in-body
- * definition is implicitly inline (vague linkage), which conflicts with the
- * plain FLASHMEM free functions sharing .flashmem, and a COMDAT copy of one in
- * .text would fail the hot-object ITCM guard by name. Nothing here runs per
- * audio block -- the whole handover is checkpoint-7 work. */
-class AiusSpdifInputClock : private AudioInputSPDIF3 {
-public:
-	AiusSpdifInputClock(void) = delete;
-	static FLASHMEM bool is_master(void);
-	static FLASHMEM void set_master(bool master);
-};
-
-class AiusSpdifOutputClock : private AudioOutputSPDIF3 {
-public:
-	AiusSpdifOutputClock(void) = delete;
-	static FLASHMEM bool is_master(void);
-	static FLASHMEM void set_master(bool master);
-};
-
 FLASHMEM bool AiusSpdifInputClock::is_master(void)
 {
 	return update_responsibility;
@@ -10680,19 +9701,9 @@ FLASHMEM void AiusSpdifInputClock::set_master(bool master)
 	update_responsibility = master;
 }
 
-static FLASHMEM bool clock_input_is_master(void)
-{
-	return AiusSpdifInputClock::is_master();
-}
-
 FLASHMEM bool AiusSpdifOutputClock::is_master(void)
 {
 	return update_responsibility;
-}
-
-static FLASHMEM bool clock_output_is_master(void)
-{
-	return AiusSpdifOutputClock::is_master();
 }
 
 FLASHMEM void AiusSpdifOutputClock::set_master(bool master)
@@ -10700,79 +9711,11 @@ FLASHMEM void AiusSpdifOutputClock::set_master(bool master)
 	update_responsibility = master;
 }
 
-/* Settle source ownership before any clock decision. Replay is strictly the
- * fallback for a board with no carrier, so a carrier and a replay never
- * contend: the carrier wins and the replay ends.
- *
- * Called from checkpoint 7 AFTER the refill pass, because
- * aius_replay_service_deliver() -- reached through replay_job_route() inside
- * that pass -- is what promotes SWITCHING_TO_REPLAY to SOURCE_REPLAY once the
- * ring reaches its watermark; running after it moves the clock in the same
- * epoch the source moves, not an epoch later.
- *
- * Source settlement is separate from graph-master reconciliation because the
- * exact 48 kHz replay plan and its four-period validity hold must finish
- * between them. */
-static FLASHMEM void replay_source_service(void)
-{
-	/* A carrier displaces any replay that is prebuffering or playing. The
-	 * refill is cancelled and the service stopped exactly as app_replay_stop()
-	 * does it -- memory only, the job drains through its own CLOSE -- and the
-	 * reason is recorded so /api/replays/status does not report this as an
-	 * indistinguishable `stopped`, and so /api/events carries the transition
-	 * rather than leaving it to be inferred from a counter. */
-	if ((g_replay_service.source == AIUS_REPLAY_SOURCE_REPLAY ||
-	     g_replay_service.source == AIUS_REPLAY_SOURCE_SWITCHING_TO_REPLAY) &&
-	    AudioInputSPDIF3::pllLocked()) {
-		replay_job_cancel();
-		aius_replay_service_stop(&g_replay_service);
-		g_replay_stop_reason = REPLAY_STOP_CARRIER;
-		record_event(AIUS_EVENT_REPLAY_STOP, current_state(),
-		             REPLAY_STOP_CARRIER);
-	}
-}
-
-/* The only graph-master writer. Called after sample_rate_service(), so output
- * can take responsibility only after the production 48 kHz plan is applied
- * and its exact 512-frame invalid hold has completed. A failed apply leaves
- * the input master, the pad dark and replay data unconsumed. */
-static FLASHMEM void replay_clock_service(void)
-{
-	const bool output_drives =
-		g_replay_service.source == AIUS_REPLAY_SOURCE_REPLAY &&
-		!AudioInputSPDIF3::pllLocked() && g_clock_replay_ready;
-	if (output_drives == AiusSpdifOutputClock::is_master())
-		return;
-	/* Both flags are read from a DMA ISR -- input_spdif3.cpp's at the top of
-	 * its handler, output_spdif3.cpp's at the bottom of its. This runs in
-	 * thread context, so an ISR cannot be mid-flight when it starts: one that
-	 * had already begun would have run to completion before the epoch
-	 * resumed. The only interleaving left is an ISR entering BETWEEN the two
-	 * stores, and one critical section spanning both removes it -- every ISR
-	 * observes either the whole before-state or the whole after-state, so
-	 * exactly one peripheral drives update_all() at every instant an ISR can
-	 * see. That makes the store order irrelevant, which is the point: neither
-	 * the both-drive window (a double-processed block) nor the neither-drives
-	 * window (a stalled one) can exist. __disable_irq() carries a memory
-	 * clobber, so the compiler cannot hoist a store out either.
-	 *
-	 * Two byte stores, at most once per epoch and in practice once per replay
-	 * transition -- shorter than the critical sections block_count() and
-	 * AudioOutputSPDIF3::update() already take, and it adds nothing to the
-	 * per-block work of either ISR. */
-	noInterrupts();
-	AiusSpdifOutputClock::set_master(output_drives);
-	AiusSpdifInputClock::set_master(!output_drives);
-	interrupts();
-}
-
-/* Checkpoint 7, after replay_source_service(): both inputs are this epoch's
- * settled values -- refill promotion and any carrier displacement have
- * already landed. In recovery-safe the scheduler never
- * reaches this checkpoint, so the gate stays frozen dark from setup(), which
+/* Checkpoint 7. In recovery-safe the scheduler never reaches this
+ * checkpoint, so the gate stays frozen dark from setup(), which
  * also mutes live passthrough there -- intended, and recorded in the plan. */
 /* Defect 28 (C3): a debounced carrier-lock rising edge re-classifies the
- * pipeline through the same block-boundary reset replay start uses, so every
+ * pipeline through the block-boundary reset (request_audio_reset()), so every
  * NEW carrier types its own stream and neither latch hazard survives a source
  * swap. Debounced on the unlocked-run length: a 1-2 epoch PLL micro-flap
  * mid-programme keeps the latched class (the parser's per-burst re-lock is
@@ -10780,8 +9723,8 @@ static FLASHMEM void replay_clock_service(void)
  * or more (~27 ms at ~115 epoch/s) arms the reset on relock. Born saturated:
  * the box HAS been unlocked since power-on, so the first-ever lock edge
  * behaves like any post-drop relock -- pre-lock garbage words may already
- * have typed the fresh pipeline. Epoch-thread writer beside the replay-start
- * writer (same thread, no race); the pre-existing benign ISR set/clear race
+ * have typed the fresh pipeline. Epoch-thread writer (no race with another
+ * writer); the pre-existing benign ISR set/clear race
  * self-heals in-pipeline (re-type or starvation re-classify). */
 static constexpr uint8_t AIUS_CARRIER_RESET_DEBOUNCE_EPOCHS = 3;
 static uint8_t g_carrier_unlocked_epochs = AIUS_CARRIER_RESET_DEBOUNCE_EPOCHS;
@@ -10793,12 +9736,6 @@ static FLASHMEM void pipeline_pcm_rate_service(uint32_t rate_hz)
 	if (aius_pipeline_set_pcm_sample_rate(g_audio_service.pipeline, rate_hz) ==
 	    AIUS_OK)
 		g_pipeline_pcm_rate_hz = rate_hz;
-}
-
-static FLASHMEM bool replay_rate_requested(AiusReplaySource source)
-{
-	return source == AIUS_REPLAY_SOURCE_SWITCHING_TO_REPLAY ||
-	       source == AIUS_REPLAY_SOURCE_REPLAY;
 }
 
 static FLASHMEM bool clock_plan_exact_equal(
@@ -10839,7 +9776,6 @@ static FLASHMEM void clock_record_fault(
 		g_clock_desired_plan_valid = false;
 	g_clock_last_fault = (uint32_t)fault;
 	g_clock_plan_applied = false;
-	g_clock_replay_ready = false;
 	g_clock_dark_transition_pending = true;
 	/* This transition has no apply behind it: its end never notes. */
 	g_clock_dark_started_by_apply = false;
@@ -10880,8 +9816,8 @@ static FLASHMEM bool clock_apply_desired_plan(
 	if (reset_audio)
 		request_audio_reset();
 	/* fault_reset_owned covers resets established earlier in the same
-	 * acquisition episode: locked-rate quiescence/relock credit and replay
-	 * start. It is distinct from reset_audio, which describes only this call.
+	 * acquisition episode: locked-rate quiescence/relock credit. It is
+	 * distinct from reset_audio, which describes only this call.
 	 * A same-nominal structural replan passes false for both and lets the first
 	 * fault own the one reset needed before producer admission recovers. */
 
@@ -10933,7 +9869,7 @@ static FLASHMEM void clock_note_centre_commit(uint32_t centre_millihz)
  * apply) commits a pending centre into g_clock_desired_plan first, so the
  * apply that follows lands the current centre; an invalid plan keeps the old
  * desired plan's contents and faults as the centre path does. discard_pending
- * true (accept, replay, carrier loss, quiesce) drops it. */
+ * true (accept, carrier loss, quiesce) drops it. */
 static FLASHMEM void clock_fill_reset(bool discard_pending)
 {
 	uint32_t centre_millihz = 0u;
@@ -10951,9 +9887,7 @@ static FLASHMEM void clock_fill_reset(bool discard_pending)
 	g_clock_desired_plan_valid = true;
 }
 
-static FLASHMEM void clock_refresh_applied(
-	AiusReplaySource source,
-	uint32_t now_ms)
+static FLASHMEM void clock_refresh_applied(uint32_t now_ms)
 {
 	AiusAudioClockBoundaryStatus boundary = {};
 	AiusSpdifClockPlan applied = {};
@@ -10975,25 +9909,18 @@ static FLASHMEM void clock_refresh_applied(
 		applied.nominal_rate_hz == g_clock_desired_plan.nominal_rate_hz &&
 		aius_spdif_clock_plan_structurally_equal(
 			&applied, &g_clock_desired_plan);
-	const bool replay_selected = replay_rate_requested(source);
 	g_clock_plan_applied =
-		!replay_selected && desired_structure_applied &&
+		desired_structure_applied &&
 		applied.nominal_rate_hz == g_clock_nominal_rate_hz &&
-		!g_clock_dark_transition_pending;
-	g_clock_replay_ready =
-		replay_selected && desired_structure_applied &&
-		applied.nominal_rate_hz == AIUS_OPTICAL_SAMPLE_RATE_HZ &&
-		applied.target_rate_millihz == UINT32_C(48000000) &&
-		have_boundary && boundary.transition_complete &&
 		!g_clock_dark_transition_pending;
 
 	/* The tracker is told the centre only (aius-sample-rate-following
 	 * Phase 4): once, on the pass the dark transition ends, and only for a
 	 * transition clock_apply_desired_plan started (a clock_record_fault edge
-	 * never notes). Never for a replay, never at another nominal, and never
+	 * never notes). Never at another nominal, and never
 	 * for a FILL readback, which would restart the 10 s cadence and move the
 	 * hysteresis reference onto the composed value. Idempotent. */
-	if (dark_ended && g_clock_dark_started_by_apply && !replay_selected &&
+	if (dark_ended && g_clock_dark_started_by_apply &&
 	    !g_clock_centre_committed_in_pass && have_applied &&
 	    applied.nominal_rate_hz == g_clock_nominal_rate_hz)
 		(void)aius_rate_tracker_note_target_applied(
@@ -11047,16 +9974,14 @@ static_assert((int)AIUS_RATE_TRACKER_TRIM_FILL ==
  * invalid_windows is NOT advanced for a trim: since 2026-09-07 a same-nominal
  * trim opens no validity window at all, so counting one would report a mute
  * that no longer happens. */
-static FLASHMEM void clock_fill_service(AiusReplaySource source,
-                                        uint32_t now_ms)
+static FLASHMEM void clock_fill_service(uint32_t now_ms)
 {
-	const bool replay = replay_rate_requested(source);
 	AiusSpdifClockPlan applied = {};
 	const bool have_applied = aius_audio_clock_get_applied_plan(&applied);
 	const AiusTxFillSnapshot snap =
 		aius_tx_fill_sensor_snapshot(&g_tx_fill_sensor);
 	AiusRateTrackerFillInput in = {};
-	in.emit_allowed = !replay && g_clock_carrier_ready &&
+	in.emit_allowed = g_clock_carrier_ready &&
 	                  g_clock_plan_applied &&
 	                  g_aius_spdif_tx24.gate_open != 0u &&
 	                  !g_clock_dark_transition_pending;
@@ -11074,12 +9999,8 @@ static FLASHMEM void clock_fill_service(AiusReplaySource source,
 
 	if (fill.centre_committed) {
 		AiusSpdifClockPlan plan = {};
-		if (replay) {
-			/* The replay plan stays exactly 48,000,000 mHz; the next
-			 * accept re-plans the live centre. */
-			clock_note_centre_commit(fill.centre_millihz);
-		} else if (!aius_spdif_clock_plan(g_clock_nominal_rate_hz,
-		                                  fill.centre_millihz, &plan)) {
+		if (!aius_spdif_clock_plan(g_clock_nominal_rate_hz,
+		                           fill.centre_millihz, &plan)) {
 			/* The tracker validates before committing; defensive. */
 			clock_record_fault(AIUS_CLOCK_APPLY_INVALID_PLAN, false);
 			return;
@@ -11127,7 +10048,6 @@ static FLASHMEM void sample_rate_service(uint32_t now_ms)
 {
 	g_clock_centre_committed_in_pass = false;
 	const bool carrier = AudioInputSPDIF3::pllLocked();
-	const AiusReplaySource source = g_replay_service.source;
 	uint32_t measured_millihz = 0u;
 	if (carrier &&
 	    !aius_spdif_input_rate_millihz(&measured_millihz))
@@ -11136,9 +10056,7 @@ static FLASHMEM void sample_rate_service(uint32_t now_ms)
 	AiusRateTrackerSample sample = {
 		carrier,
 		measured_millihz,
-		replay_rate_requested(source)
-			? AIUS_CLOCK_SOURCE_REPLAY
-			: AIUS_CLOCK_SOURCE_LIVE,
+		AIUS_CLOCK_SOURCE_LIVE,
 		now_ms,
 	};
 	const AiusRateTrackerResult result =
@@ -11149,11 +10067,6 @@ static FLASHMEM void sample_rate_service(uint32_t now_ms)
 	    observed_nominal_hz != g_clock_relock_reset_nominal_hz)
 		g_clock_relock_reset_nominal_hz = 0u;
 
-	if (replay_rate_requested(source)) {
-		pipeline_pcm_rate_service(AIUS_OPTICAL_SAMPLE_RATE_HZ);
-		/* Replay publishes whatever the live producer gate says. */
-		g_audio_ingest_since_reset = true;
-	}
 	g_clock_carrier_rate_millihz = sample.carrier_rate_millihz;
 	const bool carrier_was_ready = g_clock_carrier_ready;
 	g_clock_carrier_ready = result.carrier_ready;
@@ -11168,13 +10081,12 @@ static FLASHMEM void sample_rate_service(uint32_t now_ms)
 			g_clock_fill_open_boundary_pending = false;
 		}
 	}
-	if (result.quiesce_requested && carrier &&
-	    !replay_rate_requested(source)) {
+	if (result.quiesce_requested && carrier) {
 		/* Close the physical and producer gates on the first changed sample,
 		 * then flush/reset the old-rate software state at the next AUDIO
 		 * checkpoint. Matching acceptance consumes this reset marker instead
 		 * of issuing a second classification reset. Carrier loss remains
-		 * owned by the existing debounced relock/replay reset paths. */
+		 * owned by the existing debounced relock reset path. */
 		g_clock_live_ingress_open = false;
 		close_stream_rate_gate();
 		request_audio_reset();
@@ -11222,12 +10134,10 @@ static FLASHMEM void sample_rate_service(uint32_t now_ms)
 	}
 	/* A centre proposal (result.target_update) now goes to the tracker's
 	 * pending centre; clock_fill_service() commits it, every pass after
-	 * _step. It emits nothing for a replay, and the replay apply below
-	 * discards any pending centre before it lands the exact 48 kHz plan.
-	 * The refresh runs first (N5), as in the host plant, so the dark-end
+	 * _step. The refresh runs first (N5), as in the host plant, so the dark-end
 	 * note never resets a centre committed in this same pass. */
-	clock_refresh_applied(source, now_ms);
-	clock_fill_service(source, now_ms);
+	clock_refresh_applied(now_ms);
+	clock_fill_service(now_ms);
 
 	if (result.unsupported_accepted) {
 		g_clock_carrier_unsupported = true;
@@ -11242,34 +10152,8 @@ static FLASHMEM void sample_rate_service(uint32_t now_ms)
 	if (!carrier)
 		g_clock_carrier_unsupported = false;
 
-	if (replay_rate_requested(source) && !carrier) {
-		AiusSpdifClockPlan replay_plan = {};
-		AiusSpdifClockPlan applied = {};
-		if (aius_spdif_clock_plan(
-			    AIUS_OPTICAL_SAMPLE_RATE_HZ,
-			    UINT32_C(48000000), &replay_plan)) {
-			const bool already_applied =
-				aius_audio_clock_get_applied_plan(&applied) &&
-				clock_plan_exact_equal(applied, replay_plan);
-			clock_select_desired_plan(replay_plan);
-			if (!already_applied && !g_clock_apply_attempted) {
-				const bool rate_changed =
-					applied.nominal_rate_hz != 0u &&
-					applied.nominal_rate_hz !=
-						AIUS_OPTICAL_SAMPLE_RATE_HZ;
-				/* The replay plan must stay exactly
-				 * 48,000,000 mHz: discard a pending centre. */
-				clock_fill_reset(true);
-				(void)clock_apply_desired_plan(
-					now_ms, rate_changed, rate_changed, true);
-			}
-		} else {
-			clock_record_fault(AIUS_CLOCK_APPLY_INVALID_PLAN, true);
-		}
-	}
-
-	clock_refresh_applied(source, now_ms);
-	if (replay_rate_requested(source) || !g_clock_carrier_ready)
+	clock_refresh_applied(now_ms);
+	if (!g_clock_carrier_ready)
 		g_clock_live_ingress_open = false;
 	else if (g_clock_plan_applied) {
 		/* Monotonic within one accepted live episode: a same-nominal
@@ -11296,36 +10180,21 @@ static FLASHMEM void tx_gate_service(void)
 		}
 		g_carrier_unlocked_epochs = 0;
 	}
-	const AiusReplaySource source = g_replay_service.source;
-	const bool open =
-		aius_tx_gate_permitted(carrier, g_clock_live_ready,
-		                       g_clock_replay_ready, source);
+	const bool open = aius_tx_gate_permitted(carrier, g_clock_live_ready);
 	if (open != g_tx_gate_open)
 		tx_gate_actuate(open);
 	g_tx_gate_open = open;
+	/* audio_diag.source_changes counts carrier gained and lost edges against
+	 * the latched carrier (Phase 4i; it counted replay/optical switches
+	 * before). A counter only: the ingress generation is not bumped, since
+	 * the debounced relock reset above already owns discontinuity. The
+	 * epoch thread is this field's only writer (the clear is epoch-side
+	 * too), and the status copy reads it in the same thread. */
+	if (carrier != g_tx_gate_carrier && g_audio_ingress_ready)
+		g_audio_ingress.source_changes++;
 	g_tx_gate_carrier = carrier;
-	g_tx_gate_replay =
-		aius_tx_gate_permitted(false, false, g_clock_replay_ready,
-		                       source);
 }
 
-/* Checkpoint 7: the SD lifecycle and the replay refill, in that order, with the
- * refill quota taken from the budget rather than the legacy loop's literal
- * 2,048.
- *
- * This checkpoint is the only slot either can use: it is the last application
- * callback before the SD checkpoint consumes the epoch's HTTP action, so it is
- * the only point at which a job can be started and still yield to a route
- * admitted two checkpoints earlier (sd_storage_idle()). In recovery-safe mode
- * the scheduler runs only the two USB checkpoints, so neither runs at all --
- * which is the intended behaviour for a board recovering from repeated watchdog
- * resets.
- *
- * The lifecycle goes first because it is rate-limited -- one probe per second,
- * and the two config loads only on a card transition -- so giving it the first
- * refusal cannot starve replay, whereas the reverse could starve the probe that
- * makes a hot card removal observable. Each yields to the other's running job,
- * so the epoch still spends at most one SD primitive between them. */
 /* Input-fault instrument: poll the SPDIF peripheral's sticky error flags,
  * count per class, stamp, and clear (SPDIF_SIC is the W1C view at the same
  * offset as SIS). Clearing is what turns "an error happened since boot" into
@@ -11387,19 +10256,27 @@ static FLASHMEM void input_dark_service(uint32_t now_ms)
 	aius_input_dark_step(&g_input_dark, &sample);
 }
 
-static FLASHMEM bool platform_replay(void *, const AiusRuntimeBudget *budget,
-                                     uint32_t now_ms)
+/* Checkpoint 7 (SERVICE; REPLAY until Phase 4i, same id and budget row): the
+ * SD lifecycle with 4g's fill walk, 4j's idle DSP apply, the sample rate,
+ * the tx gate, input fault and dark, and the recorder drain, in that order.
+ *
+ * This checkpoint is the only slot the lifecycle can use: it is the last
+ * application callback before the SD checkpoint consumes the epoch's HTTP
+ * action, so it is the only point at which a job can be started and still
+ * yield to a route admitted two checkpoints earlier (sd_storage_idle()). In
+ * recovery-safe mode the scheduler runs only the two USB checkpoints, so
+ * none of this runs -- the intended behaviour for a board recovering from
+ * repeated watchdog resets. */
+static FLASHMEM bool platform_service(void *, const AiusRuntimeBudget *budget,
+                                      uint32_t now_ms)
 {
 	if (budget == nullptr ||
-	    budget->checkpoint != AIUS_BOOT_CHECKPOINT_REPLAY)
+	    budget->checkpoint != AIUS_BOOT_CHECKPOINT_SERVICE)
 		return false;
 	/* Phase 4f F2: last epoch's longest SD window segment into the mounted
 	 * mode's SD-start cost window, before this epoch's SD work. */
 	admission_sd_window_sample();
 	sd_lifecycle_service(now_ms);
-	replay_refill_service(now_ms);
-	/* Settle carrier displacement before selecting a target clock. */
-	replay_source_service();
 	/* Phase 4j: a staged DSP model with no block reaching the DSP for
 	 * AIUS_DSP_IDLE_APPLY_MS applies here, within one service epoch. It
 	 * takes a fresh millis(), never this epoch's now_ms: a nested AUDIO
@@ -11407,22 +10284,18 @@ static FLASHMEM bool platform_replay(void *, const AiusRuntimeBudget *budget,
 	 * now_ms, and now_ms - last would wrap to "due" with blocks flowing.
 	 * Nothing yields between this read and the member's flag read. */
 	g_audio_processor.dsp_idle_apply_service(millis());
-	/* Apply or verify the settled source's live plan or exact 48 kHz replay
-	 * plan before graph ownership can move. */
+	/* Apply or verify the live plan before the gate judges it. */
 	sample_rate_service(now_ms);
-	/* Memory only -- two byte stores under one critical section. Output takes
-	 * graph ownership only after replay plan/hold acknowledgement. */
-	replay_clock_service();
-	/* After the clock reconciler for the same reason it runs last: the gate
-	 * must judge this epoch's settled source and carrier, not the previous
-	 * one's. A boolean and at most three register stores; no budget row. */
+	/* After the rate service: the gate must judge this epoch's settled
+	 * carrier and plan, not the previous one's. A boolean and at most three
+	 * register stores; no budget row. */
 	tx_gate_service();
 	input_fault_service(now_ms);
 	input_dark_service(now_ms);
 	/* Flight recorder, after tx_gate_service() by contract: the epoch
 	 * trigger evaluation consumes this epoch's LATCHED gate and carrier
 	 * (underrun qualification at both ends of the delta; carrier falling
-	 * edge), and the drain quota rides this REPLAY budget row -- 8 KiB x
+	 * edge), and the drain quota rides this SERVICE budget row -- 8 KiB x
 	 * ~115 epoch/s is 2x the 384 KiB/s fill rate, so a post-stall backlog
 	 * clears. The drain is a pure copy/interleave into write-back-cached
 	 * EXTMEM: nothing DMAs the PSRAM, so there is deliberately NO cache
@@ -11618,7 +10491,7 @@ static FLASHMEM AiusRuntimeTeensyPlatformOps platform_ops(void)
 	ops.reset_capture = platform_reset_capture;
 	ops.metrics = platform_metrics;
 	ops.udp = platform_udp;
-	ops.replay = platform_replay;
+	ops.service = platform_service;
 	ops.audio = platform_audio;
 	ops.checkpoint = platform_checkpoint;
 	ops.feed_watchdog = platform_feed_watchdog;
@@ -11731,17 +10604,23 @@ FLASHMEM void setup(void)
 	(void)aius_boot_teensy_watchdog_arm(&g_boot_primitives);
 	probe_second_pad_psram();
 
-	/* Initialise both ISR-visible handoffs before AudioMemory can let the audio
-	 * graph run. DMAMEM is NOLOAD and cannot be trusted before these calls.
-	 * The replay job diagnostics share that bank and require an explicit clear. */
-	memset(&g_replay_diag, 0, sizeof(g_replay_diag));
-	aius_replay_service_init(&g_replay_service);
+	/* Initialise the ISR-visible handoff before AudioMemory can let the audio
+	 * graph run. DMAMEM is NOLOAD and cannot be trusted before this call. */
 	g_audio_ingress_ready =
 		aius_audio_ingress_init(
 			&g_audio_ingress, g_audio_ingress_words,
 			AIUS_AUDIO_INGRESS_CAPACITY_WORDS) == AIUS_OK;
 	AudioMemory(24);
 	g_audio_processor.begin_pipeline();
+	/* Phase 4i: live input is the only source, so the input is the graph's
+	 * clock master for the life of the boot. Construction order already
+	 * grants it (g_spdif_in claims update responsibility first); pinning it
+	 * once here makes that explicit, and nothing moves it afterwards. One
+	 * critical section so no ISR sees both or neither drive update_all(). */
+	noInterrupts();
+	AiusSpdifOutputClock::set_master(false);
+	AiusSpdifInputClock::set_master(true);
+	interrupts();
 
 	/* No parser is initialized here: the runtime's USB service owns its own
 	 * AiusUsbRuntime, and the legacy one died with service_usb_control().
@@ -11760,11 +10639,6 @@ FLASHMEM void setup(void)
 	 * and writes Serial directly and uses the same DTR bool as its connected
 	 * predicate (aius_cdc_teensy.cpp serial_connected). */
 	derive_auth_token();
-	/* Memory only, like every other construction here: the refill job's
-	 * transfer slice is registered now so checkpoint 7 can start a job
-	 * without allocating or touching the card. */
-	aius_sd_job_init(&g_replay_job, g_replay_transfer,
-	                 sizeof(g_replay_transfer));
 	aius_config_set_defaults(&g_config);
 	g_boot_epoch = micros();
 

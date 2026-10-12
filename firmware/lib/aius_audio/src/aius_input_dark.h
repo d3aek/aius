@@ -20,7 +20,7 @@ extern "C" {
  * inside the region that reset discards, and two of them never reach enqueue
  * at all (a block refused at the plan or rate guard, or a class latched silent
  * with no block decoded). So this instrument is driven from the epoch, once per
- * REPLAY checkpoint, from state the epoch already latches, and asks two
+ * SERVICE checkpoint, from state the epoch already latches, and asks two
  * questions the production gap cannot:
  *
  *   PHASE   which guard is the transmit path waiting behind right now? The

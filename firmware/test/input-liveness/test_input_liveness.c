@@ -286,9 +286,9 @@ int main(void)
 		assert(result.dark_ms == 0u);
 	}
 
-	/* Accepted residue: a replay commits blocks with the input carrier dark.
+	/* Accepted residue: blocks are committed with the input carrier dark.
 	 * Production is production whatever produced it, so the rule reports
-	 * PRODUCING and opens no NO_CARRIER interval for the replay's duration. */
+	 * PRODUCING and opens no NO_CARRIER interval while they last. */
 	{
 		AiusInputLivenessSample cursor = cursor_at(0u, 0);
 		AiusInputLiveness state = seeded_from(&cursor);

@@ -714,7 +714,7 @@ static void test_application_validation_and_overflow(void)
 		case 3: response.sd_job.total = 1; break;
 		case 4:
 			response.kind = AIUS_HTTP_APP_SD_JOB;
-			response.sd_job.kind = AIUS_SD_JOB_REPLAY_REFILL;
+			response.sd_job.kind = (AiusSdJobKind)6; /* retired kind */
 			response.sd_job.target_path = "/x";
 			break;
 		case 5: response.sd_job.require_existing = true; break;
@@ -1112,7 +1112,7 @@ static void test_require_existing_application_validation(void)
 		{ AIUS_SD_JOB_UPLOAD, AIUS_SD_INSTALL_FINALIZE_PART },
 		{ AIUS_SD_JOB_UPLOAD, AIUS_SD_INSTALL_STORE },
 		{ AIUS_SD_JOB_DOWNLOAD, AIUS_SD_INSTALL_REPLACE },
-		{ AIUS_SD_JOB_REPLAY_REFILL, AIUS_SD_INSTALL_REPLACE },
+		{ AIUS_SD_JOB_CACHE_FILL, AIUS_SD_INSTALL_REPLACE },
 	};
 	static const uint8_t body[] = "{}";
 	size_t rejection_trials = 0;
@@ -1138,13 +1138,12 @@ static void test_require_existing_application_validation(void)
 			response = sd_job(
 				AIUS_SD_JOB_DOWNLOAD, 200,
 				"application/octet-stream", NULL, 0, 0);
-		} else if (non_delete[i].kind ==
-		           AIUS_SD_JOB_REPLAY_REFILL) {
+		} else if (non_delete[i].kind == AIUS_SD_JOB_CACHE_FILL) {
 			dispatch =
 				feed_request(&fixture,
 				             "GET /api/status HTTP/1.0\r\n\r\n");
 			response = sd_job(
-				AIUS_SD_JOB_REPLAY_REFILL, 200,
+				AIUS_SD_JOB_CACHE_FILL, 200,
 				"application/json", body, sizeof(body) - 1u, 1);
 		} else {
 			dispatch =
@@ -5052,7 +5051,7 @@ static void test_engine_driven_precedence_registry(void)
 		       AIUS_HTTP_ACTION_DISPATCH);
 		static const uint8_t body[] = "{}";
 		AiusHttpApplicationResponse malformed =
-			sd_job(AIUS_SD_JOB_REPLAY_REFILL, 200,
+			sd_job(AIUS_SD_JOB_CACHE_FILL, 200,
 			       "application/json", body, sizeof(body) - 1u, 1);
 		action = call_step(
 			&fixture, 0,
@@ -5237,7 +5236,7 @@ static void test_receive_chunk_boundary_equivalence(void)
 {
 	static const char body[] = "{\"id\":\"channel_id_51e\",\"loop\":true}";
 	static const char raw[] =
-		"POST /api/replays/start HTTP/1.1\r\n"
+		"POST /api/measure/start HTTP/1.1\r\n"
 		"Host: 192.0.2.66\r\n"
 		"X-Aius-SD-Auth: 0123456789abcdef\r\n"
 		"Content-Type: application/json\r\n"

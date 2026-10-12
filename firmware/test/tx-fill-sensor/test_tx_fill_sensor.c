@@ -363,7 +363,7 @@ int main(void)
 	/* --- reset paths --------------------------------------------------- */
 	{
 		AiusTxFillSensor r;
-		for (uint32_t path = 0u; path < 5u; path++) {
+		for (uint32_t path = 0u; path < 4u; path++) {
 			aius_tx_fill_sensor_init(&r);
 			g_now = 100u;
 			run_class(&r, PCM, 300u, 16u, 2u);
@@ -375,13 +375,12 @@ int main(void)
 				g_now += 10666u;
 			}
 			switch (path) {
-			case 0: assert(aius_tx_fill_sensor_hold(&r, 0, 1, 0)); break; /* gate close */
-			case 1: assert(aius_tx_fill_sensor_hold(&r, 1, 0, 0)); break; /* carrier loss */
-			case 2: assert(aius_tx_fill_sensor_hold(&r, 1, 1, 1)); break; /* replay block */
-			case 3: aius_tx_fill_sensor_reset(&r); break;                  /* governor trim */
-			default: assert(!aius_tx_fill_sensor_hold(&r, 1, 1, 0)); break;
+			case 0: assert(aius_tx_fill_sensor_hold(&r, 0, 1)); break; /* gate close */
+			case 1: assert(aius_tx_fill_sensor_hold(&r, 1, 0)); break; /* carrier loss */
+			case 2: aius_tx_fill_sensor_reset(&r); break;               /* governor trim */
+			default: assert(!aius_tx_fill_sensor_hold(&r, 1, 1)); break;
 			}
-			if (path == 4u) {
+			if (path == 3u) {
 				assert(r.snap.fill_level_valid == 1);
 				continue;
 			}

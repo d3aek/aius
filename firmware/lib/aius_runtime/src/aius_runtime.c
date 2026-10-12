@@ -39,14 +39,12 @@ static const AiusRuntimeBudget runtime_budgets[] = {
 	 * inside, and the counter is the evidence when one does not. */
 	{AIUS_BOOT_CHECKPOINT_HTTP, 1u, 256u, 512u, 2u},
 	{AIUS_BOOT_CHECKPOINT_UDP, 1u, 532u, 532u, 2u},
-	/* The replay checkpoint moves no transport bytes: its work is a bounded
-	 * SD job, whose size is AIUS_REPLAY_REFILL_MAX_BYTES and whose per-epoch
-	 * cost is one card primitive. This row's rx figure is therefore vestigial
-	 * and is deliberately NOT the refill quota -- reading it as one (and as
-	 * words, at that) is what regressed the replay. Left at its historical
+	/* The service checkpoint moves no transport bytes: its work is a bounded
+	 * per-epoch service call. This row's rx figure is therefore vestigial
+	 * and is deliberately NOT a transfer quota. Left at its historical
 	 * value rather than zeroed so no runtime assertion moves; see
 	 * AiusRuntimeBudget in the header for the unit contract. */
-	{AIUS_BOOT_CHECKPOINT_REPLAY, 1u, 2048u, 0u, 0u},
+	{AIUS_BOOT_CHECKPOINT_SERVICE, 1u, 2048u, 0u, 0u},
 	/* The SD checkpoint's 512 is load-bearing and is the one number here that
 	 * bounds a BLOCKING primitive: it is the transfer slice every storage job
 	 * reads or writes in one call, and it matches AIUS_SD_MAX_TRANSFER in the
@@ -106,7 +104,7 @@ FLASHMEM bool aius_runtime_epoch(
 			return false;
 	} else {
 		for (checkpoint = AIUS_BOOT_CHECKPOINT_RESET_CAPTURE;
-		     checkpoint <= AIUS_BOOT_CHECKPOINT_REPLAY;
+		     checkpoint <= AIUS_BOOT_CHECKPOINT_SERVICE;
 		     ++checkpoint) {
 			if (!runtime_service(&snapshot, checkpoint))
 				return false;

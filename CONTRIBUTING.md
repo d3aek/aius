@@ -67,7 +67,7 @@ Every suite is host-only and self-contained except `itcm-placement`, which
 inspects the linked objects of an optical image; without a current cross-build it
 exits 3 and prints the build command to run.
 
-The SD-hosted web pages (status, DSP editor, mixer dashboard, replay manager, upgrade) are host JS
+The SD-hosted web pages (status, DSP editor, mixer dashboard, upgrade) are host JS
 covered by vitest in [`test/sd-editor/`](test/sd-editor/). The same suite holds
 the OpenAPI drift gate, which checks
 [`firmware/sd/www/openapi.json`](firmware/sd/www/openapi.json) against the
@@ -208,7 +208,7 @@ The remedy is placement:
   function in ITCM anyway. Portable sources define a no-op `FLASHMEM` fallback so
   the host suites still compile Arduino-free.
 - **Large buffers go in `DMAMEM` (OCRAM), not DTCM.** The HTTP request/response
-  buffers, the DSP models, the replay service and the UDP buffers are all placed
+  buffers, the DSP models and the UDP buffers are all placed
   that way; a DTCM instance of the composed runtime would not fit.
 - **Five post-link ITCM guards run on every optical build**
   ([`firmware/test/itcm-placement/verify_target.py`](firmware/test/itcm-placement/verify_target.py)).

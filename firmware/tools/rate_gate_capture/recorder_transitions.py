@@ -583,18 +583,10 @@ def stimulus_followed(polls: list[dict], rate: int) -> bool:
     return any(rate == entry[1] for entry in stream_rate_timeline(polls))
 
 
-def driven_phase_labels(with_replay: bool) -> list[str]:
-    """The bench phase sequence this run actually drives, recorded into the
-    evidence metadata as the `expected_phases` analysis option.
-
-    The stimulus is 48 -> 44.1 -> 48; the loss->replay leg is driven only
-    under `--with-replay`. Without it the run plays three phases, and a
-    bench that asserts a fourth fails the gate for a phase the stimulus
-    never played rather than for anything the board did."""
-    labels = [str(REFERENCE_RATE), str(TRANSITION_RATE), str(REFERENCE_RATE)]
-    if with_replay:
-        labels.append("replay")
-    return labels
+def driven_phase_labels() -> list[str]:
+    """The bench phase sequence this run drives (48 -> 44.1 -> 48), recorded
+    into the evidence metadata as the `expected_phases` analysis option."""
+    return [str(REFERENCE_RATE), str(TRANSITION_RATE), str(REFERENCE_RATE)]
 
 
 def slot_capacity_frames(header: dict, meta: dict | None) -> int:
@@ -691,66 +683,11 @@ def phase_frames(phase_seconds: float, rate: int) -> int:
 
 def usb_authorize(path: str, value: int) -> None:
     """Set a USB device's `authorized` flag. Deauthorizing the U24 (3-1.1)
-    drops the board's source carrier, inducing the loss->replay leg; 0 = down,
-    1 = up. The file is group-writable to plugdev (the operator's group).
+    drops the board's source carrier; 0 = down, 1 = up. The file is group-writable to plugdev (the operator's group).
 
     Written directly rather than through `sh -c "echo ... > path"`: the shell
     form interpolates a CLI-supplied path into a command string."""
     Path(path).write_text(str(int(value)), encoding="utf-8")
-
-
-def board_post(base: str, auth: str, path: str, body: str) -> int:
-    """POST a JSON body with the SD-auth header; return the HTTP status
-    without raising on 4xx/5xx (a 409 replay_carrier_present is expected
-    until the carrier has actually dropped)."""
-    request = urllib.request.Request(base + path, method="POST",
-                                     data=body.encode("utf-8"))
-    request.add_header("X-Aius-SD-Auth", auth)
-    try:
-        with urllib.request.urlopen(request, timeout=8) as response:
-            return response.status
-    except urllib.error.HTTPError as error:
-        return error.code
-
-
-FILL_BUSY_BUDGET_S = 120.0
-
-
-def board_post_full(base: str, auth: str, path: str,
-                    body: str) -> tuple[int, str, str | None]:
-    """Like board_post, but also return (body text, Retry-After header)."""
-    request = urllib.request.Request(base + path, method="POST",
-                                     data=body.encode("utf-8"))
-    request.add_header("X-Aius-SD-Auth", auth)
-    try:
-        with urllib.request.urlopen(request, timeout=8) as response:
-            return (response.status, response.read().decode("utf-8", "replace"),
-                    response.headers.get("Retry-After"))
-    except urllib.error.HTTPError as error:
-        return (error.code, error.read().decode("utf-8", "replace"),
-                error.headers.get("Retry-After") if error.headers else None)
-
-
-def replay_start(base: str, auth: str, body: str, *, post=board_post_full,
-                 sleep=time.sleep, clock=time.monotonic,
-                 budget_s: float = FILL_BUSY_BUDGET_S) -> int:
-    """POST /api/replays/start, retrying only `503 fill_busy` (the web-cache
-    fill walk is incomplete) per Retry-After (absent or bad = 1 s) within
-    `budget_s`; any other status is returned for the caller's own handling."""
-    started = clock()
-    while True:
-        status, text, retry_after = post(base, auth, "/api/replays/start", body)
-        if status != 503 or "fill_busy" not in text:
-            return status
-        try:
-            wait = max(float(retry_after), 0.0)
-        except (TypeError, ValueError):
-            wait = 1.0
-        if clock() - started + wait > budget_s:
-            raise RuntimeError(
-                f"replays/start still 503 fill_busy after {budget_s:.0f} s "
-                "(web-cache fill walk never completed)")
-        sleep(wait)
 
 
 class RecorderClient:
@@ -835,11 +772,6 @@ def main(argv: list[str] | None = None) -> int:
                         help="evidence directory (default: a timestamped dir "
                              "under firmware/test/evidence/rate-gate-capture/)")
     parser.add_argument("--expect-build")
-    parser.add_argument("--with-replay", action="store_true",
-                        help="drive the loss->replay leg (USB-deauths the U24)")
-    parser.add_argument("--replay-id", default="channel_id_51")
-    parser.add_argument("--usb-path",
-                        default="/sys/bus/usb/devices/3-1.1/authorized")
     parser.add_argument("--allow-rolloff", action="store_true",
                         help="run even when the recorder ring is too small to "
                              "hold the whole transition (the capture will "
@@ -954,42 +886,13 @@ def main(argv: list[str] | None = None) -> int:
         freeze_elapsed = time.monotonic() - started
         time.sleep(0.6)
 
-        # Identify the captured slot NOW, before the replay leg perturbs the
-        # bank, and only accept one that did not already exist at baseline
-        # -- otherwise a freeze that never landed reads back as somebody
+        # Identify the captured slot NOW and only accept one that did not
+        # already exist at baseline -- otherwise a freeze that never landed reads back as somebody
         # else's older capture. Identity is the per-slot (slot,
         # freeze_generation) pair; see frozen_identities.
         header = client.header()
         meta = captured_slot(header, baseline)
 
-        if args.with_replay:
-            try:
-                print("loss->replay: deauthorizing U24", flush=True)
-                usb_authorize(args.usb_path, 0)      # drop the source carrier
-                time.sleep(2.5)                       # >=2 unlocked samples
-                for _ in range(6):
-                    status = replay_start(
-                        args.base, auth,
-                        json.dumps({"id": args.replay_id, "loop": False}))
-                    print(f"replays/start -> {status}", flush=True)
-                    if status == 200:
-                        break
-                    time.sleep(0.8)                   # carrier not gone yet
-                time.sleep(3.5)                       # dwell in replay
-            finally:
-                # The evidence ends with the declared stimulus (`expected_phases`
-                # ends at `replay`). Restoring the U24 is bench housekeeping, and
-                # its re-enumeration edge -- garbage-rate unsupported episodes,
-                # the interrupted replay unit abandoned once with
-                # pipeline_last_failure TRUNCATED (MALFORMED on images before
-                # 2026-09-03) -- is a replay->live transition nobody declared;
-                # polled, the analyzer judged it as unattributed (live run
-                # 2026-09-03).
-                stop.set()
-                poller.join(timeout=5)
-                print("loss->replay: reauthorizing U24", flush=True)
-                usb_authorize(args.usb_path, 1)       # ALWAYS restore the U24
-                time.sleep(1.5)
     finally:
         stop.set()
         poller.join(timeout=5)
@@ -1038,7 +941,7 @@ def main(argv: list[str] | None = None) -> int:
         "freeze_trigger": None if freeze_elapsed is None else (
             "reference-rate-tracking" if reference_seen_elapsed is not None
             else "acceptance-timeout"),
-        "driven_phase_labels": driven_phase_labels(args.with_replay),
+        "driven_phase_labels": driven_phase_labels(),
         "stream_rate_timeline": stream_rate_timeline(polls),
         "stimulus_followed": followed,
         "status_poll_interval_s": STATUS_POLL_INTERVAL_S,
@@ -1066,7 +969,7 @@ def main(argv: list[str] | None = None) -> int:
     if polls:
         options = {"settle_s": 0.0, "phase_samples": 2,
                    "max_follow_error_millihz": 1000,
-                   "expected_phases": driven_phase_labels(args.with_replay)}
+                   "expected_phases": driven_phase_labels()}
         if args.expect_build:
             options["expect_build"] = args.expect_build
         capture.write_evidence(output / "evidence.jsonl", "transitions",

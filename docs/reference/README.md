@@ -19,7 +19,7 @@ measurements behind them, so a claim can be re-checked. Future work lives in
   [`signal-path.md`](signal-path.md) when adding I/O or spending memory, and the
   result of [`aius-network-hardening.md`](../plans/aius-network-hardening.md).
 - **[Aius user interface](user-interface.md)**: the four SD-hosted pages (DSP
-  editor, device status, replay manager, firmware upgrade), with screenshots,
+  editor, device status, firmware upgrade), with screenshots,
   the routes each reads and writes, and how the interface is served. Screenshots
   live in [`images/`](images/) and are live captures from the deployed board,
   driven by a real 5.1 source.

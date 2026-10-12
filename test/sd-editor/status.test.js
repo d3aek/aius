@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 
 /* Regression for the SD-hosted device status page (firmware/sd/www/status.html
- * + status.js). Same harness as dsp-editor.test.js and replays.test.js: the
+ * + status.js). Same harness as dsp-editor.test.js: the
  * page is a classic script served off the Teensy's SD card, so this loads the
  * real HTML body, evaluates the real sd-shared.js and then the real status.js
  * against it, and stubs `fetch` with the device contract.
@@ -12,15 +12,16 @@
  * integer spelling: `state`, `carrier`, `format`, `link`, `sd_present`,
  * `config_valid`, `recovery_safe` and every `tx_gate` member are 0/1 or small
  * enumerations on the wire even where swagger types them as booleans or
- * strings. The `tx_gate` object is swagger's TxGate schema: open,
- * carrier_locked, replay_running, each 0 or 1, latched once per epoch.
+ * strings. The `tx_gate` object is swagger's TxGate schema: open and
+ * carrier_locked, each 0 or 1, latched once per epoch.
  *
  * What this pins beyond rendering: the input-source derivation, which is the
  * question the page exists to answer and the one thing the device never
- * answers itself (carrier -> optical carrier, else the gate's replay term ->
- * replay, else none), and the unreachable degradation -- a poll failure must
- * dim every grid and say so, never leave a confident-looking snapshot on
- * screen (2026-07-27 UX report finding P4, inherited from the replay page).
+ * answers itself (carrier -> optical carrier, else none), the unreachable
+ * degradation -- a poll failure must dim every grid and say so, never leave a
+ * confident-looking snapshot on screen (2026-07-27 UX report finding P4) --
+ * and the Live processing card (GET /api/meters into the shared waveform
+ * canvas), with drawWaveform itself.
  */
 
 import { readFileSync } from 'node:fs';
@@ -105,7 +106,7 @@ const SNAPSHOT = {
   boot_generation: 250,
   watchdog_early_resets: 0,
   loop_epoch: 48211,
-  tx_gate: { open: 1, carrier_locked: 1, replay_running: 0 },
+  tx_gate: { open: 1, carrier_locked: 1 },
   /* The forensic objects, in the shapes swagger's AbState / PrevBoot /
    * FaultRecord / OtaDark / StallDiag schemas pin. A healthy board: slot B
    * committed with no trial open, the previous boot ended without aborting,
@@ -173,17 +174,39 @@ let device;
 const rejections = [];
 const trackRejection = (reason) => rejections.push(reason);
 
+/* GET /api/meters as the firmware serializes it: per-mille waveform points,
+ * [L, R] output levels in dBFS and sequence > 0 once a snapshot is published. */
+const METERS = {
+  sequence: 7,
+  waveform: [0, 250, 500, 1000],
+  output: { peak_dbfs: [-6, -9.5], rms_dbfs: [-18, -20.5] },
+  estimated_latency_us: 2900,
+};
+
 function createDevice(options = {}) {
-  const stub = { status: 'status' in options ? options.status : SNAPSHOT, calls: [] };
+  const stub = {
+    status: 'status' in options ? options.status : SNAPSHOT,
+    meters: 'meters' in options ? options.meters : METERS,
+    calls: [],
+  };
   globalThis.fetch = vi.fn(async (url, init = {}) => {
     stub.calls.push({ url, method: init.method || 'GET', headers: init.headers || {} });
     if (url === '/api/status') {
       return stub.status ? jsonResponse(200, stub.status) : jsonResponse(500, { ok: false, error: 'unavailable' });
     }
+    if (url === '/api/meters') {
+      return stub.meters ? jsonResponse(200, stub.meters) : jsonResponse(500, { ok: false, error: 'unavailable' });
+    }
     return jsonResponse(404, { ok: false, error: 'not_found' });
   });
   return stub;
 }
+
+/* The 250 ms meters poll runs beside the 1 s status poll; the polling tests
+ * below replace fetch for /api/status alone and keep meters answering. */
+const statusCalls = () => device.calls.filter((call) => call.url === '/api/status');
+const withMeters = (handler) => (url, init) =>
+  url === '/api/meters' ? Promise.resolve(jsonResponse(200, METERS)) : handler(url, init);
 
 async function boot(options) {
   device = createDevice(options);
@@ -225,7 +248,7 @@ describe('Aius SD device status — audio path', () => {
     expect(text('overruns')).toBe('0');
     expect(text('gate-open')).toBe('open');
     expect(text('gate-carrier')).toBe('locked');
-    expect(text('gate-replay')).toBe('stopped');
+    expect(el('gate-replay')).toBeNull();
     for (const pill of PILLS) expect(text(pill)).toBe('live');
   });
 
@@ -240,25 +263,6 @@ describe('Aius SD device status — audio path', () => {
     ]);
   });
 
-  it('derives a replay as the input source when no carrier is locked', async () => {
-    await boot({
-      status: snapshot({
-        state: 2,
-        carrier: 0,
-        format: 1,
-        sample_rate: 0,
-        tx_gate: { open: 1, carrier_locked: 0, replay_running: 1 },
-      }),
-    });
-
-    expect(text('input-source')).toBe('replay');
-    expect(text('carrier')).toBe('absent');
-    expect(text('audio-state')).toBe('no carrier (2)');
-    expect(text('sample-rate')).toBe('-- (no carrier)');
-    expect(text('gate-replay')).toBe('running');
-    expect(el('poll-status').textContent).toContain('Input source: replay');
-  });
-
   it('derives no input source with a dark gate, and says the output is silent', async () => {
     await boot({
       status: snapshot({
@@ -267,11 +271,15 @@ describe('Aius SD device status — audio path', () => {
         format: 0,
         sample_rate: 0,
         blocks: 0,
-        tx_gate: { open: 0, carrier_locked: 0, replay_running: 0 },
+        tx_gate: { open: 0, carrier_locked: 0 },
       }),
     });
 
     expect(text('input-source')).toBe('none');
+    expect(text('carrier')).toBe('absent');
+    expect(text('audio-state')).toBe('no carrier (2)');
+    expect(text('sample-rate')).toBe('-- (no carrier)');
+    expect(el('poll-status').textContent).toContain('Input source: none');
     expect(text('format')).toBe('unknown');
     expect(text('gate-open')).toBe('dark');
     expect(flowStages()).toEqual([
@@ -417,6 +425,12 @@ describe('Aius SD device status — configuration, network, storage, board', () 
     expect(text('last-checkpoint')).toBe('http (5)');
     expect(text('cpu-temp')).toBe('not sampled');
     expect(text('cpu-temp-max')).toBe('not sampled');
+  });
+
+  it('names checkpoint 7 service, the retired replay slot keeping its index', async () => {
+    await boot({ status: snapshot({ last_checkpoint: 7 }) });
+
+    expect(text('last-checkpoint')).toBe('service (7)');
   });
 
   it('names a completed epoch as the only value that means one', async () => {
@@ -606,11 +620,11 @@ describe('Aius SD device status — firmware slot and forensics', () => {
 describe('Aius SD device status — polling', () => {
   it('polls once a second as a public read, with no token anywhere on the page', async () => {
     await boot();
-    const afterBoot = device.calls.length;
+    const afterBoot = statusCalls().length;
 
     await vi.advanceTimersByTimeAsync(3000);
 
-    expect(device.calls.length).toBe(afterBoot + 3);
+    expect(statusCalls().length).toBe(afterBoot + 3);
     for (const call of device.calls) {
       expect(call.method).toBe('GET');
       expect(call.headers['X-Aius-SD-Auth']).toBeUndefined();
@@ -659,21 +673,21 @@ describe('Aius SD device status — polling', () => {
 
   it('treats a 503 as a silent skip: last values and pills stay, and Retry-After sets the next poll', async () => {
     device = await boot();
-    const inner = globalThis.fetch;
     let retryAfter = '30';
-    globalThis.fetch = vi.fn(async (url, init) => {
-      device.calls.push({ url, method: 'GET', headers: {} });
-      return { ...jsonResponse(503, { ok: false, error: 'audio_busy' }), headers: { get: () => retryAfter } };
-    });
-    void inner;
-    const before = device.calls.length;
+    globalThis.fetch = vi.fn(
+      withMeters(async (url) => {
+        device.calls.push({ url, method: 'GET', headers: {} });
+        return { ...jsonResponse(503, { ok: false, error: 'audio_busy' }), headers: { get: () => retryAfter } };
+      }),
+    );
+    const before = statusCalls().length;
     await vi.advanceTimersByTimeAsync(1000);
-    expect(device.calls.length).toBe(before + 1);
+    expect(statusCalls().length).toBe(before + 1);
     // 30 s clamps to 5 s: no second poll at 1 s intervals.
     await vi.advanceTimersByTimeAsync(4900);
-    expect(device.calls.length).toBe(before + 1);
+    expect(statusCalls().length).toBe(before + 1);
     await vi.advanceTimersByTimeAsync(200);
-    expect(device.calls.length).toBe(before + 2);
+    expect(statusCalls().length).toBe(before + 2);
 
     // Many sheds in a row never show unreachable.
     retryAfter = '0';
@@ -683,13 +697,13 @@ describe('Aius SD device status — polling', () => {
     for (const grid of GRIDS) expect(el(grid).dataset.stale).toBeUndefined();
     expect(text('input-source')).toBe('optical carrier');
     // 0 clamps up to 250 ms, so a 5 s window holds about twenty polls, never a flood.
-    expect(device.calls.length).toBeLessThan(before + 2 + 25);
+    expect(statusCalls().length).toBeLessThan(before + 2 + 25);
   });
 
   it('never overlaps polls: the next request waits for the previous answer', async () => {
     device = await boot();
     const waiting = [];
-    globalThis.fetch = vi.fn(() => new Promise((resolve) => waiting.push(resolve)));
+    globalThis.fetch = vi.fn(withMeters(() => new Promise((resolve) => waiting.push(resolve))));
     await vi.advanceTimersByTimeAsync(3500); /* inside the 4 s request timeout */
     expect(waiting).toHaveLength(1);
     waiting[0](jsonResponse(200, SNAPSHOT));
@@ -701,10 +715,12 @@ describe('Aius SD device status — polling', () => {
   it('aborts a hung poll after the request timeout, counts it, and schedules the next', async () => {
     device = await boot();
     const signals = [];
-    globalThis.fetch = vi.fn((url, init = {}) => {
-      signals.push(init.signal);
-      return new Promise(() => {});
-    });
+    globalThis.fetch = vi.fn(
+      withMeters((url, init = {}) => {
+        signals.push(init.signal);
+        return new Promise(() => {});
+      }),
+    );
     for (let round = 1; round <= 2; round++) {
       await vi.advanceTimersByTimeAsync(1000 + 4000);
       expect(signals).toHaveLength(round);
@@ -716,16 +732,97 @@ describe('Aius SD device status — polling', () => {
     for (const pill of PILLS) expect(text(pill)).toBe('unreachable');
   });
 
-  it('carries the four-tab firmware menu, marking the current page', async () => {
+  it('carries the three-tab firmware menu, marking the current page', async () => {
     await boot();
 
     const tabs = Array.from(document.querySelectorAll('nav a'));
     const hrefs = tabs.map((anchor) => anchor.getAttribute('href'));
-    /* Every SD page carries the same four tabs in the same order (2026-09-04
-       modernization); the strip reads as one menu because it never reorders. */
-    expect(hrefs).toEqual(['index.html', 'replays.html', 'status.html', 'upgrade.html']);
+    /* Every SD page carries the same three tabs in the same order; the strip
+       reads as one menu because it never reorders. */
+    expect(hrefs).toEqual(['index.html', 'status.html', 'upgrade.html']);
     /* This is the status page, so its own tab is the current one. */
     const current = tabs.filter((anchor) => anchor.getAttribute('aria-current') === 'page');
     expect(current.map((anchor) => anchor.getAttribute('href'))).toEqual(['status.html']);
+  });
+});
+
+/* A canvas whose 2d context records every path call, so drawWaveform's output
+ * is asserted without a rasteriser (happy-dom has none). */
+function recordingCanvas({ clientWidth = 480, clientHeight = 90 } = {}) {
+  const calls = [];
+  const record = (name) => (...args) => calls.push([name, ...args]);
+  const context = {
+    clearRect: record('clearRect'),
+    beginPath: record('beginPath'),
+    moveTo: record('moveTo'),
+    lineTo: record('lineTo'),
+    closePath: record('closePath'),
+    stroke: record('stroke'),
+    fill: record('fill'),
+  };
+  const canvas = { width: 960, height: 180, clientWidth, clientHeight, dataset: {}, getContext: () => context };
+  return { canvas, calls };
+}
+
+describe('Aius SD device status — Live processing', () => {
+  it('draws the published envelope and reads the output levels into the summary', async () => {
+    await boot();
+
+    expect(text('meter-state')).toBe('live');
+    expect(text('meter-summary')).toBe('Output peak -6.0 / -9.5 dBFS · RMS -18.0 / -20.5 dBFS · latency 2.9 ms');
+    expect(device.calls.some((call) => call.url === '/api/meters')).toBe(true);
+  });
+
+  it('says no snapshot is published yet while sequence is 0', async () => {
+    await boot({ meters: { ...METERS, sequence: 0 } });
+
+    expect(text('meter-state')).toBe('no data');
+    expect(text('meter-summary')).toBe('No meter snapshot published yet.');
+  });
+
+  it('marks the card unreachable after three failed polls and keeps the status card live', async () => {
+    device = await boot({ meters: null });
+    await vi.advanceTimersByTimeAsync(1000);
+    await settle();
+
+    expect(text('meter-state')).toBe('unreachable');
+    expect(text('meter-summary')).toContain('No meter snapshot');
+    for (const pill of PILLS) expect(text(pill)).toBe('live');
+  });
+
+  it('polls /api/meters faster than the status tick, as a public read', async () => {
+    await boot();
+    const meterCalls = () => device.calls.filter((call) => call.url === '/api/meters');
+    const before = meterCalls().length;
+
+    await vi.advanceTimersByTimeAsync(1000);
+
+    expect(meterCalls().length).toBe(before + 4);
+    for (const call of meterCalls()) expect(call.headers['X-Aius-SD-Auth']).toBeUndefined();
+  });
+
+  it('drawWaveform always draws the centre line, and mirrors the per-mille envelope about it', async () => {
+    await boot();
+    const { drawWaveform } = window.aiusSdShared;
+
+    const idle = recordingCanvas();
+    drawWaveform(idle.canvas, []);
+    expect(idle.calls.filter(([name]) => name === 'moveTo')).toEqual([['moveTo', 0, 45]]);
+    expect(idle.calls.filter(([name]) => name === 'fill')).toHaveLength(0);
+
+    const live = recordingCanvas({ clientWidth: 960, clientHeight: 180 });
+    drawWaveform(live.canvas, [0, 500, 1000]);
+    const lines = live.calls.filter(([name]) => name === 'lineTo');
+    /* centre line, then the upper edge at x = 0, 480, 960, then the mirrored
+       lower edge back from full scale. */
+    expect(lines[0]).toEqual(['lineTo', 960, 90]);
+    expect(lines.slice(1).map(([, x, y]) => [x, y])).toEqual([
+      [480, 45],
+      [960, 0],
+      [960, 180],
+      [480, 135],
+      [0, 90],
+    ]);
+    expect(live.calls.filter(([name]) => name === 'fill')).toHaveLength(1);
   });
 });

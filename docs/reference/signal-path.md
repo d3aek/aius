@@ -67,8 +67,7 @@ first. `optical_main.cpp:1160` carries the same distinction beside the code.
   pool, the exact ingress chunk and the transmit interrupt's drain of the 24-bit
   ring. `AiusAudioProcessor::update()` therefore runs at the active rate divided
   by 128, **375 times a second at 48 kHz** (`src/optical_main.cpp:1321`), and
-  publishes 256 IEC words = 512 bytes each time
-  (`lib/aius_replay/include/aius_replay.h:44`).
+  publishes 256 IEC words = 512 bytes each time.
 - **512 frames — the decoded block, and the one the budget belongs to.** A DTS Core
   access unit with `npcmblocks = 16` reconstructs to 16 × 32 = 512 samples per channel
   (`vendor/dcadec-core/core_decoder.c:962`), and PCM passthrough stages the same 512
@@ -113,7 +112,6 @@ flowchart TD
     RX["AudioInputSPDIF3 receive DMA ISR<br/>spdif_rx_buffer, 2048 B OCRAM"]
     BLK["audio_block_t pair, int16<br/>AudioMemory(24) pool, OCRAM"]
     UPD["AiusAudioProcessor::update<br/>fs/128, ingress publish only"]
-    RPL["Replay word ring<br/>aius_replay_service_pop_words"]
     ING["Audio ingress SPSC<br/>8192 words / 16 KiB OCRAM"]
     AUD["Runtime AUDIO checkpoint 9<br/>reset/flush + bounded drain/service"]
     CLS{"aius_pipeline_classify<br/>Pa/Pb preamble in 512 words?<br/>+ mid-flight re-type and starvation re-classify"}
@@ -132,12 +130,11 @@ flowchart TD
     RING["g_aius_spdif_tx24<br/>2 x 2048 int32, 16396 B DMAMEM<br/>trimmed to 128 frames at gate-open (shipped image)"]
     TXI["AiusSpdifTx24Hook::isr<br/>transmit DMA, fs/128"]
     TXB["SPDIF_tx_buffer, int32<br/>2048 B OCRAM, double-buffered"]
-    WIRE["SPDIF_STL / SPDIF_STR<br/>CORE_PIN14, 24-bit<br/>live 32/44.1/48 kHz; replay 48 kHz"]
+    WIRE["SPDIF_STL / SPDIF_STR<br/>CORE_PIN14, 24-bit<br/>live 32/44.1/48 kHz"]
     MET["AiusMeter taps<br/>accumulate + publish at 20 Hz<br/>never alters audio"]
     REC["PSRAM flight recorder + measure taps<br/>committed planes, PSRAM-fitted boards only"]
 
     OPT --> RX --> BLK --> UPD --> ING --> AUD
-    RPL -.->|"replay selected"| UPD
     AUD --> CLS
     CLS -->|"non-linear"| IEC
     IEC -->|"Pc 11"| DTS --> ENQ
@@ -217,12 +214,10 @@ classify, decode, DSP, meter, recorder or transmit-ring production in the softwa
 audio ISR. It releases the two pool blocks after either committing the slot or
 recording a bounded gap.
 
-**The replay source substitutes for the optical one at this stage, not later.** When
-`g_replay_service.source == AIUS_REPLAY_SOURCE_REPLAY`, `update()` pops 256 words from
-the replay word ring directly into a reserved slot instead of reading the input
-blocks (`src/optical_main.cpp:1003`). A short pop cancels the slot and records a short
-replay gap; a full ingress discards the matching 256-word replay slice so timeline
-does not pause behind backpressure.
+**Live input is the only audio source.** The SD replay source that once substituted
+here was retired by
+[`aius-sample-rate-following.md`](../plans/aius-sample-rate-following.md) Phase 4i
+(2026-10-12).
 
 At runtime AUDIO checkpoint 9, `aius_audio_service_run()` first applies any monotonic
 reset or ingress-generation discontinuity, then drains at most 4,096 input words and
@@ -622,7 +617,7 @@ audio-quality roadmap's item 3 (design contract:
 [`aius-dsp-config-api.md` §Item 3 design](../plans/aius-dsp-config-api.md#item-3-design--the-measurement-loopback-software-tap-first)).
 The instrument is a software tap in `enqueue()` after the tx24 commit — at the shipped
 24-bit width the committed words ARE the wire's, so the capture measures everything from
-the replay ring through the whole DSP chain to the transmit register, sharing one sample
+the stimulus input through the whole DSP chain to the transmit register, sharing one sample
 grid with the stimulus (immune to physical clock error by construction; the clock/content
 *ratio* surface stays with the future physical loop). Analysis: an IEEE 1057 3-parameter
 sine fit at the declared f0 (THD+N; SNR additionally excludes harmonics 2–10) plus
@@ -684,7 +679,7 @@ What the numbers say, in order of what they prove:
   armed back-to-back (delta −13.0 k against the ±30 k gate; `dsp_cycles_last` p50
   280,696 vs 280,657). Those p50s are also **the first measured per-block DSP cost
   with audio flowing** — ≈ 281 k cycles ≈ 4.4 % of the block budget on the PCM
-  passthrough path, replay looping, meters on, zero overruns across the whole
+  passthrough path, replay looping (replay since retired), meters on, zero overruns across the whole
   20,492-block session.
 
 One `DMAMEM` note for the maintainer contract below: the 128 KiB capture planes are the
@@ -845,9 +840,9 @@ contradiction recorded at
 
 ## The clock
 
-**Boot and replay are exactly 48 kHz; live output follows 32, 44.1 or 48 kHz
+**Boot is exactly 48 kHz; live output follows 32, 44.1 or 48 kHz
 input, including its oscillator error.** `AUDIO_SAMPLE_RATE_EXACT=48000.0f`
-still supplies the bootstrap clock and the generated replay/config default.
+still supplies the bootstrap clock and the generated config default.
 The `static_assert` keeps those two roles coherent; it no longer defines the
 live output rate.
 
@@ -869,10 +864,8 @@ the live receiver DMA as well as the transmitter; it is safe in
 missing-live gaps and transmit starvation. The closed physical pad and invalid
 IEC status are the runtime quiescence boundary while PLL4 and the TX root move.
 
-Clock responsibility moves between the two peripherals: the receiver remains
-graph master for a live carrier, and the transmitter takes responsibility only
-after a carrier-free replay has restored and acknowledged the exact
-48,000,000 millihertz plan. That mechanism belongs to
+The receiver is the clock master (`clock.master` reads the constant `input`).
+The transmit half is described in
 [`firmware-io.md` §S/PDIF output](firmware-io.md#spdif-output--the-transmit-half-of-the-hot-path)
 and is not restated.
 
@@ -972,7 +965,7 @@ objects contribute zero owned ITCM. `enqueue()` (808 B), `consume_block()` (8 B)
 that.
 
 **Measured on the device before the Slice 2b3 cutover**, build revision
-`f76baa87c67d`, 20 s of replay at 93.3–94.5 blocks/s with zero overruns and zero
+`f76baa87c67d`, 20 s of replay (since retired) at 93.3–94.5 blocks/s with zero overruns and zero
 underruns:
 
 | Figure | Cycles | Share of 6,400,000 |
@@ -1358,5 +1351,5 @@ came from; leaving it stale is what turns this document from a record into a rum
   delivered runtime-rate, PLL-following and hardware-acceptance contract.
 - [`aius-network-hardening.md`](../plans/aius-network-hardening.md) — the phase sequence
   this document lands in, and the live-hardware session that will re-measure it.
-- [`aius-replay-manager.md`](../plans/aius-replay-manager.md) — the replay source that
-  substitutes for the optical input at stage 2.
+- [`aius-replay-manager.md`](../plans/aius-replay-manager.md): the retired replay
+  source (history).

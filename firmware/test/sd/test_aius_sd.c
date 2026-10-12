@@ -254,15 +254,12 @@ static AiusSdJobRequest request_for(AiusSdJobKind kind)
 		request.content_type = "application/octet-stream";
 		break;
 	case AIUS_SD_JOB_DELETE:
-	case AIUS_SD_JOB_REPLAY_REFILL:
 	case AIUS_SD_JOB_CACHE_FILL:
 		request.target_path = "/audio/file.bin";
 		break;
 	default:
 		break;
 	}
-	if (kind == AIUS_SD_JOB_REPLAY_REFILL)
-		request.total = 1u;
 	return request;
 }
 
@@ -927,7 +924,7 @@ static void open_sized_seek(
 		job, 0u, size_event(action->action_id, file_size), AIUS_SD_ACTION_SEEK);
 }
 
-static void test_download_and_refill(void)
+static void test_download_ranges(void)
 {
 	uint8_t buffer[4];
 	AiusSdJob job;
@@ -982,28 +979,12 @@ static void test_download_and_refill(void)
 	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_FAIL);
 	CHECK(action.fault == AIUS_SD_FAULT_RANGE, "download range fault mismatch");
 
-	scenario = "replay refill capped";
-	request = request_for(AIUS_SD_JOB_REPLAY_REFILL);
-	request.initial_offset = 7u;
-	request.total = 9u;
-	start_valid(&job, buffer, sizeof(buffer), &request);
-	open_sized_seek(&job, 10u, &action);
-	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_READ);
-	CHECK(action.length == 3u && action.offset == 7u,
-	      "refill cap mismatch");
-	memcpy(action.buffer, "xyz", 3u);
-	action = step_action(
-		&job, 0u, bytes_event(action.action_id, 3u), AIUS_SD_ACTION_OUTPUT);
-	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_CLOSE);
-	acknowledge_ok(&job, &action, AIUS_SD_ACTION_COMPLETE);
-	CHECK(job.result.transferred_bytes == 3u, "refill result mismatch");
-
-	scenario = "replay refill at eof";
-	request.initial_offset = 10u;
-	start_valid(&job, buffer, sizeof(buffer), &request);
-	open_sized_seek(&job, 10u, &action);
-	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_CLOSE);
-	acknowledge_ok(&job, &action, AIUS_SD_ACTION_COMPLETE);
+	/* Kind 6 (REPLAY_REFILL) is retired, never reused: the invalid-request
+	 * table refuses it, and CACHE_FILL keeps its wire value. */
+	scenario = "job kind wire values";
+	CHECK(AIUS_SD_JOB_PROBE == 0 && AIUS_SD_JOB_DELETE == 5 &&
+	      AIUS_SD_JOB_CACHE_FILL == 7,
+	      "job kind wire values moved");
 
 	scenario = "download zero read closes";
 	request = request_for(AIUS_SD_JOB_DOWNLOAD);
@@ -1850,8 +1831,8 @@ static void test_request_boundaries(void)
 	request = request_for(AIUS_SD_JOB_DOWNLOAD);
 	request.content_type = NULL;
 	invalid[count++].request = request;
-	request = request_for(AIUS_SD_JOB_REPLAY_REFILL);
-	request.total = 0u;
+	request = request_for(AIUS_SD_JOB_DOWNLOAD);
+	request.kind = (AiusSdJobKind)6; /* retired REPLAY_REFILL */
 	invalid[count++].request = request;
 	request = upload_request(AIUS_SD_INSTALL_APPEND_PART);
 	request.temp_path = "/temp";
@@ -1919,8 +1900,8 @@ static void test_require_existing_request_matrix(void)
 		"DOWNLOAD require_existing rejected",
 		request_for(AIUS_SD_JOB_DOWNLOAD)};
 	cases[count++] = (struct RequireExistingCase){
-		"REPLAY_REFILL require_existing rejected",
-		request_for(AIUS_SD_JOB_REPLAY_REFILL)};
+		"CACHE_FILL require_existing rejected",
+		request_for(AIUS_SD_JOB_CACHE_FILL)};
 	cases[count++] = (struct RequireExistingCase){
 		"UPLOAD REPLACE require_existing rejected",
 		upload_request(AIUS_SD_INSTALL_REPLACE)};
@@ -3628,12 +3609,12 @@ static void test_complete_request_boundary_matrix(void)
 	request = request_for(AIUS_SD_JOB_DELETE);
 	request.backup_path = "/x";
 	paths[path_count++] = (struct ExtraPathCase){"delete backup", request};
-	request = request_for(AIUS_SD_JOB_REPLAY_REFILL);
+	request = request_for(AIUS_SD_JOB_CACHE_FILL);
 	request.temp_path = "/x";
-	paths[path_count++] = (struct ExtraPathCase){"refill temp", request};
-	request = request_for(AIUS_SD_JOB_REPLAY_REFILL);
+	paths[path_count++] = (struct ExtraPathCase){"cache fill temp", request};
+	request = request_for(AIUS_SD_JOB_CACHE_FILL);
 	request.backup_path = "/x";
-	paths[path_count++] = (struct ExtraPathCase){"refill backup", request};
+	paths[path_count++] = (struct ExtraPathCase){"cache fill backup", request};
 	request = upload_request(AIUS_SD_INSTALL_APPEND_PART);
 	request.temp_path = "/x";
 	paths[path_count++] = (struct ExtraPathCase){"append temp", request};
@@ -3710,9 +3691,9 @@ static void test_complete_request_boundary_matrix(void)
 	request.publish = true;
 	request.publish_capacity = AIUS_CONFIG_MAX_JSON_BYTES;
 	fields[field_count++] = (struct InvalidFieldCase){"delete publish", request};
-	request = request_for(AIUS_SD_JOB_REPLAY_REFILL);
+	request = request_for(AIUS_SD_JOB_CACHE_FILL);
 	request.content_type = "x";
-	fields[field_count++] = (struct InvalidFieldCase){"refill content type", request};
+	fields[field_count++] = (struct InvalidFieldCase){"cache fill content type", request};
 	request = request_for(AIUS_SD_JOB_CONFIG_LOAD);
 	request.total = 1u;
 	fields[field_count++] = (struct InvalidFieldCase){"config total", request};
@@ -4027,7 +4008,6 @@ typedef enum {
 	MATRIX_APPEND,
 	MATRIX_FINALIZE,
 	MATRIX_DOWNLOAD,
-	MATRIX_REFILL,
 	MATRIX_DELETE,
 	MATRIX_REPLACE_PUBLISH
 } MatrixProfile;
@@ -4087,10 +4067,6 @@ static AiusSdJobRequest matrix_request(MatrixProfile profile)
 		return request;
 	case MATRIX_DOWNLOAD:
 		request = request_for(AIUS_SD_JOB_DOWNLOAD);
-		request.total = 1u;
-		return request;
-	case MATRIX_REFILL:
-		request = request_for(AIUS_SD_JOB_REPLAY_REFILL);
 		request.total = 1u;
 		return request;
 	case MATRIX_DELETE:
@@ -4289,17 +4265,11 @@ static const char *const matrix_plan_names[] = {
 	"final-size",
 	"final-size-close",
 	"download-open",
-	"refill-open",
 	"download-size",
-	"refill-size",
 	"download-seek",
-	"refill-seek",
 	"download-read",
-	"refill-read",
 	"download-output",
-	"refill-output",
 	"download-close",
-	"refill-close",
 	"delete-exists",
 	"delete-remove",
 	"install-target-exists",
@@ -4420,35 +4390,19 @@ static const MatrixFixture matrix_fixtures[] = {
 	MATRIX_FIXTURE("download-open", MATRIX_DOWNLOAD,
 	               AIUS_SD_PHASE_DOWNLOAD_OPEN, AIUS_SD_ACTION_OPEN_READ,
 	               MATRIX_CLEAN_CLOSE, false),
-	MATRIX_FIXTURE("refill-open", MATRIX_REFILL, AIUS_SD_PHASE_DOWNLOAD_OPEN,
-	               AIUS_SD_ACTION_OPEN_READ, MATRIX_CLEAN_CLOSE, false),
 	MATRIX_FIXTURE("download-size", MATRIX_DOWNLOAD,
 	               AIUS_SD_PHASE_DOWNLOAD_SIZE, AIUS_SD_ACTION_FILE_SIZE,
 	               MATRIX_CLEAN_CLOSE, false),
-	MATRIX_FIXTURE("refill-size", MATRIX_REFILL, AIUS_SD_PHASE_DOWNLOAD_SIZE,
-	               AIUS_SD_ACTION_FILE_SIZE, MATRIX_CLEAN_CLOSE, false),
 	MATRIX_FIXTURE("download-seek", MATRIX_DOWNLOAD,
-	               AIUS_SD_PHASE_DOWNLOAD_SEEK, AIUS_SD_ACTION_SEEK,
-	               MATRIX_CLEAN_CLOSE, false),
-	MATRIX_FIXTURE("refill-seek", MATRIX_REFILL,
 	               AIUS_SD_PHASE_DOWNLOAD_SEEK, AIUS_SD_ACTION_SEEK,
 	               MATRIX_CLEAN_CLOSE, false),
 	MATRIX_FIXTURE("download-read", MATRIX_DOWNLOAD,
 	               AIUS_SD_PHASE_DOWNLOAD_READ, AIUS_SD_ACTION_READ,
 	               MATRIX_CLEAN_CLOSE, false),
-	MATRIX_FIXTURE("refill-read", MATRIX_REFILL,
-	               AIUS_SD_PHASE_DOWNLOAD_READ, AIUS_SD_ACTION_READ,
-	               MATRIX_CLEAN_CLOSE, false),
 	MATRIX_FIXTURE("download-output", MATRIX_DOWNLOAD,
 	               AIUS_SD_PHASE_DOWNLOAD_OUTPUT, AIUS_SD_ACTION_OUTPUT,
 	               MATRIX_CLEAN_CLOSE, false),
-	MATRIX_FIXTURE("refill-output", MATRIX_REFILL,
-	               AIUS_SD_PHASE_DOWNLOAD_OUTPUT, AIUS_SD_ACTION_OUTPUT,
-	               MATRIX_CLEAN_CLOSE, false),
 	MATRIX_FIXTURE("download-close", MATRIX_DOWNLOAD,
-	               AIUS_SD_PHASE_DOWNLOAD_CLOSE, AIUS_SD_ACTION_CLOSE,
-	               MATRIX_CLEAN_PLAIN, false),
-	MATRIX_FIXTURE("refill-close", MATRIX_REFILL,
 	               AIUS_SD_PHASE_DOWNLOAD_CLOSE, AIUS_SD_ACTION_CLOSE,
 	               MATRIX_CLEAN_PLAIN, false),
 	MATRIX_EXISTS_FIXTURE("delete-exists", MATRIX_DELETE,
@@ -5798,7 +5752,7 @@ int main(void)
 	test_probe_usage_delete();
 	test_config_load();
 	test_publish_buffer();
-	test_download_and_refill();
+	test_download_ranges();
 	test_cache_fill();
 	test_upload_modes();
 	test_install_publication_and_authority();
@@ -5825,9 +5779,10 @@ int main(void)
 	size_t lifecycle_cases = test_existence_purpose_routes();
 	lifecycle_cases += test_active_no_outstanding_rows();
 	lifecycle_cases += test_durable_upload_cancellation_modes();
-	CHECK(ARRAY_COUNT(matrix_fixtures) == 64u,
+	/* 64 until Phase 4i retired the six REPLAY_REFILL rows. */
+	CHECK(ARRAY_COUNT(matrix_fixtures) == 58u,
 	      "phase-10 fixture registry count drifted");
-	CHECK(matrix_trials == 1001u,
+	CHECK(matrix_trials == 907u, /* 1001 less the refill rows' 94 */
 	      "phase-10 matrix trial count drifted");
 	CHECK(lifecycle_cases == 27u,
 	      "phase-10 lifecycle case count drifted");

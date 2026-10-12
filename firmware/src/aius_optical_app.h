@@ -33,7 +33,7 @@ extern "C" {
  * runtime_success_valid). One authority: the control library's own bound. */
 #define AIUS_OPTICAL_APP_USB_PAYLOAD_MAX AIUS_USB_RUNTIME_MAX_PAYLOAD
 #define AIUS_OPTICAL_APP_USB_PAYLOAD_STORAGE (AIUS_OPTICAL_APP_USB_PAYLOAD_MAX + 1u)
-#define AIUS_OPTICAL_APP_REPLAY_ID_STORAGE (AIUS_HTTP_MAX_REPLAY_ID + 1u)
+#define AIUS_OPTICAL_APP_VECTOR_ID_STORAGE (AIUS_HTTP_MAX_VECTOR_ID + 1u)
 
 /* Probe-bin cap for POST /api/measure/start. The dispatcher deliberately does
  * not include aius_measure.h (the dispatch seam has no DSP dependency), so
@@ -121,23 +121,6 @@ typedef enum {
 	AIUS_OPTICAL_APP_STORE_LIMIT /* a new preset name at the 16-preset cap: 409 preset_limit */
 } AiusOpticalAppStoreResult;
 
-/* CARRIER_PRESENT is a start-only refusal and deliberately its own value: a live
- * S/PDIF carrier always owns the audio path, so a replay cannot start against
- * one. It is distinct from FAILED because a client must be able to tell "that id
- * is unusable" from "the input is live" -- the first is retried with a different
- * id, the second only once the carrier goes away. Appended so no existing value
- * moves. */
-typedef enum {
-	AIUS_OPTICAL_APP_REPLAY_OK,
-	AIUS_OPTICAL_APP_REPLAY_NOT_FOUND,
-	AIUS_OPTICAL_APP_REPLAY_ACTIVE,
-	AIUS_OPTICAL_APP_REPLAY_FAILED,
-	AIUS_OPTICAL_APP_REPLAY_CARRIER_PRESENT,
-	/* Phase 4g (owner, audit finding 2): a replay start while the web-cache
-	 * fill walk is incomplete; the route answers 503 fill_busy. */
-	AIUS_OPTICAL_APP_REPLAY_FILL_BUSY
-} AiusOpticalAppReplayResult;
-
 /* One directory entry, as the application read it off the card. `name` is the
  * base name only -- no directory part, NUL-terminated, and truncated by the
  * dispatcher at AIUS_OPTICAL_APP_INDEX_NAME_MAX before it is read. */
@@ -198,8 +181,6 @@ typedef struct {
 	                       size_t capacity);
 	size_t (*write_dsp_config)(void *context, uint8_t *body, size_t capacity);
 	size_t (*write_meters)(void *context, uint8_t *body, size_t capacity);
-	size_t (*write_replay_status)(void *context, uint8_t *body, size_t capacity);
-	size_t (*write_replay_list)(void *context, uint8_t *body, size_t capacity);
 
 	/* Validate and stage one complete request body; write nothing. On
 	 * ACCEPTED the dispatcher persists those exact bytes to /aius/config.json
@@ -211,11 +192,6 @@ typedef struct {
 	AiusOpticalAppStoreResult (*store_dsp_config)(void *context,
 	                                              const uint8_t *body,
 	                                              size_t length);
-
-	AiusOpticalAppReplayResult (*replay_start)(void *context, const char *id,
-	                                           bool loop);
-	AiusOpticalAppReplayResult (*replay_delete)(void *context, const char *id);
-	void (*replay_stop)(void *context);
 
 	void (*set_test_running)(void *context, bool running);
 	void (*clear_counters)(void *context);
@@ -266,7 +242,7 @@ typedef struct {
 	 *
 	 * write_measure serializes the session (state machine, figures, floors,
 	 * vector id) for the public GET. measure_start arms a capture against the
-	 * named replay vector with the per-channel fit frequencies and up to
+	 * named vector with the per-channel fit frequencies and up to
 	 * AIUS_OPTICAL_APP_MEASURE_PROBES_MAX frequency-response probe bins; false
 	 * means refused (a live capture, or parameters the analysis rejected) and
 	 * the dispatcher answers 409. */
@@ -349,7 +325,9 @@ typedef enum {
 	AIUS_OPTICAL_ADMIT_METERS,         /* GET /api/meters */
 	AIUS_OPTICAL_ADMIT_EVENTS,         /* GET /api/events */
 	AIUS_OPTICAL_ADMIT_SETTINGS,       /* PUT /api/dsp/config, PUT /api/config */
-	AIUS_OPTICAL_ADMIT_DIRECTORY,      /* GET /api/replays */
+	AIUS_OPTICAL_ADMIT_DIRECTORY,      /* reserved: no route maps here since 4i; the index keeps
+	                                          /api/status's positional http_shed_class and
+	                                          http_class_cost_us arrays stable */
 	AIUS_OPTICAL_ADMIT_SD_START_DMA,
 	AIUS_OPTICAL_ADMIT_SD_START_FIFO,
 	AIUS_OPTICAL_ADMIT_CLASSES,
@@ -522,7 +500,7 @@ bool aius_optical_app_sd_job_is_ota_staging(const AiusSdJobRequest *job);
  * It is what keeps PUT /api/ota/image an ORDINARY BUFFERED ROUTE: 4096 is well
  * under AIUS_HTTP_MAX_BODY, so the transport needs no streaming carve-out and
  * every chunk arrives whole, self-contained and resumable -- the APPEND_PART
- * shape the replay upload already answers with next_offset. */
+ * shape that answers with next_offset. */
 #define AIUS_OPTICAL_APP_OTA_MAX_CHUNK_BYTES 4096u
 
 /* Width of every text field the status document publishes: target_id and
@@ -779,7 +757,7 @@ typedef struct {
 /* Caller-owned dispatcher state.
  *
  * Borrow invariant: the returned response borrows this object's storage --
- * `body`, `target_path`, `temp_path`, `backup_path`, `replay_id` -- until the
+ * `body`, `target_path`, `temp_path`, `backup_path` -- until the
  * next HTTP dispatch on the same dispatcher, and that is strictly later than
  * the caller returning from the dispatch call. A body larger than
  * AIUS_HTTP_MAX_RESPONSE is sent straight out of `body` over roughly 25 socket
@@ -808,7 +786,6 @@ typedef struct {
 	char target_path[AIUS_SD_PATH_STORAGE];
 	char temp_path[AIUS_SD_PATH_STORAGE];
 	char backup_path[AIUS_SD_PATH_STORAGE];
-	char replay_id[AIUS_OPTICAL_APP_REPLAY_ID_STORAGE];
 	char usb_payload[AIUS_OPTICAL_APP_USB_PAYLOAD_STORAGE];
 	/* The flag word (Phase 4f): ota_pending, recorder_lease_active, valid
 	 * and the recorder lease's slot (a recorder bank index, under 256) share
@@ -1263,7 +1240,7 @@ void aius_optical_sd_flush_lapse(AiusOpticalSdFlush *flush, uint32_t now_ms);
  * sets the hold). The scheduled remount itself (remount_running) and any
  * BEGIN that reuses a mount are never blocked. Consulted by every BEGIN
  * path: the lifecycle's root steps, the flush start, the fill start, an
- * HTTP SD job's SD_START admission and the replay job's BEGIN. The answer
+ * HTTP SD job's SD_START admission. The answer
  * is a gate: NONE (not blocked), WAIT (the schedule holds the BEGIN; DAT3 is
  * not read) or NO_CARD (DAT3 read no card, read once). */
 typedef enum {
@@ -1281,11 +1258,10 @@ AiusOpticalSdBeginGate aius_optical_sd_begin_blocked(AiusOpticalSdFlush *flush,
 bool aius_optical_sd_step_begin_blocked(AiusOpticalSdFlush *flush,
                                         const AiusOpticalSdFlushOps *ops,
                                         uint32_t now_ms);
-/* D-S10: the replay refill's BEGIN: blocked only while DAT3 reads no card
- * during playback with no mount (a real pull: the replay stops); never by
- * the schedule, so a transient fault remounts at once as before 4h. Replay
- * retires in 4i. */
-bool aius_optical_sd_replay_begin_blocked(AiusOpticalSdFlush *flush,
+/* D-S10: the no-card half of the BEGIN gate: blocked only while DAT3 reads no
+ * card with the source on with no mount; never by the schedule, so a transient
+ * fault remounts at once as before 4h. */
+bool aius_optical_sd_no_card_begin_blocked(AiusOpticalSdFlush *flush,
                                           const AiusOpticalSdFlushOps *ops);
 
 /* The lifecycle's choice with no step running (the order is the policy: a
@@ -1409,7 +1385,7 @@ bool aius_optical_sd_service_final(AiusOpticalSdFlush *flush,
                                    const AiusOpticalSdFlushOps *ops,
                                    volatile bool *requested);
 
-/* E3: direct card ops (a /sd/ index, a replay listing) run only with the
+/* E3: direct card ops (a /sd/ index) run only with the
  * card ready and DAT3 not re-muxed (a card-gone invalidation or a failed
  * begin); a mode-only mount drop (POST /api/sd/mode) leaves DAT3 clear, so
  * they read the card as today and the next storage BEGIN remounts. */
@@ -1541,11 +1517,9 @@ void aius_optical_web_fill_drop_http_canceller(AiusOpticalWebFill *fill,
                                                uint32_t now_ms);
 bool aius_optical_web_fill_held(const AiusOpticalWebFill *fill,
                                 uint32_t now_ms);
-/* The scheduler's start gate: true (start no fill file) while _held() or
- * while a replay plays (`replay_playing`: REPLAY or SWITCHING_TO_REPLAY;
- * owner, closure nit A), so a walk restarted mid-replay waits for its end. */
+/* The scheduler's start gate: true (start no fill file) while _held(). */
 bool aius_optical_web_fill_paused(const AiusOpticalWebFill *fill,
-                                  uint32_t now_ms, bool replay_playing);
+                                  uint32_t now_ms);
 /* The SD_START arm. True: DEFER this start; `*cancel` is set on the one
  * consult that must cancel the in-flight fill file, through the platform's
  * one cancel entry (which latches via aius_optical_web_fill_cancel). False:
@@ -1557,8 +1531,7 @@ bool aius_optical_web_fill_sd_start(AiusOpticalWebFill *fill,
 bool aius_optical_web_fill_take_defer(AiusOpticalWebFill *fill);
 
 /* The routes whose handlers read the card directly rather than through an SD
- * job (Phase 4g, audit finding 3): GET /sd/<dir>/ (the index), GET and DELETE
- * /api/replays. False for NULL. */
+ * job (Phase 4g, audit finding 3): GET /sd/<dir>/ (the index). False for NULL. */
 bool aius_optical_app_route_reads_card(const AiusHttpRequest *request);
 /* The DISPATCH arm for such a route. True: DEFER the dispatch; `*cancel` as
  * for _sd_start. False: run it now; a dispatch the fill held releases its

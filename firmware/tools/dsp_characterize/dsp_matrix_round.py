@@ -33,7 +33,7 @@ DEVICE = os.environ.get("AIUS_ALSA_DEVICE", "hw:U24XL,0")
 FS = 48000
 W = 48000  # 1 s analysis window, 1 Hz bins
 IEC = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                   "..", "replay_samples", "generated",
+                   "..", "iec_fixtures", "generated",
                    "channel_id_51.iec")
 
 TONES = {"fl": 300, "fr": 600, "fc": 900, "lfe": 60, "sl": 1200, "sr": 1500}

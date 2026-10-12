@@ -19,7 +19,7 @@
  * case), which has no runtime keys. `meters-*.json` are the settled
  * `GET /api/meters` shape that `http_meters_json()` emits as of Phase 14b --
  * six positional dBFS input entries floored at -120, `[L, R]` output arrays,
- * a per-mille integer replay waveform -- authored to the contract rather than
+ * a per-mille integer waveform -- authored to the contract rather than
  * captured from a device, and covering the live, all-at-the-floor, and
  * never-published (`sequence == 0`) cases. The `/api/status` stub carries the
  * `carrier` flag and the latched `tx_gate` object the swagger `Status` schema
@@ -95,7 +95,7 @@ const PRESET_INDEX_DEFAULT = presetsIndexHtml(
 
 /* Nothing playing, gate dark: the quietest possible device, so a test that
  * cares about the signal-flow ends says so itself. */
-const STATUS_IDLE = { carrier: 0, tx_gate: { open: 0, carrier_locked: 0, replay_running: 0 } };
+const STATUS_IDLE = { carrier: 0, tx_gate: { open: 0, carrier_locked: 0 } };
 
 let device;
 let canvasOpsById;
@@ -1593,7 +1593,7 @@ describe('Aius SD DSP editor — meters', () => {
     expect(el('meter-sequence').textContent).toBe('1287');
   });
 
-  /* The live-processing card draws NOTHING now. It never duplicated the replay
+  /* The live-processing card draws NOTHING now. It never duplicated the status
    * page's waveform, and the spectrogram it did carry was deleted on 2026-08-16
    * with its feed: output-jitter Phase A dropped `analysis_window` from
    * /api/meters, so no device can fill one and a canvas here could only ever be
@@ -1809,10 +1809,10 @@ describe('Aius SD DSP editor — serialised polling', () => {
 });
 
 /* The two ends of the signal-flow strip: the page never said whether the audio
- * was a live optical carrier, a replay, or nothing at all. */
+ * was a live optical carrier or nothing at all. */
 describe('Aius SD DSP editor — input source and transmit gate', () => {
   it('names a live optical carrier and an open gate', async () => {
-    await boot({ status: { carrier: 1, tx_gate: { open: 1, carrier_locked: 1, replay_running: 0 } } });
+    await boot({ status: { carrier: 1, tx_gate: { open: 1, carrier_locked: 1 } } });
 
     expect(el('input-source').textContent).toBe('input: optical carrier');
     expect(el('input-source').dataset.state).toBe('carrier');
@@ -1829,7 +1829,7 @@ describe('Aius SD DSP editor — input source and transmit gate', () => {
     state: 3,
     format: 1,
     sample_rate: 48000,
-    tx_gate: { open: 1, carrier_locked: 1, replay_running: 0 },
+    tx_gate: { open: 1, carrier_locked: 1 },
     ...over,
   });
 
@@ -1880,14 +1880,6 @@ describe('Aius SD DSP editor — input source and transmit gate', () => {
     device.status = carrierStatus({ state: 9, sample_rate: 96000 });
     await vi.advanceTimersByTimeAsync(1000);
     expect(el('input-source').textContent).toBe('input: optical carrier · 96000 Hz');
-  });
-
-  it('names a replay when the latched gate says a replay is running', async () => {
-    await boot({ status: { carrier: 0, tx_gate: { open: 1, carrier_locked: 0, replay_running: 1 } } });
-
-    expect(el('input-source').textContent).toBe('input: replay');
-    expect(el('input-source').dataset.state).toBe('replay');
-    expect(el('tx-gate').dataset.state).toBe('open');
   });
 
   it('says nothing is playing and the gate is dark', async () => {

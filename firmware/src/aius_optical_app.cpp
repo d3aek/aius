@@ -58,7 +58,6 @@ static FLASHMEM bool sd_flush_pending(void)
 }
 
 #define AIUS_OPTICAL_APP_SD_ROOT "/aius/"
-#define AIUS_OPTICAL_APP_REPLAY_ROOT "/aius/replays/"
 /* The two config files the pre-cutover firmware writes, under the same root:
  * optical_main.cpp:1742 and :1794 pass "/aius/config.json" and "/aius/dsp.json"
  * to http_sd_upload_begin_target(). Named once so the literal the /sd/ route's
@@ -243,7 +242,7 @@ static FLASHMEM const char *resource_content_type(const AiusHttpRequest *request
 /* Day-long browser caching for the two stable static-asset suffixes, and ONLY
  * those. HTML stays uncached so a card sync propagates page changes on the
  * next load; .json is live data (config.json above all); binary covers the
- * presets and replay vectors, which the pages re-list after every save --
+ * presets, which the pages re-list after every save --
  * caching any of those trades correctness for nothing. The operator pays one
  * hard refresh after an asset deploy, accepted 2026-07-27. */
 #define AIUS_OPTICAL_APP_ASSET_MAX_AGE_S 86400u
@@ -349,9 +348,9 @@ static FLASHMEM bool resource_directory_valid(const uint8_t *resource,
 	return length == 4u || resource_path_valid(resource, length - 1u);
 }
 
-static FLASHMEM bool replay_id_chars_valid(const uint8_t *id, size_t length)
+static FLASHMEM bool vector_id_chars_valid(const uint8_t *id, size_t length)
 {
-	if (id == NULL || length == 0u || length > AIUS_HTTP_MAX_REPLAY_ID)
+	if (id == NULL || length == 0u || length > AIUS_HTTP_MAX_VECTOR_ID)
 		return false;
 	for (size_t i = 0; i < length; i++) {
 		uint8_t ch = id[i];
@@ -360,19 +359,6 @@ static FLASHMEM bool replay_id_chars_valid(const uint8_t *id, size_t length)
 			return false;
 	}
 	return true;
-}
-
-/* /aius/replays/<id><suffix> */
-static FLASHMEM bool build_replay_path(char *path, size_t capacity,
-                                       const uint8_t *id, size_t id_length,
-                                       const char *suffix)
-{
-	size_t length = 0u;
-	path[0] = '\0';
-	return path_append(path, capacity, &length, AIUS_OPTICAL_APP_REPLAY_ROOT,
-	                   sizeof(AIUS_OPTICAL_APP_REPLAY_ROOT) - 1u) &&
-	       path_append(path, capacity, &length, (const char *)id, id_length) &&
-	       path_append(path, capacity, &length, suffix, strlen(suffix));
 }
 
 /* /aius/<name> -- one layout for both the /sd/ resource tree and the two config
@@ -447,7 +433,7 @@ static FLASHMEM bool body_consume(AiusJsonCursor *cursor, uint8_t expected)
  * is why aius_json_take_string() is not used here: that one decodes escapes
  * into a bounded buffer, which this reader has no need of and no buffer for.
  * A backslash is refused outright rather than decoded: the two consumers are
- * this object's key set and replay_id_chars_valid(), and an escape can only
+ * this object's key set and vector_id_chars_valid(), and an escape can only
  * ever spell a byte one of them already accepts literally, so decoding would
  * add a second spelling for an id the card already has under its plain name. */
 static FLASHMEM bool body_take_string(AiusJsonCursor *cursor,
@@ -492,72 +478,6 @@ static FLASHMEM bool body_key_is(const uint8_t *key, size_t key_length,
 	return aius_json_key_is(key, key_length, 0, expected) != 0;
 }
 
-/* Parses {"id":"<id>"[,"loop":<bool>]} in either key order, tolerating the
- * insignificant whitespace RFC 8259 §2 permits around every structural
- * character -- json.dumps' `{"id": "x", "loop": true}` and JSON.stringify's
- * compact form are the same request, which is the whole point of the rewrite
- * away from the substring scan this replaced.
- *
- * The object is flat, so one left-to-right cursor pass is the entire grammar:
- * no recursion, no allocation, no buffer beyond the dispatcher's existing
- * replay_id, and one bounded walk of a body the transport already capped.
- *
- * Whitespace is the only thing newly admitted. The pass is stricter than the
- * scan everywhere else, because it reads the document rather than hunting a
- * needle inside it: an unknown key, a duplicate key, a non-boolean `loop`, a
- * non-string `id`, a body that is not a lone object, or anything trailing the
- * closing brace is refused instead of ignored. */
-static FLASHMEM bool replay_body_id(AiusOpticalAppDispatcher *dispatcher,
-                                    const AiusHttpRequest *request, bool *loop)
-{
-	AiusJsonCursor cursor = { request->body, request->body_length, 0u };
-	const uint8_t *id = NULL;
-	size_t id_length = 0u;
-	bool parsed_loop = false;
-	bool seen_loop = false;
-
-	dispatcher->replay_id[0] = '\0';
-	*loop = false;
-	if (request->body == NULL || !body_consume(&cursor, '{'))
-		return false;
-	for (;;) {
-		const uint8_t *key;
-		size_t key_length;
-		if (!body_take_string(&cursor, &key, &key_length) ||
-		    !body_consume(&cursor, ':'))
-			return false;
-		if (body_key_is(key, key_length, "id")) {
-			/* A second "id" is a duplicate key, not an override. */
-			if (id != NULL || !body_take_string(&cursor, &id, &id_length))
-				return false;
-		} else if (body_key_is(key, key_length, "loop")) {
-			if (seen_loop)
-				return false;
-			seen_loop = true;
-			if (body_take_literal(&cursor, "true"))
-				parsed_loop = true;
-			else if (!body_take_literal(&cursor, "false"))
-				return false;
-		} else {
-			return false;
-		}
-		if (!body_consume(&cursor, ','))
-			break;
-	}
-	if (!body_consume(&cursor, '}'))
-		return false;
-	aius_json_skip_whitespace(&cursor);
-	if (!aius_json_at_end(&cursor))
-		return false;
-	if (id == NULL || !replay_id_chars_valid(id, id_length) ||
-	    id_length >= sizeof(dispatcher->replay_id))
-		return false;
-	memcpy(dispatcher->replay_id, id, id_length);
-	dispatcher->replay_id[id_length] = '\0';
-	*loop = parsed_loop;
-	return true;
-}
-
 /* Strict unsigned integer for the measure body: bare digits only (no sign, no
  * fraction, no exponent -- a frequency in Hz has no business carrying any),
  * bounded to 7 digits so the value stays far inside uint32. */
@@ -581,8 +501,11 @@ static FLASHMEM bool body_take_uint(AiusJsonCursor *cursor, uint32_t *value)
 	return true;
 }
 
-/* POST /api/measure/start body, read with the same strictness as
- * replay_body_id above: {"id":"<vector>"} with optional "f0_l"/"f0_r"
+/* POST /api/measure/start body: one left-to-right cursor pass over a flat
+ * object, tolerating the insignificant whitespace RFC 8259 §2 permits around
+ * every structural character, with no recursion and no allocation. An unknown
+ * key, a duplicate key, a non-string `id` or anything trailing the closing
+ * brace is refused. {"id":"<vector>"} with optional "f0_l"/"f0_r"
  * (integer Hz, default 440 -- the corpus baseline) and an optional "probes"
  * array of up to AIUS_OPTICAL_APP_MEASURE_PROBES_MAX integer frequencies.
  * Unknown keys, duplicates, non-integer numbers and trailing bytes refuse;
@@ -646,7 +569,7 @@ static FLASHMEM bool measure_body(const AiusHttpRequest *request,
 	aius_json_skip_whitespace(&cursor);
 	if (!aius_json_at_end(&cursor))
 		return false;
-	if (vector == NULL || !replay_id_chars_valid(vector, vector_length) ||
+	if (vector == NULL || !vector_id_chars_valid(vector, vector_length) ||
 	    vector_length >= id_capacity)
 		return false;
 	memcpy(id, vector, vector_length);
@@ -878,8 +801,8 @@ static FLASHMEM const AiusHttpApplicationResponse *dispatch_recorder(
 		/* The 200 borrows PSRAM directly: stable because data resolves
 		 * only in FROZEN and a thaw is necessarily a later transaction
 		 * (single-transaction model) -- no copy, no SD job, and
-		 * deliberately NO app_sd_busy test (the refill owns ~61 % of
-		 * epochs during replay; an sd_busy gate would make the
+		 * deliberately NO app_sd_busy test (a card job can own most
+		 * epochs; an sd_busy gate would make the
 		 * recorder unusable exactly when it matters). READ_OK takes the
 		 * addressed slot's read lease (in recorder_read); the response's
 		 * completion hook (recorder_read_settle) drops it when the borrow
@@ -936,7 +859,7 @@ static FLASHMEM const AiusHttpApplicationResponse *dispatch_measure(
 	/* MEASURE_START: the control-route auth gate already ran in the entry
 	 * switch. Parsed into locals -- the callback copies synchronously, so
 	 * nothing here joins the dispatcher's borrow set. */
-	char id[AIUS_OPTICAL_APP_REPLAY_ID_STORAGE];
+	char id[AIUS_OPTICAL_APP_VECTOR_ID_STORAGE];
 	uint32_t f0_l_hz, f0_r_hz;
 	uint32_t probes_hz[AIUS_OPTICAL_APP_MEASURE_PROBES_MAX];
 	size_t probe_count;
@@ -953,7 +876,7 @@ static FLASHMEM const AiusHttpApplicationResponse *dispatch_measure(
 		         "{\"ok\":true,\"state\":\"armed\",\"id\":\"%s\"}", id));
 }
 
-/* Parses {"dma":<bool>} with the replay body's grammar: one key, no duplicate,
+/* Parses {"dma":<bool>} with the measure body's grammar: one key, no duplicate,
  * nothing trailing the closing brace. */
 static FLASHMEM bool sd_mode_body(const AiusHttpRequest *request, bool *dma)
 {
@@ -1210,10 +1133,9 @@ static FLASHMEM const AiusHttpApplicationResponse *dispatch_sd_upload(
 	AiusOpticalAppDispatcher *dispatcher, const AiusHttpRequest *request)
 {
 	const AiusOpticalApp *app = &dispatcher->app;
-	bool replay = request->route == AIUS_HTTP_ROUTE_SD_REPLAY;
 	/* Legacy order for the streamed PUT path: the refusal to overwrite the
 	 * public config outranks authentication, which outranks media state. */
-	if (!replay && resource_is_config(request))
+	if (resource_is_config(request))
 		return http_error(dispatcher, 403, "config_public_only");
 	if (!app->auth_matches(app->context, request->sd_auth,
 	                       request->sd_auth_length))
@@ -1221,7 +1143,7 @@ static FLASHMEM const AiusHttpApplicationResponse *dispatch_sd_upload(
 	/* Phase 4h (S8, B2, Q4): a www PUT is accepted into the store, card or
 	 * no card and whatever job owns the volume; the STORE request streams
 	 * the body into it and the 200 follows the commit. */
-	if (!replay && sd_overlay_present()) {
+	if (sd_overlay_present()) {
 		static const size_t kRelOffset = sizeof(AIUS_OPTICAL_APP_SD_ROOT) - 1u;
 		const char *rel;
 		AiusHttpApplicationResponse *response;
@@ -1257,47 +1179,6 @@ static FLASHMEM const AiusHttpApplicationResponse *dispatch_sd_upload(
 		return http_error(dispatcher, 503, "sd_unavailable");
 	if (app->sd_busy(app->context))
 		return http_error(dispatcher, 507, "sd_upload");
-	if (replay) {
-		int written;
-		bool final_chunk;
-		if (!request->has_content_range ||
-		    !replay_id_chars_valid(request->replay_id,
-		                           request->replay_id_length))
-			return http_error(dispatcher, 400, "sd_upload");
-		final_chunk = (uint64_t)request->content_range_end + 1u ==
-			(uint64_t)request->content_range_total;
-		if (!final_chunk) {
-			if (!build_replay_path(dispatcher->target_path,
-			                       sizeof(dispatcher->target_path),
-			                       request->replay_id,
-			                       request->replay_id_length, ".part"))
-				return http_error(dispatcher, 507, "sd_upload");
-			written = snprintf((char *)dispatcher->body,
-			                   dispatcher->body_capacity,
-			                   "{\"ok\":true,\"next_offset\":%lu}",
-			                   (unsigned long)request->content_range_end + 1ul);
-			if (written <= 0 || (size_t)written >= dispatcher->body_capacity)
-				return http_too_large(dispatcher);
-			return sd_upload(dispatcher, AIUS_SD_INSTALL_APPEND_PART,
-			                 request->content_length,
-			                 request->content_range_start, dispatcher->body,
-			                 (size_t)written);
-		}
-		if (!build_replay_path(dispatcher->temp_path,
-		                       sizeof(dispatcher->temp_path),
-		                       request->replay_id, request->replay_id_length,
-		                       ".part") ||
-		    !build_replay_path(dispatcher->target_path,
-		                       sizeof(dispatcher->target_path),
-		                       request->replay_id, request->replay_id_length,
-		                       ".iec") ||
-		    !build_upload_scratch(dispatcher, false))
-			return http_error(dispatcher, 507, "sd_upload");
-		return sd_upload(dispatcher, AIUS_SD_INSTALL_FINALIZE_PART,
-		                 request->content_length, request->content_range_start,
-		                 (const uint8_t *)"{\"ok\":true}",
-		                 sizeof("{\"ok\":true}") - 1u);
-	}
 	if (!resource_path_valid(request->resource, request->resource_length) ||
 	    !build_root_path(dispatcher->target_path,
 	                     sizeof(dispatcher->target_path),
@@ -1543,25 +1424,15 @@ static FLASHMEM const AiusHttpApplicationResponse *dispatch_sd(
 		return dispatch_sd_upload(dispatcher, request);
 	/* Phase 4h (B2, Q1): with the overlay, a www or dsp.json read looks up
 	 * the store first and a www DELETE is a tombstone, so their card gate
-	 * moves below; status and replay routes keep it here. */
+	 * moves below; the status route keeps it here. */
 	overlay = sd_overlay_present();
-	if ((!overlay || request->route == AIUS_HTTP_ROUTE_SD_STATUS ||
-	     request->route == AIUS_HTTP_ROUTE_SD_REPLAY) &&
+	if ((!overlay || request->route == AIUS_HTTP_ROUTE_SD_STATUS) &&
 	    !app->sd_ready(app->context))
 		return http_error(dispatcher, 503, "sd_unavailable");
 	if (request->route == AIUS_HTTP_ROUTE_SD_STATUS)
 		return http_json(dispatcher, 200, "{\"ready\":true}");
-	if (request->route == AIUS_HTTP_ROUTE_SD_REPLAY) {
-		if (!replay_id_chars_valid(request->replay_id,
-		                           request->replay_id_length) ||
-		    !build_replay_path(dispatcher->target_path,
-		                       sizeof(dispatcher->target_path),
-		                       request->replay_id, request->replay_id_length,
-		                       ".iec"))
-			return http_error(dispatcher, 404, "sd_path");
-		content_type = kContentBinary;
-	} else if (request->method == AIUS_HTTP_GET &&
-	           resource_is_dsp_model(request)) {
+	if (request->method == AIUS_HTTP_GET &&
+	    resource_is_dsp_model(request)) {
 		/* GET-only by construction, which is what keeps the carve-out a read:
 		 * a PUT never arrives here (it left for dispatch_sd_upload above, and
 		 * is refused there by the www/-only path rule), and a DELETE falls
@@ -1725,110 +1596,6 @@ static FLASHMEM const AiusHttpApplicationResponse *dispatch_config_public(
 	                      AIUS_OPTICAL_APP_CONFIG_NAME,
 	                      sizeof(AIUS_OPTICAL_APP_CONFIG_NAME) - 1u,
 	                      "config_invalid");
-}
-
-static FLASHMEM const AiusHttpApplicationResponse *dispatch_replays(
-	AiusOpticalAppDispatcher *dispatcher, const AiusHttpRequest *request)
-{
-	const AiusOpticalApp *app = &dispatcher->app;
-	bool loop = false;
-	bool public_route = request->route == AIUS_HTTP_ROUTE_REPLAYS_STATUS ||
-		(request->route == AIUS_HTTP_ROUTE_REPLAYS &&
-		 request->method == AIUS_HTTP_GET);
-	if (!public_route &&
-	    !app->auth_matches(app->context, request->sd_auth,
-	                       request->sd_auth_length))
-		return http_error(dispatcher, 401, "sd_auth");
-	if (request->route == AIUS_HTTP_ROUTE_REPLAYS_STATUS)
-		return http_serialized(dispatcher, kContentJson,
-		                       app->write_replay_status(app->context,
-		                                                dispatcher->body,
-		                                                dispatcher->body_capacity));
-	if (request->route == AIUS_HTTP_ROUTE_REPLAYS_STOP) {
-		app->replay_stop(app->context);
-		return http_json(dispatcher, 200,
-		                 "{\"ok\":true,\"state\":\"stopped\"}");
-	}
-	if (request->route == AIUS_HTTP_ROUTE_REPLAYS_START) {
-		if (!app->sd_ready(app->context) ||
-		    !replay_body_id(dispatcher, request, &loop))
-			return http_error(dispatcher, 400, "replay_body");
-		switch (app->replay_start(app->context, dispatcher->replay_id, loop)) {
-		case AIUS_OPTICAL_APP_REPLAY_OK:
-			return http_body_text(dispatcher, 200,
-				snprintf((char *)dispatcher->body, dispatcher->body_capacity,
-				         "{\"ok\":true,\"state\":\"prebuffering\",\"id\":\"%s\"}",
-				         dispatcher->replay_id));
-		case AIUS_OPTICAL_APP_REPLAY_NOT_FOUND:
-			return http_error(dispatcher, 404, "replay_not_found");
-		case AIUS_OPTICAL_APP_REPLAY_CARRIER_PRESENT:
-			/* Its own token, not the generic 409 below: the live input owns
-			 * the audio path, so this refusal clears when the carrier goes
-			 * away rather than when the request changes. */
-			return http_error(dispatcher, 409, "replay_carrier_present");
-		case AIUS_OPTICAL_APP_REPLAY_FILL_BUSY:
-			/* Phase 4g (owner, audit finding 2): no replay while the
-			 * web-cache fill walk is incomplete; a 503 carries
-			 * Retry-After (aius_http_write_headers) and the replay tools
-			 * retry on it. */
-			return http_error(dispatcher, 503, "fill_busy");
-		case AIUS_OPTICAL_APP_REPLAY_ACTIVE:
-		case AIUS_OPTICAL_APP_REPLAY_FAILED:
-		default:
-			break;
-		}
-		return http_error(dispatcher, 409, "replay_start");
-	}
-	if (request->method == AIUS_HTTP_GET) {
-		/* Pre-cutover behaviour: the listing reports missing media in its own
-		 * body with a 200, it does not fail the request. */
-		if (!app->sd_ready(app->context))
-			return http_error(dispatcher, 200, "sd_unavailable");
-		/* The listing enumerates the card directly -- the portable engine has
-		 * no directory job to move it onto -- so it is exactly as unsafe
-		 * against a running job as the /sd/ index is, and gets the same gate
-		 * for the same reason. Phase 14d found this one missing: the listing
-		 * could walk /aius/replays while a refill, an upload or a probe held
-		 * the volume. A busy volume answers 503 sd_busy, so the caller is told
-		 * to retry rather than handed a listing read across someone else's
-		 * transaction. Phase 4g: like the DELETE below, this route never runs
-		 * beside a CACHE_FILL file in flight: its dispatch is held until the
-		 * fill it cancelled has stopped (see dispatch_sd_index), and its end
-		 * extends the fill hold. */
-		if (app->sd_busy(app->context))
-			return http_error(dispatcher, 503, "sd_busy");
-		return http_serialized(dispatcher, kContentJson,
-		                       app->write_replay_list(app->context,
-		                                              dispatcher->body,
-		                                              dispatcher->body_capacity));
-	}
-	if (request->method == AIUS_HTTP_DELETE) {
-		if (!replay_body_id(dispatcher, request, &loop))
-			return http_error(dispatcher, 400, "replay_body");
-		/* Same gate, same reason: replay_delete stats and removes on the card
-		 * itself. Its cost is at most three primitives, so the bound was never
-		 * the problem here -- the missing exclusion was. Ordered after the body
-		 * parse so a malformed request keeps answering 400 whatever the volume
-		 * is doing. */
-		if (app->sd_busy(app->context))
-			return http_error(dispatcher, 503, "sd_busy");
-		switch (app->replay_delete(app->context, dispatcher->replay_id)) {
-		case AIUS_OPTICAL_APP_REPLAY_OK:
-			return http_body_text(dispatcher, 200,
-				snprintf((char *)dispatcher->body, dispatcher->body_capacity,
-				         "{\"ok\":true,\"deleted\":\"%s\"}",
-				         dispatcher->replay_id));
-		case AIUS_OPTICAL_APP_REPLAY_ACTIVE:
-			return http_error(dispatcher, 409, "replay_active");
-		case AIUS_OPTICAL_APP_REPLAY_NOT_FOUND:
-			return http_error(dispatcher, 404, "replay_not_found");
-		case AIUS_OPTICAL_APP_REPLAY_FAILED:
-		default:
-			break;
-		}
-		return http_error(dispatcher, 503, "replay_delete");
-	}
-	return http_error(dispatcher, 405, "replay_method");
 }
 
 /* ------------------------------------------------------------------ */
@@ -2008,14 +1775,14 @@ static FLASHMEM const AiusHttpApplicationResponse *ota_status_document(
  * the body carries them whole, and the answer states the next offset. So a
  * dropped connection costs one chunk and the client resumes from what it was
  * last told -- which is the property a multi-megabyte firmware push over one
- * socket needs, and the reason this mirrors the replay upload rather than
- * inventing a session.
+ * socket needs, and the reason this is a chunked upload rather than
+ * a session.
  *
  * DURABLE STAGING, ABSORB DEFERRED TO THE COMMIT (aius-ota-resilience.md
  * Phase 4a). On an accepted chunk the route writes the chunk's bytes to the
  * fixed staging file /aius/ota-staged.img through the existing bounded SD job
  * engine (AIUS_SD_INSTALL_APPEND_PART at the chunk's file offset, exactly the
- * replay APPEND_PART upload), so the container survives to activation. The
+ * the chunked-append shape), so the container survives to activation. The
  * 200 is the SD job's -- withheld until the write commits.
  *
  * The session's absorb no longer runs here. It used to run synchronously
@@ -2078,7 +1845,7 @@ static FLASHMEM const AiusHttpApplicationResponse *ota_image_chunk(
 	int written;
 
 	/* 1. A range and a body. Without the range the chunk has no offset to be
-	 * at, which is the same refusal a Content-Range-less replay PUT gets. */
+	 * at, which is the same refusal a Content-Range-less chunk gets. */
 	if (!request->has_content_range || request->body == NULL ||
 	    request->body_length == 0u)
 		return http_error(dispatcher, 400, "ota_chunk");
@@ -2304,10 +2071,8 @@ static FLASHMEM bool app_complete(const AiusOpticalApp *app)
 	       app->auth_matches != NULL && app->write_home != NULL &&
 	       app->write_status != NULL && app->write_events != NULL &&
 	       app->write_dsp_config != NULL && app->write_meters != NULL &&
-	       app->write_replay_status != NULL && app->write_replay_list != NULL &&
 	       app->store_public_config != NULL && app->store_dsp_config != NULL &&
-	       app->replay_start != NULL && app->replay_delete != NULL &&
-	       app->replay_stop != NULL && app->set_test_running != NULL &&
+	       app->set_test_running != NULL &&
 	       app->clear_counters != NULL && app->request_reboot != NULL &&
 	       app->write_usb_payload != NULL && app->upload_id != NULL &&
 	       app->write_measure != NULL && app->measure_start != NULL &&
@@ -2415,7 +2180,7 @@ FLASHMEM AiusOpticalSdBeginGate aius_optical_sd_begin_blocked(
 	     (ops->present(context) && ops->held(context))) &&
 	    sd_remount_waiting(flush, now_ms))
 		return AIUS_OPTICAL_SD_BEGIN_WAIT;
-	return aius_optical_sd_replay_begin_blocked(flush, ops)
+	return aius_optical_sd_no_card_begin_blocked(flush, ops)
 	               ? AIUS_OPTICAL_SD_BEGIN_NO_CARD
 	               : AIUS_OPTICAL_SD_BEGIN_NONE;
 }
@@ -2430,7 +2195,7 @@ FLASHMEM bool aius_optical_sd_step_begin_blocked(
 	       AIUS_OPTICAL_SD_BEGIN_NONE;
 }
 
-FLASHMEM bool aius_optical_sd_replay_begin_blocked(
+FLASHMEM bool aius_optical_sd_no_card_begin_blocked(
 	AiusOpticalSdFlush *flush, const AiusOpticalSdFlushOps *ops)
 {
 	void *const context = ops->context;
@@ -3178,10 +2943,10 @@ FLASHMEM const AiusHttpApplicationResponse *aius_optical_app_ota_dispatch(
  * without touching the card. They were the only mutating routes in the whole
  * surface that took no credential at all, so any host that could reach port 80
  * could stop the audio path or reset the board mid-upload. They are now gated on
- * X-Aius-SD-Auth exactly as the SD, replay and config-mutation routes are.
+ * X-Aius-SD-Auth exactly as the SD and config-mutation routes are.
  *
  * The read-only routes -- GET on /, /api/status, /api/events, /api/meters,
- * /api/dsp/config, /api/replays, /api/replays/status and /sd/ -- stay open
+ * /api/dsp/config and /sd/ -- stay open
  * deliberately: they mutate nothing, and the recovery smoke runner polls
  * /api/status and /api/events to decide whether the board came back. Gating a
  * route whose whole job is to be readable while the board is unhealthy would
@@ -3270,13 +3035,7 @@ static FLASHMEM const AiusHttpApplicationResponse *http_dispatch_route(
 		return dispatch_config_public(dispatcher, request);
 	case AIUS_HTTP_ROUTE_SD_STATUS:
 	case AIUS_HTTP_ROUTE_SD_FILE:
-	case AIUS_HTTP_ROUTE_SD_REPLAY:
 		return dispatch_sd(dispatcher, request);
-	case AIUS_HTTP_ROUTE_REPLAYS:
-	case AIUS_HTTP_ROUTE_REPLAYS_STATUS:
-	case AIUS_HTTP_ROUTE_REPLAYS_START:
-	case AIUS_HTTP_ROUTE_REPLAYS_STOP:
-		return dispatch_replays(dispatcher, request);
 	case AIUS_HTTP_ROUTE_MEASURE:
 	case AIUS_HTTP_ROUTE_MEASURE_START:
 		return dispatch_measure(dispatcher, request);
@@ -3537,9 +3296,6 @@ FLASHMEM AiusOpticalAdmitClass aius_optical_admit_route_class(
 		/* The GET is a one-shot serialise a 503 would turn into a failed
 		 * page load (F13); only the PUT parse is a class. */
 		return method == AIUS_HTTP_PUT ? AIUS_OPTICAL_ADMIT_SETTINGS
-		                               : AIUS_OPTICAL_ADMIT_NONE;
-	case AIUS_HTTP_ROUTE_REPLAYS:
-		return method == AIUS_HTTP_GET ? AIUS_OPTICAL_ADMIT_DIRECTORY
 		                               : AIUS_OPTICAL_ADMIT_NONE;
 	default:
 		return AIUS_OPTICAL_ADMIT_NONE;
@@ -3817,10 +3573,9 @@ FLASHMEM bool aius_optical_web_fill_held(const AiusOpticalWebFill *fill,
 }
 
 FLASHMEM bool aius_optical_web_fill_paused(const AiusOpticalWebFill *fill,
-                                           uint32_t now_ms,
-                                           bool replay_playing)
+                                           uint32_t now_ms)
 {
-	return replay_playing || aius_optical_web_fill_held(fill, now_ms);
+	return aius_optical_web_fill_held(fill, now_ms);
 }
 
 FLASHMEM bool aius_optical_web_fill_sd_start(AiusOpticalWebFill *fill,
@@ -3857,9 +3612,6 @@ FLASHMEM bool aius_optical_app_route_reads_card(const AiusHttpRequest *request)
 {
 	if (request == NULL)
 		return false;
-	if (request->route == AIUS_HTTP_ROUTE_REPLAYS)
-		return request->method == AIUS_HTTP_GET ||
-		       request->method == AIUS_HTTP_DELETE;
 	return request->route == AIUS_HTTP_ROUTE_SD_FILE &&
 	       request->method == AIUS_HTTP_GET && resource_is_directory(request);
 }

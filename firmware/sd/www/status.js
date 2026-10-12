@@ -2,8 +2,9 @@
  *
  * OWNS: the whole /sd/www/status.html page -- one GET /api/status per second
  * rendered into five cards (audio path, configuration, network, storage,
- * board), the input source derived from the carrier and the transmit gate,
- * and the signal-flow line that says whether anything is reaching the output.
+ * board), the input source derived from the carrier, the signal-flow line that
+ * says whether anything is reaching the output, and the Live processing card
+ * (GET /api/meters every 250 ms into the shared waveform canvas).
  *
  * The board card's forensic rows -- A/B slot, previous boot, crash record,
  * dark-window stamp, stall witness -- are each optional in TWO different ways
@@ -23,16 +24,17 @@
  * This file is served off the Teensy's SD card. It is deliberately a plain
  * classic script with no imports, no build step, and no shared UI kit -- the
  * device cannot reach a host application's module mounts. Same constraint as
- * dsp-editor.js and replays.js; keep the pages looking like one product.
+ * dsp-editor.js; keep the pages looking like one product.
  */
 (() => {
   'use strict';
 
   const $ = (id) => document.getElementById(id);
   const shared = window.aiusSdShared;
-  const { setPill, request, describe, formatBytes, formatUs } = shared;
+  const { setPill, request, describe, formatBytes, formatUs, formatDb, drawWaveform } = shared;
 
   const STATUS_POLL_MS = 1000; /* the status JSON is an epoch-latched snapshot */
+  const METER_POLL_MS = 250; /* faster than the status tick so the envelope moves */
 
   /* Numeric vocabularies mirrored from the firmware the way dsp-editor.js
    * mirrors AIUS_DSP_MODEL_MAX_JSON_BYTES: the wire carries the raw number and
@@ -73,7 +75,7 @@
     'network',
     'http',
     'udp',
-    'replay',
+    'service',
     'sd',
     'audio',
     'epoch-complete',
@@ -181,14 +183,9 @@
 
   /* The one question this page exists to answer at a glance, and the device
    * never answers it directly: it serves the inputs. A locked carrier owns the
-   * audio path (a replay start against one is refused with 409
-   * replay_carrier_present), otherwise the gate's latched replay term says a
-   * replay is feeding it, otherwise nothing is. */
+   * audio path; without one nothing is feeding it. */
   function inputSource(status) {
-    if (truthy(status.carrier)) return 'optical carrier';
-    const gate = status.tx_gate || {};
-    if (truthy(gate.replay_running)) return 'replay';
-    return 'none';
+    return truthy(status.carrier) ? 'optical carrier' : 'none';
   }
 
   /* input -> DSP -> gate -> output, with each stage saying what it is doing.
@@ -243,7 +240,6 @@
     const gate = status.tx_gate || {};
     put('gate-open', truthy(gate.open) ? 'open' : 'dark');
     put('gate-carrier', truthy(gate.carrier_locked) ? 'locked' : 'unlocked');
-    put('gate-replay', truthy(gate.replay_running) ? 'running' : 'stopped');
   }
 
   /* The two facts this card kept conflating. `source`/`model_origin` describe
@@ -516,7 +512,7 @@
   function renderUnreachable(result) {
     /* Every grid keeps its last good values, so every grid dims: a frozen
      * "PCM / gate open" beside a live-looking pill is the defect this page
-     * inherits from the replay manager's poll (UX finding P4). Reached only
+     * was an earlier page's defect here too (UX finding P4). Reached only
      * after three consecutive failures; a 503 never gets here. */
     setAllPills('unreachable');
     setGridsStale(true);
@@ -536,12 +532,55 @@
     setCardStatus('poll', `Input source: ${inputSource(status)}. Snapshot at epoch ${Number(status.loop_epoch) || 0}.`);
   }
 
+  /* ---- live processing ---------------------------------------------------- */
+
+  /* GET /api/meters wire shape, settled in docs/plans/aius-dsp-config-api.md
+     §Meters endpoint: waveform points are per-mille integers 0..1000 of full
+     scale (non-negative magnitudes, capped at 128 points, drawn mirrored about
+     the centre line by the shared renderer), output peak/rms are [L, R]
+     arrays, levels are dBFS floored at -120, and sequence 0 means "never
+     published". */
+  const meterPair = (values) => {
+    const pair = Array.isArray(values) ? values : [];
+    return `${formatDb(pair[0])} / ${formatDb(pair[1])}`;
+  };
+
+  function markMetersUnreachable(result) {
+    setPill($('meter-state'), 'unreachable');
+    $('meter-summary').textContent = `No meter snapshot -- ${describe(result)}.`;
+    drawWaveform($('waveform'), []);
+  }
+
+  function renderMeters(result) {
+    const meters = result.body;
+    const published = Number(meters.sequence) > 0;
+    drawWaveform($('waveform'), published ? meters.waveform : []);
+    if (!published) {
+      setPill($('meter-state'), 'no data');
+      $('meter-summary').textContent = 'No meter snapshot published yet.';
+      return;
+    }
+    setPill($('meter-state'), 'live');
+    const output = meters.output || {};
+    $('meter-summary').textContent = `Output peak ${meterPair(output.peak_dbfs)} dBFS · RMS ${meterPair(
+      output.rms_dbfs,
+    )} dBFS · latency ${formatUs(Number(meters.estimated_latency_us))}`;
+  }
+
   shared.createPoller({
     fetch: () => request('/api/status', { headers: { Accept: 'application/json' } }),
     cadenceMs: STATUS_POLL_MS,
     immediate: true,
     onAnswer: renderAnswer,
     onUnreachable: renderUnreachable,
+    onError: cardSink('poll'),
+  });
+  shared.createPoller({
+    fetch: () => request('/api/meters', { headers: { Accept: 'application/json' } }),
+    cadenceMs: METER_POLL_MS,
+    immediate: true,
+    onAnswer: renderMeters,
+    onUnreachable: markMetersUnreachable,
     onError: cardSink('poll'),
   });
 })();

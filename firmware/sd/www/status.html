@@ -20,7 +20,6 @@
     </a>
     <nav class="bench-nav__links" aria-label="Device pages">
       <a href="index.html">DSP editor</a>
-      <a href="replays.html">Replay manager</a>
       <a href="status.html" aria-current="page">Device status</a>
       <a href="upgrade.html">Firmware upgrade</a>
     </nav>
@@ -49,7 +48,6 @@
           <div><span>Overruns</span><strong id="overruns">--</strong></div>
           <div><span>Gate open</span><strong id="gate-open">--</strong></div>
           <div><span>Gate carrier lock</span><strong id="gate-carrier">--</strong></div>
-          <div><span>Gate replay term</span><strong id="gate-replay">--</strong></div>
         </div>
         <p id="poll-status" class="hint" role="status">Reading device status...</p>
         <p id="poll-errors" class="error-summary" role="alert" hidden></p>
@@ -116,6 +114,13 @@
           <div class="status-grid__wide"><span>OTA dark window</span><strong id="ota-dark">--</strong></div>
           <div class="status-grid__wide"><span>Stall witness</span><strong id="stall-witness">--</strong></div>
         </div>
+      </section>
+
+      <section class="panel" aria-labelledby="live-title">
+        <div class="section-title panel__head"><h2 id="live-title" class="kicker">06 / Live processing</h2><span id="meter-state" class="pill">waiting</span></div>
+        <canvas id="waveform" class="live-canvas" width="960" height="180"></canvas>
+        <p id="meter-summary" class="hint">Meter data unavailable.</p>
+        <p class="hint"><a href="/api/meters">machine meters</a></p>
       </section>
     </div>
   </main>

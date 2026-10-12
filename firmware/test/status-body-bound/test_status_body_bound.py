@@ -718,7 +718,7 @@ PINNED_KEYS = {
 BRIEF_EMITTER = "http_status_brief_json"
 BRIEF_LIMIT = 512
 BRIEF_KEYS = ("carrier", "state", "sample_rate", "pipeline_diag", "codec_pc",
-              "tx_gate", "open", "replay_running",
+              "tx_gate", "open",
               # Phase 4h: sd_flush in the brief carries exactly these four.
               "sd_flush", "dirty", "held", "failures", "last_fault", "drained")
 

@@ -221,7 +221,7 @@ static void test_tracker_lock_source_and_rate_limit(void)
 	CHECK(result.quiesce_requested);
 	CHECK(!result.carrier_ready);
 	result = step(&tracker, true, 48000000u,
-	              AIUS_CLOCK_SOURCE_REPLAY, 601u);
+	              AIUS_CLOCK_SOURCE_NONE, 601u);
 	CHECK(!result.carrier_ready);
 
 	for (i = 0u; i < AIUS_CLOCK_ACCEPT_SAMPLES - 1u; ++i)
@@ -992,8 +992,6 @@ typedef struct {
 	double src_extra_mhz;
 	double est_extra_mhz;
 	bool carrier;
-	bool replay;
-	bool replay_applied;
 	/* TX */
 	double half_start;
 	double period;
@@ -1062,8 +1060,6 @@ typedef struct {
 	uint32_t fill_stamps;
 	uint32_t centre_stamps;
 	uint32_t refusals;
-	uint32_t writes_during_replay;
-	bool replay_plan_exact;
 	bool first_fill_seen;
 	uint32_t first_fill_centre;
 	uint32_t first_fill_composed;
@@ -1141,8 +1137,6 @@ static PlantCfg plant_cfg(uint32_t nominal, PlantClass cls, int32_t offset)
 
 static double plant_true_mhz(const Plant *p)
 {
-	if (p->replay)
-		return 48000000.0;
 	return (double)(p->cfg.base_mhz ? p->cfg.base_mhz
 	                                : p->cfg.nominal_hz * 1000u) +
 	       (double)p->cfg.offset_mhz +
@@ -1162,7 +1156,7 @@ static uint32_t plant_estimate(Plant *p)
 	double v = plant_true_mhz(p) - (double)p->cfg.offset_mhz +
 	           p->est_extra_mhz;
 
-	if (p->cfg.estimate_noise && !p->replay) {
+	if (p->cfg.estimate_noise) {
 		v += (rng_unit(&p->rng) - 0.5) * 1200.0 + plant_triangle(p->t);
 		v = (double)(int64_t)(v / 140.0 + 0.5) * 140.0;
 	}
@@ -1414,30 +1408,25 @@ static void plant_block(Plant *p)
 			p->committed_since_arm += sh.block_frames;
 	}
 	if (p->gate_open) {
-		if (p->replay) {
-			(void)aius_tx_fill_sensor_hold(&p->sensor, 1, 1, 1);
-		} else {
-			const AiusTxFillReader reader = {
-				p, reader_fills, reader_level, reader_offset};
-			uint32_t excess;
+		const AiusTxFillReader reader = {
+			p, reader_fills, reader_level, reader_offset};
+		uint32_t excess;
 
-			(void)aius_tx_fill_sensor_sample(&p->sensor, &reader);
-			excess = aius_tx_governor_step(
-				&p->gov, PLANT_GOV_TARGET, PLANT_GOV_DEADBAND,
-				PLANT_GOV_WINDOW, p->level, sh.block_frames,
-				p->underruns, 1);
-			if (excess != 0u) {
-				p->level -= excess < p->level ? excess : p->level;
-				p->governor_trims++;
-				p->last_gov_t = p->t;
-				aius_tx_fill_sensor_reset_keep_latches(&p->sensor);
-			}
+		(void)aius_tx_fill_sensor_sample(&p->sensor, &reader);
+		excess = aius_tx_governor_step(
+			&p->gov, PLANT_GOV_TARGET, PLANT_GOV_DEADBAND,
+			PLANT_GOV_WINDOW, p->level, sh.block_frames,
+			p->underruns, 1);
+		if (excess != 0u) {
+			p->level -= excess < p->level ? excess : p->level;
+			p->governor_trims++;
+			p->last_gov_t = p->t;
+			aius_tx_fill_sensor_reset_keep_latches(&p->sensor);
 		}
 		p->level += sh.block_frames;
-		if (!p->replay)
-			aius_tx_fill_sensor_commit(
-				&p->sensor, sh.block_frames, unit_frames,
-				(uint32_t)(uint64_t)(p->t * 1e6), p->cfg.nominal_hz);
+		aius_tx_fill_sensor_commit(
+			&p->sensor, sh.block_frames, unit_frames,
+			(uint32_t)(uint64_t)(p->t * 1e6), p->cfg.nominal_hz);
 	}
 schedule:
 	p->block_in_unit++;
@@ -1509,7 +1498,7 @@ static void plant_record_window(Plant *p,
 }
 
 /* clock_refresh_applied's dark-end edge. The note fires once, only for a
- * transition the apply started, never for a replay, at the accepted nominal,
+ * transition the apply started, at the accepted nominal,
  * and (R4) never after a centre commit in the same pass. */
 static void plant_refresh_dark_end(Plant *p, uint32_t now_ms,
                                    bool centre_committed_in_pass,
@@ -1518,17 +1507,14 @@ static void plant_refresh_dark_end(Plant *p, uint32_t now_ms,
 	if (!(p->dark && may_end && p->t >= p->dark_until))
 		return;
 	p->dark = false;
-	if (p->apply_started && !p->replay && !centre_committed_in_pass &&
+	if (p->apply_started && !centre_committed_in_pass &&
 	    p->applied.nominal_rate_hz == p->tr.accepted_nominal_hz) {
 		CHECK(aius_rate_tracker_note_target_applied(
 			&p->tr, plant_readback(p), now_ms));
 		p->notes++;
 	}
 	p->apply_started = false;
-	if (p->replay) {
-		p->gate_open = true;
-		p->level = 128u;
-	} else if (p->tr.carrier_ready && !p->gate_open) {
+	if (p->tr.carrier_ready && !p->gate_open) {
 		plant_arm(p, p->next_arm_block);
 	}
 }
@@ -1546,8 +1532,7 @@ static void plant_pass(Plant *p)
 	memset(&sample, 0, sizeof(sample));
 	sample.carrier_locked = p->carrier;
 	sample.carrier_rate_millihz = plant_estimate(p);
-	sample.source = p->replay ? AIUS_CLOCK_SOURCE_REPLAY
-	                          : AIUS_CLOCK_SOURCE_LIVE;
+	sample.source = AIUS_CLOCK_SOURCE_LIVE;
 	sample.now_ms = now_ms;
 	r = aius_rate_tracker_step(&p->tr, &sample);
 	if (r.target_update) {
@@ -1558,13 +1543,6 @@ static void plant_pass(Plant *p)
 		(void)aius_rate_tracker_fill_reset(&p->tr, true, NULL);
 		plant_gate_close(p);
 		p->setpoint = 0u;
-	}
-	if (p->replay && !p->replay_applied) {
-		(void)aius_rate_tracker_fill_reset(&p->tr, true, NULL);
-		CHECK(aius_spdif_clock_plan(48000u, 48000000u, &p->desired));
-		plant_full_apply(p);
-		p->replay_applied = true;
-		applied_now = true;
 	}
 	if (r.nominal_accepted) {
 		(void)aius_rate_tracker_fill_reset(&p->tr, true, NULL);
@@ -1580,7 +1558,7 @@ static void plant_pass(Plant *p)
 
 	snap = aius_tx_fill_sensor_snapshot(&p->sensor);
 	memset(&in, 0, sizeof(in));
-	in.emit_allowed = !p->replay && p->tr.carrier_ready &&
+	in.emit_allowed = p->tr.carrier_ready &&
 	                  p->plan_applied && p->gate_open && !p->dark;
 	in.have_applied = p->plan_applied;
 	in.emission_readback_millihz = p->plan_applied ? plant_readback(p) : 0u;
@@ -1638,8 +1616,6 @@ static void plant_pass(Plant *p)
 		                plant_request_trim(p, &plan, fr.emit_kind);
 
 		aius_rate_tracker_note_emit(&p->tr, ok);
-		if (ok && p->replay)
-			p->writes_during_replay++;
 		if (ok && fr.emit_kind == AIUS_RATE_TRACKER_TRIM_FILL) {
 			p->fill_writes++;
 			if (p->nwin != 0u)
@@ -1653,9 +1629,6 @@ static void plant_pass(Plant *p)
 			p->centre_writes++;
 		}
 	}
-	if (p->replay && p->replay_applied && !p->dark &&
-	    p->applied.target_rate_millihz != 48000000u)
-		p->replay_plan_exact = false;
 }
 
 static void plant_init(Plant *p, const PlantCfg *cfg)
@@ -1666,7 +1639,6 @@ static void plant_init(Plant *p, const PlantCfg *cfg)
 	p->cls = cfg->cls;
 	p->next_cls = cfg->cls;
 	p->carrier = true;
-	p->replay_plan_exact = true;
 	aius_rate_tracker_init(&p->tr);
 	aius_tx_fill_sensor_init(&p->sensor);
 	aius_tx_governor_reset(&p->gov, 0u);
@@ -2337,7 +2309,6 @@ static void test_plant_resets_during_deferral(void)
 	uint32_t pending;
 	uint32_t notes;
 	uint32_t updates;
-	uint32_t writes;
 
 	current_key = "plant.fault-retry-during-deferral";
 	plant_deferral(p, &cfg);
@@ -2356,23 +2327,6 @@ static void test_plant_resets_during_deferral(void)
 	CHECK(p->trim_updates == updates + 1u); /* retargets resume */
 	CHECK(p->tr.applied_target_millihz == 48000000u);
 
-	current_key = "plant.replay-during-deferral";
-	plant_deferral(p, &cfg);
-	writes = p->fill_writes + p->centre_writes;
-	p->replay = true;
-	plant_run(p, p->t + 60.0);
-	CHECK(p->tr.pending_centre_millihz == 0u);
-	CHECK(p->applied.target_rate_millihz == 48000000u);
-	CHECK(p->replay_plan_exact);
-	CHECK(p->gate_open && p->writes_during_replay == 0u);
-	CHECK(p->fill_writes + p->centre_writes == writes);
-	CHECK(p->tr.fill_integral_microhz == 0);
-	p->replay = false;
-	p->replay_applied = false;
-	plant_run(p, p->t + 30.0);
-	CHECK(p->tr.carrier_ready && p->gate_open);
-	CHECK(p->tr.fill_integral_microhz != 0 || p->nwin > 0u);
-
 	current_key = "plant.carrier-loss-during-deferral";
 	plant_deferral(p, &cfg);
 	plant_carrier_loss(p);
@@ -2382,8 +2336,8 @@ static void test_plant_resets_during_deferral(void)
 	plant_run(p, p->t + 30.0);
 	CHECK(p->tr.pending_centre_millihz == 0u && p->gate_open);
 	printf("plant.resets-during-deferral: fault retry commits the pending "
-	       "centre (I 0, one note, retargets resume); replay and carrier "
-	       "loss discard it, replay plan exactly 48000000, no writes PASS\n");
+	       "centre (I 0, one note, retargets resume); carrier loss "
+	       "discards it PASS\n");
 }
 
 static void test_plant_structural_apply(void)

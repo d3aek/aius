@@ -86,7 +86,7 @@ typedef struct {
 		void *context,
 		const AiusRuntimeBudget *budget,
 		uint32_t now_ms);
-	bool (*replay)(
+	bool (*service)(
 		void *context,
 		const AiusRuntimeBudget *budget,
 		uint32_t now_ms);

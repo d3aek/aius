@@ -12,7 +12,7 @@ extern "C" {
  *
  * The three states the owner saw as counter rates only: SIS SYMERR alone,
  * SYMERR with BITERR, and SYMERR with BITERR and LOCKLOSS. Stepped once per
- * REPLAY epoch by input_fault_service() (about 6,500/s, see aius_recorder.h)
+ * SERVICE epoch by input_fault_service() (about 6,500/s, see aius_recorder.h)
  * from the SIS error subset that epoch latched. Everything is judged over one
  * AIUS_INPUT_RX_WINDOW_MS window, never per epoch:
  *   - rx_state is the class of the OR of the error bits seen in the last

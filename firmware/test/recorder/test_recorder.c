@@ -438,7 +438,7 @@ static void test_underrun_gate_qualification(void)
 
 /* The debounce this settle counter exists for: field evidence shows the
  * spurious boot bring-up trigger firing at block 1, well after the gate's
- * own closed->open edge (a replay session opens the gate almost
+ * own closed->open edge (a session opens the gate almost
  * immediately; an unrelated stall lands a couple of seconds later). Prove
  * a large underrun delta right after the edge does NOT fire, on both the
  * block-evaluable path and the epoch fallback -- an edge-only latch would
@@ -790,7 +790,7 @@ static void test_reclaim_window_starts_fresh_after_thaw(void)
 	assert(f.r.trigger == AIUS_RECORDER_TRIGGER_CARRIER_LOSS);
 }
 
-static void test_replay_stop_transient_suppressed(void)
+static void test_stop_transient_suppressed(void)
 {
 	Fixture f;
 	fixture_init(&f);
@@ -1373,7 +1373,7 @@ int main(void)
 	test_pending_token_without_blocks_reclaims_at_window();
 	test_reclaim_window_across_ms_wrap();
 	test_reclaim_window_starts_fresh_after_thaw();
-	test_replay_stop_transient_suppressed();
+	test_stop_transient_suppressed();
 	test_carrier_falling_edge();
 	test_governor_trim_trigger();
 	test_missed_fill_trigger();

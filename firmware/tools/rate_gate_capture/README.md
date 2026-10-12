@@ -80,7 +80,7 @@ write through the `trim_applied_at_ms` / `fill_applied_at_ms` stamp changes
 (`trim-not-observed`; a sample lacking a stamp is skipped, and the stamp
 fallback to `trim_updates` applies only when no sample carries it), checks
 `invalid_windows` delta at least `structural_replans` delta (`invalid_windows`
-rises on every successful apply: nominal accept, fault retry, replay apply;
+rises on every successful apply: nominal accept, fault retry;
 `structural_replans` only on a replan), and asserts `fill_trims` delta at most
 `fill_window_seq` delta plus 1 (`fill-cadence`). Gate 1's trim-cadence is
 advisory per design decision D4 (b): the receiver's ~140 mHz estimate quantum
@@ -189,7 +189,7 @@ than reading a vacuous pass, and the tool exits 2.
 ```bash
 python3 recorder_transitions.py \
     --tone-48 /tmp/tone-997-48000.wav --tone-44 /tmp/tone-997-44100.wav \
-    --with-replay --expect-build <revision>+teensy41-optical
+    --expect-build <revision>+teensy41-optical
 ```
 
 It drives 48→44.1→48 via aplay (`--phase-seconds first,middle,last`, default
@@ -223,7 +223,7 @@ slot and reduces. Operational contracts:
   only with `phase_samples 2` — two polls are guaranteed inside a tracking
   window only once it exceeds two 0.25 s intervals. The default 3 s middle
   clears `ACCEPTANCE_LATENCY_BUDGET_S` (1.85 s) by that rule; the old 2 s
-  lost it by 0.15 s on the 2026-09-03 run 1 (`observed ['48000', 'replay']`).
+  lost it by 0.15 s on the 2026-09-03 run 1 (the middle phase went unlabelled).
 - **The freeze is gated on acceptance, not on the trailing phase length.**
   After the trailing aplay returns the tool waits (≤ 1 s) for a poll stamped
   since the switch back showing the board tracking 48 kHz — the second
@@ -239,19 +239,10 @@ slot and reduces. Operational contracts:
   (lengthen the middle value of `--phase-seconds`), distinct from a freeze
   that failed to land.
 - **The run records the phase sequence it actually drove.** The evidence
-  metadata carries `analysis_options.expected_phases` — `["48000", "44100",
-  "48000"]`, plus `"replay"` only under `--with-replay` — and the bench's
-  `analyze` reads it back when `--expected-phases` is absent. Without it the
-  analyzer asserts the historic four-phase sequence and a run that never drove
-  the loss→replay leg fails `transition-sequence` for a phase nobody played.
-- **The evidence ends with the declared stimulus.** Under `--with-replay` the
-  poller is stopped and joined BEFORE the U24 is re-authorized: the restore is
-  bench housekeeping, not a driven phase, and its re-enumeration edge (four
-  garbage-rate `unsupported` events, the interrupted replay unit abandoned once
-  with `pipeline_last_failure` `TRUNCATED` — `MALFORMED` on images before
-  2026-09-03) is a replay→live transition `expected_phases` never declares.
-  Polled, the analyzer judged it as `transition-unattributed-unsupported` and
-  a `harmful-counter` on `au_abandons` (live run 1, 2026-09-03).
+  metadata carries `analysis_options.expected_phases` (`["48000", "44100",
+  "48000"]`), and the bench's `analyze` reads it back when
+  `--expected-phases` is absent; the bench's default is the same three
+  phases. The loss→replay leg and `--with-replay` are retired with replay.
 - **Ring capacity is checked against what the measurement needs.** The
   frames from just before the *first* rate boundary to the freeze must
   survive. The recorder stages the board's output frames at the output rate

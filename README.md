@@ -71,7 +71,7 @@ board and the enclosure engineering around it.
 - **Output follows the source rate**: 32, 44.1 or 48 kHz.
 - **Reset-safe transmitter.** A board that is booting or has faulted stays
   silent.
-- **Served from SD.** The editor, status, replay and upgrade pages all come off
+- **Served from SD.** The editor, status and upgrade pages all come off
   the card.
 - **Signed OTA upgrades**, staged and Ed25519-verified on the device.
 - **PSRAM flight recorder** that can be triggered to capture the audio ring when
@@ -105,7 +105,7 @@ board and the enclosure engineering around it.
 ## Start here
 
 - [User interface](docs/reference/user-interface.md): screenshots of the editor
-  where the mix is set, plus the status, replay and upgrade pages the device
+  where the mix is set, plus the status and upgrade pages the device
   serves off its SD card.
 - [Signal path](docs/reference/signal-path.md): the audio chain stage by stage,
   with the buffers, budgets and rounding behaviour of each.

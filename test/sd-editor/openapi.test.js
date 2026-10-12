@@ -80,7 +80,6 @@ const EMITTERS = {
     // latched, so last_failure is null and that literal also closes sd_diag.
     branchLiterals: ["null}"],
   },
-  http_replay_diag_json: { file: "src/optical_main.cpp" },
   http_audio_diag_json: { file: "src/optical_main.cpp" },
   http_clock_json: { file: "src/optical_main.cpp" },
   http_clock_regs_json: { file: "src/optical_main.cpp" },
@@ -137,8 +136,6 @@ const EMITTERS = {
   // loop shape as recorder_slot_array itself, so the item type is validated
   // once rather than the runtime position count.
   recorder_rate_change_array: { file: "src/optical_main.cpp" },
-  // GET /api/replays/status.
-  http_replay_status_json: { file: "src/optical_main.cpp" },
   // GET /api/dsp/config. Phase 4h: http_dsp_config_json hands the response buffer
   // to dsp_config_json, which hands it to the serialiser in aius_optical_app.cpp
   // (also the Q2 re-put's file form, which adds base_generation).
@@ -158,7 +155,6 @@ const DOCUMENTS = {
   status: { emitter: "http_status_json", schema: "Status" },
   statusBrief: { emitter: "http_status_brief_json", schema: "StatusBrief" },
   recorder: { emitter: "app_write_recorder", schema: "Recorder" },
-  replayStatus: { emitter: "http_replay_status_json", schema: "ReplayStatus" },
   dspConfig: {
     emitter: "http_dsp_config_json",
     schema: "DspConfig",
@@ -765,10 +761,6 @@ describe("Aius OpenAPI contract", () => {
       "/api/recorder/data",
       "/api/recorder/freeze",
       "/api/recorder/thaw",
-      "/api/replays",
-      "/api/replays/start",
-      "/api/replays/status",
-      "/api/replays/stop",
       "/api/sd",
       "/api/sd/mode",
       "/api/start",
@@ -845,18 +837,18 @@ describe("Aius OpenAPI contract", () => {
     }
 
     // The optical transmit gate: latched decision + latched inputs, policy
-    // open iff carrier_locked or replay_running, with the boot-blip and
-    // EOF-residue caveats stated where a client will read them.
+    // open iff carrier_locked, with the boot-blip caveat stated where a client
+    // will read it.
     expect(status.tx_gate).toEqual({ $ref: "#/components/schemas/TxGate" });
     const txGate = document.components.schemas.TxGate;
     expect(txGate.additionalProperties).toBe(false);
-    expect(txGate.required).toEqual(["open", "carrier_locked", "replay_running"]);
-    for (const field of ["open", "carrier_locked", "replay_running"]) {
+    expect(txGate.required).toEqual(["open", "carrier_locked"]);
+    for (const field of ["open", "carrier_locked"]) {
       expect(txGate.properties[field].enum).toEqual([0, 1]);
     }
+    expect(txGate.properties.replay_running).toBeUndefined();
     expect(txGate.description).toContain("latched");
     expect(txGate.description).toContain("blip");
-    expect(txGate.properties.replay_running.description).toContain("EOF");
 
     // The network measurement surface. Its whole purpose is to distinguish
     // readings that look alike, so the document has to keep those distinctions
@@ -1161,9 +1153,11 @@ describe("Aius OpenAPI contract", () => {
     expect(start.properties.f0_r.default).toBe(440);
     expect(start.properties.probes.maxItems).toBe(8);
     expect(Object.keys(post.responses).sort()).toEqual(["200", "400", "401", "409"]);
-    // Arm-then-start-replay is the documented operator order, with the
-    // epoch-side timeout bounds that make it safe.
+    // Render-then-arm is the documented operator order (the U24 stimulus runs
+    // first), with the epoch-side timeout bounds that make it safe.
+    expect(post.description).toContain("U24");
     expect(post.description).toContain("10 s");
+    expect(post.description).not.toMatch(/replay/i);
     expect(post.description).toContain("X-Aius-SD-Auth");
   });
 
@@ -1547,7 +1541,6 @@ describe("Aius OpenAPI contract", () => {
       ["tx_gate", "TxGate"],
       ["sd_diag", "SdDiag"],
       ["www_cache", "WwwCache"],
-      ["replay_diag", "ReplayDiag"],
       ["audio_diag", "AudioDiag"],
       ["clock", "Clock"],
       ["pipeline_diag", "PipelineDiag"],
@@ -1594,9 +1587,8 @@ describe("Aius OpenAPI contract", () => {
 
     // The clock object's vocabulary, in the firmware's own precedence order.
     const clock = document.components.schemas.Clock;
-    expect(clock.properties.master.enum).toEqual(["input", "output"]);
+    expect(clock.properties.master.enum).toEqual(["input"]);
     expect(clock.properties.state.enum).toEqual([
-      "replay",
       "fault",
       "unlocked",
       "unsupported",
@@ -1616,7 +1608,7 @@ describe("Aius OpenAPI contract", () => {
     expect(document.components.schemas.BootFuse.properties.read.description).toContain("host build");
 
     // The two failure-attribution objects keep the closed shape their siblings use.
-    for (const name of ["SdDiag", "SdDiagFailure", "ReplayDiag", "AudioDiag", "Clock", "PipelineDiag", "BootFuse"]) {
+    for (const name of ["SdDiag", "SdDiagFailure", "AudioDiag", "Clock", "PipelineDiag", "BootFuse"]) {
       const schema = document.components.schemas[name];
       expect(schema.additionalProperties).toBe(false);
       expect([...schema.required].sort()).toEqual(Object.keys(schema.properties).sort());
@@ -1712,22 +1704,26 @@ describe("Aius OpenAPI contract", () => {
     expect(document.components.schemas.RecorderSlot.properties.sample_rate_hz.description).toContain("8.8%");
   });
 
-  it("documents GET /api/replays/status exactly as the firmware serializes it", () => {
+  it("documents no replay route, schema, status field, clock state or fill_busy refusal (Phase 4i)", () => {
     const document = JSON.parse(readFileSync(documentPath, "utf8"));
-    const served = servedDocument("replayStatus");
-    expect(served.properties.size).toBeGreaterThan(10);
-    expect(compareWithSchema(document, served, "ReplayStatus")).toEqual(NO_DRIFT);
-    // The listing's row shape is a loop with a raw-character tail, which the
-    // extractor cannot assemble, so its keys are pinned against the row format
-    // literal directly: a renamed or added row key fails here, not silently.
-    const source = stripComments(
-      readFileSync(resolve(firmwareRoot, "src/optical_main.cpp"), "utf8"),
-      "optical_main.cpp",
+    expect(Object.keys(document.paths).filter((path) => path.includes("replay"))).toEqual([]);
+    for (const name of ["ReplayDiag", "ReplayList", "ReplayStatus"]) {
+      expect(document.components.schemas[name], name).toBeUndefined();
+    }
+    const status = document.components.schemas.Status.properties;
+    expect(status.replay_diag).toBeUndefined();
+    expect(document.components.schemas.TxGate.properties.replay_running).toBeUndefined();
+    expect(document.components.schemas.StatusBrief.properties.tx_gate.required).toEqual(["open"]);
+    expect(document.components.schemas.Clock.properties.state.enum).not.toContain("replay");
+    // Job kind 6 stays retired and is never reused, so CACHE_FILL keeps 7.
+    const kinds = Object.values(document.components.schemas).flatMap((schema) =>
+      Object.entries(schema.properties ?? {}).filter(([key]) => key === "job_kind"),
     );
-    const row = source.match(/\{\\"id\\":[^\n]*upload_next_offset[^\n]*/);
-    expect(row).not.toBeNull();
-    const rowKeys = [...row[0].matchAll(/\\"(\w+)\\":/g)].map((m) => m[1]);
-    expect(rowKeys).toEqual(Object.keys(document.components.schemas.ReplayList.properties.files.items.properties));
+    expect(kinds.some(([, field]) => field.description.includes("6 is retired"))).toBe(true);
+    // The only mention of the word left in the contract is the retired event
+    // type 3, which is documented as such.
+    expect(JSON.stringify(document).match(/replay(?!ing)/gi) ?? []).toHaveLength(1);
+    expect(JSON.stringify(document)).not.toContain("fill_busy");
   });
 
   it("documents GET /api/dsp/config exactly as the firmware serializes it", () => {
@@ -1826,22 +1822,10 @@ describe("Aius OpenAPI contract", () => {
     );
   });
 
-  it("refuses a replay start with 503 fill_busy and Retry-After while the fill walk is incomplete (Phase 4g)", () => {
+  it("keeps the fill walk's progress readable from the status surface (Phase 4g)", () => {
     const document = JSON.parse(readFileSync(documentPath, "utf8"));
-    const post = document.paths["/api/replays/start"].post;
-    expect(Object.keys(post.responses).sort()).toEqual(["200", "400", "401", "404", "409", "503"]);
-    const busy = post.responses["503"];
-    expect(busy.headers["Retry-After"]).toEqual({ $ref: "#/components/headers/RetryAfter" });
-    expect(busy.content["application/json"].schema).toEqual({ $ref: "#/components/schemas/Error" });
-    expect(busy.content["application/json"].examples).toEqual({
-      fill_busy: { value: { ok: false, error: "fill_busy" } },
-    });
-    // The gate is readable from the status surface the client already polls.
-    expect(busy.description).toContain("www_cache.fill_complete");
-    expect(busy.description).toContain("www_cache.present");
     expect(document.components.schemas.WwwCache.properties.fill_complete).toBeDefined();
-    // Never shed: a replay start is not an admission class.
-    expect(JSON.stringify(post)).not.toContain("audio_busy");
+    expect(document.components.schemas.WwwCache.properties.present).toBeDefined();
   });
 
   it("lists audio_busy with Retry-After on every sheddable route (Phase 4f)", () => {
@@ -1857,7 +1841,6 @@ describe("Aius OpenAPI contract", () => {
       ["/api/events", "get", []],
       ["/api/dsp/config", "put", ["sd_unavailable", "sd_busy"]],
       ["/api/config/public", "put", ["sd_unavailable", "sd_busy"]],
-      ["/api/replays", "get", ["sd_busy"]],
       ["/sd/{resource}", "get", ["sd_unavailable", "sd_busy"]],
       ["/sd/{resource}", "put", ["sd_unavailable", "sd_busy"]],
       ["/sd/{resource}", "delete", ["sd_unavailable", "sd_busy"]],

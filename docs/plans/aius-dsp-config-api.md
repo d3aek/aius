@@ -653,7 +653,9 @@ see defect 11's class; the clock/content *ratio* surface remains the physical
 loop's job.
 
 **Stimulus — raw PCM replay, not the DTS vectors. The gate measured the DTS
-corpus and it cannot support the figures.** From the committed decode
+corpus and it cannot support the figures.** (Retired by Phase 4i of
+[`aius-sample-rate-following.md`](aius-sample-rate-following.md), 2026-10-12:
+the stimulus is now a U24 `aplay` render; the vectors are unchanged.) From the committed decode
 reference (`stereo_tones.ref.s32`, which the differential test proves the
 device reproduces): the FFmpeg `dca` encode has a **−78.7 dB THD+N floor of
 its own**, decodes at −22.5 dBFS (`volume=0.6` through the decoder's 1/8), and
@@ -825,7 +827,10 @@ reduction distortion-free at −1.01 dBFS, the ISR-cost acceptance PASSED
 (−13.0 k against the ±30 k gate, `dsp_cycles_last` p50 delta 39 cycles), and
 zero overruns across the 20,492-block session. The committed driver is
 `firmware/tools/measure_vectors/measure_run.py` (upload / measure /
-isr-cost). What the leg found beyond the figures:
+isr-cost; the replay upload and start are retired by
+[`aius-sample-rate-following.md`](aius-sample-rate-following.md) Phase 4i,
+2026-10-12: it now plays the stimulus through the U24 with `aplay`). What the
+leg found beyond the figures:
 
 - **A fresh replay upload had never worked since the storage cutover** —
   every first chunk 500'd because the engine faulted the absent `.part`'s
@@ -1344,7 +1349,10 @@ HTML/CSS/JS using only the documented API; every control mapped to the config
 JSON; meters + canvas waveform from `/api/meters`. It follows the existing
 `firmware/sd/www/replays.*` precedent (self-contained classic script, no
 shared-module imports, no `mr-*` kit) and links `replays.css` before its own
-sheet so shared chrome cannot drift between the two SD pages. The device serving
+sheet so shared chrome cannot drift between the two SD pages (the replays page
+and `replays.css` were retired by Phase 4i of
+[`aius-sample-rate-following.md`](aius-sample-rate-following.md), 2026-10-12;
+the shared chrome is now `sd-chrome.css`). The device serving
 the page off its own SD card, unable to reach the host application's shared mounts, is the
 one standing exception to the repository's UI-kit reuse rule.
 

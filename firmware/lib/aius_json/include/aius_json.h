@@ -13,7 +13,7 @@ extern "C" {
  * Three hand-rolled copies of these primitives existed before this library:
  * lib/aius_config, lib/aius_dsp_config (whose own comment read "Cursor
  * primitives (mirror aius_config.c)") and src/aius_optical_app.cpp's
- * replay-body reader. This is that seam, hoisted once.
+ * measure-body reader. This is that seam, hoisted once.
  *
  * Properties every caller depends on and none may lose:
  *   - Allocation-free. The cursor is three words over a caller-owned buffer;
@@ -52,7 +52,7 @@ void aius_json_skip_whitespace(AiusJsonCursor *cursor);
 /* Consume one expected byte. Does NOT skip whitespace: whether whitespace is
  * admitted before a given structural character is the caller's grammar, not
  * this cursor's. (aius_config / aius_dsp_config skip explicitly at each
- * structural point; the replay body reader wraps this to skip first.) */
+ * structural point; the measure body reader wraps this to skip first.) */
 int aius_json_consume(AiusJsonCursor *cursor, uint8_t expected);
 
 /* Parse a JSON string, decoding escapes into a bounded buffer.

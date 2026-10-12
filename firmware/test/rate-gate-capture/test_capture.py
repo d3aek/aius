@@ -1017,10 +1017,8 @@ class RecorderStimulusShapeTests(unittest.TestCase):
         self.assertGreaterEqual(trailing + REC.FREEZE_ACCEPTANCE_TIMEOUT_S,
                                 REC.ACCEPTANCE_LATENCY_BUDGET_S)
 
-    def test_replay_leg_is_outside_the_ring_budget(self):
-        """--with-replay adds a fourth bench phase AFTER the freeze; the
-        ring budget is over the three aplay phases in either case."""
-        self.assertEqual(len(REC.driven_phase_labels(True)), 4)
+    def test_ring_budget_is_over_the_three_aplay_phases(self):
+        self.assertEqual(len(REC.driven_phase_labels()), 3)
         self.assertEqual(len(REC.DEFAULT_PHASE_SECONDS), 3)
         self.assertEqual(
             REC.required_capture_frames(REC.DEFAULT_PHASE_SECONDS,
@@ -1075,7 +1073,7 @@ class RecorderUnequalPhaseAnalysisTests(unittest.TestCase):
     @staticmethod
     def _fixture(counts):
         """transition_fixture's shape with `counts` tracking polls per
-        phase (48 -> 44.1 -> 48, no replay leg): one dark `unsupported`
+        phase (48 -> 44.1 -> 48): one dark `unsupported`
         poll, one rate-change event and one requested reset per rate
         boundary, exactly as the bench fixture models them."""
         make_sample = BENCH_TEST.sample
@@ -1127,7 +1125,7 @@ class RecorderUnequalPhaseAnalysisTests(unittest.TestCase):
         external = json.dumps({"old_rate_output_frames": 0})
         options = {"settle_s": 0.0, "phase_samples": 2,
                    "max_follow_error_millihz": 1000,
-                   "expected_phases": REC.driven_phase_labels(False)}
+                   "expected_phases": REC.driven_phase_labels()}
         with tempfile.TemporaryDirectory() as directory:
             path = pathlib.Path(directory) / "evidence.jsonl"
             CAP.write_evidence(path, "transitions", polls, options, external)
@@ -1217,19 +1215,17 @@ class RecorderDrivenPhaseMetadataTests(unittest.TestCase):
                 ["analyze", "transitions", "--evidence", str(path)])
         return code, json.loads(stdout.getvalue())
 
-    def test_replay_label_only_when_the_leg_is_driven(self):
-        self.assertEqual(REC.driven_phase_labels(False),
+    def test_driven_phase_labels_are_the_three_aplay_phases(self):
+        self.assertEqual(REC.driven_phase_labels(),
                          ["48000", "44100", "48000"])
-        self.assertEqual(REC.driven_phase_labels(True),
-                         ["48000", "44100", "48000", "replay"])
 
     def test_recorded_sequence_drives_the_bench_verdict(self):
-        samples, events = BENCH_TEST.transition_fixture(with_replay=False)
+        samples, events = BENCH_TEST.transition_fixture()
         polls = self._polls(samples, events)
         external = json.dumps({"old_rate_output_frames": 0})
         options = {"settle_s": 0.0, "phase_samples": 2,
                    "max_follow_error_millihz": 1000,
-                   "expected_phases": REC.driven_phase_labels(False)}
+                   "expected_phases": REC.driven_phase_labels()}
         with tempfile.TemporaryDirectory() as directory:
             path = pathlib.Path(directory) / "evidence.jsonl"
             CAP.write_evidence(path, "transitions", polls, options, external)
@@ -1238,13 +1234,13 @@ class RecorderDrivenPhaseMetadataTests(unittest.TestCase):
         self.assertEqual(result["metrics"]["expected_phase_sequence"],
                          ["48000", "44100", "48000"])
 
-    def test_claiming_a_replay_leg_that_never_ran_still_fails(self):
-        samples, events = BENCH_TEST.transition_fixture(with_replay=False)
+    def test_claiming_a_fourth_phase_that_never_ran_still_fails(self):
+        samples, events = BENCH_TEST.transition_fixture()
         polls = self._polls(samples, events)
         external = json.dumps({"old_rate_output_frames": 0})
         options = {"settle_s": 0.0, "phase_samples": 2,
                    "max_follow_error_millihz": 1000,
-                   "expected_phases": REC.driven_phase_labels(True)}
+                   "expected_phases": REC.driven_phase_labels() + ["48000"]}
         with tempfile.TemporaryDirectory() as directory:
             path = pathlib.Path(directory) / "evidence.jsonl"
             CAP.write_evidence(path, "transitions", polls, options, external)
@@ -1252,61 +1248,6 @@ class RecorderDrivenPhaseMetadataTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("transition-sequence",
                       {failure["code"] for failure in result["failures"]})
-
-
-class ReplayStartFillBusyTests(unittest.TestCase):
-    """recorder_transitions.replay_start retries only 503 fill_busy."""
-
-    FILL_BUSY = '{"ok":false,"error":"fill_busy"}'
-
-    def _run(self, replies, budget_s=120.0):
-        calls, sleeps = [], []
-        now = [0.0]
-        queue = list(replies)
-
-        def post(base, auth, path, body):
-            calls.append(path)
-            return queue.pop(0)
-
-        def sleep(seconds):
-            sleeps.append(seconds)
-            now[0] += seconds
-
-        try:
-            result = REC.replay_start("b", "a", "{}", post=post, sleep=sleep,
-                                      clock=lambda: now[0],
-                                      budget_s=budget_s)
-        except RuntimeError as error:
-            result = error
-        return result, calls, sleeps
-
-    def test_retries_then_succeeds(self):
-        result, calls, sleeps = self._run([
-            (503, self.FILL_BUSY, "3"), (503, self.FILL_BUSY, None),
-            (200, "{}", None)])
-        self.assertEqual(result, 200)
-        self.assertEqual(sleeps, [3.0, 1.0])
-        self.assertEqual(calls, ["/api/replays/start"] * 3)
-
-    def test_budget_exhausted_raises(self):
-        result, calls, sleeps = self._run(
-            [(503, self.FILL_BUSY, "30")] * 10, budget_s=120.0)
-        self.assertIsInstance(result, RuntimeError)
-        self.assertIn("fill_busy", str(result))
-        self.assertEqual(sum(sleeps), 120.0)
-
-    def test_other_503_not_retried(self):
-        result, calls, sleeps = self._run(
-            [(503, '{"ok":false,"error":"sd_busy"}', "2")])
-        self.assertEqual(result, 503)
-        self.assertEqual(len(calls), 1)
-        self.assertEqual(sleeps, [])
-
-    def test_409_passes_through(self):
-        result, calls, _ = self._run(
-            [(409, '{"error":"replay_carrier_present"}', None)])
-        self.assertEqual(result, 409)
-        self.assertEqual(len(calls), 1)
 
 
 if __name__ == "__main__":

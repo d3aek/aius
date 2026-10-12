@@ -106,7 +106,7 @@ crashed Teensy can never emit data ([optical sheet](../../electronics/connectivi
 
 - **the firmware transmit gate substitutes for the electronic one** (the
   carrier-management phase in the prototype plan): the output stays dark
-  unless the input carrier is locked or a replay is running, actuated at
+  unless the input carrier is locked, actuated at
   pad 14's mux, observable as `tx_gate` on `GET /api/status`. What firmware
   cannot close: an unavoidable **~0.1–2 ms silence-carrier blip** at static
   construction (~300 ms after every reset, before `setup()` runs), with the
@@ -119,22 +119,20 @@ crashed Teensy can never emit data ([optical sheet](../../electronics/connectivi
 
 ## First real signal test
 
-The firmware side was proven against replay before the first run; this test
-watches `blocks` climb from a *carrier* rather than a replay. Board reachable
-at `http://192.0.2.66` as usual.
+The firmware side was proven against the SD replay source (since retired) before
+the first run; this test watches `blocks` climb from a *carrier*. Board
+reachable at `http://192.0.2.66` as usual.
 
 1. **Electrical bring-up, fibre unplugged:** power on; check 3.3 V at both
    jacks' Vcc pins; ORJ-5 Vout idles at a steady logic level with no fibre.
    `GET /api/status` should show the familiar no-carrier state (`blocks` 0).
 2. **Carrier:** connect a PCM source (TV/DAC at 48 kHz) into the ORJ-5.
    **`blocks` on `GET /api/status` must climb continuously from passthrough
-   alone with no replay running**, `overruns` staying at or near 0 — first
+   alone**, `overruns` staying at or near 0 — first
    observed on the bench during the 2026-07-28/29 bring-up.
    `GET /api/meters` publishes non-zero input levels (`sequence` > 0).
-3. **Carrier-present refusal:** with the carrier live, `POST
-   /api/replays/start` must refuse `409 replay_carrier_present`. This is the
-   refusal's first hardware exercise; `stop_reason:"carrier"` stays reachable
-   only by unplugging mid-replay.
+3. *(Retired with replay, 2026-10-12: the `409 replay_carrier_present`
+   refusal no longer exists.)*
 4. **TX out:** connect the OTJ-5 to a sink (soundbar/DAC); it should lock to
    48 kHz stereo PCM carrying the processed downmix.
 5. **Glass loopback (optional but the payoff):** patch OTJ-5 → ORJ-5 with a
@@ -188,17 +186,13 @@ status; see [`firmware-io.md` §S/PDIF output](../reference/firmware-io.md#spdif
 optical parts at all** — proven 2026-07-28: carrier lock in seconds, blocks
 climbing, the recorder capturing. Lift the ORJ-5 Vout lead off pad 15 first
 (two output stages otherwise fight), then jumper 14→15; the OTJ-5 Vin can
-stay connected. Two behaviours to expect, both by design or known:
+stay connected. Expect one behaviour, known:
 
-- **A running replay stops the moment its own signal locks**
-  (`stop_reason:"carrier"` — the carrier-present policy), after which the
-  gate stays open on the locked carrier and the box settles into a silence
-  self-loop.
-- That self-loop currently floods the audio `overruns` counter at ~1 kHz
-  (defect 27 in `aius-network-hardening.md`); a reboot exits the state.
+- The box settles into a silence self-loop on its own signal, which currently
+  floods the audio `overruns` counter at ~1 kHz (defect 27 in
+  `aius-network-hardening.md`); a reboot exits the state.
 
-Use the measure flow, not replay, for sustained loopback testing — replay is
-architecturally self-terminating over a loop.
+Use the measure flow for sustained loopback testing.
 
 ## Troubleshooting with only a DC multimeter
 
@@ -228,8 +222,8 @@ The S/PDIF peripheral streams biphase continuously whenever the gate is open
 
 Cheap DC meters misread 6 MHz streams (the true average is ~1.65 V; readings
 skew), so judge by *contrast* between states — fibre in vs out, gate open vs
-closed — rather than absolute numbers. The firmware can toggle the gate on
-demand (start/stop a replay over HTTP) while a meter sits on the pad: the
+closed — rather than absolute numbers. A carrier toggle can open and close the gate on
+demand (a U24 de-auth, `firmware/tools/rate_gate_capture/u24_carrier.py`) while a meter sits on the pad: the
 0.00 V closed state is a built-in reference edge.
 
 Findings from this test belong in

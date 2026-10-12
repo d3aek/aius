@@ -22,12 +22,14 @@ def reject(source: str, fragment: str, path: str) -> None:
 def main() -> None:
     status_path = "sd/www/status.js"
     editor_path = "sd/www/dsp-editor.js"
-    replays_path = "sd/www/replays.html"
+    # The Live processing card moved here from the retired replays page
+    # (Phase 4i).
+    status_page_path = "sd/www/status.html"
     index_path = "sd/www/classic.html"
     firmware_path = "src/optical_main.cpp"
     status = read(status_path)
     editor = read(editor_path)
-    replays = read(replays_path)
+    status_page = read(status_page_path)
     index = read(index_path)
     firmware = read(firmware_path)
 
@@ -45,7 +47,11 @@ def main() -> None:
     require(status, "put('audio-state', audioState(status))", status_path)
     require(status, "put('format', streamFormat(status))", status_path)
     require(editor, "const encoding = carrierEncoding(status)", editor_path)
-    require(replays, "same bitstream decoder, DSP, limiter, and meter path", replays_path)
+    require(status_page, 'aria-labelledby="live-title"', status_page_path)
+    require(status_page, "06 / Live processing", status_page_path)
+    require(status_page, '<canvas id="waveform" class="live-canvas"', status_page_path)
+    require(status_page, 'id="meter-state"', status_page_path)
+    require(status_page, 'id="meter-summary"', status_page_path)
     require(index, "IEC 61937 bitstream framing and decoding cannot be bypassed", index_path)
     require(
         firmware,
@@ -74,7 +80,7 @@ def main() -> None:
     for source, path in (
         (status, status_path),
         (editor, editor_path),
-        (replays, replays_path),
+        (status_page, status_page_path),
         (index, index_path),
     ):
         for stale in stale_labels:

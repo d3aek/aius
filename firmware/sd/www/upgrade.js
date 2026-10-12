@@ -18,7 +18,7 @@
  * This file is served off the Teensy's SD card. It is deliberately a plain
  * classic script with no imports, no build step and no shared UI kit -- the
  * device cannot reach a host application's module mounts. Same constraint as
- * replays.js and dsp-editor.js; keep the pages looking like one product.
+ * dsp-editor.js; keep the pages looking like one product.
  *
  * THE CONTAINER, from lib/aius_ota/include/aius_ota.h. The offsets below are
  * that header's published constants, transcribed field for field; the container
@@ -56,8 +56,8 @@
  *                          unchanged. Anything this page shows as a payload
  *                          size subtracts the header exactly once.
  *   PUT  /api/ota/image    one Content-Range chunk per request, answering
- *                          {"ok":true,"next_offset":N} exactly as the replay
- *                          upload does. OFFSETS ARE CONTAINER-ABSOLUTE: the
+ *                          {"ok":true,"next_offset":N} exactly as any
+ *                          Content-Range upload does. OFFSETS ARE CONTAINER-ABSOLUTE: the
  *                          header is the chunk at offset 0 and the payload
  *                          follows at 256, so one number resumes an interrupted
  *                          transfer whichever half it stopped in.
@@ -194,7 +194,7 @@
   /* ---- per-card status and error lines ------------------------------------
    * Every acting card owns a status line (role=status) and an error line
    * (role=alert), and a failure lands in the card whose control was pressed --
-   * the same discipline replays.js carries. The POLL reports through the pill
+   * the same discipline dsp-editor.js carries. The POLL reports through the pill
    * and the status line only: a once-a-second failure must not paint over what
    * the operator's last button press had to say. */
 
@@ -297,7 +297,7 @@
     /* An upload has already spent its bounded retry by the time this prints;
      * any other step has not, so it is worth pressing again. */
     if (token === 'sd_busy') {
-      return `the SD volume is busy (replay refill or upload in flight); an upload retries ${SD_BUSY_RETRIES} times on its own, any other step is worth retrying by hand`;
+      return `the SD volume is busy (a cache fill or upload in flight); an upload retries ${SD_BUSY_RETRIES} times on its own, any other step is worth retrying by hand`;
     }
     if (token === 'sd_capacity') return 'the card is full';
     if (token === 'sd_unavailable') return 'no SD card is mounted';
@@ -926,7 +926,7 @@
         return false;
       }
       /* The final chunk may answer {"ok":true} with no next_offset, exactly as
-       * the replay upload's last chunk does. */
+       * any Content-Range upload's last chunk does. */
       const next = Number(result.body && result.body.next_offset != null ? result.body.next_offset : end);
       offset = Number.isFinite(next) && next > offset ? next : end;
       updateStep('upload', `Uploading ${formatBytes(offset)} of ${formatBytes(total)} (offset ${offset})`);

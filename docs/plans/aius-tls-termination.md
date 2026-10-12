@@ -211,7 +211,9 @@ Three independent reasons, in descending order of importance:
   nothing is masked. The audio DMA ISR at NVIC 128 and the software audio ISR at
   208 both preempt the burst freely. **This was the one plausible disqualifier
   and it is cleared.**
-- **Replay playback, the only epoch-loop-fed audio, has ~341 ms of slack.** The
+- **Replay playback, the only epoch-loop-fed audio, has ~341 ms of slack**
+  (retired by Phase 4i of [`aius-sample-rate-following.md`](aius-sample-rate-following.md),
+  2026-10-12; the analysis stays as history). The
   replay word ring is 65,536 words = 131,072 B with a 32,768-word start
   watermark (`lib/aius_replay/include/aius_replay.h:40-44`), so at the moment a
   refill is planned there are 65,536 B = 341 ms of audio buffered at
@@ -745,7 +747,7 @@ and the browser editor stops being trivially modifiable in flight.
 This is the largest slice of the work and it is not "update the tools". Nine
 items, enumerated. The good news first: **every browser asset survives
 untouched**, because all six files under `firmware/sd/www/` fetch root-relative
-URLs only (`dsp-editor.js:468`, `replays.js:7,31` and their call sites) and a
+URLs only (`dsp-editor.js:468`, `replays.js:7,31`, retired by Phase 4i, and their call sites) and a
 page served over HTTPS inherits the scheme. Both `test/sd-editor/` vitest suites
 stub `fetch` and are scheme-agnostic. Zero frontend changes.
 
@@ -796,13 +798,13 @@ fails in CI rather than at 2 a.m. against a board.
   overlapping connections; handshakes lengthen the occupancy window, so the
   retry budget probably needs raising. Measure the 1-in-10 accept-drop rate
   (`firmware-io.md:668-673`) again with TLS on before choosing a number.
-- **`firmware/tools/replay_samples/upload.sh`** — `curl` at `:31` and `:46-51`
-  need `--cacert`, and there is a worse problem: **the loop runs one `curl` per
+- **`firmware/tools/replay_samples/upload.sh`** (deleted by sample-rate-following
+  Phase 4i, so no longer a TLS item; the per-chunk-handshake cost it showed still
+  applies to the OTA client below) — `curl` at `:31` and `:46-51`
+  needed `--cacert`, and **the loop ran one `curl` per
   4,096-byte chunk** (`:43`), so one full TCP and TLS handshake per 4 KB. At an
-  estimated 75-160 ms of board CPU per handshake that is unusable for a
-  multi-megabyte replay. This script needs session reuse or a Python rewrite
-  against the shared runner. **This is the item most likely to be
-  underestimated.**
+  estimated 75-160 ms of board CPU per handshake that was unusable for a
+  multi-megabyte upload.
 - **`firmware/test/net/test_aius_http_runner.py`** — the local `HTTPServer` at
   `:42` needs `ssl.SSLContext.wrap_socket` and a throwaway cert, generated at
   test time rather than committed. The port-80 literal at `:85` (which asserts a
@@ -815,7 +817,8 @@ fails in CI rather than at 2 a.m. against a board.
   a `{scheme}` server variable so the fail-open case is describable. Its contract
   test is `test/swagger.test.js`.
 - **The OTA design.** [`aius-ota-upgrade.md`](aius-ota-upgrade.md) is built on
-  the chunked `PUT /sd/replays/<id>` protocol with `Content-Range`, one
+  the chunked `PUT /sd/replays/<id>` protocol (the replay route is retired by
+  Phase 4i; the OTA staging keeps the shape) with `Content-Range`, one
   self-contained request per chunk — chosen precisely because it survives
   connection loss between chunks. **Per-chunk handshakes would make a 2 MB image
   push cost tens of seconds of pure crypto on top of the ~45-50 s of transfer.**
@@ -837,7 +840,7 @@ UDP payload is the fix; the payload is length-gated at 71/99 bytes
 change with the same compatibility dance already documented.
 
 **Documentation carrying literal `http://` URLs:** `firmware/README.md:189`,
-`firmware/tools/replay_samples/README.md:26`, and
+(`firmware/tools/replay_samples/README.md:26`, deleted by Phase 4i), and
 `docs/plans/aius-sd-config-web.md:211`. Files carrying a bare `192.0.2.66` are
 more numerous and mostly become the DNS name; they are prose edits, not a
 design question.
@@ -946,7 +949,7 @@ Proceed only if **all** hold:
 2. `_itcm_block_count` has **not** incremented. If it has, the linker-script
    `.text` relocation is mandatory rather than optional and this stage repeats.
 3. Measured handshake CPU is **under 400 ms**. That leaves a 20× margin on the
-   watchdog and consumes under half the replay ring's 341 ms of slack in a single
+   watchdog and consumes under half the (retired, Phase 4i) replay ring's 341 ms of slack in a single
    burst. Above 400 ms, relax `MBEDTLS_ECP_WINDOW_SIZE` and re-measure before
    reconsidering.
 4. `fnet_poll` duration during a handshake stays under **500 µs**, so a 2.67 ms
@@ -988,7 +991,8 @@ here if it is in scope.
 
 ### Stage 3 — the rest of the tooling
 
-`aius-sd-sync.sh`, the replay uploader's session reuse or rewrite, the local
+`aius-sd-sync.sh`, the replay uploader's session reuse or rewrite (the uploader
+is deleted by Phase 4i), the local
 test fixture's TLS server, `swagger.json`, the doc URLs, and the UDP payload
 extension that publishes `tls_state` and the served port.
 

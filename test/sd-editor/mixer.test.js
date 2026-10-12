@@ -57,7 +57,7 @@ const PRESETS_INDEX =
   '<!DOCTYPE html><html><body><h1>/sd/www/presets/</h1><ul><li><a href="../">../</a></li>' +
   '<li><a href="flat.json">flat.json</a> 691</li><li><a href="night.json">night.json</a> 700</li></ul>' +
   '<p>2 shown, 0 hidden, truncated: no.</p></body></html>';
-const STATUS_LIVE = { carrier: 1, tx_gate: { open: 1, carrier_locked: 1, replay_running: 0 } };
+const STATUS_LIVE = { carrier: 1, tx_gate: { open: 1, carrier_locked: 1 } };
 
 function stubDevice(config, presetFiles = {}) {
   globalThis.fetch = vi.fn(async (url, init = {}) => {

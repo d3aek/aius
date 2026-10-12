@@ -298,7 +298,8 @@ ends left open:
   suspend caps the device at 2.5 mA, which kills the optical LED;
   deauthorize alone may leave it lit. Restore afterwards with `on` /
   `1` in reverse order (or replug). **Then run**
-  [`eac3_acceptance.py`](../../firmware/tools/replay_samples/eac3_acceptance.py)
+  `firmware/tools/replay_samples/eac3_acceptance.py` (deleted by
+  sample-rate-following Phase 4i; moot, see this item's strike)
   `--token <sd-auth>`: it polls until the carrier drops (the start
   attempt is the exact guard probe), starts `eac3_id51_3s` looped,
   samples `codec_pc` 21 / decode counters / `eac3_decode_cycles`
@@ -364,17 +365,20 @@ ends left open:
   underrun then lifts the occupancy by +128 frames, which is why they recur
   rather than persist. Phase 4's setpoint must clear the render delay.
 
-- **OPEN: dark-input lock blips end replays as false carrier stops (filed
+- **OPEN (replay part closed 2026-10-12): dark-input lock blips (filed
   2026-10-05).** With no light at the input, the receiver can sit in a state
   where its DPLL locks briefly about 10 times a second
-  (`input_diag.sis_lockloss_events` climbing). One raw lock read ends a
-  replay after 3 to 7 s, and a later stop request overwrites the `carrier`
-  stop reason with `request`. Fix planned as
-  [`aius-output-jitter.md`](aius-output-jitter.md) Phase K; the hidden
-  receiver state is instrumented in Phase L (built host-only 2026-10-11).
-  Phase K is not worth building: replay leaves the firmware in
-  [`aius-sample-rate-following.md`](aius-sample-rate-following.md) Phase
-  4i, which retires this defect with it.
+  (`input_diag.sis_lockloss_events` climbing). The replay effects (a raw lock
+  read ending a replay after 3 to 7 s, a later stop request overwriting the
+  `carrier` stop reason) are closed as moot: replay left the firmware in
+  [`aius-sample-rate-following.md`](aius-sample-rate-following.md) Phase 4i
+  and [`aius-output-jitter.md`](aius-output-jitter.md) Phase K is not built.
+  What survives: each blip still fires `tx_gate_service`'s relock
+  `request_audio_reset()` (`firmware/src/optical_main.cpp:10310-10316`) and the
+  recorder's carrier-loss edge (`firmware/lib/aius_recorder/src/aius_recorder.c:372`).
+  That remainder is in Phase L's scope, where the hidden receiver state is
+  instrumented (built host-only 2026-10-11); its device proof flips the state
+  with U24 de-auth toggles only.
 
 - **OPEN: a DSP-config save drifts floats by a few ulps (filed
   2026-10-07).** The PUT number decoder is not correctly rounded
@@ -1748,15 +1752,12 @@ ends left open:
   scratch `ux/ux-review-report.md`, sections B/D; the MUST-FIX tiers all
   shipped). ~~No marker of which preset the form came from (N2)~~ — N2
   CLOSED 2026-07-28: the preset line names the origin and tracks its
-  "(modified)" state live. Still outstanding: the replay upload form sits
-  below the full library (R-N5). Sweep the B/D lists against the shipped
-  pages before assuming any other item's state. **Re-checked 2026-09-03:
-  R-N5 stands** — `firmware/sd/www/replays.html` orders Playback (`:22`),
-  Replay library (`:45`), Upload capture (`:54`), Live processing (`:68`), so
-  the upload form is still below the full library. The B/D lists themselves
-  are gone (session scratch, 7-day GC), so only R-N5 is verifiable; no phase
-  in [`aius-outstanding-work-2026-09.md`](aius-outstanding-work-2026-09.md)
-  (UX placement is an owner call).
+  "(modified)" state live. ~~The replay upload form sits below the full
+  library (R-N5).~~ **R-N5 CLOSED 2026-10-12 as moot:** the replays page was
+  deleted by [`aius-sample-rate-following.md`](aius-sample-rate-following.md)
+  Phase 4i. The B/D lists themselves are gone (session scratch, 7-day GC), so
+  no other item is verifiable; sweep the shipped pages before assuming any
+  other item's state.
 - ~~**The DSP editor shipped a spectrogram no device can feed (2026-08-16).**~~
   **CLOSED the same day.** Output-jitter Phase A dropped `analysis_window` from
   `/api/meters` in `b4a3914ce` and its own recorded outcome said "the dsp-editor

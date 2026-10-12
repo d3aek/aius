@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the generated AC-3 IEC 61937 replay streams."""
+"""Validate the generated AC-3 IEC 61937 fixture streams."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ PREAMBLE = (0xF872, 0x4E1F, 0x0001, 0x3800)
 
 
 class ValidationError(Exception):
-    """A generated replay stream violates the fixed AC-3 contract."""
+    """A generated fixture stream violates the fixed AC-3 contract."""
 
 
 class BitReader:

@@ -308,7 +308,7 @@ void AiusSpdifTx24Hook::isr(void)
 #endif
 
 	/* Unchanged responsibility contract: this peripheral drives the graph only
-	 * while replay_clock_service() has handed it the clock. update_all() only
+	 * while the input owns the clock. update_all() only
 	 * pends the ingress producer; decode, DSP and the ring producer run later
 	 * from the AUDIO checkpoint. Both can be preempted by this handler, which is
 	 * why the ring is a single-producer/single-consumer structure rather than a

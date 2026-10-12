@@ -19,7 +19,7 @@
  *
  * Phase 1 (before the random iterations) is the defect-31 seam hunt: a
  * DETERMINISTIC sweep of loop-seam-shaped access units -- truncated AU spliced
- * with a full AU (the replay-loop / relock seam), byte-exact at the loop seam
+ * with a full AU (the carrier-relock seam), byte-exact at the loop seam
  * and step-16 across every adjacent pair, plus headless tails, bare
  * truncations, and a cut AU zero-filled to its declared length. Every decode
  * call in BOTH phases runs under a termination
@@ -276,7 +276,7 @@ static int checked_feed(AiusDtsDecoder *dec, const uint8_t *buf, size_t len,
 #define MAX_FRAMES 64
 
 /* The defect-31 seam hunt: deterministic loop-seam-shaped inputs from one
- * seed file. The replay-loop / carrier-relock seam hands the decoder a
+ * seed file. The carrier-relock seam hands the decoder a
  * truncated AU with the next AU's bytes right behind it -- S1. S3 is the
  * head-lost dual (tail bytes then a full AU), S2 the bare truncation. The
  * LOOP seam (last AU -> first AU) sweeps every byte; adjacent pairs sweep

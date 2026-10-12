@@ -29,7 +29,6 @@ build.
 | --- | --- | --- | --- | --- | --- | --- |
 | pcm-processed | pcm-stereo | pcm-stereo-48k | downmix-eq<br>input-classifier<br>optical-rx<br>optical-tx<br>pcm-normalizer<br>raw-bypass-mux<br>spdif-capture<br>spdif-transmit<br>teensy<br>tx-gate | unsupported-muted | PJRC-IMXRT1060-RM<br>PJRC-SPDIF-RX-SOURCE<br>PJRC-SPDIF-TX-SOURCE | Live output follows the accepted 32/44.1/48 kHz carrier (sample-rate following, shipped); the earlier fixed-48 kHz output payload is historical. |
 | dts-processed | iec61937-dts-core<br>iec61937-ac3<br>iec61937-eac3 | pcm-stereo-48k | downmix-eq<br>dts-decoder<br>input-classifier<br>optical-rx<br>optical-tx<br>pcm-normalizer<br>raw-bypass-mux<br>spdif-capture<br>spdif-transmit<br>teensy<br>tx-gate | unsupported-muted | PJRC-IMXRT1060-RM<br>PJRC-SPDIF-RX-SOURCE<br>PJRC-SPDIF-TX-SOURCE | Mode id retained; since the AC-3 (2026-07) and E-AC-3 (2026-08) routes it covers all three IEC 61937 families, decoded by one resident decoder at a time. Output rate follows the carrier as in pcm-processed. |
-| replay-processed | sd-replay-file | pcm-stereo-48k | downmix-eq<br>dts-decoder<br>input-classifier<br>optical-tx<br>pcm-normalizer<br>raw-bypass-mux<br>spdif-transmit<br>teensy<br>tx-gate | unsupported-muted | PJRC-SPDIF-TX-SOURCE | Added 2026-08-04: a stored IEC file plays from SD with no optical carrier; the transmitter is clock master at exactly 48 kHz and the TX gate opens during prebuffer. See [`aius-replay-manager.md`](../plans/aius-replay-manager.md). |
 | diagnostic-raw-bypass | pcm-stereo<br>iec61937-dts-core | raw-spdif | optical-rx<br>optical-tx<br>raw-bypass-mux<br>tx-gate | fault-muted | CLIFF-ORJ5<br>CLIFF-OTJ5<br>VKSDR-TOSLINK-SCHEMATICS |  |
 | unsupported-muted | none | none | input-classifier<br>optical-rx<br>spdif-capture<br>teensy | unsupported-muted | PJRC-IMXRT1060-RM<br>PJRC-SPDIF-RX-SOURCE<br>PJRC-SPDIF-TX-SOURCE |  |
 | fault-muted | none | none |  | fault-muted | PJRC-IMXRT1060-RM<br>PJRC-TEENSY41-PAGE<br>PJRC-TEENSY41-SCHEMATIC |  |
@@ -95,7 +94,7 @@ build.
 | --- | --- | --- | --- | --- | --- | --- |
 | spdif-recovered | optical-rx | input-classifier<br>spdif-capture |  | evidence-locked | CLIFF-ORJ5<br>PJRC-SPDIF-RX-SOURCE<br>VKSDR-TOSLINK-SCHEMATICS |  |
 | audio-processing | teensy | downmix-eq<br>dts-decoder<br>input-classifier<br>pcm-normalizer<br>teensy |  | software-derived | PJRC-IMXRT1060-RM<br>PJRC-SPDIF-RX-SOURCE<br>PJRC-SPDIF-TX-SOURCE |  |
-| spdif-transmit-clock | spdif-transmit | optical-tx<br>spdif-transmit | audio-processing | software-derived | CLIFF-OTJ5<br>PJRC-SPDIF-TX-SOURCE<br>VKSDR-TOSLINK-SCHEMATICS | PLL4 follows the accepted carrier nominal (32/44.1/48 kHz) including its oscillator error; exactly 48 kHz for boot and replay. See [`signal-path.md` §The clock](signal-path.md#the-clock). |
+| spdif-transmit-clock | spdif-transmit | optical-tx<br>spdif-transmit | audio-processing | software-derived | CLIFF-OTJ5<br>PJRC-SPDIF-TX-SOURCE<br>VKSDR-TOSLINK-SCHEMATICS | PLL4 follows the accepted carrier nominal (32/44.1/48 kHz) including its oscillator error; exactly 48 kHz for boot. See [`signal-path.md` §The clock](signal-path.md#the-clock). |
 | usb-device-clock | usb-bridge | teensy<br>usb-bridge |  | evidence-locked | PJRC-TEENSY41-SCHEMATIC |  |
 | ethernet-rmii-clock | ethernet | ethernet<br>teensy |  | evidence-locked | PJRC-ETHERNET-KIT<br>PJRC-IMXRT1060-RM |  |
 
@@ -111,7 +110,7 @@ build.
 
 These are contract-level abstractions. The shipped firmware realises them as the
 8,192-word ingress SPSC ring, the DTCM decoder arena, the 24-bit `g_aius_spdif_tx24`
-transmit ring, the replay word ring and the PSRAM flight-recorder ring — sizes,
+transmit ring and the PSRAM flight-recorder ring — sizes,
 banks and ownership are catalogued in [`firmware-io.md`](firmware-io.md) and
 [`signal-path.md`](signal-path.md), which are the authorities for the bench build.
 

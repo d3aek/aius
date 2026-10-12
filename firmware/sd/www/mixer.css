@@ -179,11 +179,10 @@
 .flow__core-stop-b { stop-color: var(--bench-core-b); }
 .flow__core { stroke: var(--aius-border-control); }
 
-/* The input LED: lit and breathing while the receiver has carrier, steady on a
-   replay, dark otherwise. */
+/* The input LED: lit and breathing while the receiver has carrier, dark
+   otherwise. */
 .led { width: 8px; height: 8px; border-radius: 50%; background: var(--aius-border-control); }
 .led[data-state="carrier"] { background: var(--aius-accent-primary); box-shadow: 0 0 10px var(--aius-accent-primary); animation: led-blink 2.4s ease-in-out infinite; }
-.led[data-state="replay"] { background: var(--aius-accent-warning); box-shadow: 0 0 10px var(--aius-accent-warning); }
 .led[data-state="unreachable"] { background: var(--aius-accent-danger); }
 @keyframes led-blink { 50% { opacity: .35; } }
 .flow .panel__head .flow-end { margin-left: auto; }

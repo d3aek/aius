@@ -389,7 +389,7 @@ FLASHMEM void aius_recorder_epoch(AiusRecorder *r, bool carrier_locked,
 		uint32_t mask = r->trigger_mask;
 		/* Carrier loss: the falling edge of the per-epoch lock sample.
 		 * A level would freeze instantly on the bench norm (no source)
-		 * and always during replay. */
+		 * and always with the carrier down. */
 		if ((mask & AIUS_RECORDER_MASK_CARRIER_LOSS) != 0u &&
 		    r->carrier_prev && !carrier_locked) {
 			if (!trigger_dropped_empty(r))
