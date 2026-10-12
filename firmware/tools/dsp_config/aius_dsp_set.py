@@ -36,9 +36,7 @@ re-GETs once, treats a pending or matching config as saved, else exits 1 with
 "outcome unknown, re-run --dry-run to check".
 
 Known limits: a -0 value is stored as 0; with matrix.clipfree true the stored
-headroom_linear still round-trips (the DSP ignores it), though a board on a
-pre-4t image serves the resolved clip-free headroom instead, which the compare
-tolerates when applied clipfree is true; any save may move a float by a few ulps (relative
+headroom_linear still round-trips (the DSP ignores it); any save may move a float by a few ulps (relative
 1e-12 tolerance in the applied-config compare)
 (firmware decoder rounding); another client's save that commits between our GET
 and our PUT is overwritten (the firmware's stale-check design).
@@ -190,28 +188,12 @@ def matches_applied(sent, applied):
 def config_differences(sent, applied):
     """[(path, sent, applied)] where the applied GET departs from what we sent:
     bookkeeping keys and source ignored, numbers within a few ulps (relative
-    1e-12 tolerance) equal. A pre-4t board serves the resolved clip-free
-    headroom under clipfree: an applied matrix.headroom_linear equal to it is
-    tolerated when applied clipfree is true."""
+    1e-12 tolerance) equal."""
     sent, applied = copy.deepcopy(sent), copy.deepcopy(applied)
     for cfg in (sent, applied):
         for key in _IGNORED_TOP:
             cfg.pop(key, None)
-    diffs = _differences(sent, applied, "")
-    matrix = applied.get("matrix") if isinstance(applied, dict) else None
-    if isinstance(matrix, dict) and matrix.get("clipfree") is True:
-        try:
-            lfe = abs(matrix["lfe_gain_linear"])
-            denom = (1.0 + matrix["center_gain_linear"]
-                     + matrix["surround_gain_linear"] + lfe)
-            resolved = 1.0 if denom <= 1.0 else 1.0 / denom
-            served = matrix["headroom_linear"]
-        except (KeyError, TypeError):
-            return diffs
-        if (isinstance(served, (int, float)) and not isinstance(served, bool)
-                and abs(served - resolved) <= 1e-9):
-            diffs = [d for d in diffs if d[0] != "matrix.headroom_linear"]
-    return diffs
+    return _differences(sent, applied, "")
 
 
 def _differences(a, b, path):

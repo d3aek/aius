@@ -31,12 +31,11 @@ Handover 2026-10-12 (orchestration run, session c36bf526: 4n, 4o, 4i and
 4p built; handed over before the OTA); replace wholesale on the next
 handover.
 
-- **Status.** Phases 1, 2, 3 DONE; 4a, 4c, 4d, 4n, 4o, 4p, 4q, 4r, 4s
-  DONE. BUILT, with their device proof the owner's and not yet run:
+- **Status.** Phases 1, 2, 3 DONE; 4a, 4c, 4d, 4n, 4o, 4p, 4q, 4r, 4s,
+  4t DONE. BUILT, with their device proof the owner's and not yet run:
   Phase 4 (gate 7 at fill-write cadence on the U24 bench), 4e, 4f, 4g,
-  4h, 4j, 4k, 4l, 4m, **4i** (only the page-load underrun round with
-  AC-3 playing remains) and **4t** (GET serves the stored headroom; needs
-  the OTA). 4b (acceptance umbrella) closes after 4e to 4h's device
+  4h, 4j, 4k, 4l, 4m and **4i** (only the page-load underrun round with
+  AC-3 playing remains). 4b (acceptance umbrella) closes after 4e to 4h's device
   runs and no longer gates 4i (owner, 2026-10-12).
 - **Board.** Runs `57977135e472` in slot 2 (second OTA 2026-10-12,
   source off: 4q to 4t; self-committed, `ab.active_slot` 2,
@@ -63,19 +62,14 @@ handover.
   owner's: the 4e, 4f, 4g and 4h runs listed in 4b, 4n's Firefox check,
   4i's post-removal check. A bench run is a last resort, batched, never
   mixed with listening (aius CLAUDE.md).
-- **Next action: 4t's device proof (owner).** Card writes (sync,
-  `delete-www`, `--delete`) are refused by the auto-mode classifier
-  ("Remote Shell Writes", even with the owner's authorization). They
-  run when the owner switches the session to manual approval, or by
-  the owner with `!`.
-  1. 4t's device proof: headroom 0.5, clip-free on, Apply, reload,
-     clip-free off shows 0.5 and the overshoot warning. Then remove
-     `aius_dsp_set.py`'s pre-4t tolerance (4t's "Open after the OTA").
-  2. 4i's last device item, at the next listening session with AC-3
-     playing: `underrun_episode_count` delta 0 across a page-load round
-     (load each page once while a 1 Hz poll runs), recording the
-     `http_rejections` delta per `upgrade.html` load for 4n. No bench
-     run.
+- **Next action: 4i's last device item (owner),** at the next listening
+  session with AC-3 playing: `underrun_episode_count` delta 0 across a
+  page-load round (load each page once while a 1 Hz poll runs),
+  recording the `http_rejections` delta per `upgrade.html` load for 4n.
+  No bench run. Card writes (sync, `delete-www`, `--delete`) are refused
+  by the auto-mode classifier ("Remote Shell Writes", even with the
+  owner's authorization); they run when the owner switches the session
+  to manual approval, or by the owner with `!`.
 - **What landed this run** (aius commits, each followed by a upstream repository
   pointer bump):
 
@@ -7778,7 +7772,7 @@ unit: implementer
   4t:** GET serves the resolved headroom under clip-free, so Apply plus
   reload still loses the typed value until 4t's OTA.
 
-### Phase 4t GET /api/dsp/config serves the stored headroom under clip-free
+### Phase 4t GET /api/dsp/config serves the stored headroom under clip-free ✓ SHIPPED 2026-10-12
 
 ```yaml
 outcome: GET /api/dsp/config reports the headroom_linear the client stored, whether clip-free is on or off, so a page reloaded after Apply with clip-free on restores the typed headroom when clip-free goes off; the DSP still runs the resolved clip-free headroom
@@ -7818,13 +7812,17 @@ unit: implementer
     sd-editor 416 and registry green. All four images meet their OCRAM
     floors exactly (264,768 / 264,768 / 264,736 / 264,736 B) with the
     retired-symbols guard passing.
-- **Open after the OTA:** remove `aius_dsp_set.py`'s pre-4t tolerance
-  (`firmware/tools/dsp_config/aius_dsp_set.py:202`) and its test. On a
-  post-4t board it can mask a lost typed headroom: a card overwritten
-  with the resolved value by a pre-4t re-put, a transport-failed PUT,
-  and a re-GET that matches through the tolerance (clean-room nit 2).
-  Accepted: `bench.py` has no such tolerance. On a pre-4t board it
-  aborts in `prepare()` before any mutation, so it fails safe.
+- **Device proof PASS (owner, 2026-10-12, on `57977135e472`):** headroom
+  0.5, clip-free on, Apply, reload, clip-free off showed 0.5 and the
+  overshoot warning.
+- **Shipped with the proof:** `aius_dsp_set.py`'s pre-4t tolerance and
+  its test are removed. On a post-4t board it could mask a lost typed
+  headroom: a card overwritten with the resolved value by a pre-4t
+  re-put, a transport-failed PUT, and a re-GET that matched through the
+  tolerance (clean-room nit 2). A board serving the resolved value under
+  clip-free is now a mismatch. Accepted: `bench.py` never had the
+  tolerance; on a pre-4t board it aborts in `prepare()` before any
+  mutation, so it fails safe.
 
 ### Phase 4c `test.sh` runs every `--suite` given ✓ SHIPPED 2026-10-06
 

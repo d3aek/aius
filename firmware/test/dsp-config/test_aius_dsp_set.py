@@ -267,7 +267,7 @@ class DspSetTest(unittest.TestCase):
         code, *_ = run(["features.limiter=true"], wait=30, live=live, after=[done])
         self.assertEqual(code, 0)
 
-    def test_pre_4t_board_serving_resolved_clipfree_headroom_is_tolerated(self):
+    def test_board_serving_resolved_clipfree_headroom_is_a_mismatch(self):
         live = with_state(1, False)
         live["matrix"]["clipfree"] = True
         done = applied(2, False)
@@ -278,11 +278,6 @@ class DspSetTest(unittest.TestCase):
         resolved = 1.0 if denom <= 1.0 else 1.0 / denom
         self.assertNotAlmostEqual(resolved, live["matrix"]["headroom_linear"])
         m["headroom_linear"] = resolved
-        code, *_ = run(["features.limiter=true"], wait=30, live=live, after=[done])
-        self.assertEqual(code, 0)
-        # Not tolerated when clipfree is off in the applied config.
-        m["clipfree"] = False
-        live["matrix"]["clipfree"] = False
         code, *_ = run(["features.limiter=true"], wait=30, live=live, after=[done])
         self.assertEqual(code, 1)
 
