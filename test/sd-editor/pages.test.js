@@ -48,6 +48,12 @@ describe('SD pages share one chrome', () => {
     }
   });
 
+  it.each(PAGES)('%s header.bench-nav carries bench-nav--wrap so phones keep the links', (page) => {
+    const header = parse(page).querySelector('header.bench-nav');
+    expect(header, `${page} has no header.bench-nav`).not.toBeNull();
+    expect(header.classList.contains('bench-nav--wrap'), `${page} header lacks bench-nav--wrap`).toBe(true);
+  });
+
   it('ships no replay page or sheet, and no page links one', () => {
     expect(readdirSync(www).filter((name) => /^replays\./.test(name))).toEqual([]);
     for (const page of PAGES) {

@@ -32,10 +32,9 @@ Handover 2026-10-12 (orchestration run, session c36bf526: 4n, 4o, 4i and
 handover.
 
 - **Status.** Phases 1, 2, 3 DONE; 4a, 4c, 4d, 4n, 4o, 4p, 4q, 4r, 4s,
-  4t DONE. BUILT, with their device proof the owner's and not yet run:
-  Phase 4 (gate 7 at fill-write cadence on the U24 bench), 4e, 4f, 4g,
-  4h, 4j, 4k, 4l, 4m and **4i** (only the page-load underrun round with
-  AC-3 playing remains). 4b (acceptance umbrella) closes after 4e to 4h's device
+  4t, 4i DONE. BUILT, with their device proof the owner's and not yet
+  run: Phase 4 (gate 7 at fill-write cadence on the U24 bench), 4e, 4f,
+  4g, 4h, 4j, 4k, 4l, 4m. **4u** (index nav on a phone) in progress. 4b (acceptance umbrella) closes after 4e to 4h's device
   runs and no longer gates 4i (owner, 2026-10-12).
 - **Board.** Runs `57977135e472` in slot 2 (second OTA 2026-10-12,
   source off: 4q to 4t; self-committed, `ab.active_slot` 2,
@@ -62,11 +61,8 @@ handover.
   owner's: the 4e, 4f, 4g and 4h runs listed in 4b, 4n's Firefox check,
   4i's post-removal check. A bench run is a last resort, batched, never
   mixed with listening (aius CLAUDE.md).
-- **Next action: 4i's last device item (owner),** at the next listening
-  session with AC-3 playing: `underrun_episode_count` delta 0 across a
-  page-load round (load each page once while a 1 Hz poll runs),
-  recording the `http_rejections` delta per `upgrade.html` load for 4n.
-  No bench run. Card writes (sync, `delete-www`, `--delete`) are refused
+- **Next action: 4u's card sync of `index.html` and its phone check
+  (owner).** Card writes (sync, `delete-www`, `--delete`) are refused
   by the auto-mode classifier ("Remote Shell Writes", even with the
   owner's authorization); they run when the owner switches the session
   to manual approval, or by the owner with `!`.
@@ -6619,12 +6615,12 @@ followed by its resolution.
 
 **Closure 4: PASS.**
 
-### Phase 4i Retire replay
+### Phase 4i Retire replay ✓ SHIPPED 2026-10-12
 
 ```yaml
 phase: 4i
 title: Replay leaves the firmware, the web UI and the bench tools
-status: built
+status: shipped
 depends-on: phase-4h, phase-4j # phase-4b dropped (owner, 2026-10-12): 4b's device sessions stay the owner's and no longer gate the removal, which needs no bench result
 prebuild-review: ready # re-planned 2026-10-12 to the owner's no-bench-run ruling, not re-reviewed. Closure round 3 READY 2026-10-10, nits N1 to N3 folded. Closure round 2 NOT READY 2026-10-10, no blocker (S11 reopened, S1 to S3, N1, N2), folded. Closure NOT READY 2026-10-10 (S11 open, S1 to S3 new, N1 to N5), folded with owner answer. Before it: NOT READY 2026-10-10 (B1, B2, S1 to S11, nits) and the owner's Q1 to Q4, folded the same day
 outcome: >-
@@ -6899,9 +6895,16 @@ owner gate 1.
   committed; 4p was `status.html` only); `sd-chrome.css` serves
   `text/css`. `delete-www` removed `replays.html`, `replays.js`,
   `replays.css` and `replays.html.gz`; each answers 404, and
-  `sd_flush.drained` true, `failures` 0. **Open:** the
-  `underrun_episode_count` delta across a page-load round with AC-3
-  playing, at the next listening session (State block, next action 2).
+  `sd_flush.drained` true, `failures` 0.
+- **Page-load round, AC-3 playing (owner, 2026-10-12, on
+  `57977135e472`): PASS.** The owner loaded `index.html`, `status.html`
+  and `upgrade.html` once each on a phone during a 1 Hz poll (145
+  samples, format 2, 48,002 Hz, clock tracking). `underrun_episode_count`
+  and `tx_underrun_frames` stayed 0, and nothing was audible.
+  `http_requests` went from 90,820 to 91,817, `http_rejections` stayed
+  at 1, `http_client_drops` went from 1 to 4 during the loads, and
+  `http_shed` went from 142 to 159 (it was already rising about 1 per
+  10 s before the loads).
 - **Delivery audit (2026-10-12): FAIL** (B1 plan and CLAUDE.md, S1
   meters poll, S2 held-dispatch handler counts, S3 waveform test
   coverage, N1 to N5). S2 and N1 to N4 fixed; S1 and S3 move to Phase
@@ -7595,9 +7598,9 @@ unit: implementer
   work placed after 4n.
 
 - **Device proof, 2026-10-12: PASS.** Firefox `upgrade.html` loads on
-  `4540da30e5b6` show no page-visible 408 (owner); the per-load
-  `http_rejections` delta was not captured; it is taken in 4i's
-  page-load round at the next listening session (State block).
+  `4540da30e5b6` show no page-visible 408 (owner). In 4i's page-load
+  round (owner's phone, `57977135e472`), the `http_rejections` delta
+  per `upgrade.html` load was 0.
 
 ### Phase 4o The network-transport suite passes at HEAD ✓ SHIPPED 2026-10-12
 
@@ -7823,6 +7826,37 @@ unit: implementer
   clip-free is now a mismatch. Accepted: `bench.py` never had the
   tolerance; on a pre-4t board it aborts in `prepare()` before any
   mutation, so it fails safe.
+
+### Phase 4u The index page keeps its nav on a phone
+
+```yaml
+outcome: at 760px and below, index.html shows its nav links wrapped under the logo, as status.html and upgrade.html already do
+seams:
+  - "firmware/sd/www/index.html:19 header gains bench-nav--wrap"
+  - "firmware/sd/www/sd-chrome.css:185-192 unchanged; the --wrap override already shows the links"
+targeted-proof: an sd-editor case that every page under firmware/sd/www with a bench-nav header carries bench-nav--wrap; sd-editor and www-bundle green; device (owner): the index nav shows on a phone after the card sync
+unit: implementer
+```
+
+- **Reported (owner, 2026-10-12):** the nav is not visible on
+  `index.html` on a phone. Diagnosis: `sd-chrome.css:185` hides
+  `.bench-nav__links` at 760px and below unless the header carries
+  `bench-nav--wrap`; `status.html:16` and `upgrade.html:16` carry it,
+  `index.html:19` does not. Introduced by `b9324ed` (mixer Phase 7),
+  which hid the dashboard's links on a phone on purpose; 4q and 4r did
+  not change it.
+- **Decision (orchestrator, from the report):** the owner wants the
+  nav on a phone, so the index takes the same wrap as the other pages,
+  rather than a new toggle.
+- **Built 2026-10-12; the phone check after the card sync is the
+  owner's.** `index.html:19` carries `bench-nav--wrap`; the
+  `sd-chrome.css` comment says every page does; `pages.test.js` asserts
+  it for each page. The 360px fit was read from the CSS, not rendered:
+  the index header holds only the logo and the nav, and the links wrap
+  to their own row. Proof: sd-editor, www-bundle and registry green.
+- **Accepted:** the `display: none` rule at `sd-chrome.css:185` no longer
+  applies to any page (each carries `--wrap`). It stays; it costs
+  nothing and keeps a page without `--wrap` from overflowing.
 
 ### Phase 4c `test.sh` runs every `--suite` given ✓ SHIPPED 2026-10-06
 

@@ -183,8 +183,8 @@ input:focus-visible, select:focus-visible { border-color: var(--aius-accent-info
 .bench-nav__links a:hover { background: none; color: var(--aius-accent-warning); }
 .bench-nav__links a[aria-current="page"] { background: none; color: var(--aius-accent-warning); font-weight: 600; }
 @media (max-width: 760px) { .bench-nav__links { display: none; } }
-/* The pages without a dashboard keep their links on a phone: the strip wraps
-   to its own row under the logo instead of hiding. */
+/* Every page's header carries --wrap (pages.test.js), so the links stay on a
+   phone: the strip wraps to its own row under the logo instead of hiding. */
 @media (max-width: 760px) {
   .bench-nav--wrap { flex-wrap: wrap; row-gap: 4px; padding-block: 8px; }
   .bench-nav--wrap .bench-nav__links { display: flex; order: 3; flex-basis: 100%; gap: 4px 16px; }
