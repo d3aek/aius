@@ -38,11 +38,14 @@ handover.
   retired; post-removal device check and `delete-www`). 4b (acceptance
   umbrella) PLANNED: it closes after 4e to 4h's device runs and no longer
   gates 4i (owner, 2026-10-12).
-- **Board.** Runs `ce1159286fd2` in slot 2 (4e to 4m, 4i step 1a, the
-  DSP decoder fix, recorder Phase E, output-jitter Phase L); slot 1 holds
-  `f58232711d06`. Both still carry replay; the next OTA is the first
-  image without it. The card holds no replay captures (`delete-captures`
-  2026-10-12, listing empty) but still holds the old www pages,
+- **Board.** Runs `4540da30e5b6` in slot 1 (OTA 2026-10-12, source off:
+  the first image without replay, 4i and 4p included; self-committed,
+  `ab.active_slot` 1, `trial_budget` 0, `rollback_observed` false;
+  `clock.master` "input"). Slot 2 holds `ce1159286fd2`, with replay. The
+  build met the slot-a OCRAM floor exactly (264,736 B free) and passed
+  the retired-symbols guard. The card holds no replay captures
+  (`delete-captures` 2026-10-12, listing empty) but still holds the old
+  www pages,
   `replays.html`, `replays.js`, `replays.css` and `replays.html.gz`
   included, until the next sync and `delete-www`. `df966f17b370` stays
   the owner's **fail-safe rollback candidate**: tag
@@ -60,18 +63,9 @@ handover.
   owner's: the 4e, 4f, 4g and 4h runs listed in 4b, 4n's Firefox check,
   4i's post-removal check. A bench run is a last resort, batched, never
   mixed with listening (aius CLAUDE.md).
-- **Next action: the OTA, on the owner's word.** In order:
-  1. Rebuild at a clean HEAD (the images in `firmware/.pio` were built
-     from the uncommitted 4i tree, so their stamp is stale): confirm
-     `the repo tooling git -C git_modules/aius status --short` is empty, run
-     `firmware/scripts/build_ab.sh`, and read every post-link guard (OCRAM
-     floors 264,768 / 264,736 B; the retired-symbols guard).
-  2. Read `/api/status` `ab` (expect `ledger_valid true`, `booted_slot`
-     2), state the cost (staging during playback costs dropouts; prefer
-     the source off), sign the canonical slot-a image WITHOUT `--slot`
-     with the home key and `--build-revision` = the 12-char HEAD, and
-     `aius_ota_flash.py --activate` it (aius CLAUDE.md §Device access).
-  3. After the healthy-boot self-commit, the owner's card sync
+- **Next action: the card sync, on the owner's word.** The OTA (steps 1
+  and 2) is done. In order:
+  3. The owner's card sync
      (`aius-sd-sync.sh --token-file .secrets/aius-sd-auth`): it uploads
      4i's and 4p's pages and `openapi.json`.
   4. 4i's post-removal device check (its targeted-proof "device (owner,
