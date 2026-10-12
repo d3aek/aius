@@ -44,7 +44,7 @@ built); replace wholesale on the next handover.
   (2026-10-11). **4l BUILT** (2026-10-11). **4m BUILT** (2026-10-11,
   the mixer plan's Phase 1e). **4n BUILT** (2026-10-12): host proof and
   all four images green, review closure PASS; its Firefox device check is
-  the owner's. 4o (network-transport fails at HEAD) PLANNED. 4i PLANNED, re-planned 2026-10-12 to the no-bench-run ruling (not
+  the owner's. **4o DONE** (2026-10-12, a stale test assertion). 4i PLANNED, re-planned 2026-10-12 to the no-bench-run ruling (not
   re-reviewed). 4b (acceptance umbrella)
   PLANNED: it closes after 4e to 4h's device runs. The owner holds two
   gates (below).
@@ -89,7 +89,7 @@ built); replace wholesale on the next handover.
   rewritten to the no-bench-run ruling. Next, in order: (1) **4i** step 1,
   `replay_retire.py archive` (GETs only), commit the captures, then
   `delete-captures` on the owner's word; the measure port; the four
-  removal units; (2) **4o**, independent of 4i. 4b's device sessions stay the owner's and no longer
+  removal units. 4b's device sessions stay the owner's and no longer
   gate 4i's removal (owner, 2026-10-12). Every OTA and device check waits
   for the owner's word; card reads and the archive's GETs do not.
 - **What landed this run** (aius commits; each followed by a upstream repository
@@ -6880,8 +6880,11 @@ owner gate 1.
   `evidence/AIUS-REPLAY-CAPTURES.manifest.json`, plain git; captures
   stay in LFS under `docs/reference/datasheets.mdAIUS-REPLAY-CAPTURES/`), and the
   closure's N5 (git missing is an `error:` line) and N6
-  (`GIT_OPTIONAL_LOCKS=0`). Not yet run against the board: its first use
-  is the archive run.
+  (`GIT_OPTIONAL_LOCKS=0`).
+- **Archive run (2026-10-12), committed `165814b`.** Board idle (no
+  carrier, gate shut), build `ce1159286fd2`: 5 complete captures,
+  19,765,248 bytes, in LFS with the manifest; no `.part` rows.
+  `delete-captures` is next and waits for the owner's word.
 
 **No bench run (owner, 2026-10-12): remove replay, port host-only.** The
 replay-driven baseline and the ported bench comparison left this phase;
@@ -7563,7 +7566,7 @@ unit: implementer
   does not touch it (review), so a delta that persists after 4n is new
   work placed after 4n.
 
-### Phase 4o The network-transport suite passes at HEAD
+### Phase 4o The network-transport suite passes at HEAD ✓ SHIPPED 2026-10-12
 
 ```yaml
 outcome: >-
@@ -7579,10 +7582,13 @@ targeted-proof: >-
 unit: implementer
 ```
 
-- **Found 2026-10-12** by 4n's verifier: the failure is at HEAD (4n
-  touches neither `firmware/platformio.ini`, `firmware/vendor/**` nor the
-  suite). First step: diagnose which side drifted and when (`git log` on
-  both), then fix the drifted side.
+- **Found 2026-10-12** by 4n's verifier: the failure was at HEAD.
+- **Shipped.** The test had drifted: Phase 4e (`21c8f52`, E4) added
+  `symlink://vendor/SdFat` and `symlink://vendor/SD` to the optical env's
+  `lib_deps` on purpose (`firmware/platformio.ini:142-146`), and the
+  assertion still expected NativeEthernet alone. It now expects all
+  three in the ini's order; `platformio.ini` is unchanged, so no image
+  rebuild. Proof: network-transport and registry green.
 
 ### Phase 4c `test.sh` runs every `--suite` given ✓ SHIPPED 2026-10-06
 

@@ -294,7 +294,12 @@ def test_platformio_selects_repository_snapshot():
         if section[0] == "env:teensy41-optical"
     )
     values = dict(optical_env[1])
-    assert values["lib_deps"] == ["symlink://vendor/NativeEthernet"]
+    # Phase 4e (E4) vendored the SD stack the same way; NativeEthernet stays first.
+    assert values["lib_deps"] == [
+        "symlink://vendor/NativeEthernet",
+        "symlink://vendor/SdFat",
+        "symlink://vendor/SD",
+    ]
     assert "NativeEthernet" in values["lib_ignore"]
 
 
