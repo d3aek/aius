@@ -15,7 +15,7 @@ import { describe, expect, it } from 'vitest';
 const here = dirname(fileURLToPath(import.meta.url));
 const www = resolve(here, '../../firmware/sd/www');
 const PAGES = readdirSync(www).filter((name) => name.endsWith('.html')).sort();
-const PAGE_FILES = ['index.html', 'status.html', 'upgrade.html', 'classic.html'];
+const PAGE_FILES = ['index.html', 'status.html', 'upgrade.html'];
 const NAV = ['index.html', 'status.html', 'upgrade.html'];
 
 /* A <template> parses inertly: happy-dom fetches nothing for its links. */
@@ -27,7 +27,7 @@ const parse = (page) => {
 const sheetsOf = (doc) => Array.from(doc.querySelectorAll('link[rel~="stylesheet"]')).map((link) => link.getAttribute('href'));
 
 describe('SD pages share one chrome', () => {
-  it('finds the four pages', () => {
+  it('finds the three pages', () => {
     expect(PAGES).toEqual([...PAGE_FILES].sort());
   });
 

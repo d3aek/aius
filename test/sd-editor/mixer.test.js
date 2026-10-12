@@ -5,8 +5,8 @@
  * over the editor's form, so the harness is dsp-editor.test.js's: the real
  * page body, the real sd-shared.js, dsp-editor.js and mixer.js evaluated in
  * order, and `fetch` stubbed with the device contract. The proofs are the two
- * seams the skin adds: the markup still carries every id the editor binds, and
- * the faders, readouts, chips and flow figure read and write the editor's own
+ * seams the skin adds: the markup carries every id the editor binds (any
+ * missing one fails boot), and the faders, readouts, chips and flow figure read and write the editor's own
  * fields rather than a model of their own.
  */
 
@@ -21,9 +21,7 @@ const fixture = (name) => JSON.parse(readFileSync(resolve(here, 'fixtures', name
 const read = (name) => readFileSync(resolve(www, name), 'utf8');
 const bodyOf = (html) =>
   html.slice(html.indexOf('<body') , html.indexOf('</body>')).replace(/^<body[^>]*>/, '').replace(/<script[\s\S]*?<\/script>/g, '');
-const idsOf = (html) => new Set(Array.from(bodyOf(html).matchAll(/\sid="([^"]+)"/g), (match) => match[1]));
 
-const classicHtml = read('classic.html');
 const mixerHtml = read('index.html');
 const sources = [read('sd-shared.js'), read('dsp-editor.js'), read('mixer.js')];
 
@@ -134,13 +132,6 @@ async function type(path, raw) {
   fieldOf(path).dispatchEvent(new Event('input'));
   await settle();
 }
-
-describe('index.html (mixer) markup', () => {
-  it('carries every id classic.html carries, so dsp-editor.js binds unchanged', () => {
-    const missing = [...idsOf(classicHtml)].filter((id) => !idsOf(mixerHtml).has(id));
-    expect(missing).toEqual([]);
-  });
-});
 
 describe('mixer faders', () => {
   beforeEach(async () => {

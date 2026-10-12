@@ -5,9 +5,8 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#0a0c0b">
   <title>aius mixer</title>
-  <!-- A second skin over the SAME editor: dsp-editor.js runs unchanged against
-       this page, so every id classic.html carries is carried here too (the
-       mixer suite asserts it). sd-chrome.css is every page's shared chrome,
+  <!-- The bench skin over the editor: dsp-editor.js runs unchanged against
+       this page. sd-chrome.css is every page's shared chrome,
        dsp-editor.css still lays out the form the script builds, and mixer.css
        lays the stages out as one full-width dashboard grid. -->
   <link rel="stylesheet" href="sd-chrome.css">
@@ -81,7 +80,7 @@
       </div>
     </div>
 
-    <!-- The view toggle is classic.html's; this skin has one layout, but the
+    <!-- The view toggle is the editor's; this skin has one layout, but the
          editor still writes the toggle's state. -->
     <div class="bench-legacy" hidden>
       <button id="view-editor" type="button" class="secondary" aria-pressed="false">Editor</button>
@@ -178,7 +177,7 @@
             <div id="matrix" class="form-mount"></div>
           </details>
 
-          <!-- The routing canvas is classic.html's editor for these fields; this
+          <!-- The routing canvas is the editor's for these fields; this
                skin replaces it with the faders, and the script still draws
                into it. -->
           <div class="bench-legacy" hidden>
@@ -190,7 +189,7 @@
         </div>
       </section>
 
-      <!-- 02 EQ: the stacked plot is classic.html's, unchanged. The per-channel
+      <!-- 02 EQ: the stacked plot is the editor's, unchanged. The per-channel
            table is regrouped by mixer.js into one tab per channel, linked to
            the plot's legend. -->
       <section id="dashboard-eq" class="board__cell board__cell--eq">

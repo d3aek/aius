@@ -1,6 +1,6 @@
 /* Aius SD mixer skin (index.html).
  *
- * OWNS: the views index.html draws where classic.html draws something else --
+ * OWNS: the views index.html draws over the editor's form --
  * the matrix faders, the equation readout, the centre-weight dial and the
  * worst-case verdict, the preset chips, the layout-aware chip, the live
  * signal-flow figure, the EQ channel tabs (the editor's channel table,

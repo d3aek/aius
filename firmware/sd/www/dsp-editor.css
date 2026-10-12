@@ -1,6 +1,6 @@
 /* DSP editor additions. The shared chrome (page frame, cards, status grid,
    controls, buttons, PILLS and the error-summary line) comes from sd-chrome.css,
-   which classic.html links first -- keep every SD page looking like one product
+   which index.html links first -- keep every SD page looking like one product
    and only add what the editor's dense form and signal-flow strip need. */
 
 code{color:var(--aius-accent-info)}

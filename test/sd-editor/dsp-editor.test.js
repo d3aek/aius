@@ -1,9 +1,9 @@
 // @vitest-environment happy-dom
 
-/* Regression for the SD-hosted DSP control surface (firmware/sd/www/classic.html
+/* Regression for the SD-hosted DSP control surface (firmware/sd/www/index.html
  * + dsp-editor.js, on top of the shared sd-shared.js). The page is a classic
  * script served off the Teensy's SD card, so the harness loads the real
- * classic.html body, evaluates the real sd-shared.js and then the real
+ * index.html body, evaluates the real sd-shared.js and then the real
  * dsp-editor.js against it, and stubs `fetch` with the device contract -- no
  * build step and no served URL, which is the cheapest harness that still
  * exercises the shipped files byte-for-byte.
@@ -44,11 +44,12 @@ const untrimmed = (config) => {
   for (const channel of Object.values(config.input_channels)) channel.gain_db = 0;
   return config;
 };
-const indexHtml = readFileSync(resolve(www, 'classic.html'), 'utf8');
+const indexHtml = readFileSync(resolve(www, 'index.html'), 'utf8');
 const sharedSource = readFileSync(resolve(www, 'sd-shared.js'), 'utf8');
 const editorSource = readFileSync(resolve(www, 'dsp-editor.js'), 'utf8');
 const bodyMarkup = indexHtml
-  .slice(indexHtml.indexOf('<body>') + '<body>'.length, indexHtml.indexOf('</body>'))
+  .slice(indexHtml.indexOf('<body'), indexHtml.indexOf('</body>'))
+  .replace(/^<body[^>]*>/, '')
   .replace(/<script[\s\S]*?<\/script>/g, '');
 
 const CHANNELS = ['fl', 'fr', 'fc', 'lfe', 'sl', 'sr'];
@@ -419,30 +420,6 @@ afterEach(() => {
 describe('Aius SD DSP editor — dashboard layout', () => {
   const LAYOUT_KEY = 'aius-dsp-editor-layout-v1';
   const storedLayout = () => JSON.parse(localStorage.getItem(LAYOUT_KEY));
-
-  it('starts in the Dashboard view with one band per stage, in signal order', async () => {
-    await boot();
-
-    expect(el('dashboard-surface').dataset.view).toBe('dashboard');
-    expect(el('view-dashboard').getAttribute('aria-pressed')).toBe('true');
-    expect(el('view-editor').getAttribute('aria-pressed')).toBe('false');
-    expect(
-      [...document.querySelectorAll('[data-dashboard-cell]')].map((cell) => cell.dataset.dashboardCell),
-    ).toEqual(['input', 'eq', 'matrix', 'limiter', 'output', 'live']);
-    expect(el('card-meters').closest('[data-dashboard-cell]').dataset.dashboardCell).toBe('live');
-
-    // The mode switch is the whole toolbar: with no resizable geometry left,
-    // there is nothing for a "Reset layout" button to reset.
-    expect([...document.querySelectorAll('.dashboard-toolbar button')].map((button) => button.textContent)).toEqual([
-      'Editor',
-      'Dashboard',
-    ]);
-    // A band is sized by the stylesheet alone -- the page writes no per-cell
-    // geometry onto it.
-    expect([...document.querySelectorAll('[data-dashboard-cell]')].map((cell) => cell.getAttribute('style'))).toEqual(
-      new Array(6).fill(null),
-    );
-  });
 
   it('switches to Editor and back, remembering the mode without a device write', async () => {
     await boot();
@@ -3691,17 +3668,6 @@ describe('Aius SD DSP editor — downmix matrix geometry', () => {
 });
 
 describe('Aius SD DSP editor — the downmix matrix diagram', () => {
-  it('sits in the strip between the EQ plot and the limiter', async () => {
-    await boot();
-    expect([...document.querySelectorAll('.visual .visual-block__title')].map((node) => node.textContent)).toEqual([
-      'Input levels',
-      'EQ cascades',
-      'Downmix matrix',
-      'Limiter gain reduction',
-      'Output levels',
-    ]);
-  });
-
   it('draws every term of the downmix, the unity references included', async () => {
     await boot();
     const edges = matrixEdgePaths();
@@ -4237,56 +4203,6 @@ describe('Aius SD DSP editor — meter ballistics', () => {
  * (items 12 + 13) -- the limiter's controls sharing the panel with its
  * metering being the named case. */
 describe('Aius SD DSP editor — page structure', () => {
-  it('orders the cards and nests live processing inside the Signal flow dashboard', async () => {
-    await boot();
-    const titles = [...document.querySelectorAll('main > section')].map(
-      (section) => section.querySelector('h2').textContent,
-    );
-    // "Processing stages" was a cluster of five checkboxes with no controls of
-    // its own; each moved into the head of the panel it governs.
-    expect(titles).toEqual(['Effective configuration', 'Presets', 'Signal flow']);
-    expect(el('card-meters').closest('main > section').querySelector('h2').textContent).toBe('Signal flow');
-    expect(el('card-meters').querySelector('h3').textContent).toBe('Live processing');
-  });
-
-  /* "Source" named the DSP MODEL's provenance beside a strip whose whole job is
-   * to say what the device is HEARING -- two different sources under one word.
-   * The re-read buttons said "Re-read" without saying of what. */
-  it('names the config provenance and the two reload affordances after what they do', async () => {
-    await boot();
-    const labels = [...document.querySelectorAll('.status-grid span')].map((node) => node.textContent);
-
-    expect(labels).toContain('Config');
-    expect(labels).not.toContain('Source');
-    expect(el('source').textContent).toBe('default');
-    // Revert re-reads the device and discards the page's edits; the stale notice
-    // keeps its own fuller wording.
-    expect(el('reload').textContent).toBe('Revert');
-    expect(el('stale-reload').textContent).toBe('Reload device config');
-  });
-
-  it('embeds each stage form inside its own visual block, after the picture', async () => {
-    await boot();
-    expect(el('card-input-channels').closest('.visual-block').contains(el('curve'))).toBe(true);
-    expect(el('card-output-eq').closest('.visual-block').contains(el('curve'))).toBe(true);
-    expect(el('card-matrix').closest('.visual-block').contains(el('matrix-diagram'))).toBe(true);
-    // The limiter's controls share the panel with its metering (item 12).
-    expect(el('card-limiter').closest('.visual-block').contains(el('gr-fill'))).toBe(true);
-    expect(el('card-limiter').contains(fieldOf('limiter.threshold_dbfs'))).toBe(true);
-
-    // The picture precedes its text entry in every block.
-    const matrixBlock = [...el('card-matrix').closest('.visual-block').children];
-    expect(matrixBlock.indexOf(el('card-matrix'))).toBeGreaterThan(
-      matrixBlock.indexOf(el('matrix-diagram').parentElement),
-    );
-    const limiterBlock = [...el('card-limiter').closest('.visual-block').children];
-    expect(limiterBlock.indexOf(el('card-limiter'))).toBeGreaterThan(limiterBlock.indexOf(el('gr-history')));
-
-    // The card contract survives the move: markers still mount on each title.
-    expect(el('m:card-input-channels').hidden).toBe(true);
-    expect(el('m:card-limiter').hidden).toBe(true);
-  });
-
   it('keeps the input-channel table as the dense per-channel escape hatch', async () => {
     await boot({ config: fixture('dsp-config-sd.json') });
     const grid = document.querySelector('.eq-table--channels');

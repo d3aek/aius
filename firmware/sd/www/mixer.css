@@ -159,7 +159,7 @@
 .bench .stage-head__note { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .bench .stage-head__bypass { border-color: var(--aius-accent-warning); color: var(--aius-text-warning); }
 .bench .stage-head__bypass[data-on="false"] { visibility: hidden; }
-/* A bypassed stage is dimmed, not disabled: same contract as classic.html. */
+/* A bypassed stage is dimmed, not disabled: same contract as the editor's stage bypass. */
 .panel[data-stage="off"] .mixer__body,
 .panel[data-stage="off"] .gr,
 .panel[data-stage="off"] .scope,

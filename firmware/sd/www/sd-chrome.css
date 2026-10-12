@@ -5,7 +5,7 @@
    sheets (dsp-editor.css, mixer.css) add only their own rules after it.
 
    Two tiers. Unscoped rules are the plain chrome every page gets, including
-   the classic editor, whose body keeps its own layout. Rules under body.bench are the full bench skin: the dashboard
+   any page without body.bench. Rules under body.bench are the full bench skin: the dashboard
    (index.html), status.html and upgrade.html.
 
    No web fonts are fetched: Archivo and IBM Plex Mono ship on the card under

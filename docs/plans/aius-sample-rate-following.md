@@ -31,13 +31,13 @@ Handover 2026-10-12 (orchestration run, session c36bf526: 4n, 4o, 4i and
 4p built; handed over before the OTA); replace wholesale on the next
 handover.
 
-- **Status.** Phases 1, 2, 3 DONE; 4a, 4c, 4d, 4n, 4o, 4p, 4q DONE.
-  BUILT, with their device proof the owner's and not yet run: Phase 4
-  (gate 7 at fill-write cadence on the U24 bench), 4e, 4f, 4g, 4h, 4j,
-  4k, 4l, 4m and **4i** (only the page-load underrun round with AC-3
-  playing remains). PLANNED: 4s (headroom restore, next), then 4r
-  (delete `classic.html`). 4b (acceptance umbrella) closes after 4e to
-  4h's device runs and no longer gates 4i (owner, 2026-10-12).
+- **Status.** Phases 1, 2, 3 DONE; 4a, 4c, 4d, 4n, 4o, 4p, 4q, 4r, 4s
+  DONE. BUILT, with their device proof the owner's and not yet run:
+  Phase 4 (gate 7 at fill-write cadence on the U24 bench), 4e, 4f, 4g,
+  4h, 4j, 4k, 4l, 4m, **4i** (only the page-load underrun round with
+  AC-3 playing remains) and **4t** (GET serves the stored headroom; needs
+  the OTA). 4b (acceptance umbrella) closes after 4e to 4h's device
+  runs and no longer gates 4i (owner, 2026-10-12).
 - **Board.** Runs `4540da30e5b6` in slot 1 (OTA 2026-10-12, source off:
   the first image without replay, 4i and 4p included; self-committed,
   `ab.active_slot` 1, `trial_budget` 0, `rollback_observed` false;
@@ -61,14 +61,19 @@ handover.
   owner's: the 4e, 4f, 4g and 4h runs listed in 4b, 4n's Firefox check,
   4i's post-removal check. A bench run is a last resort, batched, never
   mixed with listening (aius CLAUDE.md).
-- **Next action: Phase 4q, then one owner check.** The OTA, card sync,
-  `delete-www`, every source-off 4i item and 4n's Firefox check are done.
-  The auto-mode classifier refuses an agent running the sync or
-  `delete-www`; the owner runs them with `!` (sync needs `--device
-  http://192.0.2.66 --www firmware/sd/www`).
-  1. Phase 4q (classic links and matrix hints), then the owner's card
-     sync of its pages.
-  2. 4i's last device item, at the next listening session with AC-3
+- **Next action: the OTA and card sync for 4q to 4t, on the owner's
+  word.** The auto-mode classifier refuses an agent running card writes
+  (sync, `delete-www`, `--delete`); the owner runs them with `!`.
+  1. An agent rebuilds at a clean HEAD (`build_ab.sh` last, guards
+     read), reads `ab`, signs without `--slot`, and on the owner's word
+     activates. Then, after the self-commit, the owner runs
+     `aius-sd-sync.sh --device http://192.0.2.66 --www
+     firmware/sd/www --token-file .secrets/aius-sd-auth`,
+     then the same script with `--delete classic.html` and no `--www`.
+  2. 4t's device proof: headroom 0.5, clip-free on, Apply, reload,
+     clip-free off shows 0.5 and the overshoot warning. Then remove
+     `aius_dsp_set.py`'s pre-4t tolerance (4t's "Open after the OTA").
+  3. 4i's last device item, at the next listening session with AC-3
      playing: `underrun_episode_count` delta 0 across a page-load round
      (load each page once while a 1 Hz poll runs), recording the
      `http_rejections` delta per `upgrade.html` load for 4n. No bench
@@ -7673,7 +7678,7 @@ unit: implementer
   Proof: sd-editor 407, www-bundle 29 and optical-app green (verifier).
   The change reaches the board with the next card sync (owner).
 
-### Phase 4r classic.html is deleted from the tree and the card
+### Phase 4r classic.html is deleted from the tree and the card ✓ SHIPPED 2026-10-12
 
 ```yaml
 outcome: classic.html (and any asset only it used) is gone from firmware/sd/www and from the board's card; the DSP editor behaviour it hosted is tested through index.html; aius-sd-sync.sh can delete named card files so the owner removes it with one command
@@ -7704,6 +7709,25 @@ unit: implementer
   the clip-free PUT example's `headroom_linear` is the resolved value.
   Reword the comment and make the assertion check the example is
   in (0, 1], since the value is a stored pad ignored under clip-free.
+- **Slice 2 shipped: `classic.html` deleted.** `dsp-editor.css` stays
+  (`index.html:14` links it).
+  - `www_bundle.py` PAGES, `aius-sd-sync.sh`'s bundle lists,
+    `aius_http_runner.py --resource` and `aius_recovery_smoke.py`
+    EDITOR_RESOURCES drop the page. The page comments are reworded, and
+    `user-interface.md` records the retirement.
+  - The `dsp-editor.test.js` fixture is now `index.html`, and its 242
+    behaviour tests pass there.
+  - Retired with the page (owner, 2026-10-12): five classic-layout tests
+    (dashboard cells, visual blocks, card order, status-grid labels);
+    the `mixer.test.js` id-parity case (no second page); and
+    `test_bitstream_ui.py`'s positive check for the "IEC 61937
+    bitstream framing and decoding cannot be bypassed" hint. That hint
+    is not carried to `index.html`, because it offers bypass pills only
+    for DSP stages (`mixer.js:1007`), never for decode.
+  - `www-bundle` is reshaped to three real pages, and
+    `openapi.test.js:1054` now asserts (0, 1].
+  - Card removal (owner): `aius-sd-sync.sh --device http://192.0.2.66
+    --token-file .secrets/aius-sd-auth --delete classic.html`.
 
 ### Phase 4s The matrix overshoot warning returns when clip-free headroom goes off ✓ SHIPPED 2026-10-12
 

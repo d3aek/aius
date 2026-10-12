@@ -290,7 +290,7 @@ if ((${#selected_files[@]} > 0)); then
     for relative in "${selected_files[@]}"; do
         relative=${relative#./}
         case "$relative" in
-            (index.html|status.html|upgrade.html|classic.html) needs_bundle=1 ;;
+            (index.html|status.html|upgrade.html) needs_bundle=1 ;;
             (*) [[ "$references" != *$'\n'"$relative"$'\n'* ]] || needs_bundle=1 ;;
         esac
     done
@@ -316,7 +316,7 @@ if ((${#selected_files[@]} > 0)); then
     for relative in "${selected_files[@]}"; do
         upload_file "$www_dir/$relative" "$relative"
     done
-    for page in index.html status.html upgrade.html classic.html; do
+    for page in index.html status.html upgrade.html; do
         if [[ "$needed" == *$'\n'"$page"$'\n'* ]]; then
             upload_file "$work_dir/bundles/$page.gz" "$page.gz"
         fi

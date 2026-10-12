@@ -23,7 +23,7 @@ def main() -> None:
     status_path = "sd/www/status.js"
     editor_path = "sd/www/dsp-editor.js"
     status_page_path = "sd/www/status.html"
-    index_path = "sd/www/classic.html"
+    index_path = "sd/www/index.html"
     firmware_path = "src/optical_main.cpp"
     status = read(status_path)
     editor = read(editor_path)
@@ -47,7 +47,6 @@ def main() -> None:
     require(editor, "const encoding = carrierEncoding(status)", editor_path)
     require(status_page, 'id="audio-state"', status_page_path)
     require(status_page, 'id="format"', status_page_path)
-    require(index, "IEC 61937 bitstream framing and decoding cannot be bypassed", index_path)
     require(
         firmware,
         "dts_metrics.arena_high_water > ac3_metrics.arena_high_water",
