@@ -8217,8 +8217,8 @@ depends-on: none # web files disjoint from 4x (upgrade.* only)
     second bootable slot until an activation completes. A cold power
     cycle still boots slot 2.
   - HEAD carries the same read path (about `optical_main.cpp:5380-5426`).
-  - Unchecked: that the rehearsal's scratch sector never overlaps the
-    helper's canonical line, which would explain why rehearsals passed.
+  - A rehearsal from slot 2 takes the same read path and faults the
+    same way (4z review F3); earlier rehearsals ran from slot 1.
 - **Accepted (delivery audit nits).**
   - N1: after a failed pre-dark clear, re-activating the same container
     is refused (INTERRUPTED) until a reboot. Reboot to retry.
@@ -8238,48 +8238,126 @@ depends-on: none # web files disjoint from 4x (upgrade.* only)
 
 ```yaml
 outcome: >-
-  ota_flash_read computes its remap before the window from RAM-held values,
-  invalidates [address, length) after the GPR32 flip and SWRESET and right
-  before the copy loop, and the step path calls nothing in FLASHMEM; an
-  image carrying the fix and 4y activates from the running 57977135e472
-  into slot 1 and self-commits
+  ota_flash_read reads its remap from a DTCM value filled in ab_compose
+  right after g_ab_running_slot is set, invalidates [address, length)
+  after the GPR32 flip and SWRESET and right before the copy loop, keeps
+  the post-copy invalidate, and invalidates the I-cache after the GPR32
+  restore; nothing in the activation step loop reaches flash
+  (ab_activation_mark_pending, after all slot programming, is the named
+  exception); an image carrying the fix, 4y and the bridge pin rehearses
+  to COMPLETED from slot 2, then activates into slot 1 and self-commits
 seams:
-  - firmware/src/optical_main.cpp ota_flash_read and its window
-  - firmware/lib/aius_ab (remap helper placement or a RAM-cached remap)
-  - post-link guards (no FLASHMEM call reachable from the step path)
-  - the route past the running image's bug (decided in step 1)
+  - firmware/src/optical_main.cpp ota_flash_read, ab_compose and the window
+  - firmware/lib/aius_ab (remap values held in DTCM)
+  - post-link guard over the step-loop closure
+  - firmware/link/aius_teensy41.ld (bridge pin) and
+    firmware/test/boot-target/test_ldscript_drift.py
+  - firmware/tools/ota/aius_ota_sign.py (bridge check on the signed bytes)
 targeted-proof: >-
-  disassembly of the canonical slot-a ELF shows no flash-resident call
-  between the invalidate and the copy loop (post-link guard, failing on a
-  planted veneer call); ab, ota, optical-app suites and all image floors
-  green; the route check in step 1; then the owner's OTA and 4y's device
-  proof
+  post-link guard on the canonical slot-a ELF: no bl, blx or b.w to a
+  target outside ITCM [0, _etext) and no literal-pool word in
+  0x60000000..0x60FFFFFF in ota_flash_read, ota_flash_program,
+  ota_flash_erase or the direct-call closure of aius_ota_activate_step,
+  and nm puts the remap values in DTCM; the guard fails on a planted
+  veneer call and on a planted flash literal; the sign-time bridge check
+  passes on the built payload and on 57977135e472's own payload, fails on
+  b3e48f6db8b1's, and its unit test covers payload vs container offsets;
+  ab, ota, optical-app, boot-target suites and all image floors green;
+  device (owner's word): rehearse b3e48f6db8b1 (expect VERIFY at compare
+  0x1B80), rehearse the bridge image (expect COMPLETED), then activate it
+  and run 4y's device proof
 unit: parent-only
 ```
 
-- **Step 1: Interrogate the user: route past the running image's bug.**
-  The running `57977135e472` keeps the bug until it is replaced, so it
-  miswrites any image that differs from it on canonical 0x60011B80 to
-  0x1B9F.
-  - **Question:** how does the fixed image get onto the board?
-  - **Options:** (a) bridge OTA: pin those 32 bytes in the fixed image to
-    `57977135e472`'s bytes through the linker script, with a host check
-    that the signed payload matches them before signing; no physical
-    access, and later images need no pin because the fixed code then
-    runs. (b) USB `recovery.hex` via `firmware/scripts/flash_optical.sh`:
-    no pin, but the owner's hands on the board's USB and audio stops.
-  - **Recommendation:** (a). It needs no physical access, and a clean
-    activation also confirms the cache diagnosis.
-  - **Blocks:** step 2 onward.
-- **Step 2:** confirm the diagnosis without the device: build `5797713`'s
+- **Route (owner, 2026-10-13): bridge OTA.** The running `57977135e472`
+  keeps the bug until it is replaced, so it miswrites any image that
+  differs from it on canonical 0x60011B80 to 0x1B9F. The fixed image pins
+  those 32 bytes to `57977135e472`'s bytes through the linker script, and
+  a host check refuses to sign a payload that does not match them. A
+  clean activation also confirms the cache diagnosis; a fault elsewhere
+  leaves the board on slot 2 as before. The pin is a bridge: once the
+  fixed code runs, a later phase removes it. USB `recovery.hex` (owner's
+  hands, audio stops) was the alternative.
+- **Step 1:** confirm the diagnosis without the device: build `5797713`'s
   canonical image in a scratch build dir; `nm` shows
   `aius_ab_remap_for_slot` at 0x60011B60, and the disassembly of
   `ota_flash_read` orders the invalidate, the remap veneer call, the
   GPR32 write, then the loop.
-- **Step 3:** the fix, the guard, the route's artefacts; prebuild
-  adversarial review of this contract first.
+  - **Done (2026-10-13): confirmed.** `aius_ab_remap_for_slot` sits at
+    0x60011B60. `ota_flash_read` (ITCM 0x870) runs DCIMVAC at 0x89c,
+    `bl __aius_ab_remap_for_slot_veneer` at 0x8b4, the GPR32 write at
+    0x8ea, SWRESET at 0x8f4, then the byte copy at 0x916. The rebuilt
+    payload's 0x1B80 to 0x1B9F matches the running image's:
+    `024a8b60c1e900c2704700bf00803e6000000160bbb14ff0000cd31810b54ceb`
+    (the pin's reference bytes). A `firmware`-only export does not
+    build: `lib/aius_audio/src/aius_spdif_sources.cpp` includes from
+    `evidence/source-snapshots/`.
+- **Step 2: prebuild review round 1 FAIL (F1 blocker); contract revised
+  above.**
+  - F1: a guard over "invalidate to copy loop" misses the stretch the
+    fix moves; it now covers whole functions and the step-loop closure
+    and matches non-ITCM branch targets, `b.w` tail calls included.
+  - F2: a call-only guard misses a D-side flash read, the real
+    mechanism; it now rejects flash literals and checks the remap values
+    sit in DTCM. Indirect calls through `primitives` and `ctx` stay out
+    of the guard's reach (accepted).
+  - F3: at `5797713` a rehearsal runs the full activation sequence over
+    the inactive slot with the same identity-window read, so it hits
+    0x60011B80 like the activation. It erases the slot 1 head as the
+    activation does, so it adds no posture risk. Two rehearsals now
+    precede the activation.
+  - F4: after the bridge the board runs slot 1, remap offset 0, plain
+    memcpy, so no device step runs the fixed identity path. The fix is
+    proven by disassembly only until Phase 4za.
+  - F5: the 5797713 window's only flash D-side loads are the helper's
+    two literals on line 0x1B80 (0x60011B8C, 0x60011B90); program and
+    erase are IP commands with a PSRAM source, so the line set is fixed
+    by the running image. Reference bytes from the deployed payload's
+    disassembly match step 1's rebuild. Residual risk (accepted): M7
+    speculative D-reads of Normal write-back flash could allocate other
+    lines of a chunk; nondeterministic and failing safe at verify.
+  - F6: pin mechanism, after `KEEP(*(.startup))` in `.text.code`:
+    `. = ORIGIN(FLASH) + 0x1B80;` then eight in-script `LONG()` words,
+    then `*(.flashmem*)`. It must be ORIGIN-relative because
+    `gen_slot_ldscript.py` rewrites only the FLASH line. ld refuses to
+    move the counter backwards if `.startup` ever passes +0x1B80. It
+    costs about 0x568 pad bytes and leaves IVT, boot data and the floors
+    untouched. The `LONG()` words are the bytes' durable home; the
+    scratch payload is reaped.
+  - F7: the bridge check gets a positive control and runs inside
+    `aius_ota_sign.py` on the exact bytes signed.
+  - F8: the remap must be filled in `ab_compose` before any
+    `ota_flash_read`; otherwise a rehearsal from slot 2 takes the plain
+    path and fails verify on running-image bytes. `arm_dcache_delete`
+    (plain invalidate) is right because the flash MPU region is
+    read-only and never dirty. Writes are unaffected.
+  - Out of scope, folded in: an I-cache invalidate after the GPR32
+    restore (a speculative fetch in the identity window could cache
+    slot 1 code at canonical addresses).
+- **Step 3:** review round 2 by the same reviewer, then the build;
+  build_ab.sh last.
 - Evidence from the diagnosis: session scratch `diag-ota/` and
   `diag-ota-scripts/` (payload compares).
+
+### Phase 4za The bridge pin comes out and the fixed read path is proven on the device
+
+```yaml
+outcome: >-
+  the 4z bridge pin and its sign-time check are removed once the board
+  runs 4z's fixed code, and the identity-window read path is proven on
+  the device from slot 2
+seams:
+  - firmware/link/aius_teensy41.ld
+  - firmware/tools/ota/aius_ota_sign.py
+targeted-proof: >-
+  boot-target and ota suites green with no pin; device (owner's word):
+  with the board on slot 2 running fixed code, a rehearsal of an image
+  that differs from it on 5797713's old helper line reads COMPLETED
+unit: parent-only
+```
+
+- Needs the board on slot 2 running 4z's fixed code: one more OTA after
+  4z lands in slot 1 (4z review F4).
 
 ### Phase 4c `test.sh` runs every `--suite` given ✓ SHIPPED 2026-10-06
 
