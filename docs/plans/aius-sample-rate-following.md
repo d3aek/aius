@@ -8404,6 +8404,13 @@ unit: parent-only
     `_VectorsRam` 0x20007c00 where the guard pins 0x20007800 (a stale
     comment). The itcm-placement standalone `_main` path never ran the
     flash-pinned residency check (this predates 4z).
+- Bridge container: `aius-f075872c8b82.ota` (session scratch), built by
+  build_ab.sh from the committed tree with every guard passing, and
+  signed without `--slot` (container sha256 `5ad1d52b…908c27`, payload
+  615,424 B). `aius_ota_flash.py --rehearse` was added for the
+  rehearsals. It stages, verifies, arms, enables activation, then POSTs
+  `/api/ota/rehearse` (`firmware/test/ota/test_ota_flash_client.py`, 14
+  tests).
 - **Step 5:** `the release-promotion step` aius `CLAUDE.md`'s signing paragraph:
   until Phase 4za, `aius_ota_sign.py sign` refuses a canonical image
   whose payload 0x1B80 to 0x1B9F does not carry the bridge pin.

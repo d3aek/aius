@@ -46,6 +46,7 @@ class FakeDevice:
         self.dirty_polls = 0
         self.flush_status_reads = 0
         self.activate_posts = 0
+        self.rehearse_posts = 0
         self.activation_fault = "none"
 
     @property
@@ -110,6 +111,15 @@ class FakeDevice:
         if verb == "enable-activation":
             self.activation_enabled = True
             return 200, {"ok": True}
+        if verb == "rehearse":
+            self.rehearse_posts += 1
+            if self.dirty_polls != 0 and self.dirty:
+                return 409, {"error": "sd_flush_pending"}
+            if not self.activation_enabled:
+                return 409, {"error": "ota_activation_disabled"}
+            if self.state != "armed":
+                return 409, {"error": "ota_state"}
+            return 200, {"ok": True, "rehearsing": True}
         if verb == "activate":
             self.activate_posts += 1
             if self.dirty_polls != 0 and self.dirty:
@@ -204,6 +214,62 @@ class StageTests(unittest.TestCase):
         self.assertEqual(fake.state, "activation-requested")
         self.assertEqual(fake.verbs,
                          ["verify", "arm", "enable-activation", "activate"])
+
+class RehearseTests(unittest.TestCase):
+    IMAGE = bytes(range(256)) * 20
+
+    def test_rehearse_enables_then_rehearses_and_never_activates(self):
+        fake = FakeDevice(len(self.IMAGE))
+        logs = []
+        code = aius_ota_flash.run(client_over(fake), self.IMAGE,
+                                  activate=False, rehearse=True,
+                                  log=logs.append, sleep=quiet)
+        self.assertEqual(code, 0)
+        self.assertEqual(fake.verbs,
+                         ["verify", "arm", "enable-activation", "rehearse"])
+        self.assertEqual(fake.activate_posts, 0)
+        self.assertTrue(any("rehearsal acknowledged; the board runs the "
+                            "dark-window sequence over the inactive slot and "
+                            "resets" in m for m in logs))
+        self.assertTrue(any("rehearse: 200" in m and "rehearsing" in m
+                            for m in logs))
+        self.assertFalse(any("token" in m for m in logs))
+
+    def test_rehearse_non_2xx_exits_nonzero(self):
+        fake = FakeDevice(len(self.IMAGE))
+        original = fake._post
+
+        def refuse(verb):
+            if verb == "rehearse":
+                fake.verbs.append(verb)
+                return 409, {"error": "ota_state"}
+            return original(verb)
+
+        fake._post = refuse
+        logs = []
+        code = aius_ota_flash.run(client_over(fake), self.IMAGE,
+                                  activate=False, rehearse=True,
+                                  log=logs.append, sleep=quiet)
+        self.assertEqual(code, 1)
+        self.assertFalse(any("rehearsal acknowledged" in m for m in logs))
+
+    def test_rehearse_waits_out_flush_pending(self):
+        fake = FakeDevice(len(self.IMAGE))
+        fake.dirty_polls = 3
+        code = aius_ota_flash.run(client_over(fake), self.IMAGE,
+                                  activate=False, rehearse=True,
+                                  log=quiet, sleep=quiet)
+        self.assertEqual(code, 0)
+        self.assertEqual(fake.rehearse_posts, 2)
+
+    def test_activate_and_rehearse_are_mutually_exclusive(self):
+        fake = FakeDevice(len(self.IMAGE))
+        code = aius_ota_flash.run(client_over(fake), self.IMAGE,
+                                  activate=True, rehearse=True,
+                                  log=quiet, sleep=quiet)
+        self.assertEqual(code, 2)
+        self.assertEqual(fake.verbs, [])
+
 
 class FlushGateTests(unittest.TestCase):
     IMAGE = bytes(range(256)) * 20

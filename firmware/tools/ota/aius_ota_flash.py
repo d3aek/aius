@@ -5,6 +5,7 @@ operator client, promoted from the 2026-08-16 session's working uploader
 
   tools/ota/aius_ota_flash.py --device http://<addr> --auth-file .secrets/aius-sd-auth firmware.aiuo
   tools/ota/aius_ota_flash.py --device http://<addr> --auth-file .secrets/aius-sd-auth --activate firmware.aiuo
+  tools/ota/aius_ota_flash.py --device http://<addr> --auth-file .secrets/aius-sd-auth --rehearse firmware.aiuo
   (--auth <token> is accepted for a hand-typed session; agents must use --auth-file)
 
 What it drives, in the state machine's ACTUAL order (aius_ota.h):
@@ -146,7 +147,10 @@ def stage(device, image, log=print, sleep=time.sleep):
     return True
 
 
-def run(device, image, activate, log=print, sleep=time.sleep):
+def run(device, image, activate, log=print, sleep=time.sleep, rehearse=False):
+    if activate and rehearse:
+        log("--activate and --rehearse are mutually exclusive")
+        return 2
     if not stage(device, image, log=log, sleep=sleep):
         return 1
 
@@ -166,6 +170,23 @@ def run(device, image, activate, log=print, sleep=time.sleep):
     if status != 200 or body.get("state") != "armed":
         log(f"expected armed, got {body.get('state')}")
         return 1
+
+    if rehearse:
+        # The route wants the runtime latch on (app_ota_rehearse) and an
+        # ARMED session; it takes no body and answers {"ok":true,
+        # "rehearsing":true}. It is not the commitment point: the board runs
+        # the dark window over the INACTIVE slot, then resets deliberately.
+        status, body = post_waiting_flush(device, "enable-activation", log, sleep)
+        log(f"enable-activation: {status} {body}")
+        if status != 200:
+            return 1
+        status, body = post_waiting_flush(device, "rehearse", log, sleep)
+        log(f"rehearse: {status} {body}")
+        if status is None or not 200 <= status < 300:
+            return 1
+        log("rehearsal acknowledged; the board runs the dark-window sequence "
+            "over the inactive slot and resets")
+        return 0
 
     if not activate:
         log("ARMED. Stopping here: POST /api/ota/activate is the commitment "
@@ -265,8 +286,16 @@ def main():
                         help="continue past ARMED through enable-activation "
                              "and activate (the commitment point; see the "
                              "interim rule)")
+    parser.add_argument("--rehearse", action="store_true",
+                        help="after ARMED, enable activation and POST "
+                             "/api/ota/rehearse: the dark-window sequence over "
+                             "the inactive slot, ending in a deliberate reset "
+                             "(the staged session does not survive); mutually "
+                             "exclusive with --activate")
     parser.add_argument("container", help="signed .aiuo container")
     args = parser.parse_args()
+    if args.activate and args.rehearse:
+        parser.error("--activate and --rehearse are mutually exclusive")
 
     token = args.auth
     if args.auth_file is not None:
@@ -274,7 +303,8 @@ def main():
             token = handle.read().strip()
     with open(args.container, "rb") as handle:
         image = handle.read()
-    return run(Device(args.device, token), image, args.activate)
+    return run(Device(args.device, token), image, args.activate,
+               rehearse=args.rehearse)
 
 
 if __name__ == "__main__":
