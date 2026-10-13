@@ -90,6 +90,20 @@
 /* A phone scrolls past the bar: there it is a header, not a fixture. */
 @media (max-width: 720px) { .bench .action-bar { position: static; backdrop-filter: none; } }
 
+/* Phone: the state pill shares its row with the model facts (the hidden dirty pill
+   stops reserving a pill-width), and every editor button group sits right. */
+@media (max-width: 760px) {
+  .bench .action-bar__state { flex: 0 0 auto; }
+  .bench .action-bar__state > .pill[hidden] { display: none; }
+  .bench .action-bar .facts { flex: 1 1 0; min-width: 0; justify-content: flex-end; }
+  .bench .action-bar .facts__item { padding: 0 8px; }
+  .bench .action-bar__actions { flex: 1 1 100%; justify-content: flex-end; }
+  .bench .action-bar__actions .token-trigger { margin-right: auto; }
+  .bench .curve-controls,
+  .bench .presets-row,
+  .bench .preset-menu[open] .preset-menu__body { justify-content: flex-end; }
+}
+
 /* The lock chip doubles as the button that opens the token dialog. */
 .bench .token-trigger,
 .bench .action-bar .token-trigger { height: auto; min-height: var(--bench-control-h); padding: 0; border: 0; background: none; }

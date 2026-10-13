@@ -7895,6 +7895,53 @@ depends-on: phase-4u # both edit firmware/sd/www/index.html; dispatched after 4u
   editor's buttons generally, read better right-aligned.
 - **Decision (orchestrator):** phone widths (760px and below) only, the
   owner's context; desktop layout unchanged unless the owner asks.
+- **Built 2026-10-13; the phone check after the card sync is the
+  owner's.** One 760px block in `firmware/sd/www/mixer.css`, no markup:
+  - A hidden "no unapplied changes" pill kept its box and pushed the
+    state group to its own row; it now takes no space, and the facts
+    share the pill's row.
+  - Revert and Apply sit right, with the token trigger (LOCKED) left.
+    The curve controls and the preset rows are also right-aligned.
+  - Headless render at 360 and 320 px: pill row shared, action bar
+    142 to 111 px, button groups flush right, no page overflow. At
+    1280 px the before and after screenshots are byte-identical.
+  - No sd-editor case: the suite has no responsive-CSS pattern, so the
+    render is the proof. sd-editor 411, www-bundle 35.
+- **Found (pre-existing):** `.presets-row` buttons overrun their
+  container by about 30 px at every width (1263.5 vs 1232.6 at 1280,
+  348.9 vs 318.0 at 360), without page overflow. Folded into 4w, which
+  moves presets.
+
+### Phase 4w The DSP page merges live into signal and moves presets up
+
+```yaml
+outcome: the DSP page has no separate live pane; its fields join the signal pane, with DSP load and peak shown as one readout; the presets pane sits after signal and before matrix
+seams:
+  - "firmware/sd/www/index.html pane order and the live pane's markup"
+  - "firmware/sd/www/mixer.js / dsp-editor.js: the live pane's render targets move into the signal pane"
+  - "firmware/sd/www/mixer.css: the merged pane's layout at desktop and 760px"
+  - "test/sd-editor cases that pin pane order or the live pane's ids"
+targeted-proof: sd-editor cases for the pane order (signal, presets, matrix) and the merged fields' render targets; a headless render at 1280, 360 and 320 px; sd-editor and www-bundle green; device (owner): the phone and desktop check after the card sync
+unit: implementer
+depends-on: phase-4v # same files
+```
+
+- **Asked (owner, 2026-10-13):** merge the live and signal panes into
+  the signal pane, merging DSP load and peak; put presets after signal
+  and before matrix.
+- **What the fields are (read from code).** Snapshot is
+  `/api/meters` `sequence`, the firmware's meter publish count
+  (`aius_dsp.c:1287`, 20 Hz, never reset). Queue is `queue_frames`, the
+  S/PDIF TX ring fill at each publish (`optical_main.cpp:2666`); it
+  moves constantly (128 to 1408 frames in 4i's page-load round). DSP
+  load and peak are `dsp_cycles_last` and `dsp_cycles_max` as percent
+  of the cycle budget; the "Cycles last / max" cell repeats them as raw
+  counts.
+- **Decisions (owner, 2026-10-13):** drop the snapshot readout; keep
+  queue; one readout "load N% / peak M%", dropping the raw cycles cell.
+  Latency and the meter cards and limiter line move into signal as
+  they are.
+- **Also:** fix the `.presets-row` overrun found in 4v.
 
 ### Phase 4c `test.sh` runs every `--suite` given ✓ SHIPPED 2026-10-06
 
