@@ -145,25 +145,18 @@
   padding: var(--bench-gutter);
 }
 .board__cell { display: grid; min-width: 0; grid-column: span 12; }
+/* Signal (with the live readouts) and presets share the first band; the rest
+   * run full width. The presets card keeps its own height beside the taller
+   * signal card. */
 .board__cell--flow { grid-column: span 4; }
-.board__cell--matrix { grid-column: span 8; }
-.board__cell--limiter { grid-column: span 4; }
-.board__cell--live { grid-column: span 5; }
-.board__cell--presets { grid-column: span 3; }
+.board__cell--presets { grid-column: span 8; align-content: start; }
 @media (max-width: 1280px) {
   .board__cell--flow { grid-column: span 5; }
-  .board__cell--matrix { grid-column: span 7; }
-  .board__cell--limiter,
-  .board__cell--live { grid-column: span 6; }
-  .board__cell--presets { grid-column: span 12; }
+  .board__cell--presets { grid-column: span 7; }
 }
 @media (max-width: 1080px) {
   .board__cell--flow,
-  .board__cell--matrix { grid-column: span 12; }
-}
-@media (max-width: 720px) {
-  .board__cell--limiter,
-  .board__cell--live { grid-column: span 12; }
+  .board__cell--presets { grid-column: span 12; }
 }
 
 .panel.card--invalid { border-color: var(--aius-accent-danger); }

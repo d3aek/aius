@@ -7942,6 +7942,53 @@ depends-on: phase-4v # same files
   Latency and the meter cards and limiter line move into signal as
   they are.
 - **Also:** fix the `.presets-row` overrun found in 4v.
+- **Built 2026-10-13; the device check after the card sync is the
+  owner's.** Panes: 00 Signal, 01 Presets, 02 Matrix, 03 EQ, 04
+  Limiter. Presets was already its own pane (05) and moved unchanged.
+  - The live pane is gone. Inside signal, after the diagram, a "Live"
+    block holds Queue, Latency and one DSP load readout
+    (`0.6% / peak 0.9%`, zone the worse of the two), then the meter
+    cards and the limiter line.
+  - Snapshot, the raw cycles cell and the separate peak cell are
+    dropped; `sequence > 0` still marks a never-published meter.
+  - At desktop widths signal and presets share the first band (4 and 8
+    columns, 5 and 7 at 1280 and below, stacked at 1080 and below).
+  - The `.presets-row` overrun was not real. 4v's probe counted the
+    buttons inside the closed "More" menu; the visible buttons end at
+    the container edge at 1280, 360 and 320 px.
+  - Render (stubbed `/api/meters`) at 1280, 360 and 320 px: no page
+    overflow. sd-editor 413 (two new cases: the merge, the pane order),
+    www-bundle 35.
+- **Found in the render, fixed in 4x (same pane):** two "live" pills
+  (signal head and the Live block head); on a phone the Live block's
+  stage controls (bypassed, enabled, reset) wrap under the output pill
+  and the DSP load value wraps to two lines.
+
+### Phase 4x The audio path moves from the status page into signal
+
+```yaml
+outcome: the DSP page's signal pane shows the audio path (flow line; input source, audio state, carrier, format, sample rate, blocks, overruns, gate open, gate carrier lock), each fact once beside the diagram's pills; status.html no longer has the Audio path pane and renumbers its panes
+seams:
+  - "firmware/sd/www/index.html signal pane, dsp-editor.js: the audio-path render and its data (status.js reads /api/status; the DSP page polls /api/status/brief at 1 Hz, so either brief carries the fields or the page reads /api/status)"
+  - "firmware/sd/www/status.html, status.js: the Audio path pane and its render go; the poll-status and poll-errors lines it held stay on the page"
+  - "test/sd-editor status.test.js and dsp-editor cases"
+targeted-proof: sd-editor cases for the moved facts on the DSP page from a status fixture and their absence from status.html; a headless render at 1280, 360 and 320 px; sd-editor and www-bundle green; device (owner): after the card sync
+unit: implementer
+depends-on: phase-4w # same files
+```
+
+- **Asked (owner, 2026-10-13):** the status page's Audio path pane
+  makes more sense on the DSP page.
+- **Decisions (owner, 2026-10-13):** into the signal pane, not a pane of
+  its own; facts the pills already show (carrier, rate) appear once.
+  The status page drops its copy.
+- **Also (found in 4w's render):** one live pill in signal, not two;
+  the Live block's stage controls sit on one tidy row on a phone; the
+  DSP load value stays on one line at 360 and 320 px.
+- **Open for the implementer:** if `/api/status/brief` lacks a field
+  (blocks, overruns), read it from `/api/status` at the brief's
+  cadence rather than changing firmware; a firmware change would need
+  an OTA, so it comes back as a question.
 
 ### Phase 4c `test.sh` runs every `--suite` given ✓ SHIPPED 2026-10-06
 

@@ -1506,12 +1506,9 @@ describe('Aius SD DSP editor — meters', () => {
     expect(el('meter-out-l-peak').textContent).toBe('-3.1');
     expect(el('meter-out-r-peak').textContent).toBe('-3.4');
     expect(el('meter-out-r-rms').textContent).toBe('-14.9');
-    expect(el('meter-sequence').textContent).toBe('1287');
     expect(el('meter-queue').textContent).toBe('512 frames');
     // Microseconds stop being legible at four digits (UX finding N9).
     expect(el('meter-latency').textContent).toBe('10.7 ms');
-    // Raw DWT counts, scaled and against the budget that makes them mean something.
-    expect(el('meter-cycles').textContent).toBe('41k / 59k of 6.40M budget');
     expect(el('meter-summary').textContent).toContain('-1.8');
   });
 
@@ -1548,13 +1545,12 @@ describe('Aius SD DSP editor — meters', () => {
     await vi.advanceTimersByTimeAsync(250);
 
     expect(el('meter-state').textContent).toBe('no data');
-    expect(el('meter-sequence').textContent).toBe('0');
     // Not rendered as a genuine zero-level signal.
     expect(el('meter-in-fl-peak').textContent).toBe('--');
     expect(el('meter-out-l-rms').textContent).toBe('--');
     expect(el('meter-queue').textContent).toBe('--');
     expect(el('meter-latency').textContent).toBe('--');
-    expect(el('meter-cycles').textContent).toBe('--');
+    expect(el('meter-load').textContent).toBe('--');
     expect(el('meter-summary').textContent).toContain('No meter snapshot published yet');
 
     // A valid 200 is not a fault, so the 4 Hz poll continues at full rate --
@@ -1567,7 +1563,35 @@ describe('Aius SD DSP editor — meters', () => {
     device.meters = fixture('meters-snapshot.json');
     await vi.advanceTimersByTimeAsync(250);
     expect(el('meter-state').textContent).toBe('live');
-    expect(el('meter-sequence').textContent).toBe('1287');
+    expect(el('meter-queue').textContent).toBe('512 frames');
+  });
+
+  it('merges live into the signal pane: no snapshot or raw-cycles readout, queue stays', async () => {
+    await boot();
+    await vi.advanceTimersByTimeAsync(250);
+
+    expect(el('meter-sequence')).toBe(null);
+    expect(el('meter-cycles')).toBe(null);
+    expect(el('meter-load-peak')).toBe(null);
+    expect(el('dashboard-output')).toBe(null);
+    expect(document.body.textContent).not.toContain('Snapshot');
+    const signal = el('dashboard-input');
+    for (const id of ['meter-queue', 'meter-latency', 'meter-load', 'meter-groups', 'meter-summary', 'card-meters']) {
+      expect(signal.contains(el(id))).toBe(true);
+    }
+  });
+
+  it('orders the panes signal, presets, matrix, then the rest, numbered in sequence', () => {
+    const cells = Array.from(el('dashboard-surface').children, (cell) => cell.id);
+    expect(cells.slice(0, 3)).toEqual(['dashboard-input', 'presets', 'dashboard-matrix']);
+    const kickers = Array.from(el('dashboard-surface').querySelectorAll('h2.kicker'), (h) => h.textContent);
+    expect(kickers).toEqual([
+      '00 / Signal',
+      '01 / Presets',
+      '02 / Matrix',
+      '03 / EQ',
+      '04 / Limiter',
+    ]);
   });
 
   /* The live-processing card draws NOTHING now. It never duplicated the status
@@ -4008,8 +4032,7 @@ describe('Aius SD DSP editor — DSP load, level bars and the limiter strip', ()
     await vi.advanceTimersByTimeAsync(250);
 
     // 41230 / 6,400,000 cycles per 512-frame block at 48 kHz, in ONE phrasing.
-    expect(el('meter-load').textContent).toBe('0.6 % of budget, 99.4 % headroom');
-    expect(el('meter-load-peak').textContent).toBe('0.9 % of budget');
+    expect(el('meter-load').textContent).toBe('0.6% / peak 0.9%');
     expect(el('meter-load').dataset.zone).toBe('ok');
   });
 
@@ -4018,10 +4041,9 @@ describe('Aius SD DSP editor — DSP load, level bars and the limiter strip', ()
     await boot({ meters: busy });
     await vi.advanceTimersByTimeAsync(250);
 
-    expect(el('meter-load').textContent).toBe('87.5 % of budget, 12.5 % headroom');
-    expect(el('meter-load-peak').textContent).toBe('100.0 % of budget');
-    expect(el('meter-load').dataset.zone).toBe('warn');
-    expect(el('meter-load-peak').dataset.zone).toBe('danger');
+    expect(el('meter-load').textContent).toBe('87.5% / peak 100.0%');
+    // One cell carries the worse of load and peak.
+    expect(el('meter-load').dataset.zone).toBe('danger');
   });
 
   it('fills the level bars from the same snapshot as the table', async () => {
@@ -4083,7 +4105,6 @@ describe('Aius SD DSP editor — DSP load, level bars and the limiter strip', ()
 
     expect(el('strip-limiter-state').textContent).toBe('no data');
     expect(el('meter-load').textContent).toBe('--');
-    expect(el('meter-load-peak').textContent).toBe('--');
     expect(el('gr-value').textContent).toBe('--');
     expect(el('gr-fill').style.width).toBe('0.0%');
     expect(el('bar-in-fl-value').textContent).toBe('--');

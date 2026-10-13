@@ -2236,10 +2236,8 @@
   function renderMetersIdle() {
     setMeterState('no data');
     blankMeterRows();
-    $('meter-sequence').textContent = '0';
     $('meter-queue').textContent = '--';
     $('meter-latency').textContent = '--';
-    $('meter-cycles').textContent = '--';
     $('meter-summary').textContent =
       'No meter snapshot published yet -- metering is bypassed, or no audio block has been processed since the last config apply.';
   }
@@ -2252,15 +2250,6 @@
     Array.isArray(values) && Number.isFinite(values[index]) ? values[index] : null;
 
   const formatDb = shared.formatDb;
-
-  /* Raw DWT counts are unreadable at six digits and say nothing without their
-   * budget, so both are scaled the same way (UX finding E12). */
-  function formatCycles(cycles) {
-    if (!Number.isFinite(cycles)) return '--';
-    if (cycles < 10000) return String(Math.round(cycles));
-    if (cycles < 1e6) return `${Math.round(cycles / 1000)}k`;
-    return `${(cycles / 1e6).toFixed(2)}M`;
-  }
 
   function setMeterRow(id, peak, rms) {
     $(`${id}-peak`).textContent = formatDb(peak);
@@ -2297,17 +2286,9 @@
       setMeterRow(id, channelDbfs(output.peak_dbfs, index), channelDbfs(output.rms_dbfs, index));
     });
 
-    $('meter-sequence').textContent = Number.isFinite(meters.sequence) ? String(meters.sequence) : '--';
     $('meter-queue').textContent = Number.isFinite(meters.queue_frames) ? `${meters.queue_frames} frames` : '--';
     const latencyUs = smoothedLatencyUs(meters.estimated_latency_us);
     $('meter-latency').textContent = latencyUs === null ? '--' : shared.formatUs(latencyUs);
-    const budget = dspBudgetCycles(Number.isFinite(meters.sample_rate_hz) ? meters.sample_rate_hz : 0);
-    $('meter-cycles').textContent =
-      Number.isFinite(meters.dsp_cycles_last) || Number.isFinite(meters.dsp_cycles_max)
-        ? `${formatCycles(meters.dsp_cycles_last)} / ${formatCycles(meters.dsp_cycles_max)}${
-            budget > 0 ? ` of ${formatCycles(budget)} budget` : ''
-          }`
-        : '--';
     $('meter-summary').textContent = `Limiter gain reduction ${formatDb(meters.limiter_gain_reduction_db)} dB at ${
       Number.isFinite(meters.sample_rate_hz) ? meters.sample_rate_hz : '--'
     } Hz.`;
@@ -3871,10 +3852,9 @@
     const load = dspLoadPercent(meters.dsp_cycles_last, rate);
     const peak = dspLoadPercent(meters.dsp_cycles_max, rate);
     $('meter-load').textContent =
-      load === null ? '--' : `${load.toFixed(1)} % of budget, ${(100 - load).toFixed(1)} % headroom`;
-    $('meter-load').dataset.zone = loadZone(load);
-    $('meter-load-peak').textContent = peak === null ? '--' : `${peak.toFixed(1)} % of budget`;
-    $('meter-load-peak').dataset.zone = loadZone(peak);
+      load === null || peak === null ? '--' : `${load.toFixed(1)}% / peak ${peak.toFixed(1)}%`;
+    /* One cell, so one zone: the worse of the two. */
+    $('meter-load').dataset.zone = loadZone(load === null || peak === null ? null : Math.max(load, peak));
   }
 
   /* Gain reduction is published as a negative dB and read as a positive
@@ -3905,8 +3885,6 @@
     setBar('bar-out-r', null);
     $('meter-load').textContent = '--';
     $('meter-load').dataset.zone = 'idle';
-    $('meter-load-peak').textContent = '--';
-    $('meter-load-peak').dataset.zone = 'idle';
     driveLimiter(null);
     state.limiterHistory = [];
     state.latencyHistory = [];

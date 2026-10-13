@@ -129,13 +129,59 @@
           <!-- The editor runs the input needles here; the diagram's boxes are
                their only display on this page. -->
           <div class="bench-legacy" hidden><div id="bars-input" class="bars"></div></div>
+
+          <!-- Live readouts and meters: this block IS the meters stage; its
+               enable and dirty marker mount in its head. -->
+          <div id="card-meters" class="meters">
+            <div class="section-title"><h3 class="kicker kicker--sub">Live</h3><span id="meter-state" class="pill">waiting</span></div>
+            <div class="status-grid spec-grid">
+              <div><span>Queue</span><strong id="meter-queue">--</strong></div>
+              <div><span>Latency</span><strong id="meter-latency">--</strong></div>
+              <div><span>DSP load</span><strong id="meter-load">--</strong></div>
+            </div>
+            <div id="meter-groups" class="meter-cards"></div>
+            <p id="meter-summary" class="hint">Meter data unavailable.</p>
+          </div>
         </figure>
       </section>
 
-      <!-- 01 MATRIX -->
+      <!-- 01 PRESETS: the chips above the faders load; save, import and
+           delete live here. -->
+      <section id="presets" class="board__cell board__cell--presets">
+        <div class="panel presets-card">
+          <div class="section-title panel__head"><h2 class="kicker">01 / Presets</h2><span id="preset-state" class="pill">idle</span></div>
+          <div class="controls presets-row">
+            <label class="preset-select-field">Preset
+              <select id="preset-select" aria-label="Saved presets"><option value="">no presets</option></select>
+            </label>
+            <button id="preset-load" type="button" class="secondary">Load</button>
+            <label class="preset-name-field">Save as <input id="preset-name" type="text" maxlength="27" autocomplete="off" spellcheck="false" placeholder="e.g. movie-night"></label>
+            <button id="preset-save" type="button">Save</button>
+            <details id="preset-menu" class="preset-menu">
+              <summary>More</summary>
+              <div class="preset-menu__body">
+                <input id="preset-file" type="file" accept=".json,application/json">
+                <button id="preset-upload" type="button" class="secondary">Import file as preset</button>
+                <button id="preset-download-selected" type="button" class="secondary">Download selected</button>
+                <button id="preset-download" type="button" class="secondary">Download current form</button>
+                <button id="preset-delete" type="button" class="danger">Delete selected</button>
+                <button id="preset-refresh" type="button" class="secondary">Refresh list</button>
+              </div>
+            </details>
+          </div>
+          <p id="preset-name-hint" class="hint">0 / 27 characters.</p>
+          <p class="hint preset-line">
+            <span id="preset-status" role="status">Reading presets...</span>
+            <span id="preset-origin" class="preset-origin"></span>
+          </p>
+          <p id="preset-errors" class="error-summary" role="alert" hidden></p>
+        </div>
+      </section>
+
+      <!-- 02 MATRIX -->
       <section id="dashboard-matrix" class="board__cell board__cell--matrix">
         <div id="card-matrix" class="panel mixer">
-          <div class="section-title panel__head"><h2 class="kicker">01 / Matrix</h2></div>
+          <div class="section-title panel__head"><h2 class="kicker">02 / Matrix</h2></div>
           <div class="mixer__presets" role="group" aria-label="Load a saved preset into the form">
             <span id="mixer-presets" class="mixer__preset-chips"></span>
             <span class="mixer__divider" aria-hidden="true"></span>
@@ -189,13 +235,13 @@
         </div>
       </section>
 
-      <!-- 02 EQ: the stacked plot is the editor's, unchanged. The per-channel
+      <!-- 03 EQ: the stacked plot is the editor's, unchanged. The per-channel
            table is regrouped by mixer.js into one tab per channel, linked to
            the plot's legend. -->
       <section id="dashboard-eq" class="board__cell board__cell--eq">
         <div class="panel eq">
           <div class="panel__head">
-            <h2 class="kicker">02 / EQ</h2>
+            <h2 class="kicker">03 / EQ</h2>
             <div id="curve-legend" class="legend" role="group" aria-label="EQ curve selection"></div>
           </div>
           <div class="eq__body">
@@ -229,11 +275,11 @@
         </div>
       </section>
 
-      <!-- 03 LIMITER -->
+      <!-- 04 LIMITER -->
       <section id="dashboard-limiter" class="board__cell board__cell--limiter">
         <div id="card-limiter" class="panel">
           <div class="section-title panel__head">
-            <h2 class="kicker">03 / Limiter</h2>
+            <h2 class="kicker">04 / Limiter</h2>
             <span id="strip-limiter-state" class="pill">waiting</span>
           </div>
           <div class="gr">
@@ -244,57 +290,6 @@
           </div>
           <div class="scope scope--short"><canvas id="gr-history" class="gr__history" width="960" height="64"></canvas></div>
           <div id="limiter" class="form-mount"></div>
-        </div>
-      </section>
-
-      <!-- 04 LIVE: the live panel IS the meters stage; its enable and dirty
-           marker mount in the head. -->
-      <section id="dashboard-output" class="board__cell board__cell--live">
-        <section id="card-meters" class="panel meters">
-          <div class="section-title panel__head"><h2 class="kicker">04 / Live</h2><span id="meter-state" class="pill">waiting</span></div>
-          <div class="status-grid spec-grid">
-            <div><span>Snapshot</span><strong id="meter-sequence">--</strong></div>
-            <div><span>Queue</span><strong id="meter-queue">--</strong></div>
-            <div><span>Latency</span><strong id="meter-latency">--</strong></div>
-            <div><span>Cycles last / max</span><strong id="meter-cycles">--</strong></div>
-            <div><span>DSP load</span><strong id="meter-load">--</strong></div>
-            <div><span>Peak load</span><strong id="meter-load-peak">--</strong></div>
-          </div>
-          <div id="meter-groups" class="meter-cards"></div>
-          <p id="meter-summary" class="hint">Meter data unavailable.</p>
-        </section>
-      </section>
-
-      <!-- 05 PRESETS: the chips above the faders load; save, import and
-           delete live here. -->
-      <section id="presets" class="board__cell board__cell--presets">
-        <div class="panel presets-card">
-          <div class="section-title panel__head"><h2 class="kicker">05 / Presets</h2><span id="preset-state" class="pill">idle</span></div>
-          <div class="controls presets-row">
-            <label class="preset-select-field">Preset
-              <select id="preset-select" aria-label="Saved presets"><option value="">no presets</option></select>
-            </label>
-            <button id="preset-load" type="button" class="secondary">Load</button>
-            <label class="preset-name-field">Save as <input id="preset-name" type="text" maxlength="27" autocomplete="off" spellcheck="false" placeholder="e.g. movie-night"></label>
-            <button id="preset-save" type="button">Save</button>
-            <details id="preset-menu" class="preset-menu">
-              <summary>More</summary>
-              <div class="preset-menu__body">
-                <input id="preset-file" type="file" accept=".json,application/json">
-                <button id="preset-upload" type="button" class="secondary">Import file as preset</button>
-                <button id="preset-download-selected" type="button" class="secondary">Download selected</button>
-                <button id="preset-download" type="button" class="secondary">Download current form</button>
-                <button id="preset-delete" type="button" class="danger">Delete selected</button>
-                <button id="preset-refresh" type="button" class="secondary">Refresh list</button>
-              </div>
-            </details>
-          </div>
-          <p id="preset-name-hint" class="hint">0 / 27 characters.</p>
-          <p class="hint preset-line">
-            <span id="preset-status" role="status">Reading presets...</span>
-            <span id="preset-origin" class="preset-origin"></span>
-          </p>
-          <p id="preset-errors" class="error-summary" role="alert" hidden></p>
         </div>
       </section>
     </div>
