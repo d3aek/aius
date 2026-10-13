@@ -167,8 +167,8 @@ const without = (...keys) => {
 
 const snapshot = (overrides = {}) => Object.assign({}, SNAPSHOT, overrides);
 
-const PILLS = ['audio-pill', 'config-pill', 'network-pill', 'storage-pill', 'board-pill'];
-const GRIDS = ['audio-grid', 'config-grid', 'network-grid', 'storage-grid', 'board-grid'];
+const PILLS = ['config-pill', 'network-pill', 'storage-pill', 'board-pill'];
+const GRIDS = ['config-grid', 'network-grid', 'storage-grid', 'board-grid'];
 
 let device;
 const rejections = [];
@@ -200,12 +200,6 @@ async function boot(options) {
   return device;
 }
 
-/* The signal-flow line, as the "<stage> <value>" pairs it renders. */
-const flowStages = () =>
-  Array.from(el('flow').querySelectorAll('span'))
-    .filter((span) => span.querySelector('b'))
-    .map((span) => ({ text: span.textContent, tone: span.dataset.tone }));
-
 beforeEach(() => {
   rejections.length = 0;
   process.on('unhandledRejection', trackRejection);
@@ -218,66 +212,43 @@ afterEach(() => {
   expect(rejections).toEqual([]);
 });
 
-describe('Aius SD device status — audio path', () => {
-  it('renders the snapshot into the audio card and names the integer vocabularies', async () => {
+/* Phase 4x: the audio path (flow line, input source, audio state, carrier,
+ * format, rate, blocks, overruns, gate) moved to the DSP page's signal pane;
+ * dsp-editor.test.js pins it there. */
+describe('Aius SD device status — no audio path pane', () => {
+  it('has no audio-path pane, flow line or audio fact cells in the markup', () => {
+    for (const id of [
+      'audio-title',
+      'audio-pill',
+      'audio-grid',
+      'flow',
+      'input-source',
+      'audio-state',
+      'carrier',
+      'format',
+      'sample-rate',
+      'blocks',
+      'overruns',
+      'gate-open',
+      'gate-carrier',
+    ]) {
+      expect(bodyMarkup).not.toContain(`id="${id}"`);
+    }
+    expect(bodyMarkup).not.toContain('Audio path</h2>');
+  });
+
+  it('numbers the remaining panes 01 to 04 in order', () => {
+    const kickers = Array.from(bodyMarkup.matchAll(/<h2 id="[^"]+" class="kicker">([^<]+)<\/h2>/g)).map((m) => m[1]);
+    expect(kickers).toEqual(['01 / Configuration', '02 / Network', '03 / Storage', '04 / Board']);
+  });
+
+  it('keeps the poll status and error lines, under the page head', async () => {
     await boot();
 
-    expect(text('input-source')).toBe('optical carrier');
-    expect(text('audio-state')).toBe('PCM (3)');
-    expect(text('carrier')).toBe('locked');
-    expect(text('format')).toBe('PCM (IEC 60958)');
-    expect(text('sample-rate')).toBe('48000 Hz');
-    expect(text('blocks')).toBe('20492');
-    expect(text('overruns')).toBe('0');
-    expect(text('gate-open')).toBe('open');
-    expect(text('gate-carrier')).toBe('locked');
-    expect(el('gate-replay')).toBeNull();
+    expect(el('poll-status').closest('.page-head')).not.toBeNull();
+    expect(el('poll-errors').closest('.page-head')).not.toBeNull();
+    expect(el('poll-status').textContent).toBe('Snapshot at epoch 48211.');
     for (const pill of PILLS) expect(text(pill)).toBe('live');
-  });
-
-  it('draws the transmit gate as input -> DSP -> gate -> output', async () => {
-    await boot();
-
-    expect(flowStages()).toEqual([
-      { text: 'input optical carrier', tone: 'ok' },
-      { text: 'DSP PCM (IEC 60958)', tone: 'ok' },
-      { text: 'gate open', tone: 'ok' },
-      { text: 'output live', tone: 'ok' },
-    ]);
-  });
-
-  it('derives no input source with a dark gate, and says the output is silent', async () => {
-    await boot({
-      status: snapshot({
-        state: 2,
-        carrier: 0,
-        format: 0,
-        sample_rate: 0,
-        blocks: 0,
-        tx_gate: { open: 0, carrier_locked: 0 },
-      }),
-    });
-
-    expect(text('input-source')).toBe('none');
-    expect(text('carrier')).toBe('absent');
-    expect(text('audio-state')).toBe('no carrier (2)');
-    expect(text('sample-rate')).toBe('-- (no carrier)');
-    expect(el('poll-status').textContent).toContain('Input source: none');
-    expect(text('format')).toBe('unknown');
-    expect(text('gate-open')).toBe('dark');
-    expect(flowStages()).toEqual([
-      { text: 'input none', tone: 'off' },
-      { text: 'DSP unknown', tone: 'off' },
-      { text: 'gate dark', tone: 'off' },
-      { text: 'output silent', tone: 'off' },
-    ]);
-  });
-
-  it('highlights overruns once they are non-zero', async () => {
-    await boot({ status: snapshot({ overruns: 4 }) });
-
-    expect(text('overruns')).toBe('4');
-    expect(el('overruns').dataset.tone).toBe('warn');
   });
 });
 
@@ -618,7 +589,7 @@ describe('Aius SD device status — polling', () => {
 
   it('degrades to unreachable with every grid dimmed when the poll fails', async () => {
     device = await boot();
-    expect(text('input-source')).toBe('optical carrier');
+    expect(text('dsp-source')).toBe('loaded from card');
 
     device.status = null;
     /* Two failures are silent; the third reads unreachable. */
@@ -633,17 +604,16 @@ describe('Aius SD device status — polling', () => {
       expect(el(pill).dataset.state).toBe('unreachable');
     }
     for (const grid of GRIDS) expect(el(grid).dataset.stale).toBe('true');
-    expect(el('flow').dataset.stale).toBe('true');
     expect(el('poll-status').textContent).toContain('stale');
     /* The last good values stay on screen -- dimmed, not blanked. */
-    expect(text('input-source')).toBe('optical carrier');
+    expect(text('dsp-source')).toBe('loaded from card');
   });
 
   it('recovers the live pills and undims the grids on the next good poll', async () => {
     device = await boot({ status: null });
     await vi.advanceTimersByTimeAsync(2000);
     await settle();
-    expect(text('audio-pill')).toBe('unreachable');
+    expect(text('config-pill')).toBe('unreachable');
 
     device.status = SNAPSHOT;
     await vi.advanceTimersByTimeAsync(1000);
@@ -651,7 +621,6 @@ describe('Aius SD device status — polling', () => {
 
     for (const pill of PILLS) expect(text(pill)).toBe('live');
     for (const grid of GRIDS) expect(el(grid).dataset.stale).toBeUndefined();
-    expect(el('flow').dataset.stale).toBeUndefined();
   });
 
   it('treats a 503 as a silent skip: last values and pills stay, and Retry-After sets the next poll', async () => {
@@ -676,7 +645,7 @@ describe('Aius SD device status — polling', () => {
     await settle();
     for (const pill of PILLS) expect(text(pill)).toBe('live');
     for (const grid of GRIDS) expect(el(grid).dataset.stale).toBeUndefined();
-    expect(text('input-source')).toBe('optical carrier');
+    expect(text('dsp-source')).toBe('loaded from card');
     // 0 clamps up to 250 ms, so a 5 s window holds about twenty polls, never a flood.
     expect(statusCalls().length).toBeLessThan(before + 2 + 25);
   });

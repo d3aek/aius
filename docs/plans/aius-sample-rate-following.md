@@ -34,7 +34,9 @@ handover.
 - **Status.** Phases 1, 2, 3 DONE; 4a, 4c, 4d, 4n, 4o, 4p, 4q, 4r, 4s,
   4t, 4i DONE. BUILT, with their device proof the owner's and not yet
   run: Phase 4 (gate 7 at fill-write cadence on the U24 bench), 4e, 4f,
-  4g, 4h, 4j, 4k, 4l, 4m. **4u** (index nav on a phone) in progress. 4b (acceptance umbrella) closes after 4e to 4h's device
+  4g, 4h, 4j, 4k, 4l, 4m. **4u, 4v, 4w, 4x** (SD page layout) built,
+  awaiting one card sync and the owner's phone and desktop check.
+  **4y** (slot card and boot-other) in prebuild review. 4b (acceptance umbrella) closes after 4e to 4h's device
   runs and no longer gates 4i (owner, 2026-10-12).
 - **Board.** Runs `57977135e472` in slot 2 (second OTA 2026-10-12,
   source off: 4q to 4t; self-committed, `ab.active_slot` 2,
@@ -61,8 +63,9 @@ handover.
   owner's: the 4e, 4f, 4g and 4h runs listed in 4b, 4n's Firefox check,
   4i's post-removal check. A bench run is a last resort, batched, never
   mixed with listening (aius CLAUDE.md).
-- **Next action: 4u's card sync of `index.html` and its phone check
-  (owner).** Card writes (sync, `delete-www`, `--delete`) are refused
+- **Next action: one full card sync for 4u to 4x, then the owner's
+  phone and desktop check of the three pages.** Then 4y's build after
+  its prebuild review is READY. Card writes (sync, `delete-www`, `--delete`) are refused
   by the auto-mode classifier ("Remote Shell Writes", even with the
   owner's authorization); they run when the owner switches the session
   to manual approval, or by the owner with `!`.
@@ -7985,10 +7988,116 @@ depends-on: phase-4w # same files
 - **Also (found in 4w's render):** one live pill in signal, not two;
   the Live block's stage controls sit on one tidy row on a phone; the
   DSP load value stays on one line at 360 and 320 px.
-- **Open for the implementer:** if `/api/status/brief` lacks a field
-  (blocks, overruns), read it from `/api/status` at the brief's
-  cadence rather than changing firmware; a firmware change would need
-  an OTA, so it comes back as a question.
+- **Built 2026-10-13; the device check after the card sync is the
+  owner's.** Signal holds, in order, the diagram, an Audio path block
+  (audio state, stream format, gate carrier lock, blocks, overruns,
+  overruns warn above 0) and the Live block. `status.html` loses its
+  Audio path pane; its poll lines move under the page head, and its
+  panes run 01 Configuration to 04 Board.
+  - **Each fact once (owner's rule).** Input source, carrier, sample
+    rate and gate open show only on the input and output pills. The
+    status page's flow line is not carried over: its stages repeat the
+    pills and the format cell.
+  - **Audio state** is the firmware's `state` (2 no carrier or
+    unclassified, 3 PCM, 4 bitstream; `current_state()` derives it from
+    the same classification as `format`), labelled without the codec,
+    which stays in Stream format.
+  - **Polling.** `/api/status/brief` stays the 1 Hz poll (4f F3's load
+    cut). `/api/status` (about 8.6 KB against 220 B) is read every 5 s
+    for the Audio path block only. The brief lacks format, blocks,
+    overruns and gate carrier lock; adding them to the brief needs
+    firmware and is not planned.
+  - **4w render fixes.** One live pill, on the Live block (the signal
+    head's input-state pill is gone). On a phone the Live head is one
+    row; the bypassed pill is hidden there, and the unchecked Enabled
+    box and dimmed block carry the state. DSP load stays on one line.
+    The input pill now wraps on a phone (it was 390 px wide and
+    overflowed at 360).
+  - Render at 1280, 360 and 320 px, before the poll revision: no page
+    overflow on either page. sd-editor 419, www-bundle 35.
+
+### Phase 4y The firmware page shows both slots and boots the other on request
+
+```yaml
+outcome: >-
+  upgrade.html shows the running slot and its build revision, the other
+  slot's build revision ("unknown" when not recorded), and a confirmed
+  "Boot the other slot" action that reboots into it through the existing
+  trial boot, so a crash-looping image falls back on its own
+seams:
+  - "firmware/lib/aius_ab: the boot record's reserved bytes 16-27 (aius_ab.h:38-51) carry a 6-byte binary revision per physical slot; record version stays 1 and length 32, and decode never fails on bytes 16-27 (the frozen chooser decodes through aius_ab.c:121-129 and must keep accepting every record the new encoder writes); all-zero means unknown; only an exactly-12-hex revision (case-folded) encodes, anything else stores zero"
+  - "firmware/src/optical_main.cpp activation and rehearsal: the target slot's revision is cleared in service_ota_activation / service_ota_rehearsal after the SD gate returns RUN and before ota_quiesce() (never in app_ota_activate, which runs in the dispatch); a failed clear aborts before the window goes dark; activation then sets the revision from the container's build_revision (aius_ota.h:118) in ab_activation_mark_pending (:5127-5145)"
+  - "the plan's and aius CLAUDE.md's 'ab is untouched' rehearsal line (:11313-11315) is reworded (CLAUDE.md via the release-promotion step); the self-test erase (:5199) clears nothing (it never reaches an image)"
+  - "firmware/src/optical_main.cpp healthy mark, on every boot (ab_mark_healthy :5112-5119, first-record path :5102-5110): write the running slot's revision from AIUS_BUILD_SOURCE_REV (AIUS_BUILD_GIT_REV carries '+<env>' and never encodes, build_metadata.py:57,96-97) only when the encoded value differs from the stored one; this also covers a HalfKay recovery that leaves the record, the bad-IVT fallback and a rollback into an unknown slot"
+  - "new authenticated POST /api/ota/boot-other: the route validates and sets a request flag only (dispatch never touches flash, :6154-6156, :6211-6213); allowed only when A/B is enabled, the record is valid, pending_slot is NONE, active_slot is the running slot and the ledger's booted_slot is not NONE, and refused while a reboot, activation, rehearsal or switch is requested or the OTA session is OFFERED through ACTIVATION_REQUESTED; the plain single-image build (AIUS_AB_SLOT 0) refuses it"
+  - "the deferred reboot service (:10910-10918): writes pending=other with the activation's trial budget after aius_optical_sd_service_final succeeds and before tx_gate_actuate(false) and reset_application(); a failed write abandons with a visible fault and no reset; an abandoned reboot leaves the record untouched; every exit without a reset (SD gate abandon, failed write) clears the switch flag, either passed to aius_optical_sd_service_gate or carried as a mode bit on g_reboot_requested, so the exclusion cannot latch shut"
+  - "the other slot's IVT: checked with aius_ab_slot_ivt_sane only when running slot A (slot B reads plainly); when running slot B there is no check (slot A's range is the remapped window, :5286-5298) and the chooser's bad-IVT fallback (chooser.c:195-199) and ab_compose's rollback (:5073-5082) carry it"
+  - "the reverse exclusion: activate, rehearse and self-test refuse while a switch is requested (rehearse today checks only its own two flags, :6228)"
+  - "the route's plumbing: lib/aius_http path parser (aius_http.c:162-165, aius_http.h:101, test/http/test_http.c), the route table (aius_optical_app.h:533-545), the AiusOpticalAppOta table and its ota_wired completeness check"
+  - "http_ab_json() (:5972-5997): ab.revisions keyed by physical slot (12-hex string or null); openapi.json follows; status body bound has 527 B headroom, revisions cost about 50 B; test/status-body-bound PINNED_KEYS lists ROOT_EMITTER twice (:676, :707), silently dropping the sd_flush pins: fix it"
+  - "firmware/sd/www/upgrade.html, upgrade.js: a slots card (running slot and revision, other slot and revision) and the action behind a confirm that names the target revision, warns that an image without this feature has no way back except an OTA, and, when running slot B, says the other slot's boot header is not checked"
+  - "no chooser change (chooser/chooser.c already honours pending + budget, aius_ab.c:266-300)"
+targeted-proof: >-
+  host: aius_ab round-trip with revisions; an oracle frozen from the
+  version-1 rules (version 1, length 32, CRC over bytes 0-27, slot and
+  budget domains) or checked-in bytes from the pre-change encoder accepts
+  a record from the new encoder (the host aius_ab.c is shared with the
+  chooser, so the current decode alone proves nothing); a zero-byte record
+  decodes as unknown; non-12-hex revisions store zero; the healthy mark
+  writes AIUS_BUILD_SOURCE_REV once and not again when it matches.
+  optical-app: boot-other refusals (each predicate above, no auth,
+  single-image build) and success (flag only, no flash write in dispatch);
+  the deferred service writes pending=other with the budget after the SD
+  final and leaves the record untouched when it abandons; both non-reset
+  exits clear the switch flag; running-B skips the IVT check; activation
+  clears (in the service, before the dark window) then sets the revision;
+  a failed clear aborts before dark; rehearsal clears it; the exclusion in
+  both directions. status-body-bound with the PINNED_KEYS fix; sd-editor upgrade
+  cases for the card and the confirm; all four images at their OCRAM floors
+  with every post-link guard. device (owner, OTA): after the self-commit the
+  page shows the running slot and revision and the other slot as unknown;
+  then one /api/reboot shows record_valid true, the same slot,
+  rollback_observed false and the revisions kept (the frozen chooser's first
+  read of a non-zero reserved field). The switch itself is the owner's call
+  and not part of the proof
+unit: implementer
+prebuild-review: round 2 NOT READY 2026-10-13 (B wrong revision macro, S clear placement, S exclusion latch, S N3 code fix, N oracle, N write order, N confirm text), folded; round 1 NOT READY (B1, B2, S1 to S6, N1 to N4), folded; round 3 pending
+depends-on: none # web files disjoint from 4x (upgrade.* only)
+```
+
+- **Asked (owner, 2026-10-13):** the firmware page shows the active slot,
+  the running firmware id, the inactive slot's firmware id, and an
+  option to switch to that slot at reboot.
+- **Feasibility (read from code, 2026-10-13).** Nothing records the
+  inactive slot's revision: the boot record's bytes 16-27 are reserved
+  and zeroed, and the container's revision lives only in the RAM OTA
+  session. No route switches slots, but the chooser already boots a
+  pending slot with a trial budget and falls back when it runs out, so
+  a switch is a ledger write plus a reboot with no chooser change.
+  Nothing stores the slot image's digest, so the switch can check the
+  IVT but cannot re-verify the image.
+- **Decisions (owner, 2026-10-13):** firmware plus page in one OTA; a
+  slot written before this change shows "unknown" (no flash scan: it
+  would need the unproven remap read).
+- **Accepted risks.** An image that runs but misbehaves commits itself
+  after a switch. An older image that rewrites the record clears the
+  revisions to unknown, never to a wrong value. Switching to an image
+  without this feature leaves no way back but an OTA, and the confirm
+  says so. A cold power cycle resets the trial count, as for any
+  activation.
+- **Decision (orchestrator, review S1):** no IVT check when running
+  slot B. It would need the remap read the owner ruled out; the
+  chooser's fallback covers a bad image.
+- **Review N3, closed by design:** whether or not a HalfKay
+  `recovery.hex` flash erases the record sectors, the healthy mark on
+  every boot rewrites the running slot's revision when it differs, so no
+  `recovery.hex` change is needed.
+- **Accepted (review round 2):** a refusal before the dark window, after
+  the clear, leaves an intact slot showing "unknown"; that is the safe
+  direction.
+- **Order.** Prebuild adversarial review of this contract first, then
+  the build. Rebuilding images is serialized against any other firmware
+  build; build_ab.sh runs last.
 
 ### Phase 4c `test.sh` runs every `--suite` given ✓ SHIPPED 2026-10-06
 

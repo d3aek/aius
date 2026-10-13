@@ -5,7 +5,8 @@
  * field table below, rendering GET /api/dsp/config into it, validating edits
  * against the firmware parser's bounds, PUTting the model back with an
  * optimistic-concurrency token, polling GET /api/meters at 4 Hz and
- * GET /api/status/brief at 1 Hz (the shared poller) -- one serialised request at a time per endpoint,
+ * GET /api/status/brief at 1 Hz (the shared poller; flow ends, sd_flush) and the full
+ * GET /api/status every 5 s (the audio-path block only) -- one serialised request at a time per endpoint,
  * never a timer stack -- and drawing the signal-flow strip: ONE stacked EQ plot
  * carrying every cascade, the downmix routing diagram, the level bars under
  * peak-hold ballistics, the DSP load and the limiter's gain reduction, all from
@@ -46,6 +47,7 @@
   const APPLY_BUSY_ATTEMPTS = 5; /* Apply tries before a 503 audio_busy reads as a rejection */
   const METER_RETRY_MS = 5000; /* back-off while /api/meters is absent */
   const STATUS_POLL_MS = 1000; /* the signal-flow ends only need 1 Hz */
+  const AUDIO_PATH_POLL_MS = 5000; /* the full /api/status, audio-path block only */
   const PENDING_POLL_MS = 500; /* the apply lands at an audio block boundary */
   const PENDING_POLL_MAX = 40; /* ~20 s before the page stops waiting */
   const MODEL_MAX_BYTES = 12288; /* AIUS_DSP_MODEL_MAX_JSON_BYTES */
@@ -2220,7 +2222,7 @@
    * of the FORM and stays live when the meters go away, so it never wears a
    * "no data" pill (UX finding E5). */
   function setMeterState(text) {
-    for (const id of ['meter-state', 'strip-input-state', 'strip-limiter-state', 'strip-output-state']) {
+    for (const id of ['meter-state', 'strip-limiter-state', 'strip-output-state']) {
       shared.setPill($(id), text);
     }
   }
@@ -2301,7 +2303,7 @@
   }
 
   /* ---- signal-flow ends: what the device is hearing, and transmitting -----
-   * GET /api/status at 1 Hz. `carrier`, the decode `state`, the negotiated
+   * GET /api/status/brief at 1 Hz. `carrier`, the decode `state`, the negotiated
    * `sample_rate` and the latched tx_gate terms are the facts the page needs,
    * and they are the two ends of the strip. */
 
@@ -2330,9 +2332,55 @@
   /* The same serialised discipline at its own 1 Hz cadence: a status read that
    * takes longer than a second must not put a second one on the wire behind it,
    * because that overlap is exactly what costs a dropped connection. */
-  /* The compact body (GET /api/status/brief, never the full /api/status): it
-   * carries exactly the keys renderFlowEnds reads, so a poll costs the device
-   * one short render. */
+  /* The compact body (GET /api/status/brief, never the full /api/status, at
+   * 1 Hz): it carries exactly the keys renderFlowEnds reads, so a poll costs the
+   * device one short render. The audio-path block needs `format`, `blocks`,
+   * `overruns` and `tx_gate.carrier_locked`, which the brief omits, so it reads
+   * the full GET /api/status (about 8.6 KB) on its own 5 s poller. */
+
+  /* The audio-path block: the signal-pane facts the input and output pills do
+   * not already say. Vocabularies mirror optical_main.cpp current_state()
+   * (2 no carrier, 3 PCM, 4 bitstream) and AiusPipelineClass (0 unknown,
+   * 1 PCM, 2 bitstream). */
+  /* current_state() derives `state` from the same classification as `format`:
+   * 2 when the PLL is unlocked or the stream is not yet classified PCM or
+   * bitstream, else 3 PCM or 4 bitstream. So the cell is the receiver's verdict
+   * without the codec name (which Stream format carries), never a repeat of it. */
+  const AUDIO_STATES = { 2: 'no carrier / unclassified', 3: 'PCM', 4: 'bitstream' };
+  const STREAM_FORMATS = { 0: 'unknown', 1: 'PCM (IEC 60958)' };
+
+  function audioStateText(status) {
+    const key = Number(status.state);
+    return Number.isFinite(key) && AUDIO_STATES[key] !== undefined
+      ? `${AUDIO_STATES[key]} (${key})`
+      : String(status.state ?? '--');
+  }
+
+  function streamFormatText(status) {
+    const key = Number(status.format);
+    if (key === 2) return `bitstream (${codecName(status)})`;
+    return Number.isFinite(key) && STREAM_FORMATS[key] !== undefined
+      ? STREAM_FORMATS[key]
+      : String(status.format ?? '--');
+  }
+
+  function renderAudioPath(status) {
+    const grid = $('audio-grid');
+    if (!status) {
+      /* Unreachable: keep the last values, dimmed, as the flow ends go red. */
+      grid.dataset.stale = 'true';
+      return;
+    }
+    delete grid.dataset.stale;
+    $('audio-state').textContent = audioStateText(status);
+    $('format').textContent = streamFormatText(status);
+    const gate = status.tx_gate && typeof status.tx_gate === 'object' ? status.tx_gate : {};
+    $('gate-carrier').textContent = gate.carrier_locked ? 'locked' : 'unlocked';
+    $('blocks').textContent = Number.isFinite(status.blocks) ? String(status.blocks) : '--';
+    const overruns = Number(status.overruns);
+    $('overruns').textContent = Number.isFinite(overruns) ? String(overruns) : '--';
+    $('overruns').dataset.zone = overruns > 0 ? 'warn' : 'idle';
+  }
 
   function setFlowEnd(id, dataState, text) {
     const element = $(id);
@@ -4218,6 +4266,16 @@
       onFlushAnswer(result.body && result.body.sd_flush);
     },
     onUnreachable: () => renderFlowEnds(null),
+    onError: showError,
+  });
+  /* The audio-path block alone reads the full body (~8.6 KB), at a fifth of the
+   * brief's cadence: the brief exists to keep the 1 Hz load off the board. */
+  shared.createPoller({
+    fetch: () => request('/api/status', { headers: { Accept: 'application/json' } }),
+    cadenceMs: AUDIO_PATH_POLL_MS,
+    immediate: true,
+    onAnswer: (result) => renderAudioPath(result.body),
+    onUnreachable: () => renderAudioPath(null),
     onError: showError,
   });
   startBallistics();

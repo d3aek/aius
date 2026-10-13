@@ -62,7 +62,7 @@ function stubDevice(config, presetFiles = {}) {
     const method = init.method || 'GET';
     if (url === '/api/dsp/config' && method === 'GET') return jsonResponse(200, config);
     if (url === '/api/meters') return jsonResponse(200, fixture('meters-snapshot.json'));
-    if (url === '/api/status/brief') return jsonResponse(200, STATUS_LIVE);
+    if (url === '/api/status/brief' || url === '/api/status') return jsonResponse(200, STATUS_LIVE);
     if (url === '/sd/www/presets/') return htmlResponse(200, PRESETS_INDEX);
     if (url.startsWith('/sd/www/presets/')) {
       const name = decodeURIComponent(url.slice('/sd/www/presets/'.length)).replace(/\.json$/, '');

@@ -179,7 +179,7 @@ function createDevice(options = {}) {
     if (url === '/api/meters') {
       return stub.meters ? jsonResponse(200, stub.meters) : jsonResponse(404, { ok: false, error: 'not_found' });
     }
-    if (url === '/api/status/brief') {
+    if (url === '/api/status/brief' || url === '/api/status') {
       return stub.status ? jsonResponse(200, stub.status) : jsonResponse(500, { ok: false, error: 'unavailable' });
     }
     if (url === '/sd/www/presets/') {
@@ -1911,12 +1911,24 @@ describe('Aius SD DSP editor — input source and transmit gate', () => {
     expect(el('input-source').dataset.state).toBe('none');
   });
 
-  it('renders the flow ends from the brief fixture and polls the brief route, never the full status', async () => {
+  it('renders the flow ends from the brief fixture and polls the brief route at 1 Hz, never the full status', async () => {
     await boot({ status: fixture('status-brief.json') });
+    await vi.advanceTimersByTimeAsync(4000);
 
     expect(el('input-source').textContent).toBe('input: optical carrier · bitstream (AC-3) · 48000 Hz');
     expect(el('tx-gate').dataset.state).toBe('open');
-    expect(callsTo('/api/status')).toHaveLength(0);
+    expect(callsTo('/api/status/brief')).toHaveLength(5);
+  });
+
+  it('requests the full status no more than once per 5 s window', async () => {
+    await boot();
+    expect(callsTo('/api/status')).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(4900);
+    expect(callsTo('/api/status')).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(callsTo('/api/status')).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(callsTo('/api/status')).toHaveLength(3);
   });
 
   it('keeps the flow ends through a 503 on the brief route', async () => {
@@ -1928,6 +1940,90 @@ describe('Aius SD DSP editor — input source and transmit gate', () => {
     await vi.advanceTimersByTimeAsync(10000);
     expect(el('input-source').dataset.state).toBe('carrier');
     expect(el('tx-gate').dataset.state).toBe('open');
+  });
+
+  /* Phase 4x: the audio path moved here from status.html. The pills already say
+   * carrier, encoding, rate and gate open, so the block holds only the rest. */
+  describe('audio path in the signal pane', () => {
+    const FULL = {
+      state: 3,
+      carrier: 1,
+      format: 1,
+      sample_rate: 48000,
+      blocks: 20492,
+      overruns: 0,
+      tx_gate: { open: 1, carrier_locked: 1 },
+    };
+
+    it('renders state, format, gate lock, blocks and overruns from a status fixture', async () => {
+      await boot({ status: FULL });
+
+      expect(el('audio-state').textContent).toBe('PCM (3)');
+      expect(el('format').textContent).toBe('PCM (IEC 60958)');
+      expect(el('gate-carrier').textContent).toBe('locked');
+      expect(el('blocks').textContent).toBe('20492');
+      expect(el('overruns').textContent).toBe('0');
+      expect(el('overruns').dataset.zone).toBe('idle');
+      expect(el('card-audio').closest('#dashboard-input')).not.toBeNull();
+    });
+
+    it('names a bitstream by codec and flags overruns, and reads a dark gate as unlocked', async () => {
+      await boot({
+        status: {
+          ...FULL,
+          state: 4,
+          format: 2,
+          overruns: 3,
+          pipeline_diag: { codec_pc: 21 },
+          tx_gate: { open: 0, carrier_locked: 0 },
+        },
+      });
+
+      expect(el('audio-state').textContent).toBe('bitstream (4)');
+      expect(el('format').textContent).toBe('bitstream (E-AC-3)');
+      expect(el('gate-carrier').textContent).toBe('unlocked');
+      expect(el('overruns').dataset.zone).toBe('warn');
+    });
+
+    it('labels each firmware state value, and the state never repeats the codec of Stream format', async () => {
+      for (const [state, label] of [
+        [2, 'no carrier / unclassified (2)'],
+        [3, 'PCM (3)'],
+        [4, 'bitstream (4)'],
+        [9, '9'],
+      ]) {
+        await boot({ status: { ...FULL, state, pipeline_diag: { codec_pc: 1 } } });
+        expect(el('audio-state').textContent).toBe(label);
+      }
+    });
+
+    it('shows each fact once: carrier, rate and gate open stay on the pills only', async () => {
+      await boot({ status: FULL });
+
+      for (const label of ['Input source', 'Optical carrier', 'Sample rate', 'Gate open']) {
+        expect(el('card-audio').textContent).not.toContain(label);
+      }
+      expect(el('input-source').textContent).toContain('48000 Hz');
+      expect(el('tx-gate').textContent).toBe('output: gate open');
+    });
+
+    it('dims the block when the device goes unreachable, keeping the last values', async () => {
+      await boot({ status: FULL });
+      device.status = null;
+      await vi.advanceTimersByTimeAsync(16000); /* three failed 5 s polls */
+
+      expect(el('audio-grid').dataset.stale).toBe('true');
+      expect(el('blocks').textContent).toBe('20492');
+    });
+
+    it('wears one live pill in the signal pane, on the Live block', async () => {
+      await boot();
+      await vi.advanceTimersByTimeAsync(500);
+
+      const pills = [...document.querySelectorAll('#dashboard-input .pill')].filter((pill) => /live/i.test(pill.textContent));
+      expect(pills.map((pill) => pill.id)).toEqual(['meter-state']);
+      expect(el('strip-input-state')).toBeNull();
+    });
   });
 
   it('retries an Apply that answers 503 audio_busy, then lands it', async () => {
@@ -4056,7 +4152,7 @@ describe('Aius SD DSP editor — DSP load, level bars and the limiter strip', ()
     expect(el('bar-in-lfe-fill').style.width).toBe('50.0%');
     expect(el('bar-out-l-value').textContent).toBe('-3.1');
     expect(el('bar-out-r-value').textContent).toBe('-3.4');
-    expect(el('strip-input-state').textContent).toBe('live');
+    expect(el('meter-state').textContent).toBe('live');
     expect(el('strip-output-state').textContent).toBe('live');
   });
 
@@ -4118,7 +4214,7 @@ describe('Aius SD DSP editor — DSP load, level bars and the limiter strip', ()
     await boot({ config: fixture('dsp-config-sd.json'), meters: null });
     await vi.advanceTimersByTimeAsync(750);
 
-    expect(el('strip-input-state').textContent).toBe('unreachable');
+    expect(el('strip-output-state').textContent).toBe('unreachable');
     expect(el('strip-limiter-state').textContent).toBe('unreachable');
     expect(el('meter-state').textContent).toBe('unreachable');
     expect(el('bar-out-l-value').textContent).toBe('--');

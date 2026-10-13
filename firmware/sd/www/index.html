@@ -98,7 +98,6 @@
             <h2 id="flow-kicker" class="kicker">00 / Signal</h2>
             <span id="hero-led" class="led" data-state="unknown"></span>
             <span id="input-source" class="flow-end" data-state="unknown">input: unknown</span>
-            <span id="strip-input-state" class="pill">waiting</span>
           </div>
           <svg id="flow-svg" class="flow__svg" viewBox="0 0 520 400" role="img" aria-labelledby="flow-title">
             <title id="flow-title">Signal flow from the six decoded inputs, through the matrix, to L and R</title>
@@ -130,11 +129,25 @@
                their only display on this page. -->
           <div class="bench-legacy" hidden><div id="bars-input" class="bars"></div></div>
 
+          <!-- Audio path: the facts the input and output pills above do not carry
+               (those two already say carrier, encoding, sample rate and gate
+               open). Rendered from the 1 Hz GET /api/status. -->
+          <div id="card-audio" class="audio-path">
+            <div class="section-title"><h3 class="kicker kicker--sub">Audio path</h3></div>
+            <div id="audio-grid" class="status-grid spec-grid">
+              <div><span>Audio state</span><strong id="audio-state">--</strong></div>
+              <div><span>Stream format</span><strong id="format">--</strong></div>
+              <div><span>Gate carrier lock</span><strong id="gate-carrier">--</strong></div>
+              <div><span>Blocks</span><strong id="blocks">--</strong></div>
+              <div><span>Overruns</span><strong id="overruns">--</strong></div>
+            </div>
+          </div>
+
           <!-- Live readouts and meters: this block IS the meters stage; its
                enable and dirty marker mount in its head. -->
           <div id="card-meters" class="meters">
             <div class="section-title"><h3 class="kicker kicker--sub">Live</h3><span id="meter-state" class="pill">waiting</span></div>
-            <div class="status-grid spec-grid">
+            <div class="status-grid spec-grid spec-grid--pair">
               <div><span>Queue</span><strong id="meter-queue">--</strong></div>
               <div><span>Latency</span><strong id="meter-latency">--</strong></div>
               <div><span>DSP load</span><strong id="meter-load">--</strong></div>

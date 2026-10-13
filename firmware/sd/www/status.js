@@ -1,10 +1,9 @@
 /* Aius SD-hosted device status.
  *
  * OWNS: the whole /sd/www/status.html page -- one GET /api/status per second
- * rendered into five cards (audio path, configuration, network, storage,
- * board), the input source derived from the carrier, the signal-flow line that
- * says whether anything is reaching the output. It polls /api/status only;
- * the meters live in the DSP editor.
+ * rendered into four cards (configuration, network, storage, board). It polls
+ * /api/status only; the meters and the audio path (input, decode state,
+ * format, blocks, overruns, gate) live in the DSP editor's signal pane.
  *
  * The board card's forensic rows -- A/B slot, previous boot, crash record,
  * dark-window stamp, stall witness -- are each optional in TWO different ways
@@ -37,16 +36,10 @@
 
   /* Numeric vocabularies mirrored from the firmware the way dsp-editor.js
    * mirrors AIUS_DSP_MODEL_MAX_JSON_BYTES: the wire carries the raw number and
-   * nothing on it says what the number means.
-   *   state   optical_main.cpp current_state(): 2 no carrier, 3 PCM, 4 bitstream
-   *   format  AiusPipelineClass: 0 unknown, 1 PCM, 2 IEC 61937 bitstream
-   *   codec   pipeline_diag.codec_pc: 0 unknown, 1 AC-3, 11/12/13 DTS,
-   *           21 E-AC-3
-   *   the network and checkpoint vocabularies are the ones swagger's Status
-   *   schema documents for network_state, network_last_fault and
-   *   last_checkpoint. */
-  const AUDIO_STATES = { 2: 'no carrier', 3: 'PCM' };
-  const STREAM_FORMATS = { 0: 'unknown', 1: 'PCM (IEC 60958)' };
+   * nothing on it says what the number means. The network and checkpoint
+   * vocabularies are the ones swagger's Status schema documents for
+   * network_state, network_last_fault and last_checkpoint. (The audio state,
+   * format and codec vocabularies live in dsp-editor.js with the audio path.) */
   const NETWORK_STATES = ['stack-start', 'dhcp-wait', 'online', 'teardown', 'backoff', 'recovery-safe'];
   const NETWORK_FAULTS = [
     'none',
@@ -99,8 +92,8 @@
   const FIRST_ABORT_INVALID = 255;
   const NO_COMPARE_FAULT = 4294967295; /* ota_dark.compare_offset "no fault" */
 
-  const PILLS = ['audio-pill', 'config-pill', 'network-pill', 'storage-pill', 'board-pill'];
-  const GRIDS = ['audio-grid', 'config-grid', 'network-grid', 'storage-grid', 'board-grid'];
+  const PILLS = ['config-pill', 'network-pill', 'storage-pill', 'board-pill'];
+  const GRIDS = ['config-grid', 'network-grid', 'storage-grid', 'board-grid'];
 
   /* The booleans arrive as 0/1 integers from the C serializer while swagger
    * types some of them as booleans; accept either rather than trusting one. */
@@ -109,31 +102,6 @@
   const named = (table, value) => {
     const key = Number(value);
     return Number.isFinite(key) && table[key] !== undefined ? `${table[key]} (${key})` : String(value ?? '--');
-  };
-
-  const codecName = (status) => {
-    const pipeline = status.pipeline_diag || {};
-    const codecPc = Number(pipeline.codec_pc);
-    if (codecPc === 1) return 'AC-3';
-    if (codecPc === 11 || codecPc === 12 || codecPc === 13) return 'DTS';
-    if (codecPc === 21) return 'E-AC-3';
-    return 'unknown';
-  };
-
-  const bitstreamLabel = (status) => `bitstream (${codecName(status)})`;
-
-  const audioState = (status) => {
-    const key = Number(status.state);
-    if (key === 4) return `${bitstreamLabel(status)} (4)`;
-    return named(AUDIO_STATES, status.state);
-  };
-
-  const streamFormat = (status) => {
-    const key = Number(status.format);
-    if (key === 2) return bitstreamLabel(status);
-    return Number.isFinite(key) && STREAM_FORMATS[key] !== undefined
-      ? STREAM_FORMATS[key]
-      : String(status.format ?? '--');
   };
 
   const listed = (list, value) => {
@@ -179,67 +147,6 @@
   }
 
   const cardSink = (card) => (text) => showCardError(card, text);
-
-  /* The one question this page exists to answer at a glance, and the device
-   * never answers it directly: it serves the inputs. A locked carrier owns the
-   * audio path; without one nothing is feeding it. */
-  function inputSource(status) {
-    return truthy(status.carrier) ? 'optical carrier' : 'none';
-  }
-
-  /* input -> DSP -> gate -> output, with each stage saying what it is doing.
-   * The gate's own JSON is three latched integers; this is what they mean
-   * together. */
-  function renderFlow(status) {
-    const flow = $('flow');
-    const gate = status.tx_gate || {};
-    const open = truthy(gate.open);
-    const source = inputSource(status);
-    const format = streamFormat(status);
-    const stages = [
-      ['input', source, source !== 'none'],
-      ['DSP', format, Number(status.format) > 0],
-      ['gate', open ? 'open' : 'dark', open],
-      ['output', open ? 'live' : 'silent', open],
-    ];
-    flow.textContent = '';
-    stages.forEach((stage, index) => {
-      if (index > 0) {
-        const arrow = document.createElement('span');
-        arrow.className = 'signal-line__arrow';
-        arrow.textContent = '→';
-        /* Decoration: the stage order is already in the reading order. */
-        arrow.setAttribute('aria-hidden', 'true');
-        flow.append(arrow);
-      }
-      const cell = document.createElement('span');
-      cell.className = 'signal-line__stage';
-      cell.dataset.tone = stage[2] ? 'ok' : 'off';
-      const label = document.createElement('b');
-      label.textContent = stage[0];
-      /* The space is a real text node, not the label's margin: an assistive
-       * reader gets "gate open", not "gateopen". */
-      cell.append(label, ` ${stage[1]}`);
-      flow.append(cell);
-    });
-  }
-
-  function renderAudio(status) {
-    renderFlow(status);
-    put('input-source', inputSource(status));
-    put('audio-state', audioState(status));
-    put('carrier', truthy(status.carrier) ? 'locked' : 'absent');
-    put('format', streamFormat(status));
-    const rate = Number(status.sample_rate) || 0;
-    put('sample-rate', rate > 0 ? `${rate} Hz` : '-- (no carrier)');
-    put('blocks', String(Number(status.blocks) || 0));
-    const overruns = Number(status.overruns) || 0;
-    put('overruns', String(overruns));
-    tone('overruns', overruns > 0);
-    const gate = status.tx_gate || {};
-    put('gate-open', truthy(gate.open) ? 'open' : 'dark');
-    put('gate-carrier', truthy(gate.carrier_locked) ? 'locked' : 'unlocked');
-  }
 
   /* The two facts this card kept conflating. `source`/`model_origin` describe
    * /aius/dsp.json -- what the DSP editor writes and what the audio path is
@@ -504,8 +411,6 @@
       if (stale) $(id).dataset.stale = 'true';
       else delete $(id).dataset.stale;
     }
-    if (stale) $('flow').dataset.stale = 'true';
-    else delete $('flow').dataset.stale;
   }
 
   function renderUnreachable(result) {
@@ -520,7 +425,6 @@
 
   function renderAnswer(result) {
     const status = result.body;
-    renderAudio(status);
     renderConfiguration(status);
     renderNetwork(status);
     renderStorage(status);
@@ -528,7 +432,7 @@
     setAllPills('live');
     setGridsStale(false);
     clearCardError('poll');
-    setCardStatus('poll', `Input source: ${inputSource(status)}. Snapshot at epoch ${Number(status.loop_epoch) || 0}.`);
+    setCardStatus('poll', `Snapshot at epoch ${Number(status.loop_epoch) || 0}.`);
   }
 
   shared.createPoller({
