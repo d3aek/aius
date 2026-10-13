@@ -8015,6 +8015,13 @@ depends-on: phase-4w # same files
     overflowed at 360).
   - Render at 1280, 360 and 320 px, before the poll revision: no page
     overflow on either page. sd-editor 419, www-bundle 35.
+- **Regression fixed after the commit (2026-10-13).** The optical-app
+  suite's `firmware/test/optical-app/test_bitstream_ui.py` still pinned
+  the codec labels (`pipeline_diag.codec_pc`) in `status.js`; 4x's proof
+  ran sd-editor and www-bundle only. The behaviour lives in
+  `dsp-editor.js:2317-2376` and the test now pins it there and the ids in
+  `index.html`. Reaching a page moves the optical-app suite into its
+  proof.
 
 ### Phase 4y The firmware page shows both slots and boots the other on request
 

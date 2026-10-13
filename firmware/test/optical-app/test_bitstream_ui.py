@@ -31,22 +31,23 @@ def main() -> None:
     index = read(index_path)
     firmware = read(firmware_path)
 
-    for source, path in ((status, status_path), (editor, editor_path)):
-        require(source, "pipeline.codec_pc", path)
-        require(source, "codecPc === 1", path)
-        require(source, "codecPc === 11 || codecPc === 12 || codecPc === 13", path)
-        require(source, "codecPc === 21", path)
-        require(source, "return 'AC-3'", path)
-        require(source, "return 'DTS'", path)
-        require(source, "return 'E-AC-3'", path)
-        require(source, "return 'unknown'", path)
-        require(source, "`bitstream (${codecName(status)})`", path)
+    # Phase 4x moved the audio-path render from status.js into dsp-editor.js.
+    path, source = editor_path, editor
+    require(source, "pipeline.codec_pc", path)
+    require(source, "codecPc === 1", path)
+    require(source, "codecPc === 11 || codecPc === 12 || codecPc === 13", path)
+    require(source, "codecPc === 21", path)
+    require(source, "return 'AC-3'", path)
+    require(source, "return 'DTS'", path)
+    require(source, "return 'E-AC-3'", path)
+    require(source, "return 'unknown'", path)
+    require(source, "`bitstream (${codecName(status)})`", path)
 
-    require(status, "put('audio-state', audioState(status))", status_path)
-    require(status, "put('format', streamFormat(status))", status_path)
+    require(editor, "$('audio-state').textContent = audioStateText(status)", editor_path)
+    require(editor, "$('format').textContent = streamFormatText(status)", editor_path)
     require(editor, "const encoding = carrierEncoding(status)", editor_path)
-    require(status_page, 'id="audio-state"', status_page_path)
-    require(status_page, 'id="format"', status_page_path)
+    require(index, 'id="audio-state"', index_path)
+    require(index, 'id="format"', index_path)
     require(
         firmware,
         "dts_metrics.arena_high_water > ac3_metrics.arena_high_water",
