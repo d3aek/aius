@@ -107,7 +107,11 @@ typedef enum {
 	AIUS_HTTP_ROUTE_SD_MODE,
 	/* GET /api/status/brief: the few keys the flow-ends renderer reads
 	 * (Phase 4f F3). GET only. Appended last. */
-	AIUS_HTTP_ROUTE_STATUS_BRIEF
+	AIUS_HTTP_ROUTE_STATUS_BRIEF,
+	/* POST /api/ota/boot-other: reboot into the other A/B slot through the
+	 * chooser's trial boot (Phase 4y). Auth-gated at dispatch like every OTA
+	 * verb; POST only. Appended last. */
+	AIUS_HTTP_ROUTE_OTA_BOOT_OTHER
 } AiusHttpRoute;
 
 typedef enum {

@@ -306,6 +306,10 @@ function createDevice(options = {}) {
       Object.assign(stub.ota, { state: 'activation_requested' });
       return jsonResponse(200, { ok: true });
     }
+    if (url === '/api/ota/boot-other' && method === 'POST') {
+      if (options.bootOtherRefusal) return options.bootOtherRefusal;
+      return jsonResponse(200, { ok: true, rebooting: true, boot_other: true });
+    }
     return jsonResponse(404, { ok: false, error: 'not_found' });
   });
   return stub;
@@ -1095,5 +1099,126 @@ describe('Aius SD firmware upgrade — the auth token', () => {
     await setToken('typed-token');
 
     expect(localStorage.getItem(TOKEN_KEY)).toBe('typed-token');
+  });
+});
+
+/* Phase 4y: the slots card and the boot-other switch. The `ab` shape is
+ * http_ab_json()'s (optical_main.cpp): `slot` the running physical slot,
+ * `revisions` keyed "1" / "2", null for unknown. */
+const abStatus = (overrides = {}, revisions = { 1: 'aaaaaaaaaaaa', 2: null }) => ({
+  ok: true,
+  target_id: DEVICE_TARGET,
+  build_revision: 'aaaaaaaaaaaa+aius-ab',
+  ab: Object.assign(
+    {
+      slot: 1,
+      record_valid: true,
+      active_slot: 1,
+      pending_slot: 0,
+      sequence: 7,
+      trial_budget: 0,
+      ledger_valid: true,
+      booted_slot: 1,
+      ledger_boots: 0,
+      ledger_fell_back: false,
+      rollback_observed: false,
+      revisions,
+    },
+    overrides,
+  ),
+});
+
+const bootOtherCalls = () => mutations().filter((call) => call.url === '/api/ota/boot-other');
+
+describe('Aius SD firmware upgrade — firmware slots', () => {
+  it('shows the running slot and its 12-hex revision, and the other slot as unknown', async () => {
+    /* The device proof's first read: after the self-commit, the other slot
+     * was written before revisions existed. The running revision is the
+     * build_revision's part before '+', the form the record stores. */
+    await boot({ status: abStatus() });
+
+    expect(el('slot-running').textContent).toBe('slot A');
+    expect(el('slot-running-revision').textContent).toBe('aaaaaaaaaaaa');
+    expect(el('slot-other').textContent).toBe('slot B');
+    expect(el('slot-other-revision').textContent).toBe('unknown');
+    expect(el('boot-other').disabled).toBe(false);
+  });
+
+  it('shows a known other-slot revision, running slot B', async () => {
+    await boot({
+      status: abStatus({ slot: 2, active_slot: 2, booted_slot: 2 }, { 1: '0123456789ab', 2: 'aaaaaaaaaaaa' }),
+    });
+
+    expect(el('slot-running').textContent).toBe('slot B');
+    expect(el('slot-other').textContent).toBe('slot A');
+    expect(el('slot-other-revision').textContent).toBe('0123456789ab');
+  });
+
+  it('confirms with the target revision and the no-way-back warning, then posts with the token', async () => {
+    await boot({ status: abStatus({}, { 1: 'aaaaaaaaaaaa', 2: 'bbbbbbbbbbbb' }) });
+    await setToken('secret');
+
+    el('boot-other').click();
+    await settle();
+
+    const text = window.confirm.mock.calls.at(-1)[0];
+    expect(text).toContain('Boot slot B (revision bbbbbbbbbbbb)?');
+    expect(text).toContain('no way back except an OTA');
+    expect(text).not.toContain('not checked');
+    expect(bootOtherCalls()).toHaveLength(1);
+    expect(bootOtherCalls()[0].headers['X-Aius-SD-Auth']).toBe('secret');
+    expect(el('slots-status').textContent).toContain('Rebooting into slot B');
+    expect(el('boot-other').disabled).toBe(true);
+  });
+
+  it("running slot B, the confirm says slot A's boot header is not checked", async () => {
+    await boot({ status: abStatus({ slot: 2, active_slot: 2, booted_slot: 2 }, { 1: null, 2: 'aaaaaaaaaaaa' }) });
+    await setToken('secret');
+
+    el('boot-other').click();
+    await settle();
+
+    const text = window.confirm.mock.calls.at(-1)[0];
+    expect(text).toContain('Boot slot A (revision unknown)?');
+    expect(text).toContain("Slot A's boot header is not checked");
+    expect(text).toContain('no way back except an OTA');
+  });
+
+  it('sends nothing when the confirm is cancelled', async () => {
+    await boot({ status: abStatus() });
+    await setToken('secret');
+    window.confirm = vi.fn(() => false);
+
+    el('boot-other').click();
+    await settle();
+
+    expect(bootOtherCalls()).toHaveLength(0);
+    expect(el('slots-status').textContent).toContain('cancelled');
+  });
+
+  it('names a device refusal in the slots card', async () => {
+    await boot({
+      status: abStatus(),
+      bootOtherRefusal: jsonResponse(409, { ok: false, error: 'ota_ivt' }),
+    });
+    await setToken('secret');
+
+    el('boot-other').click();
+    await settle();
+
+    expect(errorsShown('slots')).toContain('not a bootable image');
+  });
+
+  it('offers no switch on a single-image build or while a trial is open', async () => {
+    await boot();
+    expect(el('slot-running').textContent).toBe('single image');
+    expect(el('boot-other').disabled).toBe(true);
+
+    await boot({ status: abStatus({ pending_slot: 2, trial_budget: 2 }) });
+    expect(el('boot-other').disabled).toBe(true);
+    expect(el('slots-status').textContent).toContain('trial boot is still open');
+
+    await boot({ status: abStatus({ booted_slot: 0 }) });
+    expect(el('boot-other').disabled).toBe(true);
   });
 });

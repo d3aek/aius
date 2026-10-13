@@ -541,7 +541,8 @@ typedef enum {
 	AIUS_OPTICAL_APP_OTA_ROUTE_ENABLE_ACTIVATION, /* POST /api/ota/enable-activation (auth) */
 	AIUS_OPTICAL_APP_OTA_ROUTE_SELF_TEST,         /* POST /api/ota/self-test-flash   (auth) */
 	AIUS_OPTICAL_APP_OTA_ROUTE_REHEARSE,          /* POST /api/ota/rehearse          (auth) */
-	AIUS_OPTICAL_APP_OTA_ROUTE_REHEARSE_FAULT     /* POST /api/ota/rehearse-fault    (auth) */
+	AIUS_OPTICAL_APP_OTA_ROUTE_REHEARSE_FAULT,    /* POST /api/ota/rehearse-fault    (auth) */
+	AIUS_OPTICAL_APP_OTA_ROUTE_BOOT_OTHER         /* POST /api/ota/boot-other        (auth) */
 } AiusOpticalAppOtaRoute;
 
 /* The upgrade lifecycle, value-for-value the AiusOtaState the core publishes.
@@ -661,7 +662,7 @@ typedef struct {
 } AiusOpticalAppOtaStatus;
 
 /* The OTA seam. Every entry is required as a SET: aius_optical_app_set_ota()
- * takes all eleven or none, so a half-wired table is refused at registration
+ * takes all twelve or none, so a half-wired table is refused at registration
  * rather than discovered as a null call at dispatch.
  *
  * `context` is the OTA adapter's own, not AiusOpticalApp's: the session, its
@@ -752,6 +753,13 @@ typedef struct {
 	 * the self-test, and refused while a real activation or another
 	 * rehearsal is pending. OK == the rehearsal was accepted and deferred. */
 	AiusOpticalAppOtaResult (*rehearse)(void *context, bool inject_fault);
+
+	/* Phase 4y: requests a reboot into the other A/B slot through the
+	 * chooser's trial boot. Validates (aius_optical_boot_other_check) and
+	 * sets the request flags ONLY: the record write happens in the deferred
+	 * reboot service after the 200 drains (aius_optical_reboot_finish), so
+	 * this never touches flash. OK == accepted and deferred. */
+	AiusOpticalAppOtaResult (*boot_other)(void *context);
 } AiusOpticalAppOta;
 
 /* Caller-owned dispatcher state.
@@ -1384,6 +1392,88 @@ AiusOpticalSdService aius_optical_sd_service_gate(
 bool aius_optical_sd_service_final(AiusOpticalSdFlush *flush,
                                    const AiusOpticalSdFlushOps *ops,
                                    volatile bool *requested);
+
+/* --------------------------------------------------------------------------
+ * Phase 4y: boot the other A/B slot (POST /api/ota/boot-other)
+ * ------------------------------------------------------------------------ */
+
+/* The A/B slot ids, mirrored from aius_ab_layout.h (the seam names what it
+ * decides on without the library; optical_main.cpp static_asserts them). */
+#define AIUS_OPTICAL_AB_SLOT_NONE 0u
+#define AIUS_OPTICAL_AB_SLOT_A 1u
+#define AIUS_OPTICAL_AB_SLOT_B 2u
+
+/* The deferred one-way acts and the exclusions between them. The switch is
+ * excluded by every other pending act; activate, rehearse and self-test are
+ * excluded by a pending switch (rehearse also by its own two flags, as
+ * before). */
+typedef enum {
+	AIUS_OPTICAL_ACT_ACTIVATE = 0,
+	AIUS_OPTICAL_ACT_REHEARSE,
+	AIUS_OPTICAL_ACT_SELF_TEST,
+	AIUS_OPTICAL_ACT_BOOT_OTHER
+} AiusOpticalFlashAct;
+
+typedef struct {
+	bool reboot;
+	bool activation;
+	bool rehearsal;
+	bool boot_other;
+} AiusOpticalPendingActs;
+
+bool aius_optical_flash_act_excluded(AiusOpticalFlashAct act,
+                                     const AiusOpticalPendingActs *pending);
+
+/* Everything the boot-other admission reads, filled by the composition. */
+typedef struct {
+	bool ab_built;        /* AIUS_AB_SLOT != 0: false on the plain image */
+	bool ab_enabled;      /* the retained-ledger address contract held */
+	bool record_valid;
+	uint8_t active_slot;
+	uint8_t pending_slot;
+	uint8_t running_slot; /* the physical slot running now */
+	uint8_t booted_slot;  /* the ledger's stamp; NONE when invalid or old */
+	AiusOpticalAppOtaState ota_state;
+	AiusOpticalPendingActs pending;
+} AiusOpticalBootOther;
+
+/* The admission, pure. UNSUPPORTED: no A/B on this build or board.
+ * STATE_REFUSED: no valid record, a trial open, the record's active slot is
+ * not the running one, a pre-slot-agnostic ledger (booted_slot NONE),
+ * another deferred act pending, or an OTA session OFFERED through
+ * ACTIVATION_REQUESTED. IVT: running slot A and `other_ivt_sane` (slot B's
+ * IVT under aius_ab_slot_ivt_sane) says no. Running slot B never calls it:
+ * slot A's range is the remapped window, and the chooser's bad-IVT fallback
+ * carries a bad image. */
+AiusOpticalAppOtaResult aius_optical_boot_other_check(
+	const AiusOpticalBootOther *state, bool (*other_ivt_sane)(void *context),
+	void *context);
+
+/* The deferred reboot service's terminal step. The caller runs the SD gate
+ * (reset past the freeze ceiling, as before; WAIT returns before this) and
+ * the final drain query itself and passes `drained` = gate RUN && final
+ * passed; this then, for a switch, writes the record. RESET is the caller's
+ * cue to drive the TX gate low and reset, and is returned only after a
+ * switch's write landed. `switch_write` writes pending = the other slot with
+ * the activation's trial budget and answers false on a failed write or
+ * read-back. Every exit without RESET clears `*switch_requested`, so the
+ * exclusion above cannot latch. */
+typedef struct {
+	void *context;
+	bool (*switch_write)(void *context);
+} AiusOpticalRebootActs;
+
+typedef enum {
+	AIUS_OPTICAL_REBOOT_ABANDONED = 0, /* the SD gate abandoned: record untouched */
+	AIUS_OPTICAL_REBOOT_SWITCH_FAILED, /* the record write failed: no reset,
+	                                    * unfrozen, both requests cleared */
+	AIUS_OPTICAL_REBOOT_RESET          /* reset now (the write, if any, landed) */
+} AiusOpticalRebootStep;
+
+AiusOpticalRebootStep aius_optical_reboot_finish(
+	AiusOpticalSdFlush *flush, const AiusOpticalSdFlushOps *ops,
+	const AiusOpticalRebootActs *acts, volatile bool *reboot_requested,
+	volatile bool *switch_requested, bool drained);
 
 /* E3: direct card ops (a /sd/ index) run only with the
  * card ready and DAT3 not re-muxed (a card-gone invalidation or a failed

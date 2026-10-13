@@ -415,6 +415,350 @@ static void test_remap_primitive(void)
 	CHECK(!aius_ab_remap_for_slot(AIUS_AB_SLOT_A, NULL));
 }
 
+/* ------------------------------------------------------------------ */
+/* Phase 4y: per-slot revisions in bytes 16-27                         */
+/* ------------------------------------------------------------------ */
+
+/* THE FROZEN VERSION-1 ORACLE. The host aius_ab.c is the chooser's own
+ * source, so its decode accepting a new record proves nothing about the
+ * chooser on the board; this is the version-1 acceptance rule written out
+ * independently (own CRC, own offsets), and it must accept every record the
+ * revision-aware encoder writes. */
+static uint32_t v1_crc32(const uint8_t *bytes, unsigned length)
+{
+	uint32_t crc = 0xffffffffu;
+	unsigned index;
+	unsigned bit;
+
+	for (index = 0u; index < length; index++) {
+		crc ^= bytes[index];
+		for (bit = 0u; bit < 8u; bit++)
+			crc = (crc & 1u) ? (crc >> 1) ^ 0xedb88320u : crc >> 1;
+	}
+	return ~crc;
+}
+
+static int v1_oracle_accepts(const uint8_t bytes[32])
+{
+	const uint32_t magic = (uint32_t)bytes[0] | ((uint32_t)bytes[1] << 8) |
+	                       ((uint32_t)bytes[2] << 16) |
+	                       ((uint32_t)bytes[3] << 24);
+	const unsigned version = (unsigned)bytes[4] | ((unsigned)bytes[5] << 8);
+	const unsigned length = (unsigned)bytes[6] | ((unsigned)bytes[7] << 8);
+	const uint32_t crc = (uint32_t)bytes[28] | ((uint32_t)bytes[29] << 8) |
+	                     ((uint32_t)bytes[30] << 16) |
+	                     ((uint32_t)bytes[31] << 24);
+	const uint8_t active = bytes[12];
+	const uint8_t pending = bytes[13];
+	const uint8_t budget = bytes[14];
+
+	if (magic != 0x42414941u || version != 1u || length != 32u)
+		return 0;
+	if (crc != v1_crc32(bytes, 28u))
+		return 0;
+	if (active != 1u && active != 2u)
+		return 0;
+	if (pending != 0u && ((pending != 1u && pending != 2u) ||
+	                      pending == active))
+		return 0;
+	if (pending == 0u)
+		return budget == 0u;
+	return budget >= 1u && budget <= 8u;
+}
+
+/* Bytes the PRE-4y encoder wrote for {sequence 0x01020304, active A,
+ * pending B, budget 2}, checked in: the revision-aware encoder with no
+ * revisions must reproduce them exactly. */
+static const uint8_t kPre4yRecord[32] = {
+	0x41, 0x49, 0x41, 0x42, 0x01, 0x00, 0x20, 0x00,
+	0x04, 0x03, 0x02, 0x01, 0x01, 0x02, 0x02, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x03, 0x09, 0x68, 0x6b,
+};
+
+static AiusAbRevisions revisions_of(const char *a, const char *b)
+{
+	AiusAbRevisions revisions;
+
+	memset(&revisions, 0, sizeof(revisions));
+	(void)aius_ab_revision_parse(a, revisions.slot[0]);
+	(void)aius_ab_revision_parse(b, revisions.slot[1]);
+	return revisions;
+}
+
+static int revision_is(const AiusAbRevisions *revisions, uint8_t slot,
+	               const char *expected)
+{
+	char text[AIUS_AB_REVISION_TEXT_STORAGE];
+
+	if (expected == NULL)
+		return !aius_ab_revision_format(
+			       aius_ab_revision_of(revisions, slot), text,
+			       sizeof(text)) &&
+		       text[0] == '\0';
+	return aius_ab_revision_format(aius_ab_revision_of(revisions, slot),
+	                               text, sizeof(text)) &&
+	       strcmp(text, expected) == 0;
+}
+
+static void test_revision_text(void)
+{
+	uint8_t revision[AIUS_AB_REVISION_BYTES];
+	char text[AIUS_AB_REVISION_TEXT_STORAGE];
+	static const char *const refused[] = {
+		NULL, "", "92aae16", "92aae16abcd", "92aae16abcdef",
+		"92aae16abcde+aius-ab", "92aae16abcdg", "92aae16abcd ",
+		" 92aae16abcd", "unknown", "000000000000",
+	};
+	unsigned index;
+
+	current_key = "revision.parse-folds-case";
+	CHECK(aius_ab_revision_parse("92AAE16abcDE", revision));
+	CHECK(revision[0] == 0x92u && revision[1] == 0xaau &&
+	      revision[2] == 0xe1u && revision[3] == 0x6au &&
+	      revision[4] == 0xbcu && revision[5] == 0xdeu);
+	CHECK(aius_ab_revision_format(revision, text, sizeof(text)));
+	CHECK(strcmp(text, "92aae16abcde") == 0);
+
+	current_key = "revision.non-12-hex-stores-zero";
+	for (index = 0u; index < sizeof(refused) / sizeof(refused[0]);
+	     index++) {
+		memset(revision, 0x5a, sizeof(revision));
+		CHECK(!aius_ab_revision_parse(refused[index], revision));
+		CHECK(revision[0] == 0u && revision[1] == 0u &&
+		      revision[2] == 0u && revision[3] == 0u &&
+		      revision[4] == 0u && revision[5] == 0u);
+	}
+
+	current_key = "revision.format-unknown";
+	memset(revision, 0, sizeof(revision));
+	memset(text, 'x', sizeof(text));
+	CHECK(!aius_ab_revision_format(revision, text, sizeof(text)));
+	CHECK(text[0] == '\0');
+	CHECK(aius_ab_revision_parse("0123456789ab", revision));
+	CHECK(!aius_ab_revision_format(revision, text, sizeof(text) - 1u));
+	CHECK(aius_ab_revision_of(NULL, AIUS_AB_SLOT_A) == NULL);
+}
+
+static void test_record_revisions(void)
+{
+	AiusAbRecord record;
+	AiusAbRecord decoded;
+	AiusAbRevisions revisions;
+	AiusAbRevisions read;
+	uint8_t bytes[AIUS_AB_RECORD_BYTES];
+	uint8_t zeroed[AIUS_AB_RECORD_BYTES];
+	unsigned index;
+
+	current_key = "revisions.pre-4y-bytes";
+	record = trial(0x01020304u, AIUS_AB_SLOT_A, AIUS_AB_SLOT_B, 2u);
+	CHECK(aius_ab_record_encode_revisions(&record, NULL, bytes,
+	                                      sizeof(bytes)));
+	CHECK(memcmp(bytes, kPre4yRecord, sizeof(bytes)) == 0);
+	CHECK(aius_ab_record_encode(&record, bytes, sizeof(bytes)));
+	CHECK(memcmp(bytes, kPre4yRecord, sizeof(bytes)) == 0);
+	CHECK(v1_oracle_accepts(kPre4yRecord));
+
+	current_key = "revisions.round-trip";
+	revisions = revisions_of("0123456789ab", "fedcba987654");
+	CHECK(aius_ab_record_encode_revisions(&record, &revisions, bytes,
+	                                      sizeof(bytes)));
+	CHECK(bytes[16] == 0x01u && bytes[21] == 0xabu);
+	CHECK(bytes[22] == 0xfeu && bytes[27] == 0x54u);
+	CHECK(aius_ab_record_decode(&decoded, bytes, sizeof(bytes)));
+	CHECK(decoded.sequence == 0x01020304u &&
+	      decoded.active_slot == AIUS_AB_SLOT_A &&
+	      decoded.pending_slot == AIUS_AB_SLOT_B &&
+	      decoded.trial_budget == 2u);
+	CHECK(aius_ab_record_revisions(bytes, sizeof(bytes), &read));
+	CHECK(revision_is(&read, AIUS_AB_SLOT_A, "0123456789ab"));
+	CHECK(revision_is(&read, AIUS_AB_SLOT_B, "fedcba987654"));
+
+	current_key = "revisions.frozen-v1-oracle";
+	/* Every slot/budget shape the app writes, with revisions in every
+	 * byte, passes the frozen version-1 rule and the pick. */
+	{
+		static const struct {
+			uint8_t active, pending, budget;
+		} shapes[] = {
+			{ AIUS_AB_SLOT_A, AIUS_AB_SLOT_NONE, 0u },
+			{ AIUS_AB_SLOT_B, AIUS_AB_SLOT_NONE, 0u },
+			{ AIUS_AB_SLOT_A, AIUS_AB_SLOT_B, 2u },
+			{ AIUS_AB_SLOT_B, AIUS_AB_SLOT_A, 8u },
+		};
+		for (index = 0u; index < sizeof(shapes) / sizeof(shapes[0]);
+		     index++) {
+			AiusAbRecord picked;
+			record = trial(index + 9u, shapes[index].active,
+			               shapes[index].pending, shapes[index].budget);
+			revisions = revisions_of("ffffffffffff", "a1b2c3d4e5f6");
+			CHECK(aius_ab_record_encode_revisions(
+				&record, &revisions, bytes, sizeof(bytes)));
+			CHECK(v1_oracle_accepts(bytes));
+			CHECK(aius_ab_record_pick(bytes, NULL, sizeof(bytes),
+			                          &picked) == 0);
+		}
+	}
+
+	current_key = "revisions.zero-bytes-unknown";
+	record = committed(3u, AIUS_AB_SLOT_B);
+	CHECK(aius_ab_record_encode(&record, zeroed, sizeof(zeroed)));
+	CHECK(aius_ab_record_revisions(zeroed, sizeof(zeroed), &read));
+	CHECK(revision_is(&read, AIUS_AB_SLOT_A, NULL));
+	CHECK(revision_is(&read, AIUS_AB_SLOT_B, NULL));
+
+	current_key = "revisions.invalid-record";
+	memset(&read, 0x77, sizeof(read));
+	bytes[3] ^= 0x01u;
+	CHECK(!aius_ab_record_revisions(bytes, sizeof(bytes), &read));
+	CHECK(revision_is(&read, AIUS_AB_SLOT_A, NULL));
+	CHECK(revision_is(&read, AIUS_AB_SLOT_B, NULL));
+}
+
+static void test_plan_healthy(void)
+{
+	AiusAbRecord record;
+	AiusAbRecord next;
+	AiusAbRevisions revisions;
+	AiusAbRevisions next_revisions;
+
+	current_key = "healthy.first-record";
+	CHECK(aius_ab_plan_healthy(NULL, NULL, AIUS_AB_SLOT_B, "0123456789ab",
+	                           &next, &next_revisions));
+	CHECK(next.sequence == 1u && next.active_slot == AIUS_AB_SLOT_B &&
+	      next.pending_slot == AIUS_AB_SLOT_NONE && next.trial_budget == 0u);
+	CHECK(revision_is(&next_revisions, AIUS_AB_SLOT_B, "0123456789ab"));
+	CHECK(revision_is(&next_revisions, AIUS_AB_SLOT_A, NULL));
+
+	current_key = "healthy.writes-once";
+	/* A record with no revision (the first 4y boot): one write, then the
+	 * same boot's inputs on the next boot ask for none. */
+	record = committed(5u, AIUS_AB_SLOT_A);
+	memset(&revisions, 0, sizeof(revisions));
+	CHECK(aius_ab_plan_healthy(&record, &revisions, AIUS_AB_SLOT_A,
+	                           "0123456789AB", &next, &next_revisions));
+	CHECK(next.sequence == 6u && next.active_slot == AIUS_AB_SLOT_A &&
+	      next.pending_slot == AIUS_AB_SLOT_NONE);
+	CHECK(revision_is(&next_revisions, AIUS_AB_SLOT_A, "0123456789ab"));
+	record = next;
+	revisions = next_revisions;
+	CHECK(!aius_ab_plan_healthy(&record, &revisions, AIUS_AB_SLOT_A,
+	                            "0123456789ab", &next, &next_revisions));
+
+	current_key = "healthy.rewrites-a-different-revision";
+	/* HalfKay recovery, a bad-IVT fallback, a rollback into a slot whose
+	 * stored revision is stale: the running image's own wins. */
+	CHECK(aius_ab_plan_healthy(&record, &revisions, AIUS_AB_SLOT_A,
+	                           "fedcba987654", &next, &next_revisions));
+	CHECK(next.sequence == 7u);
+	CHECK(revision_is(&next_revisions, AIUS_AB_SLOT_A, "fedcba987654"));
+
+	current_key = "healthy.unknown-build-clears";
+	CHECK(aius_ab_plan_healthy(&record, &revisions, AIUS_AB_SLOT_A,
+	                           "unknown", &next, &next_revisions));
+	CHECK(revision_is(&next_revisions, AIUS_AB_SLOT_A, NULL));
+	memset(&revisions, 0, sizeof(revisions));
+	CHECK(!aius_ab_plan_healthy(&record, &revisions, AIUS_AB_SLOT_A,
+	                            "0123456789ab+aius-ab", &next,
+	                            &next_revisions));
+
+	current_key = "healthy.trial-commit-folds-revision";
+	record = trial(9u, AIUS_AB_SLOT_A, AIUS_AB_SLOT_B, 2u);
+	revisions = revisions_of("111111111111", "222222222222");
+	CHECK(aius_ab_plan_healthy(&record, &revisions, AIUS_AB_SLOT_B,
+	                           "333333333333", &next, &next_revisions));
+	CHECK(next.sequence == 10u && next.active_slot == AIUS_AB_SLOT_B &&
+	      next.pending_slot == AIUS_AB_SLOT_NONE && next.trial_budget == 0u);
+	CHECK(revision_is(&next_revisions, AIUS_AB_SLOT_A, "111111111111"));
+	CHECK(revision_is(&next_revisions, AIUS_AB_SLOT_B, "333333333333"));
+
+	current_key = "healthy.other-slot-trial-untouched";
+	/* N1: a trial pending for the OTHER slot (a failed rollback write)
+	 * never earns a write, even with a stale revision. */
+	record = trial(9u, AIUS_AB_SLOT_A, AIUS_AB_SLOT_B, 2u);
+	CHECK(!aius_ab_plan_healthy(&record, &revisions, AIUS_AB_SLOT_A,
+	                            "333333333333", &next, &next_revisions));
+	CHECK(!aius_ab_plan_healthy(&record, &revisions, AIUS_AB_SLOT_NONE,
+	                            "333333333333", &next, &next_revisions));
+}
+
+static void test_plan_writes(void)
+{
+	AiusAbRecord record;
+	AiusAbRecord next;
+	AiusAbRevisions revisions;
+	AiusAbRevisions next_revisions;
+
+	current_key = "pending.sets-target-revision";
+	record = committed(4u, AIUS_AB_SLOT_A);
+	revisions = revisions_of("111111111111", "222222222222");
+	CHECK(aius_ab_plan_pending(&record, &revisions, AIUS_AB_SLOT_A,
+	                           AIUS_AB_DEFAULT_TRIAL_BOOTS, "abcdefabcdef",
+	                           &next, &next_revisions));
+	CHECK(next.sequence == 5u && next.active_slot == AIUS_AB_SLOT_A &&
+	      next.pending_slot == AIUS_AB_SLOT_B &&
+	      next.trial_budget == AIUS_AB_DEFAULT_TRIAL_BOOTS);
+	CHECK(revision_is(&next_revisions, AIUS_AB_SLOT_A, "111111111111"));
+	CHECK(revision_is(&next_revisions, AIUS_AB_SLOT_B, "abcdefabcdef"));
+	CHECK(aius_ab_plan_pending(NULL, NULL, AIUS_AB_SLOT_B, 2u,
+	                           "not-a-revision", &next, &next_revisions));
+	CHECK(next.sequence == 1u && next.active_slot == AIUS_AB_SLOT_B &&
+	      next.pending_slot == AIUS_AB_SLOT_A);
+	CHECK(revision_is(&next_revisions, AIUS_AB_SLOT_A, NULL));
+
+	current_key = "clear.other-slot-only";
+	CHECK(aius_ab_plan_clear_other(&record, &revisions, AIUS_AB_SLOT_A,
+	                               &next, &next_revisions));
+	CHECK(next.sequence == 5u && next.active_slot == AIUS_AB_SLOT_A &&
+	      next.pending_slot == AIUS_AB_SLOT_NONE);
+	CHECK(revision_is(&next_revisions, AIUS_AB_SLOT_A, "111111111111"));
+	CHECK(revision_is(&next_revisions, AIUS_AB_SLOT_B, NULL));
+	/* Already unknown, or no record: nothing to write. */
+	CHECK(!aius_ab_plan_clear_other(&next, &next_revisions, AIUS_AB_SLOT_A,
+	                                &record, &revisions));
+	CHECK(!aius_ab_plan_clear_other(NULL, NULL, AIUS_AB_SLOT_A, &next,
+	                                &next_revisions));
+
+	current_key = "clear.closes-a-stale-other-trial";
+	record = trial(8u, AIUS_AB_SLOT_B, AIUS_AB_SLOT_A, 2u);
+	revisions = revisions_of("111111111111", "222222222222");
+	CHECK(aius_ab_plan_clear_other(&record, &revisions, AIUS_AB_SLOT_B,
+	                               &next, &next_revisions));
+	CHECK(next.sequence == 9u && next.active_slot == AIUS_AB_SLOT_B &&
+	      next.pending_slot == AIUS_AB_SLOT_NONE && next.trial_budget == 0u);
+	CHECK(revision_is(&next_revisions, AIUS_AB_SLOT_A, NULL));
+	CHECK(revision_is(&next_revisions, AIUS_AB_SLOT_B, "222222222222"));
+
+	current_key = "switch.pending-other-with-budget";
+	record = committed(12u, AIUS_AB_SLOT_B);
+	CHECK(aius_ab_plan_switch(&record, AIUS_AB_SLOT_B,
+	                          AIUS_AB_DEFAULT_TRIAL_BOOTS, &next));
+	CHECK(next.sequence == 13u && next.active_slot == AIUS_AB_SLOT_B &&
+	      next.pending_slot == AIUS_AB_SLOT_A &&
+	      next.trial_budget == AIUS_AB_DEFAULT_TRIAL_BOOTS);
+	{
+		uint8_t bytes[AIUS_AB_RECORD_BYTES];
+		AiusAbChoice choice;
+		AiusAbRecord decoded;
+		CHECK(aius_ab_record_encode_revisions(&next, &revisions, bytes,
+		                                      sizeof(bytes)));
+		CHECK(v1_oracle_accepts(bytes));
+		CHECK(aius_ab_record_decode(&decoded, bytes, sizeof(bytes)));
+		aius_ab_choose(&decoded, NULL, &choice);
+		CHECK(choice.boot_slot == AIUS_AB_SLOT_A &&
+		      choice.reason == AIUS_AB_REASON_TRIAL);
+	}
+
+	current_key = "switch.refusals";
+	CHECK(!aius_ab_plan_switch(NULL, AIUS_AB_SLOT_A, 2u, &next));
+	CHECK(!aius_ab_plan_switch(&record, AIUS_AB_SLOT_A, 2u, &next));
+	CHECK(!aius_ab_plan_switch(&record, AIUS_AB_SLOT_B, 0u, &next));
+	CHECK(!aius_ab_plan_switch(&record, AIUS_AB_SLOT_B,
+	                           AIUS_AB_MAX_TRIAL_BOOTS + 1u, &next));
+	record = trial(12u, AIUS_AB_SLOT_B, AIUS_AB_SLOT_A, 2u);
+	CHECK(!aius_ab_plan_switch(&record, AIUS_AB_SLOT_B, 2u, &next));
+}
+
 int main(void)
 {
 	test_layout_arithmetic();
@@ -424,6 +768,10 @@ int main(void)
 	test_choose_rules();
 	test_slot_ivt_sanity();
 	test_remap_primitive();
+	test_revision_text();
+	test_record_revisions();
+	test_plan_healthy();
+	test_plan_writes();
 	puts("ab tests passed");
 	return 0;
 }

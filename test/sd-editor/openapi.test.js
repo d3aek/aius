@@ -213,6 +213,14 @@ const CONVERSION_TYPES = new Map([
 
 const CONVERSION = /^%[-+ #0]*[0-9*]*(?:\.[0-9*]+)?(?:hh|h|ll|l|L|j|z|t)?[diouxXeEfFgGaAsp]/;
 
+/**
+ * Document paths whose bare %s is NOT the boolean idiom but a value the
+ * firmware pre-renders as a quoted string or `null` (Phase 4y: http_ab_json's
+ * per-slot revisions, filled by ab_revision_json in optical_main.cpp). Pinned
+ * against that renderer below, so the exemption cannot outlive it.
+ */
+const PRERENDERED_NULLABLE_STRINGS = new Set(["ab.revisions.1", "ab.revisions.2"]);
+
 const sources = new Map();
 
 /** Read one firmware source with its comments stripped. */
@@ -557,6 +565,9 @@ function parseKeyTree(text, dynamicKeys) {
     const conversion = CONVERSION.exec(text.slice(index));
     if (conversion) {
       index += conversion[0].length;
+      if (conversion[0].at(-1) === "s" && PRERENDERED_NULLABLE_STRINGS.has(path)) {
+        return { kind: "string", nullable: true };
+      }
       const kind = CONVERSION_TYPES.get(conversion[0].at(-1));
       if (kind === undefined) fail(`unsupported conversion ${conversion[0]} for ${path}`);
       // `cond ? "%lu" : "null"` concatenates to `%lunull`: a nullable scalar.
@@ -753,6 +764,7 @@ describe("Aius OpenAPI contract", () => {
       "/api/ota/abort",
       "/api/ota/activate",
       "/api/ota/arm",
+      "/api/ota/boot-other",
       "/api/ota/image",
       "/api/ota/verify",
       "/api/reboot",
@@ -770,6 +782,27 @@ describe("Aius OpenAPI contract", () => {
       "/sd/{directory}/",
       "/sd/{resource}",
     ]);
+    // Phase 4y: boot-other is token-gated and answers the OTA verdict tokens.
+    {
+      const bootOther = document.paths["/api/ota/boot-other"].post;
+      expect(bootOther.parameters).toEqual([{ $ref: "#/components/parameters/SdAuth" }]);
+      expect(Object.keys(bootOther.responses).sort()).toEqual(["200", "400", "401", "404", "409"]);
+      expect(bootOther.responses["409"].description).toContain("ota_ivt");
+      expect(bootOther.responses["409"].description).toContain("ota_state");
+    }
+    // The pre-rendered revision values: ab_revision_json writes exactly a
+    // quoted 12-hex string or null into the bare %s the extractor exempts.
+    {
+      const main = firmwareSource("src/optical_main.cpp");
+      const renderer = main.slice(main.indexOf("ab_revision_json(char *out"));
+      const body = renderer.slice(0, renderer.indexOf("\n}\n"));
+      expect(body).toContain("out[0] = '\"';");
+      expect(body).toContain("out[AIUS_AB_REVISION_HEX_CHARS + 1u] = '\"';");
+      expect(body).toContain('memcpy(out, "null", sizeof("null"));');
+      const abRevisions = document.components.schemas.AbState.properties.revisions;
+      expect(abRevisions.properties["1"]).toEqual({ type: "string", nullable: true, pattern: "^[0-9a-f]{12}$" });
+      expect(abRevisions.required).toEqual(["1", "2"]);
+    }
     // The single-config model retires mode/mix selection entirely.
     expect(document.paths["/api/mode"]).toBeUndefined();
     expect(document.paths["/api/mix"]).toBeUndefined();

@@ -672,7 +672,10 @@ PINNED_KEYS = {
     # Phase 4h H10: sd_diag's two restore counters.
     "aius_runtime_storage_diag_json": ("settings_restores", "settings_restore_faults"),
     # Phase 4h: the sd_flush object (openapi.json's exact key set), rendered
-    # by the root emitter itself, crc_drops included.
+    # by the root emitter itself, crc_drops included; then Phase 4f's
+    # admission counters, same emitter. ONE entry: a dict literal keeps only
+    # the last of two equal keys, which silently dropped the sd_flush pins
+    # until Phase 4y.
     ROOT_EMITTER: (
         "sd_flush",
         "dirty",
@@ -687,7 +690,14 @@ PINNED_KEYS = {
         "last_fault",
         "held",
         "drained",
+        "http_shed",
+        "http_dispatch_max_us",
+        "sd_fifo_defers",
+        "http_shed_class",
+        "http_class_cost_us",
     ),
+    # Phase 4y: the A/B object's per-physical-slot revisions.
+    "http_ab_json": ("revisions",),
     # aius-sample-rate-following Phase 4: the fill-referenced trim and the
     # fill sensor's window sequence and last exclusion bits.
     "http_clock_json": (
@@ -702,14 +712,6 @@ PINNED_KEYS = {
         "fill_window_exclusions",
         # Phase 4a F3: the pending-boundary open's extra pad.
         "gate_open_pending_padded_frames",
-    ),
-    # Phase 4f: the admission counters, rendered by the root emitter itself.
-    ROOT_EMITTER: (
-        "http_shed",
-        "http_dispatch_max_us",
-        "sd_fifo_defers",
-        "http_shed_class",
-        "http_class_cost_us",
     ),
 }
 
@@ -736,7 +738,26 @@ def check_brief(sources):
     return worst
 
 
+def check_pinned_keys_unique():
+    """PINNED_KEYS as written has no repeated emitter: a dict literal keeps only
+    the last of two equal keys, so a repeat drops pins without a word."""
+    import ast
+
+    tree = ast.parse(Path(__file__).read_text())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == "PINNED_KEYS" for t in node.targets
+        ):
+            keys = [ast.unparse(k) for k in node.value.keys]
+            repeated = sorted({k for k in keys if keys.count(k) > 1})
+            if repeated:
+                raise BoundError(f"PINNED_KEYS repeats {repeated}; merge them into one entry")
+            return
+    raise BoundError("PINNED_KEYS assignment not found")
+
+
 def check_pinned_keys(sources, rows):
+    check_pinned_keys_unique()
     walked = {callee for callee, _ in rows} | {ROOT_EMITTER}
     for emitter, keys in PINNED_KEYS.items():
         if emitter not in walked:

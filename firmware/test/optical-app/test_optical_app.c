@@ -119,6 +119,7 @@ typedef struct {
 	AiusOpticalAppOtaResult ota_enable_activation_result;
 	AiusOpticalAppOtaResult ota_self_test_result;
 	AiusOpticalAppOtaResult ota_rehearse_result;
+	AiusOpticalAppOtaResult ota_boot_other_result;
 	bool last_ota_rehearse_injected;
 	uint32_t ota_next_offset;
 	uint32_t last_ota_offset;
@@ -513,6 +514,13 @@ static AiusOpticalAppOtaResult fake_ota_rehearse(void *context,
 	return fake->ota_rehearse_result;
 }
 
+static AiusOpticalAppOtaResult fake_ota_boot_other(void *context)
+{
+	Fake *fake = (Fake *)context;
+	record(fake, "ota_boot_other");
+	return fake->ota_boot_other_result;
+}
+
 static AiusOpticalAppOta fake_ota(Fake *fake)
 {
 	AiusOpticalAppOta ota;
@@ -529,6 +537,7 @@ static AiusOpticalAppOta fake_ota(Fake *fake)
 	ota.enable_activation = fake_ota_enable_activation;
 	ota.self_test_flash = fake_ota_self_test_flash;
 	ota.rehearse = fake_ota_rehearse;
+	ota.boot_other = fake_ota_boot_other;
 	return ota;
 }
 
@@ -640,6 +649,7 @@ static void fixture_init(Fixture *fixture)
 	fixture->fake.ota_enable_activation_result = AIUS_OPTICAL_APP_OTA_OK;
 	fixture->fake.ota_self_test_result = AIUS_OPTICAL_APP_OTA_OK;
 	fixture->fake.ota_rehearse_result = AIUS_OPTICAL_APP_OTA_OK;
+	fixture->fake.ota_boot_other_result = AIUS_OPTICAL_APP_OTA_OK;
 	fixture_init_ota_document(&fixture->fake);
 	app = fake_app(&fixture->fake);
 	assert(aius_optical_app_init(&fixture->dispatcher, &app, fixture->body,
@@ -2482,6 +2492,8 @@ static void test_recorder_lease_double_acquire_releases(void)
 
 #define OTA_AUTH "X-Aius-SD-Auth: token\r\n"
 #define OTA_ABSENT_BODY "{\"ok\":false,\"error\":\"ota_absent\"}"
+#define BOOT_OTHER_ACCEPTED \
+	"{\"ok\":true,\"rebooting\":true,\"boot_other\":true}"
 #define OTA_CHUNK_BODY "{\"ok\":false,\"error\":\"ota_chunk\"}"
 
 /* The carrier line, and why an OTA request needs one.
@@ -2545,7 +2557,8 @@ static const AiusOpticalAppOtaRoute kOtaRoutes[] = {
 	AIUS_OPTICAL_APP_OTA_ROUTE_ENABLE_ACTIVATION,
 	AIUS_OPTICAL_APP_OTA_ROUTE_SELF_TEST,
 	AIUS_OPTICAL_APP_OTA_ROUTE_REHEARSE,
-	AIUS_OPTICAL_APP_OTA_ROUTE_REHEARSE_FAULT, AIUS_OPTICAL_APP_OTA_ROUTE_NONE
+	AIUS_OPTICAL_APP_OTA_ROUTE_REHEARSE_FAULT,
+	AIUS_OPTICAL_APP_OTA_ROUTE_BOOT_OTHER, AIUS_OPTICAL_APP_OTA_ROUTE_NONE
 };
 
 /* OTA is a compile-time option that defaults OFF, so "this build has no OTA" is
@@ -2603,7 +2616,7 @@ static void test_ota_table_registration(void)
 	fixture_init(&fixture);
 	ota = fake_ota(&fixture.fake);
 
-	for (size_t i = 0; i < 11u; ++i) {
+	for (size_t i = 0; i < 12u; ++i) {
 		AiusOpticalAppOta holed = fake_ota(&fixture.fake);
 		void **slots[] = {
 			(void **)&holed.present, (void **)&holed.status,
@@ -2611,9 +2624,10 @@ static void test_ota_table_registration(void)
 			(void **)&holed.arm,
 			(void **)&holed.verify, (void **)&holed.abort,
 			(void **)&holed.activate, (void **)&holed.enable_activation,
-			(void **)&holed.self_test_flash, (void **)&holed.rehearse
+			(void **)&holed.self_test_flash, (void **)&holed.rehearse,
+			(void **)&holed.boot_other
 		};
-		assert(ARRAY_LENGTH(slots) == 11u);
+		assert(ARRAY_LENGTH(slots) == 12u);
 		*slots[i] = NULL;
 		assert(!aius_optical_app_set_ota(&fixture.dispatcher, &holed));
 		/* Refused AND left absent -- fail-closed, not half-wired. */
@@ -2659,7 +2673,8 @@ static void test_ota_routes_are_authenticated(void)
 		AIUS_OPTICAL_APP_OTA_ROUTE_ENABLE_ACTIVATION,
 		AIUS_OPTICAL_APP_OTA_ROUTE_SELF_TEST,
 		AIUS_OPTICAL_APP_OTA_ROUTE_REHEARSE,
-		AIUS_OPTICAL_APP_OTA_ROUTE_REHEARSE_FAULT
+		AIUS_OPTICAL_APP_OTA_ROUTE_REHEARSE_FAULT,
+		AIUS_OPTICAL_APP_OTA_ROUTE_BOOT_OTHER
 	};
 	static const char *const refused_calls[] = {
 		"ota_present", "auth_matches"
@@ -3360,7 +3375,7 @@ static void test_route_coverage(void)
 		  "X-Aius-SD-Auth: token\r\n", NULL, -1 },
 		{ "GET /api/status/brief", NULL, NULL, -1 }
 	};
-	bool seen[AIUS_HTTP_ROUTE_STATUS_BRIEF + 1u];
+	bool seen[AIUS_HTTP_ROUTE_OTA_BOOT_OTHER + 1u];
 	memset(seen, 0, sizeof(seen));
 	fixture_init(&fixture);
 
@@ -3372,7 +3387,7 @@ static void test_route_coverage(void)
 		assert(response->status >= 200u && response->status < 600u);
 		assert(response->content_type != NULL);
 		assert(response->body_length == 0u || response->body != NULL);
-		assert(fixture.request.route <= AIUS_HTTP_ROUTE_STATUS_BRIEF);
+		assert(fixture.request.route <= AIUS_HTTP_ROUTE_OTA_BOOT_OTHER);
 		seen[fixture.request.route] = true;
 	}
 	/* Phase 4f: the brief route is dispatched (404 without the optional
@@ -4969,6 +4984,16 @@ static void test_sd_overlay_reads_and_drain(void)
 	expect_immediate(dispatch_ota(&fixture, AIUS_OPTICAL_APP_OTA_ROUTE_REHEARSE,
 	                              OTA_AUTH, NULL, -1),
 	                 409, "{\"ok\":false,\"error\":\"sd_flush_pending\"}");
+	/* Phase 4y: boot-other is a reboot, under the same gate, and the
+	 * callback is never asked. */
+	expect_immediate(dispatch_ota(&fixture,
+	                              AIUS_OPTICAL_APP_OTA_ROUTE_BOOT_OTHER,
+	                              OTA_AUTH, NULL, -1),
+	                 409, "{\"ok\":false,\"error\":\"sd_flush_pending\"}");
+	{
+		static const char *const gated[] = { "ota_present", "auth_matches" };
+		expect_log(&fixture, gated, ARRAY_LENGTH(gated));
+	}
 	expect_immediate(dispatch_ota(&fixture, AIUS_OPTICAL_APP_OTA_ROUTE_ACTIVATE,
 	                              NULL, NULL, -1),
 	                 401, "{\"ok\":false,\"error\":\"sd_auth\"}");
@@ -4979,6 +5004,10 @@ static void test_sd_overlay_reads_and_drain(void)
 	expect_immediate(dispatch_ota(&fixture, AIUS_OPTICAL_APP_OTA_ROUTE_ACTIVATE,
 	                              OTA_AUTH, NULL, -1),
 	                 200, "{\"ok\":true,\"activating\":true}");
+	expect_immediate(dispatch_ota(&fixture,
+	                              AIUS_OPTICAL_APP_OTA_ROUTE_BOOT_OTHER,
+	                              OTA_AUTH, NULL, -1),
+	                 200, BOOT_OTHER_ACCEPTED);
 }
 
 /* Phase 4h H10: the settings mount policy against fake parsers and a fake
@@ -6663,8 +6692,351 @@ static void test_sd_flush_pass_notes_on_fault(void)
 	assert(g_ff.pass_count == 1u);
 }
 
+/* ------------------------------------------------------------------ */
+/* Phase 4y: boot the other slot                                       */
+/* ------------------------------------------------------------------ */
+
+/* The dispatcher half: auth (test_ota_routes_are_authenticated) and the
+ * FR-S8 gate (test_sd_overlay_reads_and_drain) are pinned elsewhere; here the
+ * accepted body, that dispatch reaches the one flag-setting callback and
+ * nothing else, and every refusal through the verdict map. */
+static void test_boot_other_dispatch(void)
+{
+	Fixture fixture;
+	static const char *const calls[] = {
+		"ota_present", "auth_matches", "ota_boot_other"
+	};
+	static const struct {
+		AiusOpticalAppOtaResult result;
+		unsigned status;
+		const char *body;
+	} refusals[] = {
+		{ AIUS_OPTICAL_APP_OTA_UNSUPPORTED, 400u,
+		  "{\"ok\":false,\"error\":\"ota_unsupported\"}" },
+		{ AIUS_OPTICAL_APP_OTA_STATE_REFUSED, 409u,
+		  "{\"ok\":false,\"error\":\"ota_state\"}" },
+		{ AIUS_OPTICAL_APP_OTA_IVT, 409u,
+		  "{\"ok\":false,\"error\":\"ota_ivt\"}" },
+	};
+	fixture_init(&fixture);
+
+	expect_immediate(dispatch_ota(&fixture,
+	                              AIUS_OPTICAL_APP_OTA_ROUTE_BOOT_OTHER,
+	                              OTA_AUTH, NULL, -1),
+	                 200, BOOT_OTHER_ACCEPTED);
+	expect_log(&fixture, calls, ARRAY_LENGTH(calls));
+	assert(fixture.fake.reboots == 0u); /* not the plain reboot callback */
+	for (size_t i = 0; i < ARRAY_LENGTH(refusals); ++i) {
+		fixture.fake.ota_boot_other_result = refusals[i].result;
+		expect_immediate(dispatch_ota(&fixture,
+		                              AIUS_OPTICAL_APP_OTA_ROUTE_BOOT_OTHER,
+		                              OTA_AUTH, NULL, -1),
+		                 refusals[i].status, refusals[i].body);
+		expect_log(&fixture, calls, ARRAY_LENGTH(calls));
+	}
+}
+
+/* The composition's IVT read, counted: running slot B must never call it. */
+static unsigned g_ivt_reads;
+static bool g_ivt_sane;
+
+static bool fake_other_ivt_sane(void *context)
+{
+	(void)context;
+	g_ivt_reads++;
+	return g_ivt_sane;
+}
+
+/* A healthy board on the slot-agnostic chooser, running slot A. */
+static AiusOpticalBootOther boot_other_ok(void)
+{
+	AiusOpticalBootOther state;
+	memset(&state, 0, sizeof(state));
+	state.ab_built = true;
+	state.ab_enabled = true;
+	state.record_valid = true;
+	state.active_slot = AIUS_OPTICAL_AB_SLOT_A;
+	state.pending_slot = AIUS_OPTICAL_AB_SLOT_NONE;
+	state.running_slot = AIUS_OPTICAL_AB_SLOT_A;
+	state.booted_slot = AIUS_OPTICAL_AB_SLOT_A;
+	state.ota_state = AIUS_OPTICAL_APP_OTA_STATE_IDLE;
+	return state;
+}
+
+static void test_boot_other_admission(void)
+{
+	AiusOpticalBootOther state;
+
+	/* Success, running A: slot B's IVT is read exactly once. */
+	g_ivt_reads = 0u;
+	g_ivt_sane = true;
+	state = boot_other_ok();
+	assert(aius_optical_boot_other_check(&state, fake_other_ivt_sane, NULL) ==
+	       AIUS_OPTICAL_APP_OTA_OK);
+	assert(g_ivt_reads == 1u);
+	g_ivt_sane = false;
+	assert(aius_optical_boot_other_check(&state, fake_other_ivt_sane, NULL) ==
+	       AIUS_OPTICAL_APP_OTA_IVT);
+
+	/* Running B: no check at all, even with an insane answer waiting. */
+	g_ivt_reads = 0u;
+	state.active_slot = AIUS_OPTICAL_AB_SLOT_B;
+	state.running_slot = AIUS_OPTICAL_AB_SLOT_B;
+	state.booted_slot = AIUS_OPTICAL_AB_SLOT_B;
+	assert(aius_optical_boot_other_check(&state, fake_other_ivt_sane, NULL) ==
+	       AIUS_OPTICAL_APP_OTA_OK);
+	assert(g_ivt_reads == 0u);
+	g_ivt_sane = true;
+
+	/* The single-image build, and A/B whose ledger contract failed. */
+	state = boot_other_ok();
+	state.ab_built = false;
+	assert(aius_optical_boot_other_check(&state, NULL, NULL) ==
+	       AIUS_OPTICAL_APP_OTA_UNSUPPORTED);
+	state = boot_other_ok();
+	state.ab_enabled = false;
+	assert(aius_optical_boot_other_check(&state, fake_other_ivt_sane, NULL) ==
+	       AIUS_OPTICAL_APP_OTA_UNSUPPORTED);
+	assert(aius_optical_boot_other_check(NULL, fake_other_ivt_sane, NULL) ==
+	       AIUS_OPTICAL_APP_OTA_UNSUPPORTED);
+
+	/* Each record / ledger predicate refuses on its own. */
+	g_ivt_reads = 0u;
+	state = boot_other_ok();
+	state.record_valid = false;
+	assert(aius_optical_boot_other_check(&state, fake_other_ivt_sane, NULL) ==
+	       AIUS_OPTICAL_APP_OTA_STATE_REFUSED);
+	state = boot_other_ok();
+	state.pending_slot = AIUS_OPTICAL_AB_SLOT_A; /* a trial still open */
+	assert(aius_optical_boot_other_check(&state, fake_other_ivt_sane, NULL) ==
+	       AIUS_OPTICAL_APP_OTA_STATE_REFUSED);
+	state = boot_other_ok();
+	state.active_slot = AIUS_OPTICAL_AB_SLOT_B; /* active is not running */
+	assert(aius_optical_boot_other_check(&state, fake_other_ivt_sane, NULL) ==
+	       AIUS_OPTICAL_APP_OTA_STATE_REFUSED);
+	state = boot_other_ok();
+	state.booted_slot = AIUS_OPTICAL_AB_SLOT_NONE; /* old chooser's ledger */
+	assert(aius_optical_boot_other_check(&state, fake_other_ivt_sane, NULL) ==
+	       AIUS_OPTICAL_APP_OTA_STATE_REFUSED);
+
+	/* Every pending deferred act refuses it. */
+	state = boot_other_ok();
+	state.pending.reboot = true;
+	assert(aius_optical_boot_other_check(&state, fake_other_ivt_sane, NULL) ==
+	       AIUS_OPTICAL_APP_OTA_STATE_REFUSED);
+	state = boot_other_ok();
+	state.pending.activation = true;
+	assert(aius_optical_boot_other_check(&state, fake_other_ivt_sane, NULL) ==
+	       AIUS_OPTICAL_APP_OTA_STATE_REFUSED);
+	state = boot_other_ok();
+	state.pending.rehearsal = true;
+	assert(aius_optical_boot_other_check(&state, fake_other_ivt_sane, NULL) ==
+	       AIUS_OPTICAL_APP_OTA_STATE_REFUSED);
+	state = boot_other_ok();
+	state.pending.boot_other = true;
+	assert(aius_optical_boot_other_check(&state, fake_other_ivt_sane, NULL) ==
+	       AIUS_OPTICAL_APP_OTA_STATE_REFUSED);
+
+	/* An OTA session OFFERED through ACTIVATION_REQUESTED refuses; IDLE
+	 * and FAILED do not. */
+	for (unsigned s = AIUS_OPTICAL_APP_OTA_STATE_IDLE;
+	     s <= AIUS_OPTICAL_APP_OTA_STATE_FAILED; ++s) {
+		const bool busy = s >= AIUS_OPTICAL_APP_OTA_STATE_OFFERED &&
+		                  s <= AIUS_OPTICAL_APP_OTA_STATE_ACTIVATION_REQUESTED;
+		state = boot_other_ok();
+		state.ota_state = (AiusOpticalAppOtaState)s;
+		assert(aius_optical_boot_other_check(&state, fake_other_ivt_sane,
+		                                     NULL) ==
+		       (busy ? AIUS_OPTICAL_APP_OTA_STATE_REFUSED
+		             : AIUS_OPTICAL_APP_OTA_OK));
+	}
+	/* No refusal above reached the IVT read except the two successes. */
+	assert(g_ivt_reads == 2u);
+}
+
+/* The exclusion in both directions. */
+static void test_boot_other_exclusion(void)
+{
+	AiusOpticalPendingActs pending;
+
+	memset(&pending, 0, sizeof(pending));
+	assert(!aius_optical_flash_act_excluded(AIUS_OPTICAL_ACT_ACTIVATE,
+	                                        &pending));
+	assert(!aius_optical_flash_act_excluded(AIUS_OPTICAL_ACT_REHEARSE,
+	                                        &pending));
+	assert(!aius_optical_flash_act_excluded(AIUS_OPTICAL_ACT_SELF_TEST,
+	                                        &pending));
+	assert(!aius_optical_flash_act_excluded(AIUS_OPTICAL_ACT_BOOT_OTHER,
+	                                        &pending));
+
+	/* A pending switch refuses activate, rehearse and self-test. */
+	pending.boot_other = true;
+	assert(aius_optical_flash_act_excluded(AIUS_OPTICAL_ACT_ACTIVATE,
+	                                       &pending));
+	assert(aius_optical_flash_act_excluded(AIUS_OPTICAL_ACT_REHEARSE,
+	                                       &pending));
+	assert(aius_optical_flash_act_excluded(AIUS_OPTICAL_ACT_SELF_TEST,
+	                                       &pending));
+	assert(aius_optical_flash_act_excluded(AIUS_OPTICAL_ACT_BOOT_OTHER,
+	                                       &pending));
+
+	/* A pending activation or rehearsal refuses the switch (and rehearse
+	 * keeps its own two flags); a plain reboot refuses only the switch. */
+	memset(&pending, 0, sizeof(pending));
+	pending.activation = true;
+	assert(aius_optical_flash_act_excluded(AIUS_OPTICAL_ACT_BOOT_OTHER,
+	                                       &pending));
+	assert(aius_optical_flash_act_excluded(AIUS_OPTICAL_ACT_REHEARSE,
+	                                       &pending));
+	memset(&pending, 0, sizeof(pending));
+	pending.rehearsal = true;
+	assert(aius_optical_flash_act_excluded(AIUS_OPTICAL_ACT_BOOT_OTHER,
+	                                       &pending));
+	assert(aius_optical_flash_act_excluded(AIUS_OPTICAL_ACT_REHEARSE,
+	                                       &pending));
+	memset(&pending, 0, sizeof(pending));
+	pending.reboot = true;
+	assert(aius_optical_flash_act_excluded(AIUS_OPTICAL_ACT_BOOT_OTHER,
+	                                       &pending));
+	assert(!aius_optical_flash_act_excluded(AIUS_OPTICAL_ACT_ACTIVATE,
+	                                        &pending));
+	assert(!aius_optical_flash_act_excluded(AIUS_OPTICAL_ACT_REHEARSE,
+	                                        &pending));
+	assert(!aius_optical_flash_act_excluded(AIUS_OPTICAL_ACT_SELF_TEST,
+	                                        &pending));
+	assert(aius_optical_flash_act_excluded(AIUS_OPTICAL_ACT_BOOT_OTHER,
+	                                       NULL));
+}
+
+/* The deferred reboot service's record write, recorded. */
+static struct {
+	char order[8];
+	unsigned count;
+	bool write_ok;
+	bool frozen_at_write;
+} g_reboot_acts;
+
+static bool fake_switch_write(void *context)
+{
+	AiusOpticalSdFlush *flush = (AiusOpticalSdFlush *)context;
+	g_reboot_acts.order[g_reboot_acts.count++] = 'w';
+	g_reboot_acts.frozen_at_write = flush->frozen;
+	return g_reboot_acts.write_ok;
+}
+
+/* One drained epoch of service_reboot_request (optical_main.cpp), composed
+ * exactly as the firmware composes it: the SD gate (reset past the freeze
+ * ceiling), WAIT returning early, then aius_optical_reboot_finish over gate
+ * RUN && the final drain query. RESET stands for tx_gate_actuate(false) +
+ * reset_application(). */
+#define REBOOT_EPOCH_WAIT (-1)
+
+static int reboot_epoch(AiusOpticalSdFlush *flush,
+                        const AiusOpticalRebootActs *acts, bool *reboot,
+                        bool *switch_requested, uint32_t now_ms)
+{
+	const AiusOpticalSdService gate = aius_optical_sd_service_gate(
+		flush, &g_ff_ops, reboot, now_ms, true);
+	if (gate == AIUS_OPTICAL_SD_SERVICE_WAIT)
+		return REBOOT_EPOCH_WAIT;
+	return (int)aius_optical_reboot_finish(
+		flush, &g_ff_ops, acts, reboot, switch_requested,
+		gate == AIUS_OPTICAL_SD_SERVICE_RUN &&
+			aius_optical_sd_service_final(flush, &g_ff_ops, reboot));
+}
+
+static void test_boot_other_reboot_service(void)
+{
+	AiusOpticalSdFlush flush;
+	AiusOpticalRebootActs acts;
+	bool reboot;
+	bool switch_requested;
+
+	acts.context = &flush;
+	acts.switch_write = fake_switch_write;
+
+	/* A switch: the record write runs after the SD final passed (the
+	 * freeze is held), and RESET -- the caller's cue for tx_gate_actuate
+	 * (false) + reset_application() -- comes only after it landed. */
+	ff_reset(&flush);
+	memset(&g_reboot_acts, 0, sizeof(g_reboot_acts));
+	g_reboot_acts.write_ok = true;
+	reboot = switch_requested = true;
+	assert(reboot_epoch(&flush, &acts, &reboot, &switch_requested,0u) ==
+	       AIUS_OPTICAL_REBOOT_RESET);
+	assert(g_reboot_acts.count == 1u && g_reboot_acts.order[0] == 'w');
+	assert(g_reboot_acts.frozen_at_write);
+
+	/* A plain reboot never writes the record. */
+	ff_reset(&flush);
+	memset(&g_reboot_acts, 0, sizeof(g_reboot_acts));
+	reboot = true;
+	switch_requested = false;
+	assert(reboot_epoch(&flush, &acts, &reboot, &switch_requested,0u) ==
+	       AIUS_OPTICAL_REBOOT_RESET);
+	assert(g_reboot_acts.count == 0u);
+
+	/* The freeze wait: nothing written, nothing cleared. */
+	ff_reset(&flush);
+	memset(&g_reboot_acts, 0, sizeof(g_reboot_acts));
+	g_ff.settled = false;
+	reboot = switch_requested = true;
+	assert(reboot_epoch(&flush, &acts, &reboot, &switch_requested,0u) ==
+	       REBOOT_EPOCH_WAIT);
+	assert(g_reboot_acts.count == 0u && reboot && switch_requested);
+
+	/* Non-reset exit 1, the SD gate abandons (unflushed write): the record
+	 * is untouched and BOTH flags clear, so the exclusion cannot latch. */
+	ff_reset(&flush);
+	memset(&g_reboot_acts, 0, sizeof(g_reboot_acts));
+	g_ff.drained = false;
+	reboot = switch_requested = true;
+	assert(reboot_epoch(&flush, &acts, &reboot, &switch_requested,0u) ==
+	       AIUS_OPTICAL_REBOOT_ABANDONED);
+	assert(g_reboot_acts.count == 0u);
+	assert(!reboot && !switch_requested && !flush.frozen);
+
+	/* The same through the final drain query (a PUT accepted mid-wait). */
+	ff_reset(&flush);
+	memset(&g_reboot_acts, 0, sizeof(g_reboot_acts));
+	g_ff.settled = false;
+	reboot = switch_requested = true;
+	assert(reboot_epoch(&flush, &acts, &reboot, &switch_requested,0u) ==
+	       REBOOT_EPOCH_WAIT);
+	g_ff.settled = true;
+	g_ff.drained = false;
+	assert(reboot_epoch(&flush, &acts, &reboot, &switch_requested,1u) ==
+	       AIUS_OPTICAL_REBOOT_ABANDONED);
+	assert(g_reboot_acts.count == 0u);
+	assert(!reboot && !switch_requested && !flush.frozen);
+
+	/* Non-reset exit 2, the record write fails: no reset, unfrozen, both
+	 * flags cleared; the caller surfaces the fault. */
+	ff_reset(&flush);
+	memset(&g_reboot_acts, 0, sizeof(g_reboot_acts));
+	g_reboot_acts.write_ok = false;
+	reboot = switch_requested = true;
+	assert(reboot_epoch(&flush, &acts, &reboot, &switch_requested,0u) ==
+	       AIUS_OPTICAL_REBOOT_SWITCH_FAILED);
+	assert(g_reboot_acts.count == 1u && g_reboot_acts.order[0] == 'w');
+	assert(!reboot && !switch_requested && !flush.frozen);
+	/* Cleared, so a later activate is admitted again. */
+	{
+		AiusOpticalPendingActs pending;
+		memset(&pending, 0, sizeof(pending));
+		pending.reboot = reboot;
+		pending.boot_other = switch_requested;
+		assert(!aius_optical_flash_act_excluded(AIUS_OPTICAL_ACT_ACTIVATE,
+		                                        &pending));
+	}
+}
+
 int main(void)
 {
+	RUN_TEST(test_boot_other_dispatch);
+	RUN_TEST(test_boot_other_admission);
+	RUN_TEST(test_boot_other_exclusion);
+	RUN_TEST(test_boot_other_reboot_service);
 	RUN_TEST(test_sd_flush_pass_notes_on_fault);
 	RUN_TEST(test_sd_flush_long_lapse);
 	RUN_TEST(test_sd_card_loss_call_sites);

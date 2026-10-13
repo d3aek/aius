@@ -36,7 +36,8 @@ handover.
   run: Phase 4 (gate 7 at fill-write cadence on the U24 bench), 4e, 4f,
   4g, 4h, 4j, 4k, 4l, 4m. **4u, 4v, 4w, 4x** (SD page layout) built,
   awaiting one card sync and the owner's phone and desktop check.
-  **4y** (slot card and boot-other) in prebuild review. 4b (acceptance umbrella) closes after 4e to 4h's device
+  **4y** (slot card and boot-other) built, delivery audit PASS, needs the
+  owner's OTA. 4b (acceptance umbrella) closes after 4e to 4h's device
   runs and no longer gates 4i (owner, 2026-10-12).
 - **Board.** Runs `57977135e472` in slot 2 (second OTA 2026-10-12,
   source off: 4q to 4t; self-committed, `ab.active_slot` 2,
@@ -64,8 +65,11 @@ handover.
   4i's post-removal check. A bench run is a last resort, batched, never
   mixed with listening (aius CLAUDE.md).
 - **Next action: one full card sync for 4u to 4x, then the owner's
-  phone and desktop check of the three pages.** Then 4y's build after
-  its prebuild review is READY. Card writes (sync, `delete-www`, `--delete`) are refused
+  phone and desktop check of the three pages.** Then 4y's OTA (owner's
+  word): rebuild from the committed tree, sign without `--slot`,
+  activate; then the device proof in 4y's contract, including one
+  `/api/reboot` after the self-commit. The card sync must include 4y's
+  `upgrade.html` and `upgrade.js`. Card writes (sync, `delete-www`, `--delete`) are refused
   by the auto-mode classifier ("Remote Shell Writes", even with the
   owner's authorization); they run when the owner switches the session
   to manual approval, or by the owner with `!`.
@@ -8115,6 +8119,46 @@ depends-on: none # web files disjoint from 4x (upgrade.* only)
   - N4: the slots card shows the running revision in the 12-hex form
     (`build_revision` reads `<rev>+aius-ab`), so both slots compare at a
     glance.
+- **Built 2026-10-13 (host proof green; device proof at the owner's
+  OTA).**
+  - `aius_ab` packs 6 bytes per slot into bytes 16-27, version 1 and
+    decode unchanged. Its plan helpers (`aius_ab_plan_healthy`,
+    `_pending`, `_clear_other`, `_switch`) are under
+    `__STDC_HOSTED__`, so the chooser compiles none. The rebuilt
+    `chooser.hex` is byte-identical (sha256 `4ccd4f7a…527f2`).
+  - `POST /api/ota/boot-other` sets a flag only. The deferred reboot
+    service writes pending through `aius_optical_reboot_finish`, and
+    `aius_optical_flash_act_excluded` holds the two-way exclusion.
+  - Refusals: 400 `ota_unsupported` on the single-image build, 409
+    `ota_state` or `ota_ivt` on a predicate, `sd_flush_pending` first.
+  - `ab.revisions` is in `/api/status` and `openapi.json`; status body
+    headroom 473 B. The status-body-bound `PINNED_KEYS` duplicate is
+    merged, with an AST guard against a repeat.
+  - The upgrade page has a slots card and the confirm.
+  - Memory: per-slot revisions are read on demand from the memory-mapped
+    winning record sector, with no RAM copy. The flags sit beside
+    `g_reboot_requested`, reached through FLASHMEM accessors. A first cut
+    put slot-A 32 B over the DTCM ceiling.
+  - Deviation: `ab_activation_mark_pending` is `noinline`. Inlined into
+    the FASTRUN finalizer, it cost two ITCM veneers and put slot-A 16 B
+    under the ITCM floor. It still runs after the dark window, from
+    flash.
+  - Images: OCRAM 264,768 / 264,768 / 264,736 / 264,736 B (floors).
+    Slot-A ITCM free 13,348 (floor 13,284); `_ebss` exactly at its
+    ceiling; `_VectorsRam` unchanged. Every post-link guard passes.
+  - Suites: ab, http, optical-app, status-body-bound, optical-cutover,
+    registry, stack-bound, memory, itcm-placement, producer-isolation
+    green; sd-editor 426.
+  - Delivery audit PASS (same reviewer as the prebuild rounds), with S1:
+    aius `CLAUDE.md`'s rehearsal line, reworded by `the release-promotion step`.
+- **Accepted (delivery audit nits).**
+  - N1: after a failed pre-dark clear, re-activating the same container
+    is refused (INTERRUPTED) until a reboot. Reboot to retry.
+  - N2: a stale other-slot trial survives a rehearsal when that slot's
+    revision is already unknown. It predates 4y and needs a failed
+    rollback write first.
+  - N3: the activation and rehearsal clear wiring is code-read; the pure
+    plans are tested (`firmware/test/ab/test_ab.c:685-750`).
 - **Accepted (review round 2):** a refusal before the dark window, after
   the clear, leaves an intact slot showing "unknown"; that is the safe
   direction.

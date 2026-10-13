@@ -4,7 +4,8 @@
  * signed container's 256-byte header, the resumable chunked PUT of that
  * container, the verify / arm / abort verbs, the step log that narrates them,
  * the 1 Hz /api/ota poll, the TEST KEY banner and the OTA-absent inactive
- * state.
+ * state; and (Phase 4y) the A/B slots card read from /api/status `ab` with
+ * its confirmed POST /api/ota/boot-other switch.
  *
  * DOES NOT OWN: the shared chrome behaviours -- pills, the never-throw fetch
  * discipline, the formatters and SD-auth token storage are
@@ -189,6 +190,7 @@
     deviceTargetId: '', /* the board identity, from /api/status */
     running: false, /* an upgrade run owns the controls */
     steps: new Map(), /* step key -> the <li> that narrates it */
+    slots: null, /* slotFacts() of the last /api/status, or null */
   };
 
   /* ---- per-card status and error lines ------------------------------------
@@ -1063,12 +1065,137 @@
    * UNSUPPORTED itself, so the page says so rather than blocking. */
   async function refreshIdentity() {
     const result = await request('/api/status', { headers: { Accept: 'application/json' } });
-    if (!result.ok || !result.body) return;
+    if (!result.ok || !result.body) {
+      renderSlotsUnreachable();
+      return;
+    }
     const target = result.body.target_id;
     if (typeof target === 'string' && target !== '') {
       state.deviceTargetId = target;
       $('ota-target').textContent = target;
     }
+    renderSlots(result.body);
+  }
+
+  /* ---- the A/B slots (Phase 4y) ---------------------------------------------
+   * /api/status `ab`: `slot` is the running PHYSICAL slot (1 = A, 2 = B) and
+   * `revisions` the boot record's per-slot 12-hex revision keyed "1" / "2",
+   * null when unknown. The running revision prints in that same form: the
+   * status build_revision reads `<rev>+<env>`, so its part before '+' (review
+   * N4), and the two slots compare at a glance. The device is the authority
+   * on the switch; the page mirrors only the refusals the status already
+   * proves, so the button never offers what the device will refuse. */
+  const SLOT_LETTERS = Object.freeze({ 1: 'A', 2: 'B' });
+  const REVISION_PATTERN = /^[0-9a-f]{12}$/;
+
+  const slotRevision = (value) => (typeof value === 'string' && REVISION_PATTERN.test(value) ? value : '');
+
+  /**
+   * The slots card's facts from one /api/status body.
+   *
+   * @param {object} status the /api/status body
+   * @returns {{ab: boolean, running: number, other: number, runningRevision: string,
+   *   otherRevision: string, blocked: string}} blocked is '' when the switch is offered
+   */
+  function slotFacts(status) {
+    const ab = status && typeof status.ab === 'object' ? status.ab : null;
+    if (!ab || !SLOT_LETTERS[ab.slot]) {
+      return { ab: false, running: 0, other: 0, runningRevision: '', otherRevision: '', blocked: 'this build has no A/B slots' };
+    }
+    const running = ab.slot;
+    const other = running === 1 ? 2 : 1;
+    const revisions = ab.revisions && typeof ab.revisions === 'object' ? ab.revisions : {};
+    const fromBuild = String(status.build_revision || '').split('+')[0];
+    const runningRevision = slotRevision(fromBuild) || slotRevision(revisions[String(running)]);
+    const otherRevision = slotRevision(revisions[String(other)]);
+    let blocked = '';
+    if (ab.record_valid !== true) blocked = 'no boot record yet; the first healthy boot writes it';
+    else if (ab.pending_slot !== 0) blocked = 'a trial boot is still open; wait for it to commit';
+    else if (ab.active_slot !== running) blocked = 'the boot record does not name the running slot';
+    else if (ab.booted_slot === 0) blocked = 'the chooser on this board predates slot switching';
+    return { ab: true, running, other, runningRevision, otherRevision, blocked };
+  }
+
+  function renderSlots(status) {
+    const facts = slotFacts(status);
+    state.slots = facts;
+    if (!facts.ab) {
+      $('slot-running').textContent = 'single image';
+      $('slot-running-revision').textContent = '--';
+      $('slot-other').textContent = '--';
+      $('slot-other-revision').textContent = '--';
+      setPill($('slots-pill'), 'no A/B');
+    } else {
+      $('slot-running').textContent = `slot ${SLOT_LETTERS[facts.running]}`;
+      $('slot-running-revision').textContent = facts.runningRevision || 'unknown';
+      $('slot-other').textContent = `slot ${SLOT_LETTERS[facts.other]}`;
+      $('slot-other-revision').textContent = facts.otherRevision || 'unknown';
+      setPill($('slots-pill'), `slot ${SLOT_LETTERS[facts.running]}`);
+    }
+    $('boot-other').disabled = facts.blocked !== '';
+    setCardStatus(
+      'slots',
+      facts.blocked !== ''
+        ? `Switching is unavailable: ${facts.blocked}.`
+        : `Boot slot ${SLOT_LETTERS[facts.other]} on request; it trial-boots and falls back to slot ${SLOT_LETTERS[facts.running]} on its own if it never comes up healthy.`,
+    );
+  }
+
+  function renderSlotsUnreachable() {
+    state.slots = null;
+    $('boot-other').disabled = true;
+    setPill($('slots-pill'), 'unreachable');
+    setCardStatus('slots', 'Could not read /api/status; the slot state is unknown.');
+  }
+
+  /**
+   * The switch's confirm text: the target slot and revision, the no-way-back
+   * warning, and, running slot B, that slot A's boot header goes unchecked.
+   *
+   * @param {{running: number, other: number, otherRevision: string}} facts
+   * @returns {string}
+   */
+  function bootOtherConfirmText(facts) {
+    const target = SLOT_LETTERS[facts.other];
+    const lines = [
+      `Boot slot ${target} (revision ${facts.otherRevision || 'unknown'})?`,
+      `The board reboots now and trial-boots slot ${target}; if it never comes up healthy it falls back to slot ${SLOT_LETTERS[facts.running]} on its own.`,
+      'An image without this feature has no way back except an OTA.',
+    ];
+    if (facts.running === 2) {
+      lines.push(`Slot ${target}'s boot header is not checked first while running slot B; the chooser falls back if it is bad.`);
+    }
+    return lines.join('\n\n');
+  }
+
+  function describeBootOtherFailure(result) {
+    const token = faultName(result.body && result.body.error ? result.body.error : '');
+    if (token === 'unsupported') return 'this build or board has no A/B slots';
+    if (token === 'state') {
+      return 'the device refused: a trial is open, the boot record does not name this slot, another reboot or flash act is pending, or an upgrade is staged (abort it first)';
+    }
+    if (token === 'ivt') return "the other slot's boot header is not a bootable image; nothing was changed";
+    if (token === 'sd_flush_pending') return 'a settings write has not reached the card yet; retry in a moment';
+    return describeOtaFailure(result);
+  }
+
+  async function bootOtherSlot() {
+    clearCardError('slots');
+    const facts = state.slots;
+    if (!facts || facts.blocked !== '') return;
+    if (!window.confirm(bootOtherConfirmText(facts))) {
+      setCardStatus('slots', 'Switch cancelled; nothing was changed.');
+      return;
+    }
+    if (tokenMissing('slots', 'boot the other slot')) return;
+    const result = await request('/api/ota/boot-other', { method: 'POST', headers: mutationHeaders({}) });
+    if (!result.ok) {
+      showCardError('slots', `The device refused the switch -- ${describeBootOtherFailure(result)}.`);
+      return;
+    }
+    $('boot-other').disabled = true;
+    setPill($('slots-pill'), 'rebooting');
+    setCardStatus('slots', `Rebooting into slot ${SLOT_LETTERS[facts.other]}; reload this page once the board answers again.`);
   }
 
   /* ---- boot ---------------------------------------------------------------- */
@@ -1076,6 +1203,7 @@
   $('image-file').addEventListener('change', () => void guard(selectContainer, cardSink('image')));
   $('start').addEventListener('click', () => void guard(runUpgrade, cardSink('log')));
   $('abort').addEventListener('click', () => void guard(abortUpgrade, cardSink('log')));
+  $('boot-other').addEventListener('click', () => void guard(bootOtherSlot, cardSink('slots')));
   $('token').value = readStoredToken();
   $('token').addEventListener('input', () => storeToken(authToken()));
 

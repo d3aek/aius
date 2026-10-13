@@ -49,6 +49,8 @@ static FLASHMEM bool sd_overlay_present(void)
 
 /* PROGMEM: flash, not DTCM .rodata (the .data cliff). */
 static const char kSdFlushPending[] PROGMEM = "sd_flush_pending";
+static const char kBootOtherAccepted[] PROGMEM =
+	"{\"ok\":true,\"rebooting\":true,\"boot_other\":true}";
 
 /* FR-S8: 409 sd_flush_pending while anything is unflushed. */
 static FLASHMEM bool sd_flush_pending(void)
@@ -1966,7 +1968,7 @@ static FLASHMEM bool ota_wired(const AiusOpticalAppOta *ota)
 	       ota->arm != NULL && ota->verify != NULL &&
 	       ota->abort != NULL && ota->activate != NULL &&
 	       ota->enable_activation != NULL && ota->self_test_flash != NULL &&
-	       ota->rehearse != NULL;
+	       ota->rehearse != NULL && ota->boot_other != NULL;
 }
 
 /* Both gates run BEFORE the switch, for the reason route_is_control()'s gate
@@ -2048,6 +2050,14 @@ static FLASHMEM const AiusHttpApplicationResponse *dispatch_ota(
 		return ota_verdict_answer(
 			dispatcher, ota->rehearse(ota->context, true),
 			"{\"ok\":true,\"rehearsing\":true,\"fault_injection\":true}");
+	case AIUS_OPTICAL_APP_OTA_ROUTE_BOOT_OTHER:
+		/* Phase 4y: a reboot, so the reboot route's FR-S8 gate first. The
+		 * callback validates and sets flags only; the record write runs in
+		 * the deferred reboot service after this 200 drains. */
+		if (sd_flush_pending())
+			return http_error(dispatcher, 409, kSdFlushPending);
+		return ota_verdict_answer(dispatcher, ota->boot_other(ota->context),
+		                          kBootOtherAccepted);
 	case AIUS_OPTICAL_APP_OTA_ROUTE_NONE:
 	default:
 		break;
@@ -2628,6 +2638,73 @@ FLASHMEM bool aius_optical_sd_service_final(AiusOpticalSdFlush *flush,
 	return false;
 }
 
+/* Phase 4y: the deferred acts' mutual exclusion (aius_optical_app.h). */
+FLASHMEM bool aius_optical_flash_act_excluded(
+	AiusOpticalFlashAct act, const AiusOpticalPendingActs *pending)
+{
+	if (pending == NULL)
+		return true;
+	switch (act) {
+	case AIUS_OPTICAL_ACT_BOOT_OTHER:
+		return pending->reboot || pending->activation ||
+		       pending->rehearsal || pending->boot_other;
+	case AIUS_OPTICAL_ACT_REHEARSE:
+		return pending->activation || pending->rehearsal ||
+		       pending->boot_other;
+	case AIUS_OPTICAL_ACT_ACTIVATE:
+	case AIUS_OPTICAL_ACT_SELF_TEST:
+		return pending->boot_other;
+	default:
+		return true;
+	}
+}
+
+FLASHMEM AiusOpticalAppOtaResult aius_optical_boot_other_check(
+	const AiusOpticalBootOther *state, bool (*other_ivt_sane)(void *context),
+	void *context)
+{
+	if (state == NULL || !state->ab_built || !state->ab_enabled)
+		return AIUS_OPTICAL_APP_OTA_UNSUPPORTED;
+	if (!state->record_valid ||
+	    state->pending_slot != AIUS_OPTICAL_AB_SLOT_NONE ||
+	    (state->running_slot != AIUS_OPTICAL_AB_SLOT_A &&
+	     state->running_slot != AIUS_OPTICAL_AB_SLOT_B) ||
+	    state->active_slot != state->running_slot ||
+	    state->booted_slot == AIUS_OPTICAL_AB_SLOT_NONE)
+		return AIUS_OPTICAL_APP_OTA_STATE_REFUSED;
+	if (aius_optical_flash_act_excluded(AIUS_OPTICAL_ACT_BOOT_OTHER,
+	                                    &state->pending))
+		return AIUS_OPTICAL_APP_OTA_STATE_REFUSED;
+	/* An upgrade in flight owns the other slot's future. */
+	if (state->ota_state >= AIUS_OPTICAL_APP_OTA_STATE_OFFERED &&
+	    state->ota_state <= AIUS_OPTICAL_APP_OTA_STATE_ACTIVATION_REQUESTED)
+		return AIUS_OPTICAL_APP_OTA_STATE_REFUSED;
+	if (state->running_slot == AIUS_OPTICAL_AB_SLOT_A &&
+	    (other_ivt_sane == NULL || !other_ivt_sane(context)))
+		return AIUS_OPTICAL_APP_OTA_IVT;
+	return AIUS_OPTICAL_APP_OTA_OK;
+}
+
+FLASHMEM AiusOpticalRebootStep aius_optical_reboot_finish(
+	AiusOpticalSdFlush *flush, const AiusOpticalSdFlushOps *ops,
+	const AiusOpticalRebootActs *acts, volatile bool *reboot_requested,
+	volatile bool *switch_requested, bool drained)
+{
+	if (!drained) {
+		/* The gate or the final query abandoned (and already unfroze and
+		 * cleared the reboot) before anything was written: the record
+		 * stands. */
+		*switch_requested = false;
+		return AIUS_OPTICAL_REBOOT_ABANDONED;
+	}
+	if (*switch_requested && !acts->switch_write(acts->context)) {
+		*switch_requested = false;
+		sd_service_abandon(flush, ops, reboot_requested);
+		return AIUS_OPTICAL_REBOOT_SWITCH_FAILED;
+	}
+	return AIUS_OPTICAL_REBOOT_RESET;
+}
+
 FLASHMEM bool aius_optical_app_card_ops_ready(bool card_ready, bool dat3_remuxed)
 {
 	return card_ready && !dat3_remuxed;
@@ -3101,6 +3178,9 @@ static FLASHMEM const AiusHttpApplicationResponse *http_dispatch_route(
 		return dispatch_ota(dispatcher, AIUS_OPTICAL_APP_OTA_ROUTE_REHEARSE, request);
 	case AIUS_HTTP_ROUTE_OTA_REHEARSE_FAULT:
 		return dispatch_ota(dispatcher, AIUS_OPTICAL_APP_OTA_ROUTE_REHEARSE_FAULT,
+		                    request);
+	case AIUS_HTTP_ROUTE_OTA_BOOT_OTHER:
+		return dispatch_ota(dispatcher, AIUS_OPTICAL_APP_OTA_ROUTE_BOOT_OTHER,
 		                    request);
 	case AIUS_HTTP_ROUTE_UNKNOWN:
 	default:

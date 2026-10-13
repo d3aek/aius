@@ -47,8 +47,15 @@ extern "C" {
  *   13   1  pending_slot (NONE, or the freshly-programmed slot on trial)
  *   14   1  trial_budget (boots a trial may take; 0 iff pending is NONE)
  *   15   1  reserved0 = 0
- *   16  12  reserved = 0
+ *   16   6  slot A's build revision (binary; all-zero = unknown)
+ *   22   6  slot B's build revision (binary; all-zero = unknown)
  *   28   4  CRC-32 over bytes [0, 28)
+ *
+ * Bytes 16-27 were reserved-and-zero before Phase 4y and the version stays 1:
+ * decode never reads them (only the CRC covers them), so the frozen chooser
+ * accepts every record the revision-aware encoder writes, and an older image
+ * that rewrites the record zeroes them back to "unknown", never to a wrong
+ * value. A revision is the 12-hex source revision packed into 6 bytes.
  */
 #define AIUS_AB_RECORD_MAGIC UINT32_C(0x42414941) /* "AIAB" */
 #define AIUS_AB_RECORD_VERSION 1u
@@ -60,7 +67,11 @@ extern "C" {
 #define AIUS_AB_RECORD_OFFSET_ACTIVE 12u
 #define AIUS_AB_RECORD_OFFSET_PENDING 13u
 #define AIUS_AB_RECORD_OFFSET_BUDGET 14u
+#define AIUS_AB_RECORD_OFFSET_REVISIONS 16u
 #define AIUS_AB_RECORD_OFFSET_CRC32 28u
+#define AIUS_AB_REVISION_BYTES 6u
+#define AIUS_AB_REVISION_HEX_CHARS 12u
+#define AIUS_AB_REVISION_TEXT_STORAGE (AIUS_AB_REVISION_HEX_CHARS + 1u)
 
 /* Two boots, matching the health machinery's default: the same number of
  * chances the recovery boundary has always given an image. */
@@ -73,6 +84,13 @@ typedef struct {
 	uint8_t pending_slot; /* AIUS_AB_SLOT_NONE when no trial is open */
 	uint8_t trial_budget;
 } AiusAbRecord;
+
+/* The per-physical-slot revisions in a record's bytes 16-27, kept apart from
+ * AiusAbRecord so the chooser's decode and struct stay exactly what they
+ * were. Index 0 is slot A, 1 is slot B; all-zero is "unknown". */
+typedef struct {
+	uint8_t slot[2][AIUS_AB_REVISION_BYTES];
+} AiusAbRevisions;
 
 /* Ledger wire layout, 32 bytes, at AIUS_AB_LEDGER_ADDRESS in retained OCRAM.
  *
@@ -195,6 +213,83 @@ bool aius_ab_ivt_sane_in_window(uint32_t ivt_word0, uint32_t entry_word,
  * physical slot). False for an invalid slot id. */
 bool aius_ab_slot_ivt_sane(uint8_t slot, uint32_t ivt_word0,
 	                   uint32_t entry_word);
+
+/* ------------------------------------------------------------------
+ * Per-slot build revisions (Phase 4y). APPLICATION AND HOST ONLY: the
+ * definitions sit behind `#if __STDC_HOSTED__`, so the freestanding chooser
+ * compiles none of them and its image is unchanged. Everything here writes
+ * bytes 16-27 alone; the decode rules above never look at them.
+ * ------------------------------------------------------------------ */
+
+/* aius_ab_record_encode plus `revisions` in bytes 16-27 (NULL = both
+ * unknown), CRC recomputed over the lot. */
+bool aius_ab_record_encode_revisions(const AiusAbRecord *record,
+	                             const AiusAbRevisions *revisions,
+	                             uint8_t *bytes, size_t length);
+
+/* Bytes 16-27 of a record that DECODES; false with `revisions` zeroed for
+ * one that does not. */
+bool aius_ab_record_revisions(const uint8_t *bytes, size_t length,
+	                      AiusAbRevisions *revisions);
+
+/* Packs EXACTLY 12 hex digits (either case) followed by NUL into 6 bytes.
+ * Anything else (NULL, short, long, "<rev>+env", a non-hex digit) stores
+ * zero, which is "unknown"; so does "000000000000". True iff a known
+ * revision was stored. */
+bool aius_ab_revision_parse(const char *text,
+	                    uint8_t revision[AIUS_AB_REVISION_BYTES]);
+
+/* Lower-case 12-hex text plus NUL; "" and false for an unknown revision or a
+ * capacity under AIUS_AB_REVISION_TEXT_STORAGE. */
+bool aius_ab_revision_format(const uint8_t revision[AIUS_AB_REVISION_BYTES],
+	                     char *text, size_t capacity);
+
+/* The slot's 6 bytes inside `revisions`, NULL for an invalid slot. */
+const uint8_t *aius_ab_revision_of(const AiusAbRevisions *revisions,
+	                           uint8_t slot);
+
+/* THE RECORD WRITES, pure, each answering "write this?" and the bytes to
+ * write. False means no write (nothing to change, or the state refuses it);
+ * `next` / `next_revisions` are then unspecified. Revisions not named by a
+ * plan are carried over unchanged. `revisions` NULL reads as both unknown.
+ *
+ * Healthy mark (every boot): no record yields the first record, committed to
+ * the running slot; a trial for the running slot commits; with no trial open
+ * the running slot's revision is rewritten only when `running_revision`
+ * (the image's 12-hex source revision; anything else encodes unknown)
+ * differs from the stored one; a trial for the OTHER slot is never touched
+ * (a write would bump the sequence and hand a failed image another crash
+ * cycle). */
+bool aius_ab_plan_healthy(const AiusAbRecord *record,
+	                  const AiusAbRevisions *revisions,
+	                  uint8_t running_slot, const char *running_revision,
+	                  AiusAbRecord *next, AiusAbRevisions *next_revisions);
+
+/* Activation's boot-pending mark: pending = the other slot with `budget`,
+ * and the other slot's revision set from `target_revision` (the container's
+ * build_revision; non-12-hex stores unknown). No record starts from
+ * sequence 0 committed to the running slot. */
+bool aius_ab_plan_pending(const AiusAbRecord *record,
+	                  const AiusAbRevisions *revisions,
+	                  uint8_t running_slot, uint8_t budget,
+	                  const char *target_revision, AiusAbRecord *next,
+	                  AiusAbRevisions *next_revisions);
+
+/* The pre-dark clear: the other slot's revision to unknown, before an
+ * activation or rehearsal overwrites that slot. No write when no record
+ * exists or the revision is already unknown. A trial left open for the
+ * other slot (a failed rollback write) is closed in the same write, so the
+ * bumped sequence cannot restart that slot's trial count. */
+bool aius_ab_plan_clear_other(const AiusAbRecord *record,
+	                      const AiusAbRevisions *revisions,
+	                      uint8_t running_slot, AiusAbRecord *next,
+	                      AiusAbRevisions *next_revisions);
+
+/* Boot-other: pending = the other slot with `budget` (1 to
+ * AIUS_AB_MAX_TRIAL_BOOTS). Only from a valid record with no trial open
+ * whose active slot is the running one. Revisions are not touched. */
+bool aius_ab_plan_switch(const AiusAbRecord *record, uint8_t running_slot,
+	                 uint8_t budget, AiusAbRecord *next);
 
 #ifdef __cplusplus
 }

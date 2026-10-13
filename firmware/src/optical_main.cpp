@@ -95,6 +95,11 @@ extern "C" {
 	(AIUS_AB_INACTIVE_SLOT == AIUS_AB_SLOT_A ? AIUS_AB_SLOT_A_BASE \
 	                                         : AIUS_AB_SLOT_B_BASE)
 #endif
+/* Phase 4y: the dispatch seam's mirrored slot ids. */
+static_assert(AIUS_OPTICAL_AB_SLOT_NONE == AIUS_AB_SLOT_NONE &&
+	              AIUS_OPTICAL_AB_SLOT_A == AIUS_AB_SLOT_A &&
+	              AIUS_OPTICAL_AB_SLOT_B == AIUS_AB_SLOT_B,
+              "aius_optical_app.h mirrors aius_ab_layout.h's slot ids");
 
 /* The Teensy core's FlexSPI-1 boot-flash erase/program driver (cores/teensy4/
  * eeprom.c). Exported for LittleFS_Program; the plan (§Self-flashing is
@@ -153,6 +158,12 @@ extern "C" const uint8_t _flashimagelen;
 #endif
 #ifndef AIUS_BUILD_UTC
 #define AIUS_BUILD_UTC "unknown"
+#endif
+/* The bare 12-hex source revision (build_metadata.py), the one form the A/B
+ * record's per-slot revision encodes; AIUS_BUILD_GIT_REV carries "+<env>"
+ * and never would. "unknown" encodes as unknown. */
+#ifndef AIUS_BUILD_SOURCE_REV
+#define AIUS_BUILD_SOURCE_REV "unknown"
 #endif
 /* build_metadata.py defines this for every PlatformIO image; the fallback keeps
  * the file compilable outside that build, exactly as the two stamps above do. A
@@ -4728,6 +4739,13 @@ static FASTRUN void reset_application(void)
 		asm volatile("isb" ::: "memory");
 }
 
+/* Phase 4y: the OTA callbacks below reach the reboot and switch flags (defined
+ * beside app_request_reboot) through these accessors, so the flags keep their
+ * place in .bss. Placement attributes live on the definitions. */
+static bool reboot_flag_pending(void);
+static bool ab_switch_flag_pending(void);
+static void ab_switch_flag_request(void);
+
 #if AIUS_OTA
 /* ------------------------------------------------------------------ */
 /* OTA -- staged firmware upgrade                                       */
@@ -4847,7 +4865,10 @@ typedef enum {
 	OTA_ACTIVATION_FAULT_GEOMETRY,   /* the flash geometry refused (rehearsal:
 	                                  * the image reaches the scratch window) */
 	OTA_ACTIVATION_FAULT_FLUSH_PENDING, /* 4h: an unflushed write at the drain gate */
-	OTA_ACTIVATION_FAULT_SD_BUSY        /* 4h: an SD job outlasted AIUS_OPTICAL_SD_FREEZE_MS */
+	OTA_ACTIVATION_FAULT_SD_BUSY,       /* 4h: an SD job outlasted AIUS_OPTICAL_SD_FREEZE_MS */
+	OTA_ACTIVATION_FAULT_AB_RECORD      /* 4y: an A/B record write failed (the
+	                                     * pre-dark revision clear, or the
+	                                     * boot-other switch: no reset) */
 } OtaActivationFault;
 static volatile OtaActivationFault g_ota_activation_fault;
 
@@ -4973,12 +4994,33 @@ static bool g_ab_committed_this_boot;
  * chooser cutover. */
 static uint8_t g_ab_running_slot = AIUS_AB_SLOT;
 
+/* Phase 4y: the winning record's per-slot revisions (bytes 16-27), read on
+ * demand from its memory-mapped sector rather than mirrored in RAM (the
+ * canonical image's DTCM ceiling has no room for a copy). The record sectors
+ * sit in the head region, outside the remapped window, so a plain read is the
+ * physical bytes under either running slot, and ab_record_write's read-back
+ * leaves the D-cache holding the new bytes. Every record write carries these
+ * so none drops a slot's revision. False (zeroed: unknown) with no valid
+ * record. */
+static FLASHMEM bool ab_stored_revisions(AiusAbRevisions *revisions)
+{
+	if (!g_ab_record_valid || g_ab_record_sector < 0) {
+		memset(revisions, 0, sizeof(*revisions));
+		return false;
+	}
+	return aius_ab_record_revisions(
+		(const uint8_t *)(g_ab_record_sector == 1 ? AIUS_AB_RECORD_SECTOR_1
+		                                          : AIUS_AB_RECORD_SECTOR_0),
+		AIUS_AB_RECORD_BYTES, revisions);
+}
+
 /* Writes `record` into the ping-pong sector the current winner does NOT
  * occupy, through the same bounds-checked RAM-resident primitives the
  * activation uses (the record sectors are inside the boot window), and
  * read-back verifies it. FLASHMEM: every caller runs with flash idle --
  * setup, the healthy mark, and the POST-window finalize. */
-static FLASHMEM bool ab_record_write(const AiusAbRecord *record)
+static FLASHMEM bool ab_record_write(const AiusAbRecord *record,
+                                     const AiusAbRevisions *revisions)
 {
 	uint8_t bytes[AIUS_AB_RECORD_BYTES];
 	uint8_t verify[AIUS_AB_RECORD_BYTES];
@@ -4987,7 +5029,8 @@ static FLASHMEM bool ab_record_write(const AiusAbRecord *record)
 	const uint32_t address = target == 0 ? AIUS_AB_RECORD_SECTOR_0
 	                                     : AIUS_AB_RECORD_SECTOR_1;
 
-	if (!aius_ab_record_encode(record, bytes, sizeof(bytes)))
+	if (!aius_ab_record_encode_revisions(record, revisions, bytes,
+	                                     sizeof(bytes)))
 		return false;
 	if (ota_flash_erase(nullptr, address) != 0)
 		return false;
@@ -5070,6 +5113,8 @@ static FLASHMEM void ab_compose(void)
 
 	if (!g_ab_record_valid)
 		return;
+	AiusAbRevisions revisions;
+	(void)ab_stored_revisions(&revisions);
 	if (g_ab_record.pending_slot != AIUS_AB_SLOT_NONE &&
 	    g_ab_record.pending_slot != g_ab_running_slot) {
 		AiusAbRecord next = g_ab_record;
@@ -5077,7 +5122,7 @@ static FLASHMEM void ab_compose(void)
 		next.active_slot = g_ab_running_slot;
 		next.pending_slot = AIUS_AB_SLOT_NONE;
 		next.trial_budget = 0u;
-		if (ab_record_write(&next))
+		if (ab_record_write(&next, &revisions))
 			g_ab_rollback_observed = true;
 		return;
 	}
@@ -5086,7 +5131,7 @@ static FLASHMEM void ab_compose(void)
 		AiusAbRecord next = g_ab_record;
 		next.sequence++;
 		next.active_slot = g_ab_running_slot;
-		(void)ab_record_write(&next);
+		(void)ab_record_write(&next, &revisions);
 	}
 }
 
@@ -5096,52 +5141,100 @@ static FLASHMEM void ab_compose(void)
  * rather than at setup so a boot-looping flash cannot self-commit. */
 static FLASHMEM void ab_mark_healthy(void)
 {
+	AiusAbRecord next;
+	AiusAbRevisions revisions;
+	AiusAbRevisions next_revisions;
+
 	if (!g_ab_enabled || g_ab_committed_this_boot)
 		return;
 	g_ab_committed_this_boot = true;
-	if (!g_ab_record_valid) {
-		AiusAbRecord initial;
-		memset(&initial, 0, sizeof(initial));
-		initial.sequence = 1u;
-		initial.active_slot = g_ab_running_slot;
-		initial.pending_slot = AIUS_AB_SLOT_NONE;
-		initial.trial_budget = 0u;
-		(void)ab_record_write(&initial);
-		return;
-	}
-	if (g_ab_record.pending_slot == g_ab_running_slot) {
-		AiusAbRecord committed = g_ab_record;
-		committed.sequence++;
-		committed.active_slot = g_ab_running_slot;
-		committed.pending_slot = AIUS_AB_SLOT_NONE;
-		committed.trial_budget = 0u;
-		(void)ab_record_write(&committed);
-	}
+	(void)ab_stored_revisions(&revisions);
+	/* Phase 4y: the same moment also records THIS image's revision for the
+	 * running slot, on every boot, whenever the stored one differs (a
+	 * HalfKay recovery, the bad-IVT fallback, a rollback into an unknown
+	 * slot); a trial commit folds it into its one write, and a trial left
+	 * open for the other slot is never written (aius_ab_plan_healthy). */
+	if (aius_ab_plan_healthy(g_ab_record_valid ? &g_ab_record : NULL,
+	                         &revisions, g_ab_running_slot,
+	                         AIUS_BUILD_SOURCE_REV, &next, &next_revisions))
+		(void)ab_record_write(&next, &next_revisions);
+}
+
+/* Phase 4y: the pre-dark clear of the other slot's revision, called by the
+ * activation and the rehearsal after every refusal they can answer and
+ * before ota_quiesce(): the slot is about to be overwritten, so a fault in
+ * the window can never leave it named by its old revision. True when there
+ * was nothing to clear or the write landed. */
+static FLASHMEM bool ab_clear_other_revision(void)
+{
+	AiusAbRecord next;
+	AiusAbRevisions revisions;
+	AiusAbRevisions next_revisions;
+
+	if (!g_ab_enabled || !g_ab_record_valid)
+		return true;
+	(void)ab_stored_revisions(&revisions);
+	if (!aius_ab_plan_clear_other(&g_ab_record, &revisions,
+	                              g_ab_running_slot, &next, &next_revisions))
+		return true;
+	return ab_record_write(&next, &next_revisions);
+}
+
+/* Phase 4y: the boot-other switch's record write, run by the deferred
+ * reboot service after the SD final and before the reset: pending = the
+ * other slot with the activation's trial budget, so the chooser trial-boots
+ * it and falls back on its own if it never reaches the healthy mark. */
+static FLASHMEM bool ab_switch_write(void *)
+{
+	AiusAbRecord next;
+	AiusAbRevisions revisions;
+
+	if (!g_ab_enabled || !g_ab_record_valid ||
+	    !aius_ab_plan_switch(&g_ab_record, g_ab_running_slot,
+	                         AIUS_AB_DEFAULT_TRIAL_BOOTS, &next))
+		return false;
+	(void)ab_stored_revisions(&revisions);
+	return ab_record_write(&next, &revisions);
+}
+
+/* Phase 4y: slot B's IVT, read plainly while running slot A (the remap
+ * offset is zero, so the address is slot B's physical flash). */
+static FLASHMEM bool ab_other_ivt_sane(void *)
+{
+	const uint32_t base = aius_ab_slot_base(AIUS_AB_SLOT_B);
+	const volatile uint32_t *ivt = (const volatile uint32_t *)(uintptr_t)(
+		base + AIUS_AB_SLOT_IVT_OFFSET);
+
+	return aius_ab_slot_ivt_sane(AIUS_AB_SLOT_B, ivt[0], ivt[1]);
 }
 
 /* The activation's boot-pending mark, written AFTER the window completes
  * (flash idle again -- under A/B the running slot and the head were never
  * touched, so FLASHMEM code executes) and BEFORE the reset. A failed write
  * leaves the freshly-programmed slot INERT: the chooser keeps booting the
- * active slot, which is the safe direction to fail in. */
-static FLASHMEM bool ab_activation_mark_pending(void)
+ * active slot, which is the safe direction to fail in.
+ * noinline (Phase 4y): its one caller is the FASTRUN finalizer, so an inlined
+ * body puts one ITCM long-branch veneer per FLASHMEM callee into ITCM; kept
+ * out of line it costs exactly one. */
+static FLASHMEM __attribute__((noinline)) bool ab_activation_mark_pending(void)
 {
 	AiusAbRecord next;
+	AiusAbRevisions revisions;
+	AiusAbRevisions next_revisions;
 
 	if (!g_ab_enabled)
 		return false;
-	if (g_ab_record_valid) {
-		next = g_ab_record;
-	} else {
-		memset(&next, 0, sizeof(next));
-		next.sequence = 0u;
-		next.active_slot = g_ab_running_slot;
-	}
-	next.sequence++;
-	next.active_slot = g_ab_running_slot;
-	next.pending_slot = aius_ab_other_slot(g_ab_running_slot);
-	next.trial_budget = AIUS_AB_DEFAULT_TRIAL_BOOTS;
-	return ab_record_write(&next);
+	(void)ab_stored_revisions(&revisions);
+	/* Phase 4y: the programmed slot's revision is the container's signed
+	 * build_revision (aius_ota_sign.py --build-revision <12-char HEAD>);
+	 * anything not exactly 12 hex records unknown. */
+	if (!aius_ab_plan_pending(g_ab_record_valid ? &g_ab_record : NULL,
+	                          &revisions, g_ab_running_slot,
+	                          AIUS_AB_DEFAULT_TRIAL_BOOTS,
+	                          g_ota_session.header.build_revision, &next,
+	                          &next_revisions))
+		return false;
+	return ab_record_write(&next, &next_revisions);
 }
 #endif /* AIUS_AB_SLOT */
 
@@ -5159,6 +5252,7 @@ static FLASHMEM const char *ota_activation_fault_name(OtaActivationFault fault)
 	/* D-N2: the 4h names in flash, not DTCM .data. */
 	static const char kFlushPending[] PROGMEM = "ota_flush_pending";
 	static const char kSdBusy[] PROGMEM = "ota_sd_busy";
+	static const char kAbRecord[] PROGMEM = "ota_ab_record";
 	switch (fault) {
 	case OTA_ACTIVATION_FAULT_NO_PSRAM:   return "ota_no_psram";
 	case OTA_ACTIVATION_FAULT_STAGE_COPY: return "ota_stage_copy";
@@ -5166,6 +5260,7 @@ static FLASHMEM const char *ota_activation_fault_name(OtaActivationFault fault)
 	case OTA_ACTIVATION_FAULT_GEOMETRY:   return "ota_geometry";
 	case OTA_ACTIVATION_FAULT_FLUSH_PENDING: return kFlushPending;
 	case OTA_ACTIVATION_FAULT_SD_BUSY:    return kSdBusy;
+	case OTA_ACTIVATION_FAULT_AB_RECORD:  return kAbRecord;
 	case OTA_ACTIVATION_FAULT_NONE:
 	default:                              return "none";
 	}
@@ -5969,10 +6064,41 @@ static FLASHMEM bool http_ota_dark_json(char *output, size_t capacity,
  * old chooser, and the difference decides whether a container must be signed
  * with --slot. Distinct from `slot` (g_ab_running_slot), which falls back to
  * the compile-time slot precisely when this field is NONE. */
+#if AIUS_AB_SLOT
+/* Phase 4y: one slot's revision as a JSON value: the quoted 12-hex form, or
+ * null when unknown (or no record is valid). Built by hand, not printf: the
+ * status render formats only through status_append (optical-cutover's
+ * status-render-appends-yield). `out` holds AB_REVISION_JSON_BYTES. */
+#define AB_REVISION_JSON_BYTES 16u
+static_assert(AIUS_AB_REVISION_HEX_CHARS + 3u <= AB_REVISION_JSON_BYTES,
+              "two quotes, twelve digits and the NUL fit");
+static FLASHMEM void ab_revision_json(char *out, uint8_t slot)
+{
+	AiusAbRevisions revisions;
+	char text[AIUS_AB_REVISION_TEXT_STORAGE];
+
+	if (ab_stored_revisions(&revisions) &&
+	    aius_ab_revision_format(aius_ab_revision_of(&revisions, slot), text,
+	                            sizeof(text))) {
+		out[0] = '"';
+		memcpy(&out[1], text, AIUS_AB_REVISION_HEX_CHARS);
+		out[AIUS_AB_REVISION_HEX_CHARS + 1u] = '"';
+		out[AIUS_AB_REVISION_HEX_CHARS + 2u] = '\0';
+	} else {
+		memcpy(out, "null", sizeof("null"));
+	}
+}
+#endif
+
 static FLASHMEM bool http_ab_json(char *output, size_t capacity,
 	                              size_t *length)
 {
 #if AIUS_AB_SLOT
+	/* `revisions` keyed by PHYSICAL slot, "1" = A and "2" = B. */
+	char revision_a[AB_REVISION_JSON_BYTES];
+	char revision_b[AB_REVISION_JSON_BYTES];
+	ab_revision_json(revision_a, AIUS_AB_SLOT_A);
+	ab_revision_json(revision_b, AIUS_AB_SLOT_B);
 	if (g_ab_enabled)
 		return status_append(output, capacity, length,
 			",\"ab\":{\"slot\":%u,\"record_valid\":%s,"
@@ -5980,7 +6106,8 @@ static FLASHMEM bool http_ab_json(char *output, size_t capacity,
 			"\"sequence\":%lu,\"trial_budget\":%u,"
 			"\"ledger_valid\":%s,\"booted_slot\":%u,"
 			"\"ledger_boots\":%lu,"
-			"\"ledger_fell_back\":%s,\"rollback_observed\":%s}",
+			"\"ledger_fell_back\":%s,\"rollback_observed\":%s,"
+			"\"revisions\":{\"1\":%s,\"2\":%s}}",
 			(unsigned)g_ab_running_slot,
 			g_ab_record_valid ? "true" : "false",
 			(unsigned)g_ab_record.active_slot,
@@ -5992,7 +6119,8 @@ static FLASHMEM bool http_ab_json(char *output, size_t capacity,
 			                             : (uint8_t)AIUS_AB_SLOT_NONE),
 			(unsigned long)g_ab_ledger.boots_attempted,
 			g_ab_ledger.fell_back != 0u ? "true" : "false",
-			g_ab_rollback_observed ? "true" : "false");
+			g_ab_rollback_observed ? "true" : "false",
+			revision_a, revision_b);
 #endif
 	return status_append(output, capacity, length, ",\"ab\":null");
 }
@@ -6161,11 +6289,28 @@ static FLASHMEM AiusOpticalAppOtaResult app_ota_abort(void *)
  *      begin() requires;
  *   3. arm the loop() flag. The dispatcher's 200 is the acknowledgement the
  *      client sees before the board goes dark. */
+/* Phase 4y: the deferred one-way acts now pending, for the exclusions. */
+static FLASHMEM AiusOpticalPendingActs ota_pending_acts(void)
+{
+	AiusOpticalPendingActs acts;
+	acts.reboot = reboot_flag_pending();
+	acts.activation = g_ota_activation_requested;
+	acts.rehearsal = g_ota_rehearsal_requested;
+	acts.boot_other = ab_switch_flag_pending();
+	return acts;
+}
+
 static FLASHMEM AiusOpticalAppOtaResult app_ota_activate(void *)
 {
 	AiusOtaStatus status;
 	if (!g_ota_activation_enabled)
 		return AIUS_OPTICAL_APP_OTA_ACTIVATION_DISABLED;
+	{
+		const AiusOpticalPendingActs pending = ota_pending_acts();
+		if (aius_optical_flash_act_excluded(AIUS_OPTICAL_ACT_ACTIVATE,
+		                                    &pending))
+			return AIUS_OPTICAL_APP_OTA_STATE_REFUSED;
+	}
 	/* THE PSRAM PRESENCE GATE, refused synchronously so the client learns
 	 * immediately and no deferred flag is armed: activation stages the image
 	 * into PSRAM (FlexSPI2, read during the FlexSPI1 erase), and a board with
@@ -6202,6 +6347,12 @@ static FLASHMEM AiusOpticalAppOtaResult app_ota_self_test_flash(void *)
 {
 	if (!g_ota_activation_enabled)
 		return AIUS_OPTICAL_APP_OTA_ACTIVATION_DISABLED;
+	{
+		const AiusOpticalPendingActs pending = ota_pending_acts();
+		if (aius_optical_flash_act_excluded(AIUS_OPTICAL_ACT_SELF_TEST,
+		                                    &pending))
+			return AIUS_OPTICAL_APP_OTA_STATE_REFUSED;
+	}
 	g_ota_self_test_result = ota_run_self_test_flash();
 	return g_ota_self_test_result == OTA_SELF_TEST_PASS
 		? AIUS_OPTICAL_APP_OTA_OK
@@ -6225,13 +6376,52 @@ static FLASHMEM AiusOpticalAppOtaResult app_ota_rehearse(void *,
 		g_ota_activation_fault = OTA_ACTIVATION_FAULT_NO_PSRAM;
 		return AIUS_OPTICAL_APP_OTA_STORAGE;
 	}
-	if (g_ota_activation_requested || g_ota_rehearsal_requested)
-		return AIUS_OPTICAL_APP_OTA_STATE_REFUSED;
+	{
+		/* Its own two flags, as before, and (Phase 4y) a pending switch. */
+		const AiusOpticalPendingActs pending = ota_pending_acts();
+		if (aius_optical_flash_act_excluded(AIUS_OPTICAL_ACT_REHEARSE,
+		                                    &pending))
+			return AIUS_OPTICAL_APP_OTA_STATE_REFUSED;
+	}
 	if (aius_ota_state(&g_ota_session) != AIUS_OTA_STATE_ARMED)
 		return AIUS_OPTICAL_APP_OTA_STATE_REFUSED;
 	g_ota_rehearsal_inject_fault = inject_fault;
 	g_ota_activation_fault = OTA_ACTIVATION_FAULT_NONE;
 	g_ota_rehearsal_requested = true;
+	return AIUS_OPTICAL_APP_OTA_OK;
+}
+
+/* boot-other (Phase 4y): the request half of the slot switch. Runs in the
+ * HTTP dispatch, so it validates and sets flags ONLY -- the record write is
+ * the deferred reboot service's, after the 200 drains. The plain single-image
+ * build answers ota_unsupported. Running slot A, slot B's IVT is checked
+ * here (a plain read; the remap offset is zero); running slot B there is no
+ * check, and the chooser's bad-IVT fallback carries a bad image. */
+static FLASHMEM AiusOpticalAppOtaResult app_ota_boot_other(void *)
+{
+	AiusOpticalBootOther state;
+	AiusOpticalAppOtaResult result;
+
+	memset(&state, 0, sizeof(state));
+	state.pending = ota_pending_acts();
+	state.ota_state = (AiusOpticalAppOtaState)aius_ota_state(&g_ota_session);
+#if AIUS_AB_SLOT
+	state.ab_built = true;
+	state.ab_enabled = g_ab_enabled;
+	state.record_valid = g_ab_record_valid;
+	state.active_slot = g_ab_record.active_slot;
+	state.pending_slot = g_ab_record.pending_slot;
+	state.running_slot = g_ab_running_slot;
+	state.booted_slot = g_ab_ledger_valid ? g_ab_ledger.booted_slot
+	                                      : (uint8_t)AIUS_AB_SLOT_NONE;
+	result = aius_optical_boot_other_check(&state, ab_other_ivt_sane,
+	                                       nullptr);
+#else
+	result = aius_optical_boot_other_check(&state, nullptr, nullptr);
+#endif
+	if (result != AIUS_OPTICAL_APP_OTA_OK)
+		return result;
+	ab_switch_flag_request();
 	return AIUS_OPTICAL_APP_OTA_OK;
 }
 
@@ -6247,7 +6437,8 @@ static const AiusOpticalAppOta g_ota_seam = {
 	app_ota_activate,
 	app_ota_enable_activation,
 	app_ota_self_test_flash,
-	app_ota_rehearse
+	app_ota_rehearse,
+	app_ota_boot_other
 };
 
 /* Composes the OTA feature: computes the key fingerprint, binds the session and
@@ -6716,6 +6907,28 @@ static FLASHMEM size_t http_home_page(uint8_t *body, size_t capacity)
  * clock, and this adapter runs inside it; loop() already has the epoch's now_ms
  * and arms the ceiling from there. */
 static volatile bool g_reboot_requested;
+/* Phase 4y: the reboot pending is a boot-other switch. Set only beside
+ * g_reboot_requested by app_ota_boot_other; every service exit without a
+ * reset clears it (aius_optical_reboot_finish), so the exclusion it puts on
+ * activate / rehearse / self-test cannot latch shut. */
+static volatile bool g_ab_switch_requested;
+
+/* Phase 4y: the accessors declared above the OTA block. */
+static FLASHMEM bool reboot_flag_pending(void)
+{
+	return g_reboot_requested;
+}
+
+static FLASHMEM bool ab_switch_flag_pending(void)
+{
+	return g_ab_switch_requested;
+}
+
+static FLASHMEM void ab_switch_flag_request(void)
+{
+	g_ab_switch_requested = true;
+	g_reboot_requested = true;
+}
 
 /* Phase 4h (E3): while DAT3 is re-muxed (a card-gone invalidation or a failed
  * begin) no direct card op runs behind it, so the card routes answer 503
@@ -10894,6 +11107,17 @@ static FLASHMEM bool reboot_drain_complete(void)
  * its acknowledgement is best-effort. The alternative -- waiting indefinitely --
  * would let a wedged or vanished peer veto the one operation that recovers the
  * board. */
+/* The reboot service's switch act (aius_optical_reboot_finish). */
+static FLASHMEM bool reboot_switch_write(void *context)
+{
+#if AIUS_AB_SLOT && AIUS_OTA
+	return ab_switch_write(context);
+#else
+	(void)context;
+	return false; /* no A/B: app_ota_boot_other never sets the flag */
+#endif
+}
+
 static FLASHMEM void service_reboot_request(uint32_t now_ms)
 {
 	if (!g_reboot_deadline_armed) {
@@ -10906,14 +11130,27 @@ static FLASHMEM void service_reboot_request(uint32_t now_ms)
 		/* Phase 4h (H9, R4-B1, R5-S2): the drain gate and SD-writes
 		 * freeze; an expired freeze ceiling resets as today's ceiling
 		 * does (the drain already passed). An unflushed write abandons:
-		 * unfreeze and clear the request, so it never re-runs. */
+		 * unfreeze and clear the request, so it never re-runs.
+		 * Phase 4y: a boot-other switch writes its record after the SD
+		 * final and before the reset; a failed write abandons with a
+		 * visible fault and no reset, and every exit without a reset
+		 * clears the switch flag (aius_optical_reboot_finish). */
+		const AiusOpticalRebootActs acts = { nullptr, reboot_switch_write };
 		const AiusOpticalSdService gate = aius_optical_sd_service_gate(
 			&g_sd_flush, &g_sd_flush_ops, &g_reboot_requested, now_ms, true);
 		if (gate == AIUS_OPTICAL_SD_SERVICE_WAIT)
 			return;
-		if (gate != AIUS_OPTICAL_SD_SERVICE_RUN ||
-		    !aius_optical_sd_service_final(&g_sd_flush, &g_sd_flush_ops,
-		                                   &g_reboot_requested)) {
+		const AiusOpticalRebootStep step = aius_optical_reboot_finish(
+			&g_sd_flush, &g_sd_flush_ops, &acts, &g_reboot_requested,
+			&g_ab_switch_requested,
+			gate == AIUS_OPTICAL_SD_SERVICE_RUN &&
+				aius_optical_sd_service_final(&g_sd_flush, &g_sd_flush_ops,
+				                              &g_reboot_requested));
+		if (step != AIUS_OPTICAL_REBOOT_RESET) {
+#if AIUS_OTA
+			if (step == AIUS_OPTICAL_REBOOT_SWITCH_FAILED)
+				g_ota_activation_fault = OTA_ACTIVATION_FAULT_AB_RECORD;
+#endif
 			g_reboot_deadline_armed = false;
 			return;
 		}
@@ -11084,6 +11321,19 @@ static FLASHMEM void service_ota_activation(uint32_t now_ms)
 		ota_activation_recover();
 		return;
 	}
+#if AIUS_AB_SLOT
+	/* Phase 4y: the target slot's revision goes unknown BEFORE the window,
+	 * after begin() accepted (so a digest or signature refusal never marks an
+	 * intact slot unknown): a fault mid-window can then never leave the slot
+	 * named by the image it no longer holds. ab_activation_mark_pending sets
+	 * it again from the container's build_revision after the window. A failed
+	 * clear aborts here, before anything goes dark. */
+	if (!ab_clear_other_revision()) {
+		g_ota_activation_fault = OTA_ACTIVATION_FAULT_AB_RECORD;
+		ota_activation_recover();
+		return;
+	}
+#endif
 
 	/* On the edge into the dark window: quiesce (one-way -- NULL snapshot),
 	 * then run to completion in RAM (never returns). */
@@ -11250,6 +11500,17 @@ static FLASHMEM void service_ota_rehearsal(uint32_t now_ms)
 		ota_rehearsal_finish(OTA_REHEARSAL_FAIL);
 		return;
 	}
+#if AIUS_AB_SLOT
+	/* Phase 4y: the rehearsal's scratch window IS the inactive slot, which
+	 * it erases and programs, so that slot's revision goes unknown first,
+	 * exactly as before a real activation; a failed clear aborts before the
+	 * quiet window. */
+	if (!ab_clear_other_revision()) {
+		g_ota_activation_fault = OTA_ACTIVATION_FAULT_AB_RECORD;
+		ota_rehearsal_finish(OTA_REHEARSAL_FAIL);
+		return;
+	}
+#endif
 
 	/* The quiet window: quiesce with a snapshot, run in RAM, restore. */
 	ota_quiesce(&snapshot);
@@ -11310,9 +11571,10 @@ static FLASHMEM void service_ota_rehearsal(uint32_t now_ms)
 	 * Nothing else is owed. The rehearsal's own 200 drained before the run
 	 * (the deadline gate at the top of this function), so no response is in
 	 * flight; ota_quiesce() already drove the transmit gate low, which is
-	 * the state service_reboot_request() resets from; and the A/B record is
-	 * untouched -- the rehearsal armed nothing and wrote no pending mark,
-	 * so `ab` reads the same across the reboot. */
+	 * the state service_reboot_request() resets from; and the A/B record
+	 * changed only by the pre-window clear (Phase 4y): the inactive slot's
+	 * revision reads unknown, the slots and the trial are as they were --
+	 * the rehearsal wrote no pending mark. */
 	reset_application();
 }
 #endif /* AIUS_OTA */

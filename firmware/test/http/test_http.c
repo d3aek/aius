@@ -148,6 +148,21 @@ static void test_ota_routes(void)
 		                       strlen(get_rehearse_fault),
 		                       &request) == AIUS_HTTP_ERR_METHOD);
 	}
+	/* Phase 4y: boot-other, POST only, no prefix match. */
+	parse_ok("POST /api/ota/boot-other HTTP/1.0\r\n\r\n",
+	         AIUS_HTTP_ROUTE_OTA_BOOT_OTHER);
+	{
+		const char *get_boot_other =
+			"GET /api/ota/boot-other HTTP/1.0\r\n\r\n";
+		const char *boot_other_x =
+			"POST /api/ota/boot-otherx HTTP/1.0\r\n\r\n";
+		assert(aius_http_parse((const uint8_t *)get_boot_other,
+		                       strlen(get_boot_other),
+		                       &request) == AIUS_HTTP_ERR_METHOD);
+		assert(aius_http_parse((const uint8_t *)boot_other_x,
+		                       strlen(boot_other_x),
+		                       &request) == AIUS_HTTP_ERR_ROUTE);
+	}
 
 	/* No shadow of a neighbouring route, and no prefix match. */
 	assert(aius_http_parse((const uint8_t *)near_miss, strlen(near_miss),

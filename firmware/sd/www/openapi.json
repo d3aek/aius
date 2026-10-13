@@ -581,6 +581,32 @@
         }
       }
     },
+    "/api/ota/boot-other": {
+      "post": {
+        "operationId": "bootOtherSlot",
+        "description": "Reboots into the other A/B slot through the chooser's trial boot (Phase 4y). Token-gated. The route validates and sets a request flag only; after this 200 drains, the deferred reboot service writes the boot record's pending slot (the other slot, with the activation's trial budget) and resets. A slot that never reaches the healthy mark within the budget falls back to this one on its own; one that does commits itself. Running slot A, slot B's boot header (IVT) is checked first; running slot B it is not (the chooser's bad-IVT fallback carries a bad image). A failed record write abandons with ota_diag.activation_fault ota_ab_record and no reset; an abandoned reboot (SD drain gate) leaves the record untouched.",
+        "parameters": [{ "$ref": "#/components/parameters/SdAuth" }],
+        "responses": {
+          "200": {
+            "description": "Accepted and deferred; body {\"ok\":true,\"rebooting\":true,\"boot_other\":true}.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Ack" } } }
+          },
+          "400": {
+            "description": "ota_unsupported: the plain single-image build, or an A/B build whose retained-ledger contract failed (ab null).",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "401": { "$ref": "#/components/responses/Error" },
+          "404": {
+            "description": "ota_absent.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "409": {
+            "description": "ota_state: no valid boot record, a trial still open (pending_slot non-zero), the record's active slot is not the running one, an old per-slot chooser (booted_slot 0), a reboot, activation, rehearsal or switch already requested, or an OTA session offered, staging, staged, verified, armed or activation-requested. ota_ivt: running slot A, slot B's IVT is not a bootable image. sd_flush_pending: an accepted write has not reached the card. POST /api/ota/activate, /api/ota/rehearse and /api/ota/self-test-flash answer ota_state while a switch is requested.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      }
+    },
     "/api/ota/activate": {
       "post": {
         "operationId": "activateOta",
@@ -4011,7 +4037,8 @@
           "booted_slot",
           "ledger_boots",
           "ledger_fell_back",
-          "rollback_observed"
+          "rollback_observed",
+          "revisions"
         ],
         "description": "A/B slot state: the running slot's identity, the ping-pong flash boot record (written only by the application) and the retained trial ledger (written only by the first-stage chooser). Slot values throughout: 0 none, 1 slot A, 2 slot B.",
         "properties": {
@@ -4069,6 +4096,16 @@
           "rollback_observed": {
             "type": "boolean",
             "description": "THIS boot persisted a failed trial's rollback into the boot record (the fallback image cleaning up after the trial that never committed)."
+          },
+          "revisions": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["1", "2"],
+            "description": "The boot record's build revision per PHYSICAL slot (Phase 4y), keyed \"1\" (slot A) and \"2\" (slot B): the 12-hex source revision, or null when unknown (no valid record, a slot written before this field existed, a revision cleared before an activation or rehearsal overwrote the slot, or an older image that rewrote the record). The healthy boot records its own slot; an activation records the container's build_revision for the slot it programmed.",
+            "properties": {
+              "1": { "type": "string", "nullable": true, "pattern": "^[0-9a-f]{12}$" },
+              "2": { "type": "string", "nullable": true, "pattern": "^[0-9a-f]{12}$" }
+            }
           }
         }
       },
@@ -4231,9 +4268,10 @@
               "ota_verify",
               "ota_geometry",
               "ota_flush_pending",
-              "ota_sd_busy"
+              "ota_sd_busy",
+              "ota_ab_record"
             ],
-            "description": "The last activation or rehearsal refusal reason, so a status poller sees why a deferred flash act did not run: no PSRAM fitted, the SD-to-PSRAM copy failed, the pre-window verification refused, or the flash geometry refused (rehearsal: the image reaches the scratch window). ota_flush_pending: a settings or www write was accepted after the route check and has not flushed (sd_flush.drained false); the activation was abandoned and the recorder stays live. ota_sd_busy: an SD job outlasted the freeze ceiling; the activation was abandoned."
+            "description": "The last activation or rehearsal refusal reason, so a status poller sees why a deferred flash act did not run: no PSRAM fitted, the SD-to-PSRAM copy failed, the pre-window verification refused, or the flash geometry refused (rehearsal: the image reaches the scratch window). ota_flush_pending: a settings or www write was accepted after the route check and has not flushed (sd_flush.drained false); the activation was abandoned and the recorder stays live. ota_sd_busy: an SD job outlasted the freeze ceiling; the activation was abandoned. ota_ab_record: an A/B boot record write failed, either the pre-dark clear of the target slot's revision (the activation or rehearsal stopped before anything went dark) or the POST /api/ota/boot-other switch (no reset; the board stays on this slot)."
           },
           "rehearsal": {
             "type": "string",

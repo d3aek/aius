@@ -378,3 +378,305 @@ FLASHMEM bool aius_ab_slot_ivt_sane(uint8_t slot, uint32_t ivt_word0,
 	                                  AIUS_AB_CANONICAL_BASE,
 	                                  AIUS_AB_CANONICAL_BYTES);
 }
+
+/* ------------------------------------------------------------------ */
+/* Per-slot build revisions (Phase 4y)                                 */
+/* ------------------------------------------------------------------ */
+
+/* Application and host only. The chooser compiles this file -ffreestanding
+ * (__STDC_HOSTED__ == 0) and links without -ffunction-sections, so code here
+ * would ride into its image as dead weight; behind this guard its object is
+ * exactly what it was, and "no chooser change" holds byte for byte. */
+#if __STDC_HOSTED__
+
+static FLASHMEM int revision_slot_index(uint8_t slot)
+{
+	if (slot == AIUS_AB_SLOT_A)
+		return 0;
+	if (slot == AIUS_AB_SLOT_B)
+		return 1;
+	return -1;
+}
+
+static FLASHMEM void revision_copy(uint8_t *to, const uint8_t *from)
+{
+	uint32_t index;
+
+	for (index = 0u; index < AIUS_AB_REVISION_BYTES; index++)
+		to[index] = from != NULL ? from[index] : 0u;
+}
+
+static FLASHMEM bool revision_equal(const uint8_t *a, const uint8_t *b)
+{
+	uint32_t index;
+
+	for (index = 0u; index < AIUS_AB_REVISION_BYTES; index++)
+		if (a[index] != b[index])
+			return false;
+	return true;
+}
+
+static FLASHMEM bool revision_known(const uint8_t *revision)
+{
+	uint32_t index;
+
+	for (index = 0u; index < AIUS_AB_REVISION_BYTES; index++)
+		if (revision[index] != 0u)
+			return true;
+	return false;
+}
+
+/* `from` NULL clears both. */
+static FLASHMEM void revisions_copy(AiusAbRevisions *to,
+	                            const AiusAbRevisions *from)
+{
+	revision_copy(to->slot[0], from != NULL ? from->slot[0] : NULL);
+	revision_copy(to->slot[1], from != NULL ? from->slot[1] : NULL);
+}
+
+static FLASHMEM void record_copy(AiusAbRecord *to, const AiusAbRecord *from)
+{
+	to->sequence = from->sequence;
+	to->active_slot = from->active_slot;
+	to->pending_slot = from->pending_slot;
+	to->trial_budget = from->trial_budget;
+}
+
+static FLASHMEM int hex_digit(char c)
+{
+	if (c >= '0' && c <= '9')
+		return c - '0';
+	if (c >= 'a' && c <= 'f')
+		return c - 'a' + 10;
+	if (c >= 'A' && c <= 'F')
+		return c - 'A' + 10;
+	return -1;
+}
+
+FLASHMEM bool aius_ab_record_encode_revisions(const AiusAbRecord *record,
+	                                      const AiusAbRevisions *revisions,
+	                                      uint8_t *bytes, size_t length)
+{
+	uint32_t index;
+
+	if (!aius_ab_record_encode(record, bytes, length))
+		return false;
+	if (revisions == NULL)
+		return true;
+	for (index = 0u; index < AIUS_AB_REVISION_BYTES; index++) {
+		bytes[AIUS_AB_RECORD_OFFSET_REVISIONS + index] =
+			revisions->slot[0][index];
+		bytes[AIUS_AB_RECORD_OFFSET_REVISIONS + AIUS_AB_REVISION_BYTES +
+		      index] = revisions->slot[1][index];
+	}
+	put_u32(&bytes[AIUS_AB_RECORD_OFFSET_CRC32],
+	        crc32_bitwise(bytes, AIUS_AB_RECORD_OFFSET_CRC32));
+	return true;
+}
+
+FLASHMEM bool aius_ab_record_revisions(const uint8_t *bytes, size_t length,
+	                               AiusAbRevisions *revisions)
+{
+	AiusAbRecord record;
+
+	if (revisions == NULL)
+		return false;
+	revisions_copy(revisions, NULL);
+	if (!aius_ab_record_decode(&record, bytes, length))
+		return false;
+	revision_copy(revisions->slot[0],
+	              &bytes[AIUS_AB_RECORD_OFFSET_REVISIONS]);
+	revision_copy(revisions->slot[1],
+	              &bytes[AIUS_AB_RECORD_OFFSET_REVISIONS +
+	                     AIUS_AB_REVISION_BYTES]);
+	return true;
+}
+
+FLASHMEM bool aius_ab_revision_parse(const char *text,
+	                             uint8_t revision[AIUS_AB_REVISION_BYTES])
+{
+	uint8_t packed[AIUS_AB_REVISION_BYTES];
+	uint32_t index;
+	int digit;
+
+	if (revision == NULL)
+		return false;
+	revision_copy(revision, NULL);
+	if (text == NULL)
+		return false;
+	/* The digit test stops at the NUL, so a short string never reads past
+	 * its end. */
+	for (index = 0u; index < AIUS_AB_REVISION_HEX_CHARS; index++) {
+		digit = hex_digit(text[index]);
+		if (digit < 0)
+			return false;
+		if ((index & 1u) == 0u)
+			packed[index / 2u] = (uint8_t)(digit << 4);
+		else
+			packed[index / 2u] |= (uint8_t)digit;
+	}
+	if (text[AIUS_AB_REVISION_HEX_CHARS] != '\0')
+		return false;
+	revision_copy(revision, packed);
+	return revision_known(revision);
+}
+
+FLASHMEM bool aius_ab_revision_format(
+	const uint8_t revision[AIUS_AB_REVISION_BYTES], char *text,
+	size_t capacity)
+{
+	uint32_t index;
+	unsigned nibble;
+
+	if (text == NULL || capacity == 0u)
+		return false;
+	text[0] = '\0';
+	if (revision == NULL || capacity < AIUS_AB_REVISION_TEXT_STORAGE ||
+	    !revision_known(revision))
+		return false;
+	for (index = 0u; index < AIUS_AB_REVISION_HEX_CHARS; index++) {
+		nibble = (index & 1u) == 0u ? (unsigned)(revision[index / 2u] >> 4)
+		                            : (unsigned)(revision[index / 2u] & 0xfu);
+		text[index] = (char)(nibble < 10u ? '0' + nibble
+		                                  : 'a' + (nibble - 10u));
+	}
+	text[AIUS_AB_REVISION_HEX_CHARS] = '\0';
+	return true;
+}
+
+FLASHMEM const uint8_t *aius_ab_revision_of(const AiusAbRevisions *revisions,
+	                                    uint8_t slot)
+{
+	const int index = revision_slot_index(slot);
+
+	if (revisions == NULL || index < 0)
+		return NULL;
+	return revisions->slot[index];
+}
+
+static FLASHMEM void revision_set(AiusAbRevisions *revisions, uint8_t slot,
+	                          const uint8_t *revision)
+{
+	const int index = revision_slot_index(slot);
+
+	if (index >= 0)
+		revision_copy(revisions->slot[index], revision);
+}
+
+FLASHMEM bool aius_ab_plan_healthy(const AiusAbRecord *record,
+	                           const AiusAbRevisions *revisions,
+	                           uint8_t running_slot,
+	                           const char *running_revision,
+	                           AiusAbRecord *next,
+	                           AiusAbRevisions *next_revisions)
+{
+	uint8_t packed[AIUS_AB_REVISION_BYTES];
+
+	if (next == NULL || next_revisions == NULL || !slot_valid(running_slot))
+		return false;
+	(void)aius_ab_revision_parse(running_revision, packed);
+	if (record == NULL) {
+		/* The fresh migration's first record, committed to this slot. */
+		next->sequence = 1u;
+		next->active_slot = running_slot;
+		next->pending_slot = AIUS_AB_SLOT_NONE;
+		next->trial_budget = 0u;
+		revisions_copy(next_revisions, NULL);
+		revision_set(next_revisions, running_slot, packed);
+		return true;
+	}
+	record_copy(next, record);
+	revisions_copy(next_revisions, revisions);
+	if (record->pending_slot == running_slot) {
+		/* The trial vouches for itself; the revision folds into the same
+		 * write. */
+		next->sequence++;
+		next->active_slot = running_slot;
+		next->pending_slot = AIUS_AB_SLOT_NONE;
+		next->trial_budget = 0u;
+		revision_set(next_revisions, running_slot, packed);
+		return true;
+	}
+	if (record->pending_slot != AIUS_AB_SLOT_NONE)
+		return false; /* a trial for the other slot stays as it is */
+	if (revision_equal(aius_ab_revision_of(next_revisions, running_slot),
+	                   packed))
+		return false;
+	next->sequence++;
+	revision_set(next_revisions, running_slot, packed);
+	return true;
+}
+
+FLASHMEM bool aius_ab_plan_pending(const AiusAbRecord *record,
+	                           const AiusAbRevisions *revisions,
+	                           uint8_t running_slot, uint8_t budget,
+	                           const char *target_revision,
+	                           AiusAbRecord *next,
+	                           AiusAbRevisions *next_revisions)
+{
+	uint8_t packed[AIUS_AB_REVISION_BYTES];
+
+	if (next == NULL || next_revisions == NULL ||
+	    !slot_valid(running_slot) || budget == 0u ||
+	    budget > AIUS_AB_MAX_TRIAL_BOOTS)
+		return false;
+	if (record != NULL) {
+		record_copy(next, record);
+		revisions_copy(next_revisions, revisions);
+	} else {
+		next->sequence = 0u;
+		revisions_copy(next_revisions, NULL);
+	}
+	next->sequence++;
+	next->active_slot = running_slot;
+	next->pending_slot = aius_ab_other_slot(running_slot);
+	next->trial_budget = budget;
+	(void)aius_ab_revision_parse(target_revision, packed);
+	revision_set(next_revisions, next->pending_slot, packed);
+	return true;
+}
+
+FLASHMEM bool aius_ab_plan_clear_other(const AiusAbRecord *record,
+	                               const AiusAbRevisions *revisions,
+	                               uint8_t running_slot, AiusAbRecord *next,
+	                               AiusAbRevisions *next_revisions)
+{
+	const uint8_t other = aius_ab_other_slot(running_slot);
+	const uint8_t *stored;
+
+	if (record == NULL || revisions == NULL || next == NULL ||
+	    next_revisions == NULL || !slot_valid(running_slot))
+		return false;
+	stored = aius_ab_revision_of(revisions, other);
+	if (!revision_known(stored))
+		return false;
+	record_copy(next, record);
+	revisions_copy(next_revisions, revisions);
+	next->sequence++;
+	if (next->pending_slot == other) {
+		next->active_slot = running_slot;
+		next->pending_slot = AIUS_AB_SLOT_NONE;
+		next->trial_budget = 0u;
+	}
+	revision_set(next_revisions, other, NULL);
+	return true;
+}
+
+FLASHMEM bool aius_ab_plan_switch(const AiusAbRecord *record,
+	                          uint8_t running_slot, uint8_t budget,
+	                          AiusAbRecord *next)
+{
+	if (record == NULL || next == NULL || !slot_valid(running_slot) ||
+	    budget == 0u || budget > AIUS_AB_MAX_TRIAL_BOOTS)
+		return false;
+	if (record->pending_slot != AIUS_AB_SLOT_NONE ||
+	    record->active_slot != running_slot)
+		return false;
+	record_copy(next, record);
+	next->sequence++;
+	next->pending_slot = aius_ab_other_slot(running_slot);
+	next->trial_budget = budget;
+	return true;
+}
+
+#endif /* __STDC_HOSTED__ */

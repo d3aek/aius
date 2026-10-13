@@ -57,8 +57,27 @@
         <p id="ota-errors" class="error-summary" role="alert" hidden></p>
       </section>
 
+      <!-- The A/B slots: which physical slot runs, what each holds (the boot
+           record's per-slot revision), and the switch. The switch reboots
+           through the chooser's trial boot, so an image that never comes up
+           healthy falls back on its own. -->
+      <section class="panel status-card" aria-labelledby="slots-title">
+        <div class="section-title panel__head"><h2 id="slots-title" class="kicker">02 / Firmware slots</h2><span id="slots-pill" class="pill">loading</span></div>
+        <div id="slots-grid" class="status-grid spec-grid spec-grid--fill">
+          <div><span>Running slot</span><strong id="slot-running">--</strong></div>
+          <div><span>Running revision</span><strong id="slot-running-revision" class="ota-identity__value">--</strong></div>
+          <div><span>Other slot</span><strong id="slot-other">--</strong></div>
+          <div><span>Other revision</span><strong id="slot-other-revision" class="ota-identity__value">--</strong></div>
+        </div>
+        <div class="controls">
+          <button id="boot-other" type="button" class="danger" disabled>Boot the other slot</button>
+        </div>
+        <p id="slots-status" class="hint" role="status">Reading slot state...</p>
+        <p id="slots-errors" class="error-summary" role="alert" hidden></p>
+      </section>
+
       <section class="panel page-grid__wide" aria-labelledby="image-title">
-        <div class="section-title panel__head"><h2 id="image-title" class="kicker">02 / Signed container</h2><span id="image-pill" class="pill">no image</span></div>
+        <div class="section-title panel__head"><h2 id="image-title" class="kicker">03 / Signed container</h2><span id="image-pill" class="pill">no image</span></div>
         <p class="hint">The 256-byte container header is parsed in this browser before a byte is sent, so an image for another board, another format version or another signature scheme is refused here rather than after a multi-megabyte upload.</p>
         <div class="controls">
           <label class="controls__field controls__field--file">Container file <input id="image-file" type="file" accept=".aiuo,application/octet-stream"></label>
@@ -84,7 +103,7 @@
       </section>
 
       <section class="panel page-grid__narrow" aria-labelledby="log-title">
-        <div class="section-title panel__head"><h2 id="log-title" class="kicker">03 / Progress log</h2><span id="log-pill" class="pill">idle</span></div>
+        <div class="section-title panel__head"><h2 id="log-title" class="kicker">04 / Progress log</h2><span id="log-pill" class="pill">idle</span></div>
         <p class="hint">One line per step, in the order the device performs them. A step turns green from the route's own answer plus a read of <code>/api/ota</code>; a failure names the fault and stops the run where it stands. Uploading the same container again resumes from the offset the device reports.</p>
         <ol id="log" class="ota-log"></ol>
         <p id="log-status" class="hint" role="status">Nothing attempted yet.</p>
