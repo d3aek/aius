@@ -42,7 +42,8 @@ handover.
 - **Board.** Runs `57977135e472` in slot 2 (second OTA 2026-10-12,
   source off: 4q to 4t; self-committed, `ab.active_slot` 2,
   `trial_budget` 0, `rollback_observed` false; `clock.master` "input").
-  Slot 1 holds `4540da30e5b6` (first replay-free image). Slot-a OCRAM
+  Slot 1 is not bootable (head erased by 4y's two faulted activations,
+  2026-10-13); it held `4540da30e5b6`. Slot-a OCRAM
   free 264,736 B, exactly the floor; retired-symbols guard passed. The
   card serves 4q to 4t's pages (sync of 22 files and `--delete
   classic.html` 2026-10-12; `classic.html` and `.gz` answer 404, the
@@ -64,10 +65,13 @@ handover.
   owner's: the 4e, 4f, 4g and 4h runs listed in 4b, 4n's Firefox check,
   4i's post-removal check. A bench run is a last resort, batched, never
   mixed with listening (aius CLAUDE.md).
-- **Next action: one full card sync for 4u to 4x, then the owner's
-  phone and desktop check of the three pages.** Then 4y's OTA (owner's
-  word): rebuild from the committed tree, sign without `--slot`,
-  activate; then the device proof in 4y's contract, including one
+- **Next action: Phase 4z step 1, the owner's route past the running
+  image's stale-cache activation bug (4y's two OTAs faulted identically;
+  diagnosis in 4y). Slot 1 is not bootable until an activation
+  completes.** Independently:
+  one full card sync for 4u to 4x, then the owner's phone and desktop
+  check of the three pages. Then 4y's OTA (owner's word): rebuild from
+  the committed tree, sign without `--slot`, activate; then the device proof in 4y's contract, including one
   `/api/reboot` after the self-commit. The card sync must include 4y's
   `upgrade.html` and `upgrade.js`. Card writes (sync, `delete-www`, `--delete`) are refused
   by the auto-mode classifier ("Remote Shell Writes", even with the
@@ -8172,6 +8176,49 @@ depends-on: none # web files disjoint from 4x (upgrade.* only)
     (which restages) is not refused.
   - A retry faulting at the same offset makes it repeatable and a bench
     item.
+- **Second OTA attempt (owner's "retry", 2026-10-13): the same VERIFY
+  fault, bit for bit, so it is deterministic and the transient-glitch
+  reading above is refuted.** Restaging took 4 retried chunk faults
+  (`sd_busy` x3, `sd_failure` x1), then verify, arm and activate passed.
+  The fresh stamp (`dark_window_cycles` 51,661,410 against the first
+  attempt's 49,119,630; `prev_boot.final_checkpoint` 10 against 0)
+  matches the first in every other field: step 14 of 2,550, step address
+  0x60011B00, compare offset 0x1B80, 2,816 bytes programmed and verified,
+  digest prefix `60dd587bdd3c4cb0`. The board is back on slot 2 running
+  `57977135e472`, the record is untouched (sequence 27, active 2, pending
+  0, `rollback_observed` false). Evidence:
+  `status-post-4y-2.json`, `ota-b3e48f6db8b1-retry.log` (session
+  scratch). No further activation until the cause is read from code.
+- **Cause, read from code and bytes (supersedes the two cause and slot 1
+  bullets of the first attempt): a stale M7 D-cache line in the running
+  image's activation read path.** The fix and the route past it are
+  Phase 4z.
+  - In `57977135e472` (commit `5797713`), `ota_flash_read` in
+    `firmware/src/optical_main.cpp` (about :5285 to :5319 at that commit)
+    invalidates `[address, length)`, then calls the FLASHMEM
+    `aius_ab_remap_for_slot` (`firmware/lib/aius_ab/src/aius_ab.c:321`).
+    That function's literal-pool loads refill canonical line 0x60011B80
+    with the running slot B bytes. The GPR32 identity flip and FlexSPI
+    SWRESET do not touch the D-cache, so the copy loop reads 0x1B00 to
+    0x1B7F from physical slot A correctly and hits the stale line at
+    0x1B80. This breaks the step path's own rule that it reaches nothing
+    FLASHMEM (`firmware/lib/aius_ota/src/aius_ota_activate.c:14-22`).
+  - Why earlier OTAs passed: `4540da30e5b6` and `57977135e472` carry
+    identical bytes on 0x1B80 to 0x1B9F, so the stale line equalled the
+    new content. Running from slot A remaps by 0 and takes the plain
+    path. 4y grew `aius_ab.c` and shifted the helper by 0x6C, so
+    `b3e48f6db8b1` differs on that line and faults every time.
+  - FlexSPI RX-buffer staleness, 0xFF-run skipping, a 128/256 buffer bug,
+    erase ordering and protected-region overlap are each killed by code
+    (`aius_ota_activate.c:221`, `:488-509`; SWRESET on both sides of the
+    flip).
+  - Slot 1 is NOT bootable: the head sector was erased at step 1 and is
+    programmed last, so the corrected reading is that the board has no
+    second bootable slot until an activation completes. A cold power
+    cycle still boots slot 2.
+  - HEAD carries the same read path (about `optical_main.cpp:5380-5426`).
+  - Unchecked: that the rehearsal's scratch sector never overlaps the
+    helper's canonical line, which would explain why rehearsals passed.
 - **Accepted (delivery audit nits).**
   - N1: after a failed pre-dark clear, re-activating the same container
     is refused (INTERRUPTED) until a reboot. Reboot to retry.
@@ -8186,6 +8233,53 @@ depends-on: none # web files disjoint from 4x (upgrade.* only)
 - **Order.** Prebuild adversarial review of this contract first, then
   the build. Rebuilding images is serialized against any other firmware
   build; build_ab.sh runs last.
+
+### Phase 4z The activation read path never refills a stale cache line
+
+```yaml
+outcome: >-
+  ota_flash_read computes its remap before the window from RAM-held values,
+  invalidates [address, length) after the GPR32 flip and SWRESET and right
+  before the copy loop, and the step path calls nothing in FLASHMEM; an
+  image carrying the fix and 4y activates from the running 57977135e472
+  into slot 1 and self-commits
+seams:
+  - firmware/src/optical_main.cpp ota_flash_read and its window
+  - firmware/lib/aius_ab (remap helper placement or a RAM-cached remap)
+  - post-link guards (no FLASHMEM call reachable from the step path)
+  - the route past the running image's bug (decided in step 1)
+targeted-proof: >-
+  disassembly of the canonical slot-a ELF shows no flash-resident call
+  between the invalidate and the copy loop (post-link guard, failing on a
+  planted veneer call); ab, ota, optical-app suites and all image floors
+  green; the route check in step 1; then the owner's OTA and 4y's device
+  proof
+unit: parent-only
+```
+
+- **Step 1: Interrogate the user: route past the running image's bug.**
+  The running `57977135e472` keeps the bug until it is replaced, so it
+  miswrites any image that differs from it on canonical 0x60011B80 to
+  0x1B9F.
+  - **Question:** how does the fixed image get onto the board?
+  - **Options:** (a) bridge OTA: pin those 32 bytes in the fixed image to
+    `57977135e472`'s bytes through the linker script, with a host check
+    that the signed payload matches them before signing; no physical
+    access, and later images need no pin because the fixed code then
+    runs. (b) USB `recovery.hex` via `firmware/scripts/flash_optical.sh`:
+    no pin, but the owner's hands on the board's USB and audio stops.
+  - **Recommendation:** (a). It needs no physical access, and a clean
+    activation also confirms the cache diagnosis.
+  - **Blocks:** step 2 onward.
+- **Step 2:** confirm the diagnosis without the device: build `5797713`'s
+  canonical image in a scratch build dir; `nm` shows
+  `aius_ab_remap_for_slot` at 0x60011B60, and the disassembly of
+  `ota_flash_read` orders the invalidate, the remap veneer call, the
+  GPR32 write, then the loop.
+- **Step 3:** the fix, the guard, the route's artefacts; prebuild
+  adversarial review of this contract first.
+- Evidence from the diagnosis: session scratch `diag-ota/` and
+  `diag-ota-scripts/` (payload compares).
 
 ### Phase 4c `test.sh` runs every `--suite` given ✓ SHIPPED 2026-10-06
 
