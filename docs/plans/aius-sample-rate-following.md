@@ -36,16 +36,19 @@ handover.
   run: Phase 4 (gate 7 at fill-write cadence on the U24 bench), 4e, 4f,
   4g, 4h, 4j, 4k, 4l, 4m. **4u, 4v, 4w, 4x** (SD page layout) built,
   awaiting one card sync and the owner's phone and desktop check.
-  **4y** (slot card and boot-other) built, delivery audit PASS, needs the
-  owner's OTA. 4b (acceptance umbrella) closes after 4e to 4h's device
+  **4y** (slot card and boot-other) running on the board since the 4z
+  bridge OTA; it needs the card sync and one `/api/reboot` to finish its
+  device proof. **4z** SHIPPED (bridge OTA 2026-10-13); **4za** (pin
+  removal, fixed path proven from slot 2) is next firmware work. 4b
+  (acceptance umbrella) closes after 4e to 4h's device
   runs and no longer gates 4i (owner, 2026-10-12).
-- **Board.** Runs `57977135e472` in slot 2 (second OTA 2026-10-12,
-  source off: 4q to 4t; self-committed, `ab.active_slot` 2,
-  `trial_budget` 0, `rollback_observed` false; `clock.master` "input").
-  Slot 1 is not bootable (head erased by 4y's two faulted activations,
-  2026-10-13); it held `4540da30e5b6`. Slot-a OCRAM
-  free 264,736 B, exactly the floor; retired-symbols guard passed. The
-  card serves 4q to 4t's pages (sync of 22 files and `--delete
+- **Board.** Runs `f075872c8b82` in slot 1 (4z bridge OTA 2026-10-13,
+  carrying 4y and 4z; self-committed, `ab.active_slot` 1, sequence 29,
+  `trial_budget` 0, `rollback_observed` false, `revisions` {1:
+  `f075872c8b82`, 2: null}). Slot 2 holds `57977135e472` (4q to 4t), so
+  the 4z bridge pin stays until 4za. Slot-a OCRAM free 264,736 B, exactly
+  the floor; ITCM free 13,364 B; `_ebss` at its ceiling. The card serves
+  4q to 4t's pages (sync of 22 files and `--delete
   classic.html` 2026-10-12; `classic.html` and `.gz` answer 404, the
   served `index.html` is byte-identical to source) and holds no replay
   captures or pages.
@@ -65,18 +68,11 @@ handover.
   owner's: the 4e, 4f, 4g and 4h runs listed in 4b, 4n's Firefox check,
   4i's post-removal check. A bench run is a last resort, batched, never
   mixed with listening (aius CLAUDE.md).
-- **Next action: Phase 4z's device steps (owner's word, audio cost
-  first): restaging before each, rehearse `b3e48f6db8b1` (expect VERIFY
-  at 0x1B80), rehearse the 4z bridge image (expect COMPLETED), then
-  activate it and run 4y's device proof.** 4z is built, reviewed and
-  committed. The bridge container is rebuilt from the committed tree
-  and signed without `--slot`. Slot 1 is not bootable until an
-  activation completes. Independently:
-  one full card sync for 4u to 4x, then the owner's phone and desktop
-  check of the three pages. Then 4y's OTA (owner's word): rebuild from
-  the committed tree, sign without `--slot`, activate; then the device proof in 4y's contract, including one
-  `/api/reboot` after the self-commit. The card sync must include 4y's
-  `upgrade.html` and `upgrade.js`. Card writes (sync, `delete-www`, `--delete`) are refused
+- **Next action: the owner's full card sync (4u to 4x pages and 4y's
+  `upgrade.html` and `upgrade.js`), then one `/api/reboot` for 4y's
+  device proof** (`record_valid` true, same slot, `rollback_observed`
+  false, revisions kept), then the owner's phone and desktop check of
+  the three pages. Card writes (sync, `delete-www`, `--delete`) are refused
   by the auto-mode classifier ("Remote Shell Writes", even with the
   owner's authorization); they run when the owner switches the session
   to manual approval, or by the owner with `!`.
@@ -8237,7 +8233,7 @@ depends-on: none # web files disjoint from 4x (upgrade.* only)
   the build. Rebuilding images is serialized against any other firmware
   build; build_ab.sh runs last.
 
-### Phase 4z The activation read path never refills a stale cache line
+### Phase 4z The activation read path never refills a stale cache line ✓ SHIPPED 2026-10-13
 
 ```yaml
 outcome: >-
@@ -8411,9 +8407,24 @@ unit: parent-only
   rehearsals. It stages, verifies, arms, enables activation, then POSTs
   `/api/ota/rehearse` (`firmware/test/ota/test_ota_flash_client.py`, 14
   tests).
-- **Step 5:** `the release-promotion step` aius `CLAUDE.md`'s signing paragraph:
+- **Step 5: done.** Promoted aius `CLAUDE.md`'s signing paragraph:
   until Phase 4za, `aius_ota_sign.py sign` refuses a canonical image
   whose payload 0x1B80 to 0x1B9F does not carry the bridge pin.
+- **Device steps (owner's "ok", 2026-10-13), all as predicted.**
+  1. Rehearsal of `b3e48f6db8b1` from slot 2: one retried chunk, then
+     FAULTED, VERIFY at compare 0x1B80, step 14 of 2,550, `rehearsal`
+     true. The diagnosis is confirmed on the device.
+  2. Rehearsal of the bridge `f075872c8b82`: 0 retries, then COMPLETED,
+     fault 0, 2,555 of 2,555 steps. The dark window took 4,025,210,828
+     cycles, about 6.7 s at 600 MHz.
+  3. Activation of the bridge: 0 retries, COMPLETED, trial boot and
+     self-commit. The board then read `f075872c8b82` in slot 1:
+     `active_slot` 1, `trial_budget` 0, sequence 29, `ledger_boots` 1,
+     `rollback_observed` false. `revisions` read {1: `f075872c8b82`,
+     2: null}; slot 2 reads null because `57977135e472` predates
+     recorded revisions.
+  - Evidence (session scratch): `ota-4z-step{1,2,3}.log` and
+    `status-post-4z-step{1,2,3}*.json`.
 - Evidence from the diagnosis: session scratch `diag-ota/` and
   `diag-ota-scripts/` (payload compares).
 
