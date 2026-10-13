@@ -8061,7 +8061,7 @@ targeted-proof: >-
   read of a non-zero reserved field). The switch itself is the owner's call
   and not part of the proof
 unit: implementer
-prebuild-review: round 2 NOT READY 2026-10-13 (B wrong revision macro, S clear placement, S exclusion latch, S N3 code fix, N oracle, N write order, N confirm text), folded; round 1 NOT READY (B1, B2, S1 to S6, N1 to N4), folded; round 3 pending
+prebuild-review: round 3 READY 2026-10-13, nits N1 to N4 folded below; round 2 NOT READY 2026-10-13 (B wrong revision macro, S clear placement, S exclusion latch, S N3 code fix, N oracle, N write order, N confirm text), folded; round 1 NOT READY (B1, B2, S1 to S6, N1 to N4), folded; round 3 pending
 depends-on: none # web files disjoint from 4x (upgrade.* only)
 ```
 
@@ -8092,6 +8092,22 @@ depends-on: none # web files disjoint from 4x (upgrade.* only)
   `recovery.hex` flash erases the record sectors, the healthy mark on
   every boot rewrites the running slot's revision when it differs, so no
   `recovery.hex` change is needed.
+- **Review round 3 nits, part of the build.**
+  - N1: the healthy mark's revision rewrite runs only when
+    `pending_slot` is NONE or the running slot. A write with the other
+    slot pending (a failed rollback write in `ab_compose`,
+    `optical_main.cpp:5080`) would bump the sequence and give a failed
+    image another crash cycle. On a trial boot it folds into the commit
+    write, one write.
+  - N2: `#ifndef AIUS_BUILD_SOURCE_REV` falls back to "unknown" beside
+    the existing fallbacks (`optical_main.cpp:151-162`).
+  - N3: the activation clear runs after `aius_ota_activate_begin()`
+    succeeds (`:11079-11086`), so a digest or signature refusal never
+    marks an intact slot unknown; a failed clear exits through
+    `ota_activation_recover()` (`:10958`).
+  - N4: the slots card shows the running revision in the 12-hex form
+    (`build_revision` reads `<rev>+aius-ab`), so both slots compare at a
+    glance.
 - **Accepted (review round 2):** a refusal before the dark window, after
   the clear, leaves an intact slot showing "unknown"; that is the safe
   direction.
