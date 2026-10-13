@@ -8151,6 +8151,27 @@ depends-on: none # web files disjoint from 4x (upgrade.* only)
     green; sd-editor 426.
   - Delivery audit PASS (same reviewer as the prebuild rounds), with S1:
     aius `CLAUDE.md`'s rehearsal line, reworded by `the release-promotion step`.
+- **First OTA attempt (owner's word, 2026-10-13): VERIFY fault in the
+  dark window; the board is safe on `57977135e472`.** Signed
+  `b3e48f6db8b1` (container sha256 `0dc4a540…209a7d`, no `--slot`) staged
+  and verified, then the running image's activation faulted. The stamp
+  reads state 3, phase 5, fault 7 (VERIFY), with compare offset 7040
+  (0x1B80) at step 14 of 2,550. That step programmed 0x60011B00 in slot
+  A, after 2,816 bytes programmed and verified. The board came back on
+  slot 2 with the record untouched (sequence 27, active 2, pending 0,
+  `rollback_observed` false), `/api/ota` idle, and boot events only.
+  - Cause, read from code: not the 4y content, which is data checked
+    against a digest-verified staged copy. The running code's activation
+    path is unchanged from `ce1159286fd2`, which wrote slot 1 from slot
+    2 once before. The mismatch falls at a 128-byte half-page boundary,
+    which suggests a FlexSPI or AHB transfer glitch (inferred, not
+    proven).
+  - Slot 1 now holds the new IVT and startup code over the old body. The
+    chooser boots it only if slot 2's IVT failed or pending were set, so
+    a cold power cycle is safe. The health mark is RAM-only, so a retry
+    (which restages) is not refused.
+  - A retry faulting at the same offset makes it repeatable and a bench
+    item.
 - **Accepted (delivery audit nits).**
   - N1: after a failed pre-dark clear, re-activating the same container
     is refused (INTERRUPTED) until a reboot. Reboot to retry.
