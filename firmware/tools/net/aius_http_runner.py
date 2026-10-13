@@ -197,7 +197,11 @@ def main():
     # its three POSTs and `reboot` never reboots.
     parser.add_argument("--auth-token", default=os.environ.get("AIUS_SD_TOKEN"),
                         help="X-Aius-SD-Auth for /api/start|stop|clear|reboot")
+    # Agents pass the token by file: the classifier denies it on a command line.
+    parser.add_argument("--auth-file", help="file whose first token is X-Aius-SD-Auth")
     args = parser.parse_args()
+    if args.auth_file is not None:
+        args.auth_token = Path(args.auth_file).read_text(encoding="utf-8").split()[0]
     if ":" in args.target and args.target.rsplit(":", 1)[1].isdigit():
         host, port_text = args.target.rsplit(":", 1)
         target = (host, int(port_text))

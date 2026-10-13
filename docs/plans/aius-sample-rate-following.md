@@ -35,10 +35,10 @@ handover.
   4t, 4i DONE. BUILT, with their device proof the owner's and not yet
   run: Phase 4 (gate 7 at fill-write cadence on the U24 bench), 4e, 4f,
   4g, 4h, 4j, 4k, 4l, 4m. **4u, 4v, 4w, 4x** (SD page layout) built,
-  awaiting one card sync and the owner's phone and desktop check.
-  **4y** (slot card and boot-other) running on the board since the 4z
-  bridge OTA; it needs the card sync and one `/api/reboot` to finish its
-  device proof. **4z** SHIPPED (bridge OTA 2026-10-13); **4za** (pin
+  synced to the card 2026-10-13, awaiting the owner's phone and desktop
+  check. **4y** (slot card and boot-other) running on the board since
+  the 4z bridge OTA; its reboot proof passed 2026-10-13, and it awaits
+  the same page check. **4z** SHIPPED (bridge OTA 2026-10-13); **4za** (pin
   removal, fixed path proven from slot 2) is next firmware work. 4b
   (acceptance umbrella) closes after 4e to 4h's device
   runs and no longer gates 4i (owner, 2026-10-12).
@@ -48,10 +48,9 @@ handover.
   `f075872c8b82`, 2: null}). Slot 2 holds `57977135e472` (4q to 4t), so
   the 4z bridge pin stays until 4za. Slot-a OCRAM free 264,736 B, exactly
   the floor; ITCM free 13,364 B; `_ebss` at its ceiling. The card serves
-  4q to 4t's pages (sync of 22 files and `--delete
-  classic.html` 2026-10-12; `classic.html` and `.gz` answer 404, the
-  served `index.html` is byte-identical to source) and holds no replay
-  captures or pages.
+  the 4u to 4y pages (full sync of 22 files 2026-10-13; `classic.html`
+  removed 2026-10-12) and holds no replay captures or pages. A
+  `/api/reboot` 2026-10-13 kept slot 1 and the record intact (4y).
   `df966f17b370` stays
   the owner's **fail-safe rollback candidate**: tag
   `fw-rollback-df966f17b370`, signed container and USB `recovery.hex` in
@@ -68,14 +67,12 @@ handover.
   owner's: the 4e, 4f, 4g and 4h runs listed in 4b, 4n's Firefox check,
   4i's post-removal check. A bench run is a last resort, batched, never
   mixed with listening (aius CLAUDE.md).
-- **Next action: the owner's full card sync (4u to 4x pages and 4y's
-  `upgrade.html` and `upgrade.js`), then one `/api/reboot` for 4y's
-  device proof** (`record_valid` true, same slot, `rollback_observed`
-  false, revisions kept), then the owner's phone and desktop check of
-  the three pages. Card writes (sync, `delete-www`, `--delete`) are refused
-  by the auto-mode classifier ("Remote Shell Writes", even with the
-  owner's authorization); they run when the owner switches the session
-  to manual approval, or by the owner with `!`.
+- **Next action: the owner's phone and desktop check of the dsp, status
+  and upgrade pages** (the upgrade page shows slot 1 active running
+  `f075872c8b82` and slot 2 "unknown"); it marks 4u, 4v, 4w, 4x and 4y
+  SHIPPED. Then 4za. The auto-mode classifier has refused card writes
+  before ("Remote Shell Writes") but ran the 2026-10-13 sync once the
+  owner said to try; if it refuses, the owner runs it with `!`.
 - **What landed this run** (aius commits, each followed by a upstream repository
   pointer bump):
 
@@ -8232,6 +8229,19 @@ depends-on: none # web files disjoint from 4x (upgrade.* only)
 - **Order.** Prebuild adversarial review of this contract first, then
   the build. Rebuilding images is serialized against any other firmware
   build; build_ab.sh runs last.
+- **Device proof, reboot leg (owner's word, 2026-10-13): PASS.** 4y runs
+  as part of `f075872c8b82` (the 4z bridge). After the full card sync (22
+  files, `sd_flush.drained` true), one `POST /api/reboot` (via
+  `firmware/tools/net/aius_http_runner.py reboot --auth-file`) brought
+  the board back on slot 1. The record held: `record_valid` true,
+  `active_slot` 1, `pending_slot` 0, sequence 29, `trial_budget` 0,
+  `rollback_observed` false, `revisions` {1: `f075872c8b82`, 2: null}.
+  `ledger_boots` is 0, the chooser's attempt count on a committed boot,
+  and `prev_boot.first_abort` is 254 (`AIUS_ABORT_NONE`). This was the
+  frozen chooser's first read of a non-zero reserved field. Evidence:
+  `status-pre-4y-reboot.json`, `status-post-4y-reboot.json` (session
+  scratch). The page check (both slots on the upgrade page) is the
+  owner's and still open.
 
 ### Phase 4z The activation read path never refills a stale cache line ✓ SHIPPED 2026-10-13
 
