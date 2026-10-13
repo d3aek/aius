@@ -71,6 +71,18 @@ SECTIONS
 
 	.text.code : {
 		KEEP(*(.startup))
+		/* AIUS ADDITION — OTA bridge pin; see aius-sample-rate-following.md Phase 4z (removed by Phase 4za). */
+		. = ORIGIN(FLASH) + 0x1B80;
+		/* aius-bridge-pin begin: 57977135e472 canonical 0x1B80..0x1B9F */
+		LONG(0x608b4a02)
+		LONG(0xc200e9c1)
+		LONG(0xbf004770)
+		LONG(0x603e8000)
+		LONG(0x60010000)
+		LONG(0xf04fb1bb)
+		LONG(0x18d30c00)
+		LONG(0xeb4cb510)
+		/* aius-bridge-pin end */
 		*(.flashmem*)
 		/* AIUS ADDITION — TweetNaCl pinned to flash; see the EXCLUDE_FILE on
 		 * .text.itcm and aius_ota_ed25519.c's placement note. */

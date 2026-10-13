@@ -129,6 +129,30 @@ TWEETNACL_ITCM_PINNED = (
 )
 TWEETNACL_ITCM_FRAMEWORK = "\t\t*(.text*)\n"
 
+# The OTA bridge pin (aius-sample-rate-following.md Phase 4z): the running
+# 57977135e472 miswrites canonical 0x1B80..0x1B9F of any image that differs
+# from it there, so the fixed image pins those 32 bytes to that image's bytes.
+# Inside the framework's .text.code body, between .startup and .flashmem, so it
+# is normalised away before the compare; any edit to it is drift (the signing
+# tool cross-checks the same words). Phase 4za removes the pin and this block.
+BRIDGE_PIN_ANCHOR = "\t\tKEEP(*(.startup))\n"
+BRIDGE_PIN_BLOCK = (
+    "\t\t/* AIUS ADDITION — OTA bridge pin; see aius-sample-rate-following.md"
+    " Phase 4z (removed by Phase 4za). */\n"
+    "\t\t. = ORIGIN(FLASH) + 0x1B80;\n"
+    "\t\t/* aius-bridge-pin begin: 57977135e472 canonical 0x1B80..0x1B9F */\n"
+    "\t\tLONG(0x608b4a02)\n"
+    "\t\tLONG(0xc200e9c1)\n"
+    "\t\tLONG(0xbf004770)\n"
+    "\t\tLONG(0x603e8000)\n"
+    "\t\tLONG(0x60010000)\n"
+    "\t\tLONG(0xf04fb1bb)\n"
+    "\t\tLONG(0x18d30c00)\n"
+    "\t\tLONG(0xeb4cb510)\n"
+    "\t\t/* aius-bridge-pin end */\n"
+)
+BRIDGE_PIN_NEXT = "\t\t*(.flashmem*)\n"
+
 FOOTER_START = "\n/* AIUS ADDITION — the enforcement."
 
 REQUIRED_ASSERTS = (
@@ -215,6 +239,18 @@ def strip_additions(text: str) -> str:
         )
     body = body.replace(TWEETNACL_ITCM_PINNED, TWEETNACL_ITCM_FRAMEWORK, 1)
 
+    # The bridge pin: exactly once, immediately after .startup and before
+    # .flashmem (the `. =` is ORIGIN-relative, so it lands at payload 0x1B80
+    # only there; ld refuses it if .startup ever grows past that offset).
+    if body.count(BRIDGE_PIN_BLOCK) != 1:
+        raise DriftError("the OTA bridge pin block is missing or edited")
+    if BRIDGE_PIN_ANCHOR + BRIDGE_PIN_BLOCK + BRIDGE_PIN_NEXT not in body:
+        raise DriftError(
+            "the OTA bridge pin must sit between KEEP(*(.startup)) and "
+            "*(.flashmem*) in .text.code"
+        )
+    body = body.replace(BRIDGE_PIN_BLOCK, "", 1)
+
     footer_at = body.find(FOOTER_START)
     if footer_at < 0:
         raise DriftError("the Aius ASSERT block is missing")
@@ -288,6 +324,15 @@ def self_test(ours: Path) -> None:
         ),
         "drop the TweetNaCl ITCM exclusion": text.replace(
             TWEETNACL_ITCM_PINNED, TWEETNACL_ITCM_FRAMEWORK, 1
+        ),
+        "drop the bridge pin": text.replace(BRIDGE_PIN_BLOCK, "", 1),
+        "edit a bridge pin word": text.replace(
+            "\t\tLONG(0x60010000)\n", "\t\tLONG(0x60010001)\n", 1
+        ),
+        "move the bridge pin after .flashmem": text.replace(
+            BRIDGE_PIN_BLOCK, "", 1
+        ).replace(
+            BRIDGE_PIN_NEXT, BRIDGE_PIN_NEXT + BRIDGE_PIN_BLOCK, 1
         ),
         "weaken the origin ASSERT": text.replace(
             "ADDR(.bss.aius_retained) == ORIGIN(RAM)",

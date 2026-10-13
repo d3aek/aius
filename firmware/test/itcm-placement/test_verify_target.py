@@ -488,6 +488,238 @@ class DarkWindowTests(unittest.TestCase):
             VERIFY.verify_dark_window_symbols(table)
 
 
+ETEXT = 0x2000
+
+
+def disassembly(**bodies: tuple[int, list[str]]) -> str:
+    """An `objdump -d --no-show-raw-insn` listing: one block per symbol,
+    each (start address, instruction lines "addr:\\tmnemonic\\toperands")."""
+    text = (
+        "\nfirmware.elf:     file format elf32-littlearm\n\n\n"
+        "Disassembly of section .text.itcm:\n"
+    )
+    for name, (start, lines) in bodies.items():
+        text += f"\n{start:08x} <{name}>:\n"
+        for line in lines:
+            text += f"     {line}\n"
+    return text
+
+
+def clean_bodies() -> dict[str, tuple[int, list[str]]]:
+    """The four named roots plus one primitive, all ITCM; ota_flash_read
+    reaches flash_wait only by bl, so the walk must follow it (N1)."""
+    return {
+        "aius_ota_activate_step": (0x100, [
+            "100:\tpush\t{r4, lr}",
+            "102:\tcbz\tr0, 10a <aius_ota_activate_step+0xa>",
+            "104:\tbl\t400 <aius_ota_activate_check_span_in>",
+            "108:\tbeq.n\t10a <aius_ota_activate_step+0xa>",
+            "10a:\tblx\tr3",
+            "10c:\tpop\t{r4, pc}",
+            "110:\t.word\t0x20004000",
+        ]),
+        "_ZL14ota_flash_readPvmPhm": (0x200, [
+            "200:\tpush\t{r3, lr}",
+            "202:\tldr\tr3, [pc, #8]\t; (20c <_ZL14ota_flash_readPvmPhm+0xc>)",
+            "204:\tbl\t500 <flash_wait>",
+            "208:\tb.w\t600 <memcpy>",
+            "20c:\t.word\t0xe000ef5c",
+            "210:\t.word\t0x402a8000",
+        ]),
+        "_ZL17ota_flash_programPvmPKhm": (0x300, ["300:\tbx\tlr"]),
+        "_ZL15ota_flash_erasePvm": (0x340, ["340:\tbx\tlr"]),
+        "_ZL12ota_wdt_feedPv": (0x380, ["380:\tbx\tlr"]),
+        "aius_ota_activate_check_span_in": (0x400, ["400:\tbx\tlr"]),
+        "flash_wait": (0x500, ["500:\tbx\tlr", "504:\t.word\t0x402a8000"]),
+        "memcpy": (0x600, ["600:\tbx\tlr"]),
+        "__aius_ab_remap_for_slot_veneer": (0x1f00, [
+            "1f00:\tldr.w\tpc, [pc]\t; 1f04 <__aius_ab_remap_for_slot_veneer+0x4>",
+            "1f04:\t.word\t0x60011b61",
+        ]),
+    }
+
+
+CLOSURE_ROOTS = (*VERIFY.STEP_LOOP_ROOTS, "ota_wdt_feed")
+
+
+class StepLoopClosureTests(unittest.TestCase):
+    """aius-sample-rate-following.md Phase 4z: nothing the activation step
+    loop reaches may fetch flash, by branch or by literal."""
+
+    def walk(self, bodies):
+        return VERIFY.verify_step_loop_closure(
+            VERIFY.parse_disassembly(disassembly(**bodies)), ETEXT,
+            CLOSURE_ROOTS,
+        )
+
+    def test_a_clean_closure_passes_and_walks_bl_only_callees(self) -> None:
+        functions, branches, words = self.walk(clean_bodies())
+        # 5 roots + check_span_in, flash_wait, memcpy; the veneer is unreached.
+        self.assertEqual(functions, 8)
+        # cbz, bl, beq.n, bl, b.w; `blx r3` is indirect and uncounted.
+        self.assertEqual(branches, 5)
+        self.assertEqual(words, 4)
+
+    def test_a_planted_veneer_call_fails(self) -> None:
+        bodies = clean_bodies()
+        start, lines = bodies["_ZL14ota_flash_readPvmPhm"]
+        lines.insert(1, "201:\tbl\t1f00 <__aius_ab_remap_for_slot_veneer>")
+        with self.assertRaisesRegex(
+            VERIFY.VerificationError,
+            r"ota_flash_readPvmPhm\+0x1 branches to veneer "
+            r"<__aius_ab_remap_for_slot_veneer>",
+        ):
+            self.walk(bodies)
+
+    def test_a_planted_flash_literal_in_a_callee_fails(self) -> None:
+        bodies = clean_bodies()
+        bodies["flash_wait"][1].append("508:\t.word\t0x60011b8c")
+        with self.assertRaisesRegex(
+            VERIFY.VerificationError,
+            r"flash_wait\+0x8 literal 0x60011b8c names flash",
+        ):
+            self.walk(bodies)
+
+    def test_the_flash_range_edges_are_inclusive(self) -> None:
+        for value, fails in (
+            (0x5FFFFFFF, False), (0x60000000, True),
+            (0x60FFFFFF, True), (0x61000000, False),
+        ):
+            bodies = clean_bodies()
+            bodies["memcpy"][1].append(f"604:\t.word\t0x{value:08x}")
+            with self.subTest(value=hex(value)):
+                if fails:
+                    with self.assertRaises(VERIFY.VerificationError):
+                        self.walk(bodies)
+                else:
+                    self.walk(bodies)
+
+    def test_a_tail_call_into_flash_fails(self) -> None:
+        bodies = clean_bodies()
+        bodies["_ZL12ota_wdt_feedPv"] = (0x380, [
+            "380:\tb.w\t60011b60 <aius_ab_remap_for_slot>",
+        ])
+        with self.assertRaisesRegex(
+            VERIFY.VerificationError,
+            r"ota_wdt_feedPv\+0x0 branches to 0x60011b60 "
+            r"<aius_ab_remap_for_slot> outside ITCM",
+        ):
+            self.walk(bodies)
+
+    def test_a_conditional_tail_call_past_etext_fails(self) -> None:
+        bodies = clean_bodies()
+        bodies["aius_ota_activate_check_span_in"] = (0x400, [
+            "400:\tbne.w\t2400 <past_etext>",
+            "404:\tbx\tlr",
+        ])
+        with self.assertRaisesRegex(
+            VERIFY.VerificationError, r"0x00002400 <past_etext> outside ITCM"
+        ):
+            self.walk(bodies)
+
+    def test_an_absent_root_fails(self) -> None:
+        bodies = clean_bodies()
+        del bodies["_ZL15ota_flash_erasePvm"]
+        with self.assertRaisesRegex(
+            VERIFY.VerificationError, r"root absent.*ota_flash_erase"
+        ):
+            self.walk(bodies)
+
+    def test_the_primitives_table_roots_are_parsed(self) -> None:
+        source = (
+            "\tprimitives.ctx = nullptr;\n"
+            "\tprimitives.erase_sector = ota_flash_erase;\n"
+            "\tprimitives.ctx = &g_ota_rehearsal_window;\n"
+            "\t\tprimitives.flash_read = ota_flash_read_inject_head_fault;\n"
+            "\tprimitives.erase_sector = ota_flash_erase;\n"
+        )
+        self.assertEqual(
+            VERIFY.primitive_roots(source),
+            ["ota_flash_erase", "ota_flash_read_inject_head_fault"],
+        )
+
+    def test_the_live_primitives_tables_name_every_primitive(self) -> None:
+        """N2: both tables (activation and rehearsal) are roots."""
+        roots = VERIFY.primitive_roots(
+            (FIRMWARE_ROOT / VERIFY.PRIMITIVES_SOURCE).read_text(
+                encoding="utf-8"
+            )
+        )
+        for name in (
+            "ota_flash_read", "ota_flash_read_inject_head_fault",
+            "ota_wdt_feed", "ota_dark_stamp_write",
+            "ota_rehearsal_dark_stamp_write", "ota_rehearsal_health_write",
+            "ota_flash_cycles", "ota_health_read", "ota_health_write",
+            "ota_rehearsal_health_read",
+        ):
+            self.assertIn(name, roots)
+        self.assertNotIn("nullptr", roots)
+
+    def test_a_ternary_right_hand_side_is_rejected(self) -> None:
+        with self.assertRaisesRegex(
+            VERIFY.VerificationError,
+            r"optical_main\.cpp:2:.*primitives\.flash_read.*not a bare",
+        ):
+            VERIFY.primitive_roots(
+                "\tprimitives.cycles = ota_flash_cycles;\n"
+                "\tprimitives.flash_read = inject ? a : b;\n"
+            )
+
+    def test_an_address_of_right_hand_side_is_accepted(self) -> None:
+        self.assertEqual(
+            VERIFY.primitive_roots("\tprimitives.cycles = &ota_fn;\n"),
+            ["ota_fn"],
+        )
+
+    def test_an_unassigned_function_pointer_field_is_rejected(self) -> None:
+        header = (
+            "typedef int (*FooFn)(void *ctx);\n"
+            "typedef struct {\n\tvoid *ctx;\n\tFooFn a; /* x */\n"
+            "\tFooFn b;\n} AiusOtaActivatePrimitives;\n"
+        )
+        self.assertEqual(VERIFY.primitive_function_fields(header), ["a", "b"])
+        self.assertEqual(
+            VERIFY.verify_primitive_fields_assigned(
+                "primitives.a = x;\nprimitives.b = &y;\n", header
+            ),
+            2,
+        )
+        with self.assertRaisesRegex(
+            VERIFY.VerificationError, r"never assigned.*: b\b"
+        ):
+            VERIFY.verify_primitive_fields_assigned(
+                "primitives.ctx = nullptr;\nprimitives.a = x;\n", header
+            )
+
+    def test_the_live_header_fields_are_all_assigned(self) -> None:
+        count = VERIFY.verify_primitive_fields_assigned(
+            (FIRMWARE_ROOT / VERIFY.PRIMITIVES_SOURCE).read_text(
+                encoding="utf-8"
+            ),
+            (FIRMWARE_ROOT / VERIFY.PRIMITIVES_HEADER).read_text(
+                encoding="utf-8"
+            ),
+        )
+        self.assertEqual(count, 8)
+
+    def test_the_remap_must_sit_in_dtcm(self) -> None:
+        self.assertEqual(
+            VERIFY.verify_remap_in_dtcm(
+                "00012000 A _etext\n20001a40 b _ZL15g_ab_read_remap\n"
+            ),
+            0x20001A40,
+        )
+        with self.assertRaisesRegex(VERIFY.VerificationError, r"not DTCM"):
+            VERIFY.verify_remap_in_dtcm("60012000 r _ZL15g_ab_read_remap\n")
+        with self.assertRaisesRegex(VERIFY.VerificationError, r"absent"):
+            VERIFY.verify_remap_in_dtcm("20001a40 b g_ab_record\n")
+
+    def test_the_summary_names_the_remap_address(self) -> None:
+        line = VERIFY._step_loop_summary(8, 6, 4, 0x20001A40)
+        self.assertIn("8 functions, 6 direct branches", line)
+        self.assertIn("g_ab_read_remap in DTCM at 0x20001a40", line)
+
+
 def tx_symbol_table(
     *rows: tuple[str, int, int],
 ) -> dict[str, tuple[int, int]]:

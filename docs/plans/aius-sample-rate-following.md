@@ -65,10 +65,13 @@ handover.
   owner's: the 4e, 4f, 4g and 4h runs listed in 4b, 4n's Firefox check,
   4i's post-removal check. A bench run is a last resort, batched, never
   mixed with listening (aius CLAUDE.md).
-- **Next action: Phase 4z step 1, the owner's route past the running
-  image's stale-cache activation bug (4y's two OTAs faulted identically;
-  diagnosis in 4y). Slot 1 is not bootable until an activation
-  completes.** Independently:
+- **Next action: Phase 4z's device steps (owner's word, audio cost
+  first): restaging before each, rehearse `b3e48f6db8b1` (expect VERIFY
+  at 0x1B80), rehearse the 4z bridge image (expect COMPLETED), then
+  activate it and run 4y's device proof.** 4z is built, reviewed and
+  committed. The bridge container is rebuilt from the committed tree
+  and signed without `--slot`. Slot 1 is not bootable until an
+  activation completes. Independently:
   one full card sync for 4u to 4x, then the owner's phone and desktop
   check of the three pages. Then 4y's OTA (owner's word): rebuild from
   the committed tree, sign without `--slot`, activate; then the device proof in 4y's contract, including one
@@ -8254,18 +8257,20 @@ seams:
     firmware/test/boot-target/test_ldscript_drift.py
   - firmware/tools/ota/aius_ota_sign.py (bridge check on the signed bytes)
 targeted-proof: >-
-  post-link guard on the canonical slot-a ELF: no bl, blx or b.w to a
-  target outside ITCM [0, _etext) and no literal-pool word in
-  0x60000000..0x60FFFFFF in ota_flash_read, ota_flash_program,
-  ota_flash_erase or the direct-call closure of aius_ota_activate_step,
+  post-link guard on the canonical slot-a ELF: walking bl and b/b.w to
+  symbols from the roots aius_ota_activate_step, ota_flash_read,
+  ota_flash_program, ota_flash_erase and every function assigned into
+  the activation primitives table, no branch targets outside ITCM
+  [0, _etext) and no literal-pool word falls in 0x60000000..0x60FFFFFF,
   and nm puts the remap values in DTCM; the guard fails on a planted
   veneer call and on a planted flash literal; the sign-time bridge check
   passes on the built payload and on 57977135e472's own payload, fails on
   b3e48f6db8b1's, and its unit test covers payload vs container offsets;
   ab, ota, optical-app, boot-target suites and all image floors green;
-  device (owner's word): rehearse b3e48f6db8b1 (expect VERIFY at compare
-  0x1B80), rehearse the bridge image (expect COMPLETED), then activate it
-  and run 4y's device proof
+  device (owner's word, audio cost stated first): restaging before each,
+  rehearse b3e48f6db8b1 (expect VERIFY at compare 0x1B80), rehearse the
+  bridge image (expect COMPLETED), then activate it and run 4y's device
+  proof; three stagings in all, since a rehearsal consumes the session
 unit: parent-only
 ```
 
@@ -8334,8 +8339,74 @@ unit: parent-only
   - Out of scope, folded in: an I-cache invalidate after the GPR32
     restore (a speculative fetch in the identity window could cache
     slot 1 code at canonical addresses).
-- **Step 3:** review round 2 by the same reviewer, then the build;
-  build_ab.sh last.
+- **Step 3: review round 2 PASS.** Minor findings folded in:
+  - N1: the guard's closure roots are named, so callees reached only
+    by `blx` (`check_*_in`, `eepromemu_*`, `flash_wait`, `memcpy`) are
+    walked.
+  - N2: every function in the primitives table is a root, so the
+    outcome's "nothing in the step loop reaches flash" is what the guard
+    proves.
+  - N3 and N4: moved into Phase 4za's contract.
+  - N5: three stagings, restaging before each; state the audio cost
+    before the ask.
+  - Accepted: indirect calls are safe outside the identity window,
+    because every primitive is synchronous and the next read's
+    invalidate drops any fill.
+- **Step 4:** the build; build_ab.sh last.
+  - Sign-time check landed in `firmware/tools/ota/aius_ota_sign.py`
+    (`bridge_pin_mismatch()`; canonical window without `--slot` only,
+    exit 2, no override) with `BridgePinTests` in
+    `firmware/test/ota/test_ota_signer.py`. It refuses `b3e48f6db8b1`'s
+    payload and passes `57977135e472`'s. Canonical fixtures now plant
+    the pin and run 8,192 bytes long.
+  - Firmware landed:
+    - `g_ab_read_remap` (`firmware/src/optical_main.cpp`) is filled in
+      `ab_compose`. `ota_flash_read` reads it with no call, invalidates
+      after the GPR32 flip and SWRESET, keeps the post-copy invalidate,
+      and runs ICIALLU after the restore.
+    - Bridge pin in `firmware/link/aius_teensy41.ld`, held by
+      `firmware/test/boot-target/test_ldscript_drift.py`. Removing it in
+      4za means removing `BRIDGE_PIN_BLOCK` there too.
+    - Closure guard in `firmware/test/itcm-placement/verify_target.py`.
+      Its roots are the four named functions plus every
+      `primitives.<field> = fn;` parsed from `optical_main.cpp`. The
+      remap `nm` check runs on slot-a and slot-b only.
+    - Deviation: the remap is in DTCM `.data`, not `.bss`, by section
+      attribute. In `.bss`, slot-a `_ebss` reached 0x200494e0, past the
+      0x200494c0 ceiling; `.data` has about 790 B of pad below
+      `_VectorsRam`. No floor moved.
+    - Proof:
+      - The guard rejects a planted veneer and a planted flash literal
+        on the real ELF, and fails on the pre-fix ELF.
+      - Canonical payload 0x1B80 to 0x1B9F holds the pin.
+      - Suites green: ab, ota, optical-app, boot-target (16),
+        http, runtime, registry (74 arms), stack-bound, memory,
+        producer-isolation, status-body-bound (473 B), and itcm-placement
+        (55).
+      - Slot-a ITCM free 13,364, which is +80 over its floor.
+  - Delivery audit PASS (same reviewer as rounds 1 and 2):
+    - The `.data` initialiser is zero and copied before any C code runs,
+      and `ab_compose` overwrites it.
+    - The window touches only peripherals, the PPB, the destination and
+      ITCM literals.
+    - The pin is unreferenced, and slot-b and plain images carry it at
+      ORIGIN+0x1B80; `_flashimagelen` grows by 0x400.
+    - D1 (the root parse silently skipped a non-identifier RHS) fixed:
+      such a line fails, and the parsed fields are cross-checked against
+      `AiusOtaActivatePrimitives`.
+    - D2 moved to Phase 4za.
+    - D3 accepted: the literal rule sees only pools objdump prints as
+      `.word`, and the current closure has no hand-written assembly
+      without mapping symbols.
+  - Found (not 4z): slot-a `_ebss` sits exactly at its ceiling, 0 B
+    headroom, so the next 7 B or more of slot-a DTCM `.bss` fails the
+    build. `firmware/src/aius_runtime_storage.cpp:1116` names
+    `_VectorsRam` 0x20007c00 where the guard pins 0x20007800 (a stale
+    comment). The itcm-placement standalone `_main` path never ran the
+    flash-pinned residency check (this predates 4z).
+- **Step 5:** `the release-promotion step` aius `CLAUDE.md`'s signing paragraph:
+  until Phase 4za, `aius_ota_sign.py sign` refuses a canonical image
+  whose payload 0x1B80 to 0x1B9F does not carry the bridge pin.
 - Evidence from the diagnosis: session scratch `diag-ota/` and
   `diag-ota-scripts/` (payload compares).
 
@@ -8343,8 +8414,9 @@ unit: parent-only
 
 ```yaml
 outcome: >-
-  the 4z bridge pin and its sign-time check are removed once the board
-  runs 4z's fixed code, and the identity-window read path is proven on
+  the 4z bridge pin and its sign-time check are removed once neither
+  slot's revision reads 57977135e472 in /api/status (a rollback to it
+  needs the pin again), and the identity-window read path is proven on
   the device from slot 2
 seams:
   - firmware/link/aius_teensy41.ld
@@ -8352,12 +8424,22 @@ seams:
 targeted-proof: >-
   boot-target and ota suites green with no pin; device (owner's word):
   with the board on slot 2 running fixed code, a rehearsal of an image
-  that differs from it on 5797713's old helper line reads COMPLETED
+  that differs from it on most 32-byte lines (dropping the pad shifts
+  every .flashmem byte by about 0x588; the fraction recorded) reads
+  COMPLETED
 unit: parent-only
 ```
 
 - Needs the board on slot 2 running 4z's fixed code: one more OTA after
   4z lands in slot 1 (4z review F4).
+- From 4z's delivery audit (D2, fixed path only, not the bridge): a
+  speculative D-fill of a canonical line outside `[address, length)`
+  in the identity window survives the restore, because only the read
+  range is invalidated, and a later FLASHMEM literal load (for example
+  `ab_activation_mark_pending`'s) could read slot 1 bytes. It is
+  nondeterministic. Decide here: record it as accepted beside 4z's F5,
+  or clean and invalidate the whole D-cache by set/way after the
+  restore (1,024 lines; safe for write-back OCRAM).
 
 ### Phase 4c `test.sh` runs every `--suite` given ✓ SHIPPED 2026-10-06
 

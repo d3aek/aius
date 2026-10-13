@@ -4993,6 +4993,18 @@ static bool g_ab_committed_this_boot;
  * Defaulting to AIUS_AB_SLOT keeps every consumer legacy-correct before the
  * chooser cutover. */
 static uint8_t g_ab_running_slot = AIUS_AB_SLOT;
+/* Phase 4z: the running slot's FlexSPI remap, filled by ab_compose() right
+ * after g_ab_running_slot is set, so ota_flash_read() reads it from DTCM
+ * with no call into FLASHMEM aius_ab_remap_for_slot(): a flash fetch there
+ * allocated a canonical D-cache line the identity-window copy then served
+ * stale (aius-sample-rate-following.md Phase 4z). Zero (the plain memcpy
+ * path) until composed. The itcm-placement guard pins it to DTCM.
+ * DTCM .data, not .bss, deliberately: .bss had 6 B of slack below the slot-a
+ * _ebss ceiling (0x200494c0) and these 12 B crossed the 32 B step, while
+ * .data has ~790 B of padding below the 1 KiB-aligned _VectorsRam, so the
+ * section attribute costs no DTCM floor. */
+__attribute__((section(".data.aius_ab_read_remap")))
+static AiusAbRemap g_ab_read_remap;
 
 /* Phase 4y: the winning record's per-slot revisions (bytes 16-27), read on
  * demand from its memory-mapped sector rather than mirrored in RAM (the
@@ -5086,6 +5098,9 @@ static FLASHMEM void ab_compose(void)
 		g_ab_ledger.booted_slot != AIUS_AB_SLOT_NONE;
 	g_ab_running_slot =
 		new_chooser ? g_ab_ledger.booted_slot : (uint8_t)AIUS_AB_SLOT;
+	/* Before any ota_flash_read() (F8): a rehearsal from slot 2 must take
+	 * the identity path. A slot with no remap leaves it zeroed. */
+	(void)aius_ab_remap_for_slot(g_ab_running_slot, &g_ab_read_remap);
 
 	/* Container acceptance follows the same gate: under the new chooser one
 	 * untagged canonical image serves every slot, so accept slot_id NONE;
@@ -5390,12 +5405,19 @@ FASTRUN static int ota_flash_read(void *ctx, uint32_t address, uint8_t *dest,
 	 * It runs FASTRUN with IRQs off (the context eepromemu's SWRESET uses) and
 	 * inside the dark window, which ends in a reset that re-programs the remap.
 	 * BENCH-REQUIRED: the remap/SWRESET timing is unvalidated off hardware; a
-	 * wrong read fails the verify (fail-safe), never bricks. */
+	 * wrong read fails the verify (fail-safe), never bricks.
+	 *
+	 * NOTHING HERE REACHES FLASH (Phase 4z). The remap comes from DTCM
+	 * (g_ab_read_remap), not a call: 57977135e472 called the FLASHMEM
+	 * aius_ab_remap_for_slot() through a veneer after the invalidate above,
+	 * its literal loads refilled canonical line 0x60011B80 with RUNNING-image
+	 * bytes, and the identity copy then read that stale line and failed
+	 * verify. The itcm-placement step-loop closure guard proves no branch
+	 * leaves ITCM and no flash literal sits in this function's reach. */
 	{
-		AiusAbRemap remap;
-		if (aius_ab_remap_for_slot(g_ab_running_slot, &remap) &&
-		    remap.offset != 0u && address >= remap.start &&
-		    address < remap.end) {
+		const uint32_t remap_offset = g_ab_read_remap.offset;
+		if (remap_offset != 0u && address >= g_ab_read_remap.start &&
+		    address < g_ab_read_remap.end) {
 			const uint32_t saved = IOMUXC_GPR_GPR32;
 			volatile const uint8_t *src =
 				(volatile const uint8_t *)(uintptr_t)address;
@@ -5410,6 +5432,11 @@ FASTRUN static int ota_flash_read(void *ctx, uint32_t address, uint8_t *dest,
 			while (FLEXSPI_MCR0 & FLEXSPI_MCR0_SWRESET)
 				;
 			__asm__ volatile("dsb\n\tisb\n\t" : : : "memory");
+			/* Drop any line allocated since the first invalidate (a
+			 * speculative D-read under the old mapping) so the copy below
+			 * fetches through the identity mapping; plain invalidate is
+			 * right, the flash MPU region is read-only and never dirty. */
+			arm_dcache_delete((void *)(uintptr_t)address, length);
 			for (i = 0u; i < length; i++)
 				dest[i] = src[i];
 			IOMUXC_GPR_GPR32 = saved; /* restore the running slot's remap */
@@ -5424,6 +5451,12 @@ FASTRUN static int ota_flash_read(void *ctx, uint32_t address, uint8_t *dest,
 			 * D-cache). Without this the running image could later read its
 			 * own .rodata as the other slot's bytes. */
 			arm_dcache_delete((void *)(uintptr_t)address, length);
+			/* And the I-side: a speculative fetch inside the identity window
+			 * could have cached slot-A code at canonical addresses, which
+			 * now belong to the running image. */
+			__asm__ volatile("dsb" : : : "memory");
+			SCB_CACHE_ICIALLU = 0u;
+			__asm__ volatile("dsb\n\tisb\n\t" : : : "memory");
 			__asm__ volatile("msr primask, %0"
 			                 : : "r"(primask) : "memory");
 			return 0;

@@ -814,6 +814,357 @@ def verify_flash_pinned_residency(build_dir: Path, readelf: str) -> int:
     return verify_flash_pinned_symbols(parse_function_symbols(result.stdout))
 
 
+# THE STEP-LOOP CLOSURE (aius-sample-rate-following.md Phase 4z). Residency
+# of the named symbols is not enough: 57977135e472's ota_flash_read lived in
+# ITCM and still called FLASHMEM aius_ab_remap_for_slot through a linker
+# veneer, whose literal loads refilled a canonical D-cache line the identity
+# copy then read stale. So this walks the linked image's disassembly: from the
+# roots below plus every function src/optical_main.cpp assigns into an
+# activation primitives table, every direct branch (bl, b, b.w, conditional
+# and cbz forms) is followed to its symbol, and the build fails when one
+# targets anything outside ITCM [0, _etext), any `__*_veneer` stub included,
+# or when any literal-pool word in the closure names flash. Indirect calls
+# (`blx rN` through `primitives` and `ctx`) are out of reach by construction;
+# each primitive is a root here instead. ab_activation_mark_pending is the
+# named exception the plan records: it runs after all slot programming and is
+# not reached from these roots.
+STEP_LOOP_ROOTS = (
+    "aius_ota_activate_step",
+    "ota_flash_read",
+    "ota_flash_program",
+    "ota_flash_erase",
+)
+PRIMITIVES_SOURCE = "src/optical_main.cpp"
+PRIMITIVES_HEADER = "lib/aius_ota/include/aius_ota_activate.h"
+PRIMITIVES_STRUCT = "AiusOtaActivatePrimitives"
+# Every `primitives.<field> = <rhs>` line, whatever its right-hand side.
+PRIMITIVE_ASSIGNMENT = re.compile(
+    r"^[ \t]*primitives\.(\w+)[ \t]*=(?!=)(.*)$", re.MULTILINE
+)
+# The only accepted right-hand sides: `name;` or `&name;`.
+PRIMITIVE_RHS = re.compile(r"^\s*&?\s*([A-Za-z_]\w*)\s*;\s*(?://.*)?$")
+PRIMITIVE_NON_FUNCTIONS = frozenset({"nullptr", "NULL"})
+FLASH_LITERAL_LOW = 0x60000000
+FLASH_LITERAL_HIGH = 0x60FFFFFF
+DTCM_LOW = 0x20000000
+DTCM_HIGH = 0x20080000
+# The DTCM copy of the running slot's remap ota_flash_read consults.
+REMAP_SYMBOL = "g_ab_read_remap"
+# Only the A/B slot envs compile the remap (AIUS_AB_SLOT != 0).
+REMAP_ENVS = frozenset({"teensy41-optical-slot-a", "teensy41-optical-slot-b"})
+
+DISASM_SYMBOL = re.compile(r"^([0-9a-f]+) <([^>]+)>:$")
+DISASM_LINE = re.compile(r"^\s+([0-9a-f]+):\s+(\S+)(?:\s+(.*))?$")
+DISASM_TARGET = re.compile(r"^(?:\S+,\s*)?([0-9a-f]+) <([^>+]+)(?:\+0x[0-9a-f]+)?>")
+BRANCH_MNEMONIC = re.compile(
+    r"^(?:bl|blx|b|cbn?z)"
+    r"(?:eq|ne|cs|cc|hs|lo|mi|pl|vs|vc|hi|ls|ge|lt|gt|le|al)?"
+    r"(?:\.n|\.w)?$"
+)
+
+
+def parse_primitive_assignments(source_text: str) -> list[tuple[str, str]]:
+    """Every `primitives.<field> = <name>;` / `= &<name>;` as (field, name), in
+    source order. Fails on any other right-hand side (ternary, designated
+    initialiser, call, multi-line): the root set must not silently shrink."""
+    found: list[tuple[str, str]] = []
+    for match in PRIMITIVE_ASSIGNMENT.finditer(source_text):
+        field, rhs = match.groups()
+        parsed = PRIMITIVE_RHS.match(rhs)
+        if not parsed:
+            line = source_text.count("\n", 0, match.start()) + 1
+            raise VerificationError(
+                f"step-loop closure: {PRIMITIVES_SOURCE}:{line}: "
+                f"`primitives.{field} ={rhs.rstrip()}` is not a bare "
+                "identifier or `&identifier`; the closure walk cannot name "
+                "its root. Assign through a plain function name."
+            )
+        found.append((field, parsed.group(1)))
+    return found
+
+
+def primitive_roots(source_text: str) -> list[str]:
+    """Every function name assigned into an activation primitives table
+    (`primitives.<field> = <fn>;`), in source order, deduplicated."""
+    roots: list[str] = []
+    for field, name in parse_primitive_assignments(source_text):
+        if field == "ctx" or name in PRIMITIVE_NON_FUNCTIONS:
+            continue
+        if name not in roots:
+            roots.append(name)
+    return roots
+
+
+def primitive_function_fields(header_text: str) -> list[str]:
+    """Function-pointer field names of AiusOtaActivatePrimitives: fields whose
+    type is a `typedef ... (*Name)(...)` in the same header."""
+    text = re.sub(r"/\*.*?\*/", "", header_text, flags=re.DOTALL)
+    text = re.sub(r"//[^\n]*", "", text)
+    fn_types = set(re.findall(r"\(\s*\*\s*(\w+)\s*\)\s*\(", text))
+    struct = re.search(
+        r"typedef\s+struct\s*(?:\w+\s*)?\{([^{}]*)\}\s*"
+        + PRIMITIVES_STRUCT
+        + r"\s*;",
+        text,
+    )
+    if not struct:
+        raise VerificationError(
+            f"step-loop closure: struct {PRIMITIVES_STRUCT} not found in "
+            f"{PRIMITIVES_HEADER}"
+        )
+    fields = [
+        field
+        for type_name, field in re.findall(
+            r"(\w+)\s+(\w+)\s*;", struct.group(1)
+        )
+        if type_name in fn_types
+    ]
+    if not fields:
+        raise VerificationError(
+            f"step-loop closure: no function-pointer field parsed from "
+            f"{PRIMITIVES_STRUCT}"
+        )
+    return fields
+
+
+def verify_primitive_fields_assigned(
+    source_text: str, header_text: str
+) -> int:
+    """Every function-pointer field of the primitives struct must be assigned
+    in some parsed table. Returns the field count."""
+    assigned = {field for field, _ in parse_primitive_assignments(source_text)}
+    fields = primitive_function_fields(header_text)
+    missing = [field for field in fields if field not in assigned]
+    if missing:
+        raise VerificationError(
+            f"step-loop closure: {PRIMITIVES_STRUCT} function-pointer "
+            f"field(s) never assigned in {PRIMITIVES_SOURCE}: "
+            + ", ".join(missing)
+            + "; their roots would be missing from the closure walk."
+        )
+    return len(fields)
+
+
+def parse_disassembly(output: str) -> dict[str, dict]:
+    """`objdump -d --no-show-raw-insn` -> symbol -> {start, branches, words}.
+    branches: (insn address, target address, target symbol); words: (address,
+    value) of every `.word` the disassembler placed under the symbol."""
+    functions: dict[str, dict] = {}
+    current = None
+    for line in output.splitlines():
+        header = DISASM_SYMBOL.match(line)
+        if header:
+            current = functions.setdefault(
+                header.group(2),
+                {"start": int(header.group(1), 16), "branches": [], "words": []},
+            )
+            continue
+        if current is None:
+            continue
+        insn = DISASM_LINE.match(line)
+        if not insn:
+            continue
+        address = int(insn.group(1), 16)
+        mnemonic = insn.group(2)
+        operands = (insn.group(3) or "").split(";")[0].strip()
+        if mnemonic == ".word":
+            try:
+                current["words"].append((address, int(operands, 0)))
+            except ValueError:
+                pass
+        elif BRANCH_MNEMONIC.match(mnemonic):
+            target = DISASM_TARGET.match(operands)
+            if target:
+                current["branches"].append(
+                    (address, int(target.group(1), 16), target.group(2))
+                )
+    return functions
+
+
+def resolve_function(functions: Mapping[str, dict], name: str):
+    """The disassembly symbol for `name`: exact, or a C++ file-static via
+    its _ZL<len><name> mangling (exact-name, as dark_window_symbol_address)."""
+    if name in functions:
+        return name
+    mangled = f"_ZL{len(name)}{name}"
+    for symbol in functions:
+        if symbol.startswith(mangled):
+            return symbol
+    return None
+
+
+def verify_step_loop_closure(
+    functions: Mapping[str, dict], etext: int, roots: Iterable[str]
+) -> tuple[int, int, int]:
+    """Walk direct branches from `roots`. Fails on a missing root, a branch
+    outside [0, etext), a veneer, or a literal word in flash. Pure half;
+    returns (functions walked, branches checked, literal words checked)."""
+    pending: list[str] = []
+    missing = []
+    for name in roots:
+        symbol = resolve_function(functions, name)
+        if symbol is None:
+            missing.append(name)
+        elif symbol not in pending:
+            pending.append(symbol)
+    if missing:
+        raise VerificationError(
+            "step-loop closure: root absent from the ITCM disassembly "
+            "(inlined away or moved to flash): " + ", ".join(sorted(missing))
+        )
+    seen: set[str] = set()
+    offenders: list[str] = []
+    branches = 0
+    words = 0
+    while pending:
+        symbol = pending.pop(0)
+        if symbol in seen:
+            continue
+        seen.add(symbol)
+        body = functions[symbol]
+        for insn, target, target_symbol in body["branches"]:
+            branches += 1
+            where = f"{symbol}+0x{insn - body['start']:x}"
+            if not 0 <= target < etext:
+                offenders.append(
+                    f"{where} branches to 0x{target:08x} <{target_symbol}> "
+                    f"outside ITCM [0, 0x{etext:x})"
+                )
+            elif target_symbol.endswith("_veneer"):
+                offenders.append(
+                    f"{where} branches to veneer <{target_symbol}>"
+                )
+            elif target_symbol != symbol:
+                if target_symbol in functions:
+                    pending.append(target_symbol)
+                else:
+                    offenders.append(
+                        f"{where} branches to 0x{target:08x} <{target_symbol}> "
+                        "with no disassembled body"
+                    )
+        for address, value in body["words"]:
+            words += 1
+            if FLASH_LITERAL_LOW <= value <= FLASH_LITERAL_HIGH:
+                offenders.append(
+                    f"{symbol}+0x{address - body['start']:x} literal "
+                    f"0x{value:08x} names flash"
+                )
+    if offenders:
+        raise VerificationError(
+            "step-loop closure: " + "; ".join(offenders) + ". Nothing the "
+            "activation step loop reaches may touch flash: a flash fetch "
+            "inside the GPR32 identity window refills a canonical cache line "
+            "with the running image's bytes (aius-sample-rate-following.md "
+            "Phase 4z). Make the callee FASTRUN, or move the value to DTCM."
+        )
+    return len(seen), branches, words
+
+
+def verify_remap_in_dtcm(nm_output: str) -> int:
+    """nm puts the DTCM remap copy in [0x20000000, 0x20080000). Pure half;
+    returns its address."""
+    hits = []
+    for line in nm_output.splitlines():
+        parts = line.split()
+        if len(parts) < 3:
+            continue
+        name = parts[-1]
+        if name == REMAP_SYMBOL or name.startswith(
+            f"_ZL{len(REMAP_SYMBOL)}{REMAP_SYMBOL}"
+        ):
+            try:
+                hits.append((name, int(parts[0], 16)))
+            except ValueError:
+                continue
+    if not hits:
+        raise VerificationError(
+            f"step-loop closure: {REMAP_SYMBOL} absent from the linked image; "
+            "ota_flash_read must read the remap from DTCM"
+        )
+    for name, value in hits:
+        if not DTCM_LOW <= value < DTCM_HIGH:
+            raise VerificationError(
+                f"step-loop closure: {name} at 0x{value:08x} is not DTCM; "
+                "ota_flash_read would read the remap through flash"
+            )
+    return hits[0][1]
+
+
+def parse_nm_value(nm_output: str, name: str):
+    for line in nm_output.splitlines():
+        parts = line.split()
+        if len(parts) >= 3 and parts[-1] == name:
+            return int(parts[0], 16)
+    return None
+
+
+def _sibling_tool(readelf: str, tool: str) -> str:
+    """objdump/nm beside the readelf in use (same toolchain prefix)."""
+    if readelf.endswith("readelf"):
+        return readelf[: -len("readelf")] + tool
+    return f"arm-none-eabi-{tool}"
+
+
+def verify_step_loop_closure_in_build(
+    build_dir: Path, readelf: str, project_dir: Path, environment: str
+) -> tuple[int, int, int, int | None]:
+    elf = build_dir / "firmware.elf"
+    if not elf.exists():
+        raise VerificationError(f"linked image not found: {elf}")
+    nm = subprocess.run(
+        [_sibling_tool(readelf, "nm"), str(elf)],
+        check=True,
+        text=True,
+        capture_output=True,
+    ).stdout
+    etext = parse_nm_value(nm, "_etext")
+    if etext is None:
+        raise VerificationError("step-loop closure: _etext absent from nm")
+    disassembly = subprocess.run(
+        [
+            _sibling_tool(readelf, "objdump"),
+            "-d",
+            "--no-show-raw-insn",
+            "--start-address=0",
+            f"--stop-address=0x{etext:x}",
+            str(elf),
+        ],
+        check=True,
+        text=True,
+        capture_output=True,
+    ).stdout
+    source = (project_dir / PRIMITIVES_SOURCE).read_text(encoding="utf-8")
+    table = primitive_roots(source)
+    verify_primitive_fields_assigned(
+        source,
+        (project_dir / PRIMITIVES_HEADER).read_text(encoding="utf-8"),
+    )
+    if not table:
+        raise VerificationError(
+            f"step-loop closure: no primitives assignment in "
+            f"{PRIMITIVES_SOURCE}; the root set would silently shrink"
+        )
+    walked = verify_step_loop_closure(
+        parse_disassembly(disassembly), etext, (*STEP_LOOP_ROOTS, *table)
+    )
+    remap = verify_remap_in_dtcm(nm) if environment in REMAP_ENVS else None
+    return (*walked, remap)
+
+
+def _step_loop_summary(
+    functions: int, branches: int, words: int, remap: int | None
+) -> str:
+    where = (
+        f", {REMAP_SYMBOL} in DTCM at 0x{remap:08x}" if remap is not None
+        else ""
+    )
+    return (
+        "step-loop closure: PASS "
+        f"({functions} functions, {branches} direct branches all ITCM, "
+        f"{words} literal words none flash{where})"
+    )
+
+
 def parse_symbol_names(output: str) -> list[str]:
     """Every named symbol from `readelf -sW` on the linked ELF, any type."""
     names: list[str] = []
@@ -1151,6 +1502,9 @@ def verify_cold_placement(source, target, env) -> None:
     print(_dark_window_summary(
         verify_dark_window_residency(build_dir, readelf)
     ))
+    print(_step_loop_summary(*verify_step_loop_closure_in_build(
+        build_dir, readelf, project_dir, environment
+    )))
     print(_tx_itcm_summary(verify_tx_itcm_residency(build_dir, readelf)))
     print(_flash_pinned_summary(
         verify_flash_pinned_residency(build_dir, readelf)
@@ -1235,6 +1589,14 @@ def _main(argv: list[str]) -> int:
         print(f"dark-window ITCM residency: FAIL: {error}", file=sys.stderr)
         return 1
     print(_dark_window_summary(dark))
+    try:
+        step_loop = verify_step_loop_closure_in_build(
+            build_dir, args.readelf, project_dir, environment
+        )
+    except (OSError, subprocess.CalledProcessError, VerificationError) as error:
+        print(f"step-loop closure: FAIL: {error}", file=sys.stderr)
+        return 1
+    print(_step_loop_summary(*step_loop))
     try:
         tx_sizes = verify_tx_itcm_residency(build_dir, args.readelf)
     except (OSError, subprocess.CalledProcessError, VerificationError) as error:
