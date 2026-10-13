@@ -7830,11 +7830,12 @@ unit: implementer
 ### Phase 4u The index page keeps its nav on a phone
 
 ```yaml
-outcome: at 760px and below, index.html shows its nav links wrapped under the logo, as status.html and upgrade.html already do
+outcome: at 760px and below, every page shows its nav links on the logo's row, labelled firmware, dsp and status, wrapping only when the screen is too narrow
 seams:
   - "firmware/sd/www/index.html:19 header gains bench-nav--wrap"
-  - "firmware/sd/www/sd-chrome.css:185-192 unchanged; the --wrap override already shows the links"
-targeted-proof: an sd-editor case that every page under firmware/sd/www with a bench-nav header carries bench-nav--wrap; sd-editor and www-bundle green; device (owner): the index nav shows on a phone after the card sync
+  - "firmware/sd/www/{index,status,upgrade}.html nav link texts: firmware, dsp, status"
+  - "firmware/sd/www/sd-chrome.css 760px --wrap rule: links stay on the logo row, the header still wraps rather than overflow"
+targeted-proof: sd-editor cases that every page's header carries bench-nav--wrap and the three labels; a headless render of each page at 360 and 320 px shows logo and links on one row with no overflow; sd-editor and www-bundle green; device (owner): the nav shows on the logo row on a phone after the card sync
 unit: implementer
 ```
 
@@ -7854,9 +7855,46 @@ unit: implementer
   it for each page. The 360px fit was read from the CSS, not rendered:
   the index header holds only the logo and the nav, and the links wrap
   to their own row. Proof: sd-editor, www-bundle and registry green.
+- **First device check (owner, 2026-10-13):** `index.html` and its
+  `.gz` synced with `--file index.html`, and the served page matched the
+  source. The owner then asked for the nav on the logo's row on a phone,
+  with the links renamed to `firmware`, `dsp` and `status`. The labels
+  change on every page and at every width, so the nav reads the same
+  everywhere.
+- **Built 2026-10-13 (follow-up).** Link texts are `dsp`, `status` and
+  `firmware` on all three pages (hrefs, `aria-current`, titles and
+  headings unchanged). In `sd-chrome.css`, the 760px `--wrap` rule no
+  longer puts the links on a row of their own, the logo does not
+  shrink, and the header still wraps rather than overflowing.
+  `pages.test.js` asserts the labels on every page. A headless Chromium
+  render of each page at 360 and 320 px puts the logo and links on one
+  row with no overflow (logo 79 px, links end at x 273). Proof:
+  sd-editor 411, www-bundle 35.
+- **Accepted:** the firmware's own fallback home page
+  (`firmware/src/http_home_page.cpp:24-26`) and prose docs keep the long
+  names. They are not the SD nav, and changing the firmware page would
+  need an OTA.
 - **Accepted:** the `display: none` rule at `sd-chrome.css:185` no longer
   applies to any page (each carries `--wrap`). It stays; it costs
   nothing and keeps a page without `--wrap` from overflowing.
+
+### Phase 4v The DSP editor's top panel and buttons fit a phone
+
+```yaml
+outcome: at 760px and below, the DSP editor's top panel keeps the loaded-state pill on the row it belongs to rather than its own row, and the editor's buttons (Revert, Apply and the rest) sit right-aligned
+seams:
+  - "firmware/sd/www/index.html DSP editor markup (top panel, button rows), only if CSS alone cannot do it"
+  - "the editor's stylesheet(s) (dsp-editor.css / mixer.css): 760px rules for the pill and button rows"
+targeted-proof: a headless render of index.html at 360 and 320 px shows the pill sharing its row and every editor button row right-aligned with no overflow; sd-editor and www-bundle green; device (owner): the phone check after the card sync
+unit: implementer
+depends-on: phase-4u # both edit firmware/sd/www/index.html; dispatched after 4u's edit lands
+```
+
+- **Reported (owner, 2026-10-13):** on a phone, the top panel's loaded
+  pill takes a row of its own for no reason; Revert and Apply, and the
+  editor's buttons generally, read better right-aligned.
+- **Decision (orchestrator):** phone widths (760px and below) only, the
+  owner's context; desktop layout unchanged unless the owner asks.
 
 ### Phase 4c `test.sh` runs every `--suite` given ✓ SHIPPED 2026-10-06
 

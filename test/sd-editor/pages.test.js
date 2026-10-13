@@ -17,6 +17,7 @@ const www = resolve(here, '../../firmware/sd/www');
 const PAGES = readdirSync(www).filter((name) => name.endsWith('.html')).sort();
 const PAGE_FILES = ['index.html', 'status.html', 'upgrade.html'];
 const NAV = ['index.html', 'status.html', 'upgrade.html'];
+const NAV_LABELS = ['dsp', 'status', 'firmware'];
 
 /* A <template> parses inertly: happy-dom fetches nothing for its links. */
 const parse = (page) => {
@@ -65,6 +66,7 @@ describe('SD pages share one chrome', () => {
     const doc = parse(page);
     const links = Array.from(doc.querySelectorAll('header.bench-nav a:not(.logo)'));
     expect(links.map((anchor) => anchor.getAttribute('href'))).toEqual(NAV);
+    expect(links.map((anchor) => anchor.textContent.trim())).toEqual(NAV_LABELS);
     const current = links.filter((anchor) => anchor.getAttribute('aria-current') === 'page');
     expect(current.map((anchor) => anchor.getAttribute('href'))).toEqual(NAV.includes(page) ? [page] : []);
   });
