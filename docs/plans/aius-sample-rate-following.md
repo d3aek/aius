@@ -36,9 +36,8 @@ handover.
   run: Phase 4 (gate 7 at fill-write cadence on the U24 bench), 4e, 4f,
   4g, 4h, 4j, 4k, 4l, 4m. **4u, 4v, 4w, 4x** (SD page layout) built,
   synced to the card 2026-10-13, awaiting the owner's phone and desktop
-  check. **4y** (slot card and boot-other) running on the board since
-  the 4z bridge OTA; its reboot proof passed 2026-10-13, and it awaits
-  the same page check. **4z** SHIPPED (bridge OTA 2026-10-13); **4za** (pin
+  check. **4y** (slot card and boot-other) SHIPPED 2026-10-14 (reboot
+  and page proof passed). **4z** SHIPPED (bridge OTA 2026-10-13); **4za** (pin
   removal, fixed path proven from slot 2) is next firmware work. 4b
   (acceptance umbrella) closes after 4e to 4h's device
   runs and no longer gates 4i (owner, 2026-10-12).
@@ -67,10 +66,12 @@ handover.
   owner's: the 4e, 4f, 4g and 4h runs listed in 4b, 4n's Firefox check,
   4i's post-removal check. A bench run is a last resort, batched, never
   mixed with listening (aius CLAUDE.md).
-- **Next action: the owner's phone and desktop check of the dsp, status
-  and upgrade pages** (the upgrade page shows slot 1 active running
-  `f075872c8b82` and slot 2 "unknown"); it marks 4u, 4v, 4w, 4x and 4y
-  SHIPPED. Then 4za. The auto-mode classifier has refused card writes
+- **Next action: the owner's phone and desktop check of the index (DSP)
+  and status pages**: the nav on the logo row on a phone (4u), the top
+  panel and button rows fitting a phone (4v), signal, presets, matrix
+  pane order with live merged into signal (4w), and the audio path on
+  the DSP page, gone from status (4x). It marks 4u to 4x SHIPPED. Then
+  4za. The auto-mode classifier has refused card writes
   before ("Remote Shell Writes") but ran the 2026-10-13 sync once the
   owner said to try; if it refuses, the owner runs it with `!`.
 - **What landed this run** (aius commits, each followed by a upstream repository
@@ -8027,7 +8028,7 @@ depends-on: phase-4w # same files
   `index.html`. Reaching a page moves the optical-app suite into its
   proof.
 
-### Phase 4y The firmware page shows both slots and boots the other on request
+### Phase 4y The firmware page shows both slots and boots the other on request ✓ SHIPPED 2026-10-14
 
 ```yaml
 outcome: >-
@@ -8240,8 +8241,9 @@ depends-on: none # web files disjoint from 4x (upgrade.* only)
   and `prev_boot.first_abort` is 254 (`AIUS_ABORT_NONE`). This was the
   frozen chooser's first read of a non-zero reserved field. Evidence:
   `status-pre-4y-reboot.json`, `status-post-4y-reboot.json` (session
-  scratch). The page check (both slots on the upgrade page) is the
-  owner's and still open.
+  scratch).
+- **Device proof, page leg (owner, 2026-10-14): PASS.** The upgrade
+  page shows the slots correctly.
 
 ### Phase 4z The activation read path never refills a stale cache line ✓ SHIPPED 2026-10-13
 
