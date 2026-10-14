@@ -34,9 +34,10 @@ handover.
 - **Status.** Phases 1, 2, 3 DONE; 4a, 4c, 4d, 4n, 4o, 4p, 4q, 4r, 4s,
   4t, 4i DONE. BUILT, with their device proof the owner's and not yet
   run: Phase 4 (gate 7 at fill-write cadence on the U24 bench), 4e, 4f,
-  4g, 4h, 4j, 4k, 4l, 4m. **4u, 4v, 4w, 4x** (SD page layout) built,
-  synced to the card 2026-10-13, awaiting the owner's phone and desktop
-  check. **4y** (slot card and boot-other) SHIPPED 2026-10-14 (reboot
+  4g, 4h, 4j, 4k, 4l, 4m. **4u** SHIPPED 2026-10-14. **4v, 4w, 4x**
+  (SD page layout) synced 2026-10-13, and **4xa** (phone facts, sticky
+  actions) built 2026-10-14; they await 4xa's sync and the owner's phone
+  and desktop check. **4y** (slot card and boot-other) SHIPPED 2026-10-14 (reboot
   and page proof passed). **4z** SHIPPED (bridge OTA 2026-10-13); **4za** (pin
   removal, fixed path proven from slot 2) is next firmware work. 4b
   (acceptance umbrella) closes after 4e to 4h's device
@@ -66,12 +67,13 @@ handover.
   owner's: the 4e, 4f, 4g and 4h runs listed in 4b, 4n's Firefox check,
   4i's post-removal check. A bench run is a last resort, batched, never
   mixed with listening (aius CLAUDE.md).
-- **Next action: the owner's phone and desktop check of the index (DSP)
-  and status pages**: the nav on the logo row on a phone (4u), the top
-  panel and button rows fitting a phone (4v), signal, presets, matrix
-  pane order with live merged into signal (4w), and the audio path on
-  the DSP page, gone from status (4x). It marks 4u to 4x SHIPPED. Then
-  4za. The auto-mode classifier has refused card writes
+- **Next action: a card sync of 4xa's `mixer.css`, then the owner's
+  phone and desktop check of the DSP and status pages**: the top facts
+  as a two-column grid and Revert and Apply stuck to the top while
+  scrolling (4xa, 4v), the pane order signal, presets, matrix, with
+  live merged into signal (4w), and the audio path on the DSP page,
+  gone from status (4x). It marks 4v to 4xa SHIPPED (4u shipped
+  2026-10-14). Then 4za. The auto-mode classifier has refused card writes
   before ("Remote Shell Writes") but ran the 2026-10-13 sync once the
   owner said to try; if it refuses, the owner runs it with `!`.
 - **What landed this run** (aius commits, each followed by a upstream repository
@@ -7835,7 +7837,7 @@ unit: implementer
   tolerance; on a pre-4t board it aborts in `prepare()` before any
   mutation, so it fails safe.
 
-### Phase 4u The index page keeps its nav on a phone
+### Phase 4u The index page keeps its nav on a phone ✓ SHIPPED 2026-10-14
 
 ```yaml
 outcome: at 760px and below, every page shows its nav links on the logo's row, labelled firmware, dsp and status, wrapping only when the screen is too narrow
@@ -8027,6 +8029,51 @@ depends-on: phase-4w # same files
   `dsp-editor.js:2317-2376` and the test now pins it there and the ids in
   `index.html`. Reaching a page moves the optical-app suite into its
   proof.
+
+### Phase 4xa The DSP page's top facts sit cleanly on a phone and its actions stay in view
+
+```yaml
+outcome: at 360 and 320 px the DSP editor's top-panel facts (config, gen, rate and the rest) read as tidy label and value pairs with no awkward stacking; the action bar holding Revert and Apply sticks to the top of the viewport while the page scrolls, at every width
+seams:
+  - "firmware/sd/www/mixer.css (and dsp-editor.css if the rules live there): the top-panel facts' 760px layout; position sticky on the action bar with an opaque background and a stacking order above the panes"
+  - "firmware/sd/www/index.html: only if CSS alone cannot do it (a sticky element's ancestors must not clip it with overflow)"
+  - "test/sd-editor: a case pinning the action bar's sticky rule if the suite can express it; else the render is the proof, as in 4v"
+targeted-proof: a headless Chromium render at 1280, 360 and 320 px shows the facts as label and value pairs without a lone wrapped label or value and no page overflow; after scrolling past the top panel the action bar's top is 0 and Revert and Apply are visible and clickable above the panes; sd-editor, www-bundle and optical-app green; device (owner): the phone check after the card sync
+unit: implementer
+depends-on: phase-4x # same files
+```
+
+- **Reported (owner, 2026-10-14):** the nav fits (4u passes). On a
+  phone, the config, gen, rate and other label and value facts stack
+  awkwardly. Revert and Apply would be better stuck to the top of the
+  viewport while scrolling.
+- **Decision (orchestrator):** sticky at every width, not phone only.
+  The owner did not limit it to a phone, and a desktop scroll hides the
+  bar just the same. Revert this decision if the owner wants desktop
+  unchanged.
+- 4v, 4w and 4x stay unshipped until the owner checks the page after
+  this phase's sync.
+- **Built 2026-10-14; the phone check after the card sync is the
+  owner's.** Both changes are in `firmware/sd/www/mixer.css`, with no
+  markup change.
+  - The stacking: the four facts (Config, Gen, Rate, json) were
+    free-wrapping inline items with left dividers. At 360 px Rate fell to
+    a row of its own, and at 320 px Gen and Rate did, each starting with
+    a stray divider. In the 760px block they are now a two-column grid
+    (Config and Gen, then Rate and json) with no dividers, still on the
+    pill's row. At 1280 px the facts' geometry is unchanged.
+  - Sticky: the bar was already `position: sticky; top: 0; z-index: 20`,
+    but a 720px rule forced it `static` on a phone. That rule is gone.
+    The bar's background is now opaque (`--aius-surface-page`, not the
+    translucent nav glass with blur) at every width. No ancestor clips
+    it.
+  - Accepted: on a phone the stuck bar is about 113 px tall.
+  - Render (headless Chromium, stubbed APIs, scrolled 1200 px) at 1280,
+    360 and 320 px: no page overflow, bar top 0, and Revert and Apply
+    hit-test as themselves. Before the change, at 360 and 320 px, the
+    bar scrolled away.
+  - `test/sd-editor/pages.test.js` pins the sticky rule with a CSS-text
+    check. Proof: sd-editor 428, www-bundle 35, optical-app green.
 
 ### Phase 4y The firmware page shows both slots and boots the other on request ✓ SHIPPED 2026-10-14
 

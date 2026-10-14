@@ -71,3 +71,26 @@ describe('SD pages share one chrome', () => {
     expect(current.map((anchor) => anchor.getAttribute('href'))).toEqual(NAV.includes(page) ? [page] : []);
   });
 });
+
+/* happy-dom loads no stylesheets, so the action bar's stick-to-top rule is pinned on the CSS
+   text; the headless render (plan Phase 4xa) is the behavioural proof. */
+describe('the DSP action bar sticks to the top at every width', () => {
+  const mixer = readFileSync(resolve(www, 'mixer.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+  const rules = (selector) => Array.from(mixer.matchAll(/([^{}]+)\{([^{}]*)\}/g))
+    .filter((match) => match[1].split(',').some((part) => part.trim() === selector))
+    .map((match) => match[2]);
+
+  it('declares sticky, top 0, an opaque background and a z-index', () => {
+    const body = rules('.bench .action-bar').join(';');
+    expect(body).toMatch(/position:\s*sticky/);
+    expect(body).toMatch(/top:\s*0\b/);
+    expect(body).toMatch(/z-index:\s*\d+/);
+    expect(body).toMatch(/background:\s*var\(--aius-surface-page\)/);
+  });
+
+  it('never turns the bar static or glass again at a narrower width', () => {
+    const body = rules('.bench .action-bar').join(';');
+    expect(body).not.toMatch(/position:\s*(static|relative)/);
+    expect(body).not.toMatch(/backdrop-filter/);
+  });
+});

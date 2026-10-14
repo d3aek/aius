@@ -75,8 +75,7 @@
   border: 0;
   border-bottom: 1px solid var(--aius-border-strong);
   border-radius: 0;
-  background: var(--bench-nav-glass);
-  backdrop-filter: blur(14px) saturate(140%);
+  background: var(--aius-surface-page);
   box-shadow: none;
 }
 .bench .action-bar__token-field { font: 500 10px var(--bench-f-mono); text-transform: uppercase; letter-spacing: .06em; }
@@ -87,16 +86,13 @@
 /* The dirty pill keeps its box while hidden, so a status change never resizes the bar. */
 .bench .action-bar__state > .pill[hidden] { display: inline-flex; visibility: hidden; }
 
-/* A phone scrolls past the bar: there it is a header, not a fixture. */
-@media (max-width: 720px) { .bench .action-bar { position: static; backdrop-filter: none; } }
-
 /* Phone: the state pill shares its row with the model facts (the hidden dirty pill
    stops reserving a pill-width), and every editor button group sits right. */
 @media (max-width: 760px) {
   .bench .action-bar__state { flex: 0 0 auto; }
   .bench .action-bar__state > .pill[hidden] { display: none; }
-  .bench .action-bar .facts { flex: 1 1 0; min-width: 0; justify-content: flex-end; }
-  .bench .action-bar .facts__item { padding: 0 8px; }
+  .bench .action-bar .facts { display: grid; grid-template-columns: repeat(2, auto); justify-content: end; gap: 2px 14px; flex: 1 1 0; min-width: 0; }
+  .bench .action-bar .facts__item { justify-content: space-between; padding: 0; border-left: 0; }
   .bench .action-bar__actions { flex: 1 1 100%; justify-content: flex-end; }
   .bench .action-bar__actions .token-trigger { margin-right: auto; }
   .bench .curve-controls,
