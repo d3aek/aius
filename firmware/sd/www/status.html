@@ -26,10 +26,8 @@
   </header>
 
   <main id="main" class="bench-page">
+    <h1 class="u-visually-hidden">Device status</h1>
     <div class="page-head">
-      <p class="kicker">Aius / SD card</p>
-      <h1 class="page-head__title">Device status</h1>
-      <p class="page-head__lede">One <code>GET /api/status</code> per second, whole. Read-only and public: nothing on this page writes to the device, so it needs no auth token. The audio path is on the <a href="index.html">DSP page</a>.</p>
       <p id="poll-status" class="hint" role="status">Reading device status...</p>
       <p id="poll-errors" class="error-summary" role="alert" hidden></p>
     </div>
@@ -37,10 +35,11 @@
     <div class="page-grid">
       <section class="panel page-grid__third" aria-labelledby="config-title">
         <div class="section-title panel__head"><h2 id="config-title" class="kicker">01 / Configuration</h2><span id="config-pill" class="pill">loading</span></div>
-        <p class="hint">Two unrelated files. The <a href="index.html">DSP editor</a> writes the audio model to <code>/aius/dsp.json</code>: that is the first two rows. <code>/aius/config.json</code> is a separate optional boot file whose feature flags no firmware path reads today; its absence is the normal state, not a fault, and applying a DSP model never creates it.</p>
+        <p class="hint">Two unrelated files. The <a href="index.html">DSP editor</a> writes the audio model to <code>/aius/dsp.json</code>: that is the first three rows. <code>/aius/config.json</code> is a separate optional boot file whose feature flags no firmware path reads today; its absence is the normal state, not a fault, and applying a DSP model never creates it.</p>
         <div id="config-grid" class="status-grid spec-grid spec-grid--fill">
           <div><span>DSP model</span><strong id="dsp-source">--</strong></div>
           <div><span>Applied by</span><strong id="dsp-origin">--</strong></div>
+          <div><span>DSP generation</span><strong id="dsp-generation">--</strong></div>
           <div class="status-grid__wide"><span>Boot config file (/aius/config.json)</span><strong id="config-file">--</strong></div>
           <div><span>Config load errors</span><strong id="config-errors">--</strong></div>
         </div>

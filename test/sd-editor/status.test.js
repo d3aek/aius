@@ -177,10 +177,14 @@ const trackRejection = (reason) => rejections.push(reason);
 function createDevice(options = {}) {
   const stub = {
     status: 'status' in options ? options.status : SNAPSHOT,
+    config: 'config' in options ? options.config : { source: 'sd', config_generation: 4 },
     calls: [],
   };
   globalThis.fetch = vi.fn(async (url, init = {}) => {
     stub.calls.push({ url, method: init.method || 'GET', headers: init.headers || {} });
+    if (url === '/api/dsp/config') {
+      return stub.config ? jsonResponse(200, stub.config) : jsonResponse(500, { ok: false, error: 'unavailable' });
+    }
     if (url === '/api/status') {
       return stub.status ? jsonResponse(200, stub.status) : jsonResponse(500, { ok: false, error: 'unavailable' });
     }
@@ -666,6 +670,7 @@ describe('Aius SD device status — polling', () => {
     device = await boot();
     const signals = [];
     globalThis.fetch = vi.fn((url, init = {}) => {
+      if (url !== '/api/status') return Promise.resolve(jsonResponse(404, { ok: false }));
       signals.push(init.signal);
       return new Promise(() => {});
     });
@@ -694,6 +699,34 @@ describe('Aius SD device status — polling', () => {
   });
 });
 
+describe('Aius SD device status — DSP generation', () => {
+  const configCalls = () => device.calls.filter((call) => call.url === '/api/dsp/config');
+
+  it('shows config_generation from GET /api/dsp/config beside the DSP model rows, read every 10 s', async () => {
+    await boot();
+    expect(text('dsp-generation')).toBe('4');
+    expect(el('dsp-generation').closest('#config-grid')).not.toBeNull();
+    expect(configCalls()).toHaveLength(1);
+
+    device.config = { source: 'sd', config_generation: 5 };
+    await vi.advanceTimersByTimeAsync(9000);
+    expect(configCalls()).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1100);
+    await settle();
+    expect(configCalls()).toHaveLength(2);
+    expect(text('dsp-generation')).toBe('5');
+  });
+
+  it('shows -- on a failed read and leaves the rest of the pane alone', async () => {
+    await boot({ config: null });
+
+    expect(text('dsp-generation')).toBe('--');
+    expect(text('dsp-source')).toBe('loaded from card');
+    expect(text('config-pill')).toBe('live');
+    expect(el('config-grid').dataset.stale).toBeUndefined();
+  });
+});
+
 describe('Aius SD device status — one poller', () => {
   it('requests only /api/status, never /api/meters, and has no Live processing card', async () => {
     await boot();
@@ -701,7 +734,7 @@ describe('Aius SD device status — one poller', () => {
     await settle();
 
     expect(device.calls.length).toBeGreaterThan(0);
-    for (const call of device.calls) expect(call.url).toBe('/api/status');
+    for (const call of device.calls) expect(['/api/status', '/api/dsp/config']).toContain(call.url);
     expect(el('waveform')).toBeNull();
     expect(el('meter-state')).toBeNull();
     expect(el('meter-summary')).toBeNull();

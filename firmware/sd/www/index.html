@@ -37,13 +37,6 @@
         <span id="apply-state" class="pill">loading</span>
         <span id="dirty-state" class="pill" hidden>no unapplied changes</span>
       </div>
-      <!-- Where the effective MODEL came from. -->
-      <div class="action-bar__group facts">
-        <span class="facts__item"><span class="facts__key">Config</span><strong id="source">unknown</strong></span>
-        <span class="facts__item"><span class="facts__key">Gen</span><strong id="generation">--</strong></span>
-        <span class="facts__item"><span class="facts__key">Rate</span><strong id="sample-rate">--</strong></span>
-        <a class="facts__item facts__link" href="/api/dsp/config">json</a>
-      </div>
       <div class="action-bar__group action-bar__actions">
         <!-- The lock chip is the token's door: the field itself lives in the
              dialog below, out of the bar until it is needed. -->
@@ -95,6 +88,7 @@
         <figure class="panel flow" data-live="false" aria-labelledby="flow-kicker">
           <div class="panel__head">
             <h2 id="flow-kicker" class="kicker">00 / Signal</h2>
+            <a id="model-json" class="flow__link" href="/api/dsp/config">json</a>
             <span id="hero-led" class="led" data-state="unknown"></span>
             <span id="input-source" class="flow-end" data-state="unknown">input: unknown</span>
           </div>
@@ -137,6 +131,7 @@
               <div><span>Audio state</span><strong id="audio-state">--</strong></div>
               <div><span>Stream format</span><strong id="format">--</strong></div>
               <div><span>Gate carrier lock</span><strong id="gate-carrier">--</strong></div>
+              <div><span>Model rate</span><strong id="sample-rate">--</strong></div>
               <div><span>Blocks</span><strong id="blocks">--</strong></div>
               <div><span>Overruns</span><strong id="overruns">--</strong></div>
             </div>

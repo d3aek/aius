@@ -435,6 +435,31 @@
     setCardStatus('poll', `Snapshot at epoch ${Number(status.loop_epoch) || 0}.`);
   }
 
+  /* The DSP model's generation is not on /api/status (the firmware keeps it off
+   * that body on purpose), so this page reads it from GET /api/dsp/config at
+   * load and every 10 s: `config_generation`, the same field the DSP editor
+   * holds as its concurrency token. A failed read shows `--` and touches
+   * nothing else in the pane; a 503 shed keeps the last value. */
+  const DSP_GENERATION_POLL_MS = 10000;
+
+  async function readDspGeneration() {
+    let result;
+    try {
+      result = await request('/api/dsp/config', { headers: { Accept: 'application/json' } });
+    } catch (error) {
+      result = null;
+    }
+    if (result && result.status === 503) return;
+    const generation = result && result.ok && result.body ? Number(result.body.config_generation) : NaN;
+    put('dsp-generation', Number.isFinite(generation) ? grouped(generation) : '--');
+  }
+
+  async function pollDspGeneration() {
+    await readDspGeneration();
+    setTimeout(() => void pollDspGeneration(), DSP_GENERATION_POLL_MS);
+  }
+  void pollDspGeneration();
+
   shared.createPoller({
     fetch: () => request('/api/status', { headers: { Accept: 'application/json' } }),
     cadenceMs: STATUS_POLL_MS,

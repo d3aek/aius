@@ -65,7 +65,7 @@
 .bench .flow-end::before { content: ""; flex: none; width: var(--bench-dot); height: var(--bench-dot); border-radius: 50%; background: currentColor; }
 
 /* ---- action bar ----------------------------------------------------------------
-   Full-bleed glass strip, sticky: state, model facts, token, actions. */
+   Full-bleed glass strip, sticky: state, token, actions. */
 .bench .action-bar {
   position: sticky;
   top: 0;
@@ -86,13 +86,11 @@
 /* The dirty pill keeps its box while hidden, so a status change never resizes the bar. */
 .bench .action-bar__state > .pill[hidden] { display: inline-flex; visibility: hidden; }
 
-/* Phone: the state pill shares its row with the model facts (the hidden dirty pill
-   stops reserving a pill-width), and every editor button group sits right. */
+/* Phone: the hidden dirty pill stops reserving a pill-width, and every editor
+   button group sits right. */
 @media (max-width: 760px) {
   .bench .action-bar__state { flex: 0 0 auto; }
   .bench .action-bar__state > .pill[hidden] { display: none; }
-  .bench .action-bar .facts { display: grid; grid-template-columns: repeat(2, auto); justify-content: end; gap: 2px 14px; flex: 1 1 0; min-width: 0; }
-  .bench .action-bar .facts__item { justify-content: space-between; padding: 0; border-left: 0; }
   .bench .action-bar__actions { flex: 1 1 100%; justify-content: flex-end; }
   .bench .action-bar__actions .token-trigger { margin-right: auto; }
   .bench .curve-controls,
@@ -117,11 +115,6 @@
 .bench .token-dialog input { width: 100%; height: var(--bench-control-h); }
 .token-dialog__actions { display: flex; justify-content: flex-end; gap: 8px; }
 
-.facts { gap: 0; }
-.facts__item { display: inline-flex; align-items: baseline; gap: 6px; padding: 0 12px; border-left: 1px solid var(--aius-border-strong); font: 500 11px var(--bench-f-mono); text-transform: uppercase; letter-spacing: .06em; color: var(--aius-text-muted); white-space: var(--aius-white-space-atomic); }
-.facts__item strong { color: var(--aius-text-primary); font-weight: 600; font-variant-numeric: tabular-nums; }
-.facts__link { color: var(--aius-accent-primary); text-decoration: none; }
-.facts__link:hover { text-decoration: underline; }
 
 /* The status line, the staged-edits reminder and the error summary: one slim
    row under the bar, never a block of prose. */
@@ -189,6 +182,9 @@
 .led[data-state="unreachable"] { background: var(--aius-accent-danger); }
 @keyframes led-blink { 50% { opacity: .35; } }
 .flow .panel__head .flow-end { margin-left: auto; }
+/* The model JSON link beside the Signal kicker: a small mono link, not a pill. */
+.flow__link { font: 500 11px var(--bench-f-mono); text-transform: uppercase; letter-spacing: .06em; color: var(--aius-accent-primary); text-decoration: none; white-space: var(--aius-white-space-atomic); }
+.flow__link:hover { text-decoration: underline; }
 
 .flow__box { fill: var(--aius-surface-recessed); stroke: var(--aius-border-control); stroke-width: 1; }
 .flow__in text,

@@ -67,12 +67,11 @@ handover.
   owner's: the 4e, 4f, 4g and 4h runs listed in 4b, 4n's Firefox check,
   4i's post-removal check. A bench run is a last resort, batched, never
   mixed with listening (aius CLAUDE.md).
-- **Next action: a card sync of 4xa's `mixer.css`, then the owner's
-  phone and desktop check of the DSP and status pages**: the top facts
-  as a two-column grid and Revert and Apply stuck to the top while
-  scrolling (4xa, 4v), the pane order signal, presets, matrix, with
-  live merged into signal (4w), and the audio path on the DSP page,
-  gone from status (4x). It marks 4v to 4xa SHIPPED (4u shipped
+- **Next action: the owner's phone and desktop check of the DSP, status
+  and firmware pages after the 2026-10-15 sync**: the slim sticky bar
+  (4xa, 4v), Model rate and the json link in signal, the pane order
+  signal, presets, matrix (4w), the audio path on the DSP page (4x), no
+  page heads on status and firmware, and DSP generation on status. It marks 4v to 4xa SHIPPED (4u shipped
   2026-10-14). Then 4za. The auto-mode classifier has refused card writes
   before ("Remote Shell Writes") but ran the 2026-10-13 sync once the
   owner said to try; if it refuses, the owner runs it with `!`.
@@ -8099,6 +8098,60 @@ depends-on: phase-4x # same files
     Proof: sd-editor 430 (new cases: the pill hidden after a load,
     shown as error after a failed one), www-bundle 35, optical-app
     green.
+- **Second device check (owner, 2026-10-15):** Config, Gen and Rate waste
+  space on a phone. Rate folds into the signal pane; Config and Gen
+  leave the DSP editor for the status page only ("state only"). The json
+  link moves to the signal pane head (owner chose it from three
+  proposed homes; the status page beside Config and Gen and the presets
+  More menu were the others). The owner asked for a sync when it is
+  ready.
+- **Decision (orchestrator):** "state only" read as the status page. If
+  the status page already shows the DSP config's source and
+  generation, they simply leave the DSP page. Rate is not repeated when
+  the signal pane already shows the same value (the each-fact-once rule
+  of 4x).
+- **Built 2026-10-15 (second follow-up).**
+  - The action bar has no facts group: state pills, lock, Revert, Apply.
+    At 360 px it is 73 px high (was 113); at 1280, 61 px.
+  - Rate is the model's `sample_rate_hz` from `/api/dsp/config`, not the
+    live carrier rate on the input pill, so it is not a duplicate. It is
+    a "Model rate" cell in the signal pane's Audio path block
+    (`#sample-rate`, still written by `adoptModel`).
+  - Config: the status page already shows the DSP model's source and
+    origin, so it just leaves the DSP page. Gen: `/api/status` omits
+    the DSP `config_generation` by design, so the status page reads it
+    from `/api/dsp/config` (next bullet). The apply and stale logic's
+    `state.baseGeneration` is untouched.
+  - The json link (`#model-json`, `.flow__link`) sits in the `00 /
+    Signal` head and stays on one row at 360 and 320 px.
+  - Render at 1280, 360 and 320 px: no overflow, sticky top 0, Revert
+    and Apply hit-test. Proof: sd-editor 431, www-bundle 35,
+    optical-app green.
+- **Also asked (owner, 2026-10-15):** the status and firmware pages need
+  neither the "Aius / SD card" kicker nor a large page header
+  (`status.html:29-32`, `upgrade.html:29-32`: kicker, h1 and lede).
+- **Decision (orchestrator):** the kicker, the visible h1 and the lede
+  go; the h1 stays as a visually hidden heading so each page keeps one
+  for screen readers, and the nav's `aria-current` already names the
+  page. Status's poll lines, which 4x put under the page head, stay.
+- **Decision (orchestrator):** the status page shows the DSP generation
+  as a Configuration row read from `GET /api/dsp/config` at load and
+  every 10 s, not the 1 Hz poll, so no firmware change is needed.
+- **Built 2026-10-15 (third follow-up); the owner's page check after
+  the card sync closes 4v to 4xa.**
+  - `status.html` and `upgrade.html` lose the kicker, visible h1 and
+    lede. Each keeps one h1 under a new `.u-visually-hidden` in
+    `sd-chrome.css`. Status's `.page-head` now holds only its poll
+    lines, and `.page-head__title` and `__lede` are gone. The first pane
+    starts at y 97 on status and y 59 on upgrade at 360 px.
+  - `status.js` reads `config_generation` from `/api/dsp/config` at
+    load and every 10 s on its own timer into a "DSP generation" row.
+    A failed read shows `--`, a 503 keeps the last value, and the rest
+    of the pane is untouched.
+  - Accepted: each open status tab costs the device one model render
+    every 10 s.
+  - Render at 1280, 360 and 320 px: no overflow. Proof: sd-editor 435,
+    www-bundle 35, optical-app green.
 
 ### Phase 4y The firmware page shows both slots and boots the other on request ✓ SHIPPED 2026-10-14
 

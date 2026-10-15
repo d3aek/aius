@@ -560,8 +560,6 @@ describe('Aius SD DSP editor — model to DOM', () => {
   it('renders the factory default config into every control', async () => {
     await boot();
 
-    expect(el('source').textContent).toBe('default');
-    expect(el('generation').textContent).toBe('0');
     expect(el('dirty-state').hidden).toBe(true);
     expect(el('sample-rate').textContent).toBe('48000 Hz');
     expect(el('apply-state').textContent).toBe('loaded');
@@ -593,6 +591,21 @@ describe('Aius SD DSP editor — model to DOM', () => {
     expect(valueOf('limiter.lookahead_ms')).toBe('2');
   });
 
+  it('keeps the action bar free of model facts and puts the json link in the signal head', async () => {
+    await boot();
+
+    const bar = el('action-bar');
+    expect(bar.querySelector('.facts')).toBeNull();
+    expect(bar.querySelector('a')).toBeNull();
+    for (const id of ['source', 'generation']) expect(document.getElementById(id)).toBeNull();
+    expect(bar.contains(el('sample-rate'))).toBe(false);
+
+    const link = el('model-json');
+    expect(link.getAttribute('href')).toBe('/api/dsp/config');
+    expect(link.closest('.panel__head')).toBe(el('flow-kicker').closest('.panel__head'));
+    expect(el('audio-grid').contains(el('sample-rate'))).toBe(true);
+  });
+
   /* The factory-default fixture IS the checked-in factory model: build_config.py
    * generates AIUS_OPTICAL_CONFIG from firmware/config/optical_dsp.json, and a
    * factory-fresh GET /api/dsp/config serves exactly that model (source
@@ -609,8 +622,6 @@ describe('Aius SD DSP editor — model to DOM', () => {
   it('renders an SD-sourced config including every EQ type and the clip-free policy', async () => {
     await boot({ config: fixture('dsp-config-sd.json') });
 
-    expect(el('source').textContent).toBe('sd');
-    expect(el('generation').textContent).toBe('4');
     expect(fieldOf('features.output_eq').checked).toBe(false);
 
     expect(valueOf('input_channels.fl.gain_db')).toBe('-3.5');
@@ -1262,8 +1273,6 @@ describe('Aius SD DSP editor — optimistic concurrency', () => {
     await click('stale-reload');
 
     expect(el('stale').hidden).toBe(true);
-    expect(el('generation').textContent).toBe('7');
-    expect(el('source').textContent).toBe('sd');
     expect(el('apply-state').textContent).toBe('loaded');
 
     // The re-read model becomes the new concurrency token.
@@ -1287,8 +1296,6 @@ describe('Aius SD DSP editor — optimistic concurrency', () => {
     await settle();
 
     expect(el('apply-state').textContent).toBe('applied');
-    expect(el('source').textContent).toBe('sd');
-    expect(el('generation').textContent).toBe('1');
   });
 
   describe('sd_flush verdict on the status line', () => {
@@ -1368,7 +1375,6 @@ describe('Aius SD DSP editor — optimistic concurrency', () => {
     await settle();
 
     expect(valueOf('limiter.release_ms')).toBe('250');
-    expect(el('generation').textContent).toBe('1');
     expect(el('apply-state').textContent).toBe('edited');
     expect(el('status').textContent).toContain('re-read');
   });
@@ -1381,7 +1387,6 @@ describe('Aius SD DSP editor — optimistic concurrency', () => {
 
     expect(el('apply-state').textContent).toBe('error');
     expect(el('errors').textContent).toContain('dsp_config_invalid');
-    expect(el('generation').textContent).toBe('0');
   });
 });
 
@@ -2440,7 +2445,6 @@ describe('Aius SD DSP editor — presets', () => {
 
     expect(valueOf('matrix.headroom_linear')).toBe('0.5');
     expect(fieldOf('limiter.enabled').checked).toBe(true);
-    expect(el('generation').textContent).toBe('4');
     expect(el('sample-rate').textContent).toBe('48000 Hz');
     expect(el('apply-state').textContent).toBe('edited');
     expect(el('preset-status').textContent).toContain('Apply to send');

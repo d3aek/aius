@@ -55,6 +55,16 @@ describe('SD pages share one chrome', () => {
     expect(header.classList.contains('bench-nav--wrap'), `${page} header lacks bench-nav--wrap`).toBe(true);
   });
 
+  it.each(['status.html', 'upgrade.html'])('%s has no visible page title, only one hidden h1', (page) => {
+    const doc = parse(page);
+    expect(doc.textContent).not.toContain('Aius / SD card');
+    expect(doc.querySelector('.page-head__title, .page-head__lede')).toBeNull();
+    const headings = doc.querySelectorAll('h1');
+    expect(headings).toHaveLength(1);
+    expect(headings[0].classList.contains('u-visually-hidden')).toBe(true);
+    expect(headings[0].textContent.trim().length).toBeGreaterThan(0);
+  });
+
   it('ships no replay page or sheet, and no page links one', () => {
     expect(readdirSync(www).filter((name) => /^replays\./.test(name))).toEqual([]);
     for (const page of PAGES) {

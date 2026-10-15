@@ -1592,8 +1592,6 @@
   function adoptModel(model, keepForm) {
     state.model = model;
     state.baseGeneration = Number.isFinite(model.config_generation) ? model.config_generation : 0;
-    $('source').textContent = model.source || 'unknown';
-    $('generation').textContent = String(state.baseGeneration);
     $('sample-rate').textContent = Number.isFinite(model.sample_rate_hz) ? `${model.sample_rate_hz} Hz` : '--';
     if (keepForm) {
       refreshDerived();
