@@ -646,17 +646,23 @@ describe('Aius SD DSP editor — model to DOM', () => {
     expect(valueOf('limiter.lookahead_ms')).toBe('2');
   });
 
-  it('reports the request body size beside Apply, against the device cap', async () => {
+  it('shows no request-body size fact (the 12288 cap is enforced at Apply only)', async () => {
     await boot({ config: fixture('dsp-config-sd.json') });
-    const text = el('model-bytes').textContent;
-    expect(text).toMatch(/^request body \d+ of 12288 bytes$/);
-    const bytes = Number(text.match(/(\d+) of/)[1]);
-    expect(bytes).toBeGreaterThan(0);
-    expect(bytes).toBeLessThan(12288);
-
-    // It is a fact about the FORM, so it moves with a keystroke.
+    expect(document.getElementById('model-bytes')).toBeNull();
     await setNumber('input_channels.fl.gain_db', '-3.55555');
-    expect(Number(el('model-bytes').textContent.match(/(\d+) of/)[1])).not.toBe(bytes);
+    expect(document.getElementById('model-bytes')).toBeNull();
+  });
+
+  it('hides the state pill once the config loads', async () => {
+    await boot();
+    expect(el('apply-state').textContent).toBe('loaded');
+    expect(el('apply-state').hidden).toBe(true);
+  });
+
+  it('shows the state pill when the config load fails', async () => {
+    await boot({ config: null });
+    expect(el('apply-state').textContent).toBe('error');
+    expect(el('apply-state').hidden).toBe(false);
   });
 
   it('emits native min, max and step from the descriptor table', async () => {

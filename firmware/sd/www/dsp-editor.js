@@ -1190,10 +1190,7 @@
       const db = linearToDb(numberOf(descriptor.path, NaN));
       $(`n:${descriptor.path}`).textContent = db === null ? '= -inf dB' : `= ${db.toFixed(1)} dB`;
     }
-    const bytes = JSON.stringify(collectModel()).length;
-    $('model-bytes').textContent = `request body ${bytes} of ${MODEL_MAX_BYTES} bytes`;
-    /* All facts about the form as it stands, so they move on the same beat as
-     * the byte count: every edit -- typed, reset, preset-loaded or dragged --
+    /* All facts about the form as it stands: every edit -- typed, reset, preset-loaded or dragged --
      * arrives here. */
     refreshDirtyPill();
     refreshSectionDirty();
@@ -4025,6 +4022,10 @@
   function setApplyState(next) {
     state.applyState = next;
     shared.setPill($('apply-state'), next);
+    /* "loaded" is the resting state and says nothing; the pill speaks for
+     * loading, error and the in-flight apply states. mixer.css keeps its box
+     * at desktop widths so the bar does not resize. */
+    $('apply-state').hidden = next === 'loaded';
   }
 
   /* The status line also carries the card-flush verdict of the last DSP save

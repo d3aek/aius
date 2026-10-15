@@ -8074,6 +8074,31 @@ depends-on: phase-4x # same files
     bar scrolled away.
   - `test/sd-editor/pages.test.js` pins the sticky rule with a CSS-text
     check. Proof: sd-editor 428, www-bundle 35, optical-app green.
+- **First device check (owner, 2026-10-15), after the full card sync:**
+  the pinned bar works. The "request body N of M bytes" text
+  (`#model-bytes`, `index.html:39`, `dsp-editor.js:1194`) overlaps the
+  new facts grid and is not useful context, so it goes. The size limit
+  it reported still gates Apply. The loaded pill is meaningless.
+- **Decision (owner, 2026-10-15):** the state pill hides in the loaded
+  state and shows only for an error or while loading, so a failed config
+  read still shows in the pinned bar.
+- **Built 2026-10-15 (follow-up); the page check after its card sync is
+  the owner's.**
+  - `#model-bytes` and its render are gone. The Apply-time check against
+    `MODEL_MAX_BYTES` (12,288) stays. Its only sd-editor case pinned
+    the display text; it now asserts the element is absent.
+  - `#apply-state` is `hidden` in `loaded` only (`setApplyState` in
+    `dsp-editor.js`). Loading, error and the in-flight apply states
+    (edited, invalid, sending, pending, stale, applied) still show; the
+    owner named error and loading, so hiding the others is the owner's
+    call if wanted. At desktop the existing `.pill[hidden]` rule keeps
+    its box, so the bar stays 61 px high; at 760px and below it takes no
+    space.
+  - Render at 1280, 360 and 320 px in the loaded and error states: no
+    overflow, nothing overlaps the facts, bar top 0 after scroll.
+    Proof: sd-editor 430 (new cases: the pill hidden after a load,
+    shown as error after a failed one), www-bundle 35, optical-app
+    green.
 
 ### Phase 4y The firmware page shows both slots and boots the other on request ✓ SHIPPED 2026-10-14
 
