@@ -2333,7 +2333,7 @@
           "fault": {
             "type": "integer",
             "minimum": 0,
-            "description": "AiusSdFault: 0 none, 1 invalid request, 2 protocol, 3 capacity, 4 path, 5 overflow, 6 timeout, 7 short I/O, 8 media, 9 open, 10 seek, 11 I/O, 12 install, 13 rollback, 14 publish, 15 cancelled, 16 cleanup, 17 range, 18 not found."
+            "description": "AiusSdFault: 0 none, 1 invalid request, 2 protocol, 3 capacity, 4 path, 5 overflow, 6 timeout, 7 short I/O, 8 media, 9 open, 10 seek, 11 I/O, 12 install, 13 rollback, 14 publish, 15 cancelled, 16 cleanup, 17 range, 18 not found, 19 verify."
           },
           "fault_phase": {
             "type": "integer",

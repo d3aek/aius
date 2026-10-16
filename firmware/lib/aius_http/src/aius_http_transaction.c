@@ -398,6 +398,10 @@ static FLASHMEM bool app_event_valid(const AiusHttpTransaction *transaction,
 	       event->sd_driver_fault == 0u && event->peer_fault == 0u;
 }
 
+/* The enum's last value: a new AiusSdFault goes at the end of the enum and
+ * moves this bound with it (a stale bound reads the new fault as malformed). */
+#define AIUS_HTTP_SD_FAULT_LAST AIUS_SD_FAULT_VERIFY
+
 static FLASHMEM bool sd_payload_shape_valid(const AiusHttpEvent *event)
 {
 	switch (event->sd_kind) {
@@ -432,12 +436,12 @@ static FLASHMEM bool sd_payload_shape_valid(const AiusHttpEvent *event)
 		       event->sd_length == 0u && event->sd_size == 0u &&
 		       event->sd_fault != AIUS_SD_FAULT_NONE &&
 		       (unsigned)event->sd_fault <=
-			       (unsigned)AIUS_SD_FAULT_NOT_FOUND;
+			       (unsigned)AIUS_HTTP_SD_FAULT_LAST;
 	case AIUS_HTTP_SD_CANCELLED:
 		return event->sd_data == NULL && event->sd_capacity == 0u &&
 		       event->sd_length == 0u && event->sd_size == 0u &&
 		       (unsigned)event->sd_fault <=
-			       (unsigned)AIUS_SD_FAULT_NOT_FOUND &&
+			       (unsigned)AIUS_HTTP_SD_FAULT_LAST &&
 		       (event->sd_fault != AIUS_SD_FAULT_NONE ||
 		        event->sd_driver_fault == 0u);
 	default:

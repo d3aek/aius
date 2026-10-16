@@ -2795,6 +2795,8 @@ static void test_sd_failure_mapping(void)
 		{ AIUS_SD_FAULT_CAPACITY, 507, "sd_capacity", true },
 		{ AIUS_SD_FAULT_OVERFLOW, 507, "sd_capacity", true },
 		{ AIUS_SD_FAULT_IO, 500, "sd_failure", true },
+		{ AIUS_SD_FAULT_VERIFY, 500, "sd_failure", true },
+		{ AIUS_SD_FAULT_VERIFY, 500, "sd_failure", false },
 	};
 	/* Phase 4h S8: the freeze's SD_BUSY driver fault answers sd_busy, the
 	 * shed's AUDIO_BUSY answers audio_busy, both 503 with Retry-After. */
@@ -2921,7 +2923,7 @@ static void test_sd_failure_mapping(void)
 	AiusHttpAction action = start_other_advance(&fixture);
 	uint64_t retained_action_id = action.action_id;
 	AiusHttpEvent invalid = sd_result(&action, AIUS_HTTP_SD_FAILED);
-	invalid.sd_fault = (AiusSdFault)(AIUS_SD_FAULT_NOT_FOUND + 1);
+	invalid.sd_fault = (AiusSdFault)(AIUS_SD_FAULT_VERIFY + 1);
 	invalid.sd_driver_fault = 8;
 	action = call_step(&fixture, 0, invalid);
 	assert_none_action(&action);

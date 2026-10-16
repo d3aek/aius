@@ -75,7 +75,14 @@ Replace wholesale on the next handover.
   the owner's: the 4e to 4h, 4k and 4l runs listed in 4b. A bench run
   is a last resort, batched, never mixed with listening (aius
   CLAUDE.md).
-- **Next action: Phase 4zf.** Prebuild-review its contract (`reviewer`,
+- **Next action (fourth run, 2026-10-16): the shared 4zf+4zh+4zj
+  image.** 4zf and 4zh are BUILT, 4zg, 4zi and 4zj SHIPPED. One clean
+  build from HEAD (`build.sh`, then `build_ab.sh` last), the real-ELF
+  stack-bound, producer-isolation, memory and itcm-placement suites, then
+  sign, OTA activate (source off), self-commit check, and 4zh's device
+  step; then flip 4zf and 4zh to SHIPPED. The paragraph below is the
+  third run's and is superseded where it disagrees.
+- **Previous next action: Phase 4zf.** Prebuild-review its contract (`reviewer`,
   opus), then dispatch one `implementer` (`model: sonnet`) owning
   `firmware/src/optical_main.cpp` (the `sd_lifecycle_service` preempt
   argument), `firmware/src/aius_optical_app.cpp` and `.h` (the
@@ -9621,12 +9628,12 @@ live-dependency: none
   "test_ota_flash_client.py"`); no test pins a POST-verb 409
   `ota_signature` without retry, true by construction.
 
-### Phase 4zj The HTTP layer knows fault 19 and a not-found is not an SD fault
+### Phase 4zj The HTTP layer knows fault 19 and a not-found is not an SD fault ✓ SHIPPED 2026-10-16
 
 ```yaml
 phase: 4zj
 title: The HTTP layer knows fault 19 and a not-found is not an SD fault
-status: planned # 2026-10-16: found in 4zh prebuild review
+status: shipped # 2026-10-16: host proof (http, sd-editor, runtime-target, registry); item 3 no-change
 depends-on: phase-4zh (shares firmware/sd/www/openapi.json)
 outcome: >-
   aius_http_transaction.c's SD event validation (:434) accepts fault 19
@@ -9645,6 +9652,18 @@ targeted-proof:
 unit: implementer
 live-dependency: none
 ```
+
+- **Shipped.** `AIUS_HTTP_SD_FAULT_LAST` (`AIUS_SD_FAULT_VERIFY`) bounds
+  the FAILED and CANCELLED checks in `sd_payload_shape_valid`
+  (`firmware/lib/aius_http/src/aius_http_transaction.c:401`); VERIFY
+  takes `select_sd_error`'s default, 500 `sd_failure`. The malformed
+  probe moved to `VERIFY + 1`. openapi lists 19 verify.
+- **Item 3, no change: the transaction's SD fault is not surfaced.**
+  Its `last_fault` is read only by the switch at
+  `firmware/src/aius_runtime_network_http.cpp:503`, which counts
+  PROTOCOL, REQUEST_CAPACITY and the timeouts; `AIUS_HTTP_FAULT_SD`
+  falls to `default` (`:518`). The surfaced SD counters are
+  `http_faults` and `root_faults`, settled by 4zh.
 
 ### Phase 4c `test.sh` runs every `--suite` given ✓ SHIPPED 2026-10-06
 
