@@ -27,27 +27,24 @@ buffer and no intermediate DSP quantisation.
 
 ## Current state
 
-Handover 2026-10-12 (orchestration run, session c36bf526: 4n, 4o, 4i and
-4p built; handed over before the OTA); replace wholesale on the next
-handover.
+Handover 2026-10-16 (orchestration run, session e173e26c: 4z diagnosed,
+bridged and shipped; 4u to 4y and the new 4xa shipped; 4za planned and
+in prebuild review); replace wholesale on the next handover.
 
-- **Status.** Phases 1, 2, 3 DONE; 4a, 4c, 4d, 4n, 4o, 4p, 4q, 4r, 4s,
-  4t, 4i DONE. BUILT, with their device proof the owner's and not yet
-  run: Phase 4 (gate 7 at fill-write cadence on the U24 bench), 4e, 4f,
-  4g, 4h, 4j, 4k, 4l, 4m. **4u** SHIPPED 2026-10-14; **4v, 4w, 4x,
-  4xa** (SD page layout) SHIPPED 2026-10-16. **4y** (slot card and boot-other) SHIPPED 2026-10-14 (reboot
-  and page proof passed). **4z** SHIPPED (bridge OTA 2026-10-13); **4za** (pin
-  removal, fixed path proven from slot 2) is next firmware work. 4b
-  (acceptance umbrella) closes after 4e to 4h's device
-  runs and no longer gates 4i (owner, 2026-10-12).
+- **Status.** Phases 1, 2, 3 DONE; 4a, 4c, 4d, 4i, 4n to 4u, 4v, 4w,
+  4x, 4xa, 4y, 4z DONE. BUILT, with their device proof the owner's and
+  not yet run: Phase 4 (gate 7 at fill-write cadence on the U24 bench),
+  4e, 4f, 4g, 4h, 4j, 4k, 4l, 4m. **4za** IN PROGRESS (prebuild review).
+  4b (acceptance umbrella) closes after 4e to 4h's device runs.
 - **Board.** Runs `f075872c8b82` in slot 1 (4z bridge OTA 2026-10-13,
   carrying 4y and 4z; self-committed, `ab.active_slot` 1, sequence 29,
   `trial_budget` 0, `rollback_observed` false, `revisions` {1:
-  `f075872c8b82`, 2: null}). Slot 2 holds `57977135e472` (4q to 4t), so
-  the 4z bridge pin stays until 4za. Slot-a OCRAM free 264,736 B, exactly
-  the floor; ITCM free 13,364 B; `_ebss` at its ceiling. The card serves
-  the 4u to 4y pages (full sync of 22 files 2026-10-13; `classic.html`
-  removed 2026-10-12) and holds no replay captures or pages. A
+  `f075872c8b82`, 2: null}). Slot 2 still holds `57977135e472` (4q to
+  4t; null because it predates recorded revisions), so the 4z bridge pin
+  stays until 4za's build 1 overwrites it. Slot-a OCRAM free 264,736 B,
+  exactly the floor; ITCM free 13,364 B (80 B over its floor); `_ebss`
+  at its ceiling. The card serves the 4u to 4xa pages (full sync of 22
+  files 2026-10-15, served files byte-identical to source). A
   `/api/reboot` 2026-10-13 kept slot 1 and the record intact (4y).
   `df966f17b370` stays
   the owner's **fail-safe rollback candidate**: tag
@@ -71,22 +68,28 @@ handover.
   flight at the 2026-10-16 handover (re-run it if no verdict is
   recorded in the contract). Then build 1 (`unit: implementer`, opus
   tier: the dark-window path), delivery audit, and three owner-gated
-  device steps. The auto-mode classifier has refused card writes
-  before ("Remote Shell Writes") but ran the 2026-10-13 sync once the
-  owner said to try; if it refuses, the owner runs it with `!`.
+  device steps. Card syncs ran from the agent this run once the owner
+  said "sync"; if the classifier refuses one, the owner runs it with
+  `!`.
 - **What landed this run** (aius commits, each followed by a upstream repository
   pointer bump):
 
 | Commit | Contents | Proof |
 | --- | --- | --- |
-| `897cc1a` | Phase 4n: an idle connection (no request byte by 150 ms) closes with no reply under AIUS_HTTP_FAULT_IDLE_CLOSE, counted nowhere, nor a spare the browser closes first; partial request still 408; network-hardening doc; 4i re-planned to the no-bench ruling; 4o planned | http, runtime-target, runtime, optical-app, status-body-bound, registry, stack-bound, producer-isolation; all four images at their floors; review PASS F1 to F5, closure PASS |
-| `165814b` | 4i step 1: 5 replay captures (19,765,248 B) archived to LFS with manifest | `replay_retire.py archive` exit 0, LFS attribute checked |
-| `01e86a1` | Phase 4o: network-transport expects the vendored SdFat and SD in lib_deps (stale since 4e) | network-transport, registry |
-| `23a4c89` | 4i measure-port: `measure_run.py` drives a U24 aplay stimulus; `--baseline` pass rule for a future owner bench session | measure-vectors 34, registry (verifier) |
-| `606a64b` | Phase 4i: replay retired from firmware, web UI, tools, docs and aius CLAUDE.md (promoted); OCRAM +132,992 B per env, floors moved; retired-symbols post-link guard | 36 commit-checkpoint suites (verifier); all four images; delivery audit FAIL, fixes, closure PASS |
-| this commit | Phase 4p: status.html drops the Live processing card (owner); this handover | sd-editor 405, www-bundle, optical-app, registry (verifier) |
+| `f075872` | Phase 4z: `ota_flash_read` reaches no flash (remap filled in `ab_compose`, DTCM `.data` static), dcache delete before the copy, I-cache invalidate; bridge pin in the ld; sign-time pin check; step-loop closure guard | itcm-placement 59, ota signer 27, boot-target, all four images at floors; review rounds 1 and 2, delivery audit D1 fixed |
+| `97fd2d2` | `aius_ota_flash.py --rehearse` | ota flash client 14 |
+| `27724d6` | aius CLAUDE.md bridge-pin paragraph (promoted) | promote diff |
+| `df6d5da` | 4z SHIPPED: three device steps (old image VERIFY 0x1B80, bridge rehearsal COMPLETED, activation self-committed) | device |
+| `2028041` | 4y reboot proof; `aius_http_runner.py --auth-file` | device; `--help` parse |
+| `b4b8630` | aius CLAUDE.md: the SD token is not sensitive (owner) (promoted) | promote diff |
+| `e71cd04` | 4y SHIPPED (owner's page check) | device |
+| `128f099` | 4xa: phone facts grid, sticky action bar at every width; 4u SHIPPED | sd-editor 428, www-bundle 35, optical-app (verifier) |
+| `cc37a42` | 4xa: request-body size dropped, loaded pill hidden | sd-editor 430, www-bundle 35, optical-app |
+| `a434e65` | 4xa: bar facts out, Model rate and json into signal, status DSP generation, no page heads | sd-editor 435, www-bundle 35, optical-app |
+| `558e023` | 4v, 4w, 4x, 4xa SHIPPED (owner's page check) | device |
+| `0d86027` | 4za contract: owner's D2 fix, round-1 review folded | review |
 
-- **Uncommitted tree.** Nothing of this session's.
+- **Uncommitted tree.** Nothing of this session's in `git_modules/aius`.
 - **Hook item.** `stop-guard.action-reverify` is item 11 of
   `src/tools/hook/docs/plans/hook-daemon-feature-backlog.md` (owner:
   plan, do not dispatch).
@@ -120,8 +123,19 @@ handover.
     `--suite` flags each run. Python tool tests run with `python3 -m
     unittest` (pytest is absent). A verifier's suite total can miscount:
     read the per-suite list against the 4i commit-checkpoint green list.
-  - The SD token never goes on a command line nor through `$(cat …)`;
-    use the tools' `--auth-file` / `--token-file`.
+  - The SD token is not sensitive (owner), but the classifier denies it
+    on a command line or through `$(cat …)`; use the tools'
+    `--auth-file` / `--token-file` (`net/aius_http_runner.py` included).
+  - `aius_http_runner.py reboot` returns the first `/api/status` that
+    answers, which can be the old boot's; read `/api/status` again for
+    the new boot. `ab.ledger_boots` is the chooser's attempt count: 1 on
+    a trial boot, 0 on a committed one; `prev_boot.first_abort` 254 is
+    `AIUS_ABORT_NONE`.
+  - The SD web suite lives at `test/sd-editor`, not
+    under `firmware/test`. A verifier that checks the changed-file list
+    flags the orchestrator's own plan edit; read it as such.
+  - The gzip bundles under `firmware/sd/www/` are untracked; the sync
+    script builds them.
   - Polling `/api/status` is not neutral: a render delays the AC-3
     producer. "Unpolled" is only unpolled if no browser has the web UI
     open.
@@ -159,10 +173,11 @@ handover.
     no HDMI-CEC link and no optical carrier when idle. Dark-input lock
     blips are on-board; their relock and capture effects are
     output-jitter Phase L's, and each now adds 2 to `source_changes`.
-- **Evidence in scratch** (reaped about 2026-10-19):
-  `.scratch/c36bf526-06d7-4bff-948c-ea31ba675a0a/` holds this run's
-  suite logs and the optical-cutover handoff; everything durable is in
-  4n, 4i and 4p's bodies.
+- **Evidence in scratch** (reaped about 2026-10-23):
+  `.scratch/e173e26c-e337-49cc-b423-533c708ff340/` holds the OTA logs,
+  status snapshots, the signed `aius-f075872c8b82.ota`, and the 4xa
+  render harness and screenshots (`4xa/`); everything durable is in 4y,
+  4z, 4xa and 4za's bodies.
 
 ## Why this plan was rebased
 
