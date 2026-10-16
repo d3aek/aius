@@ -2429,11 +2429,11 @@ static FLASHMEM SdFlushGate sd_flush_gate(AiusOpticalSdFlush *flush,
 	return SD_FLUSH_GATE_OPEN;
 }
 
-FLASHMEM void aius_optical_sd_flush_preempt_scan(
+FLASHMEM void aius_optical_sd_flush_preempt_root(
 	AiusOpticalSdFlush *flush, const AiusOpticalSdFlushOps *ops,
-	uint32_t now_ms, bool scan_running)
+	uint32_t now_ms, bool root_preemptable)
 {
-	if (!scan_running || flush->cancelled_fill ||
+	if (!root_preemptable || flush->cancelled_fill ||
 	    sd_flush_gate(flush, ops, now_ms) != SD_FLUSH_GATE_OPEN)
 		return;
 	ops->fill_cancel(ops->context);
@@ -3512,7 +3512,7 @@ FLASHMEM AiusOpticalAdmitVerdict aius_optical_admission_route(
 	return AIUS_OPTICAL_ADMIT_VERDICT_SHED;
 }
 
-FLASHMEM bool aius_optical_admission_sd_fifo_defer(
+FLASHMEM bool aius_optical_admission_sd_fifo_short(
 	AiusOpticalAdmission *admission, const AiusOpticalAdmitSample *sample)
 {
 	if (admission == NULL || sample == NULL || !sample->fifo_mode ||
@@ -3520,8 +3520,14 @@ FLASHMEM bool aius_optical_admission_sd_fifo_defer(
 		return false;
 	admit_age(&admission->window[AIUS_OPTICAL_ADMIT_SD_START_FIFO],
 	          AIUS_OPTICAL_ADMIT_SD_START_FIFO, sample->now_ms);
-	if (!aius_optical_admission_short(admission,
-	                                  AIUS_OPTICAL_ADMIT_SD_START_FIFO, sample))
+	return aius_optical_admission_short(admission,
+	                                    AIUS_OPTICAL_ADMIT_SD_START_FIFO, sample);
+}
+
+FLASHMEM bool aius_optical_admission_sd_fifo_defer(
+	AiusOpticalAdmission *admission, const AiusOpticalAdmitSample *sample)
+{
+	if (!aius_optical_admission_sd_fifo_short(admission, sample))
 		return false;
 	admission->sd_fifo_defers++;
 	return true;

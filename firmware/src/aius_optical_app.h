@@ -437,6 +437,10 @@ AiusOpticalAdmitVerdict aius_optical_admission_route(
  * (aius_optical_admission_sd_start) do not read the latch. */
 bool aius_optical_admission_sd_fifo_defer(AiusOpticalAdmission *admission,
                                           const AiusOpticalAdmitSample *sample);
+/* 4zf: sd_fifo_defer()'s predicate (same mode, bring-up latch, aging and
+ * short checks) without the sd_fifo_defers count. */
+bool aius_optical_admission_sd_fifo_short(AiusOpticalAdmission *admission,
+                                          const AiusOpticalAdmitSample *sample);
 /* F-B2: bring-up's first LOAD_DSP step has ended, found or not. */
 void aius_optical_admission_note_bringup_loaded(AiusOpticalAdmission *admission);
 /* Round 4: whether the HTTP transaction can no longer start or finish the SD
@@ -1293,13 +1297,14 @@ AiusOpticalSdIdleStep aius_optical_sd_idle_step(AiusOpticalSdFlush *flush,
 bool aius_optical_sd_flush_start(AiusOpticalSdFlush *flush,
                                  const AiusOpticalSdFlushOps *ops,
                                  uint32_t now_ms);
-/* 4zd: a due flush preempts a running USAGE_REFRESH scan. When `scan_running`
- * (root RUNNING and job kind USAGE_REFRESH), flush_start's gate prefix holds
- * and cancelled_fill is clear, calls ops->fill_cancel once and sets
+/* 4zd, 4zf: a due flush preempts a running USAGE_REFRESH scan or CACHE_FILL.
+ * When `root_preemptable` (such a root RUNNING and sd_fifo_defer() not
+ * holding; the caller decides), flush_start's gate prefix holds and
+ * cancelled_fill is clear, calls ops->fill_cancel once and sets
  * cancelled_fill; else nothing. Call before the RUNNING-root return. */
-void aius_optical_sd_flush_preempt_scan(AiusOpticalSdFlush *flush,
+void aius_optical_sd_flush_preempt_root(AiusOpticalSdFlush *flush,
                                         const AiusOpticalSdFlushOps *ops,
-                                        uint32_t now_ms, bool scan_running);
+                                        uint32_t now_ms, bool root_preemptable);
 /* 4zd: false while cancelled_fill is set (a preempted scan waits for its
  * flush), true otherwise: gates the pending USAGE_REFRESH start. */
 bool aius_optical_sd_usage_may_start(const AiusOpticalSdFlush *flush);

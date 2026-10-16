@@ -3666,6 +3666,7 @@ static void test_admission_sd_start(void)
 	assert(!aius_optical_admission_sd_fifo_defer(&a, &s)); /* PROBE */
 	assert(!aius_optical_admission_sd_fifo_defer(&a, &s)); /* LOAD_CONFIG */
 	assert(!aius_optical_admission_sd_fifo_defer(&a, &s)); /* LOAD_DSP */
+	assert(!aius_optical_admission_sd_fifo_short(&a, &s)); /* latch clear */
 	assert(a.sd_fifo_defers == 0u);
 	assert(aius_optical_admission_sd_start(&a, &download, &s, false) ==
 	       AIUS_OPTICAL_ADMIT_VERDICT_DEFER);
@@ -3699,9 +3700,15 @@ static void test_admission_sd_start(void)
 	assert(aius_optical_admission_sd_fifo_defer(&a, &s));
 	assert(aius_optical_admission_sd_fifo_defer(&a, &s));
 	assert(a.sd_fifo_defers == 2u);
+	/* The non-counting predicate (4zf preempt) agrees and never counts. */
+	assert(aius_optical_admission_sd_fifo_short(&a, &s));
+	assert(aius_optical_admission_sd_fifo_short(&a, &s));
+	assert(a.sd_fifo_defers == 2u);
 	/* DMA mode never defers. */
 	s = admit_sample(true, 0u, false, 0u);
 	assert(!aius_optical_admission_sd_fifo_defer(&a, &s));
+	assert(!aius_optical_admission_sd_fifo_short(&a, &s));
+	assert(a.sd_fifo_defers == 2u);
 
 	/* An HTTP start held 500 ms of clock time answers 503, whether 20 or 500
 	 * consults ran in that time (R4-N2). */
@@ -5875,7 +5882,7 @@ static void test_sd_scan_card_route_busy(void)
 }
 
 /* The preempt, the shared prefix and the usage-start gate. */
-static void test_sd_flush_preempt_scan(void)
+static void test_sd_flush_preempt_root(void)
 {
 	AiusOpticalSdFlush flush;
 
@@ -5884,9 +5891,9 @@ static void test_sd_flush_preempt_scan(void)
 	g_ff.due = true;
 	g_ff.fill_in_flight = true;
 	assert(aius_optical_sd_usage_may_start(&flush));
-	aius_optical_sd_flush_preempt_scan(&flush, &g_ff_ops, 0u, true);
+	aius_optical_sd_flush_preempt_root(&flush, &g_ff_ops, 0u, true);
 	assert(g_ff.fill_cancels == 1u && flush.cancelled_fill);
-	aius_optical_sd_flush_preempt_scan(&flush, &g_ff_ops, 1u, true);
+	aius_optical_sd_flush_preempt_root(&flush, &g_ff_ops, 1u, true);
 	assert(g_ff.fill_cancels == 1u);
 	assert(!aius_optical_sd_usage_may_start(&flush));
 
@@ -5894,24 +5901,24 @@ static void test_sd_flush_preempt_scan(void)
 	 * deferred, or a flush already running. */
 	ff_reset(&flush);
 	g_ff.due = true;
-	aius_optical_sd_flush_preempt_scan(&flush, &g_ff_ops, 0u, false);
+	aius_optical_sd_flush_preempt_root(&flush, &g_ff_ops, 0u, false);
 	g_ff.due = false;
-	aius_optical_sd_flush_preempt_scan(&flush, &g_ff_ops, 0u, true);
+	aius_optical_sd_flush_preempt_root(&flush, &g_ff_ops, 0u, true);
 	g_ff.due = true;
 	g_ff.held = true;
-	aius_optical_sd_flush_preempt_scan(&flush, &g_ff_ops, 0u, true);
+	aius_optical_sd_flush_preempt_root(&flush, &g_ff_ops, 0u, true);
 	g_ff.held = false;
 	flush.frozen = true;
-	aius_optical_sd_flush_preempt_scan(&flush, &g_ff_ops, 0u, true);
+	aius_optical_sd_flush_preempt_root(&flush, &g_ff_ops, 0u, true);
 	flush.frozen = false;
 	g_ff.http_deferred = true;
-	aius_optical_sd_flush_preempt_scan(&flush, &g_ff_ops, 0u, true);
+	aius_optical_sd_flush_preempt_root(&flush, &g_ff_ops, 0u, true);
 	g_ff.http_deferred = false;
 	flush.fault_remount = true;
-	aius_optical_sd_flush_preempt_scan(&flush, &g_ff_ops, 0u, true);
+	aius_optical_sd_flush_preempt_root(&flush, &g_ff_ops, 0u, true);
 	flush.fault_remount = false;
 	flush.running = true;
-	aius_optical_sd_flush_preempt_scan(&flush, &g_ff_ops, 0u, true);
+	aius_optical_sd_flush_preempt_root(&flush, &g_ff_ops, 0u, true);
 	flush.running = false;
 	assert(g_ff.fill_cancels == 0u && !flush.cancelled_fill);
 	assert(aius_optical_sd_usage_may_start(&flush));
@@ -5929,7 +5936,7 @@ static void test_sd_flush_preempt_scan(void)
 	ff_reset(&flush);
 	g_ff.due = true;
 	g_ff.fill_in_flight = true;
-	aius_optical_sd_flush_preempt_scan(&flush, &g_ff_ops, 0u, true);
+	aius_optical_sd_flush_preempt_root(&flush, &g_ff_ops, 0u, true);
 	g_ff.fill_in_flight = false;
 	g_ff.http_deferred = true;
 	assert(!aius_optical_sd_flush_start(&flush, &g_ff_ops, 1u));
@@ -5989,7 +5996,7 @@ static void test_sd_scan_reboot_reaches_flush(void)
 			const bool scan_running = g_ff.fill_in_flight;
 			AiusOpticalSdService svc;
 
-			aius_optical_sd_flush_preempt_scan(&flush, &g_ff_ops, t,
+			aius_optical_sd_flush_preempt_root(&flush, &g_ff_ops, t,
 			                                   scan_running);
 			/* The scan stops at its next chunk boundary after the cancel. */
 			if (g_ff.fill_cancels != 0u && t >= 30u)
@@ -7274,7 +7281,7 @@ int main(void)
 	RUN_TEST(test_sd_service_gate);
 	RUN_TEST(test_sd_scan_flush_and_freeze);
 	RUN_TEST(test_sd_scan_card_route_busy);
-	RUN_TEST(test_sd_flush_preempt_scan);
+	RUN_TEST(test_sd_flush_preempt_root);
 	RUN_TEST(test_sd_scan_reboot_reaches_flush);
 	RUN_TEST(test_sd_flush_put_stops_fill);
 	RUN_TEST(test_sd_flush_start_and_settle);

@@ -9351,23 +9351,24 @@ prebuild-review: ready # 2026-10-16: rounds 1 to 5 HOLD folded, round 6 PASS (ni
 ```yaml
 phase: 4zf
 title: A due flush also preempts a running cache fill
-status: planned # 2026-10-16: found in 4zd prebuild review round 5; contract amended by prebuild review (fourth run), code branch
+status: built # 2026-10-16: host proof green (optical-app, optical-cutover 62, runtime, registry); delivery audit FIX folded, clean-room PASS; W4 and memory real-ELF cases outstanding at the shared 4zf+4zh image build
 depends-on: phase-4zd (the preempt helper and its sd_lifecycle_service call)
 outcome: >-
   A due flush cancels a running CACHE_FILL root job at its next primitive
   boundary, as 4zd's preempt does for a USAGE_REFRESH scan, so the
   409 sd_flush_pending window (reboot, OTA activate, rehearse,
   boot-other with dirty entries) and the dirty (power-loss) window no
-  longer include a fill-file hold. No preempt fires while sd_fifo_defer()
-  holds, since the flush cannot start then either. fill_cancels counts
-  each preempted fill exactly once.
+  longer include a fill-file hold. No fill preempt fires while the FIFO
+  defer predicate holds (the fill is paused then and the flush cannot
+  start either); a scan stays preemptable, since it keeps stepping under
+  defer. sd_fifo_defers keeps its meaning (a count of holds, not of
+  epochs).
 seams:
-  - "firmware/src/optical_main.cpp sd_lifecycle_service: the preempt argument covers web_cache_fill_in_flight() beside sd_flush_usage_scan_running(), gated off while sd_fifo_defer() holds; the cancel goes through sd_flush_fill_cancel then web_cache_fill_cancel (hold latch and fill_cancels)"
-  - "firmware/src/optical_main.cpp:1346: fill_cancels no longer counts when the fill has terminal_seen and cancel_root returns false"
-  - "firmware/src/aius_optical_app.cpp and .h: the 4zd preempt helper renamed and commented if it no longer only means a scan; keeps its bool parameter (the W4 tables then need no recount); aius_optical_web_fill_cancel's count (:3645) unchanged"
+  - "firmware/src/optical_main.cpp sd_lifecycle_service: the preempt argument is sd_flush_usage_scan_running() || (web_cache_fill_in_flight() && !<non-counting FIFO-short predicate>); the cancel goes through sd_flush_fill_cancel then web_cache_fill_cancel (hold latch and fill_cancels)"
+  - "firmware/src/aius_optical_app.cpp and .h: the 4zd preempt helper renamed aius_optical_sd_flush_preempt_root, keeping its bool parameter (the W4 tables then need no recount); a non-counting aius_optical_admission_sd_fifo_short() that aius_optical_admission_sd_fifo_defer calls before it counts; aius_optical_web_fill_cancel's count (:3645) unchanged"
 targeted-proof:
-  - "host (optical-app): the renamed helper's existing cases still pass; aius_optical_web_fill_cancel counts once per cancel (asserted, unchanged)"
-  - "host (optical-cutover): UPDATE the existing assertion that pins sd_flush_usage_scan_running() (test_optical_cutover.py:6116) to the widened argument, including web_cache_fill_in_flight() and the sd_fifo_defer() gate; a text check that the preempted fill cancels through sd_flush_fill_cancel and web_cache_fill_cancel; a text check for the :1346 terminal_seen guard. The fill restart is inherited from 4g's CANCELLED path, not re-proved"
+  - "host (optical-app): the renamed helper's existing cases still pass; aius_optical_admission_sd_fifo_short() never changes sd_fifo_defers; aius_optical_web_fill_cancel counts once per cancel (asserted, unchanged)"
+  - "host (optical-cutover): UPDATE the existing assertion that pins sd_flush_usage_scan_running() (test_optical_cutover.py:6116) to the widened argument with the fill-only FIFO gate; a text check that the preempted fill cancels through sd_flush_fill_cancel and web_cache_fill_cancel. The fill restart is inherited from 4g's CANCELLED path, not re-proved"
   - "host (W4 and memory, after the next build_ab.sh, orchestrator-run): stack-bound, producer-isolation, memory, itcm-placement green with no table recount"
 unit: implementer
 live-dependency: none
@@ -9395,6 +9396,30 @@ live-dependency: none
   - **Accepted residual (orchestrator, autonomous):** 4zd's stuck
     `cancelled_fill` residual now covers a preempted fill too; the
     post-mount walk stays parked until the next upload.
+- **Build (2026-10-16).** Preempt argument
+  `sd_flush_usage_scan_running() || (web_cache_fill_in_flight() && !sd_fifo_short())`
+  in `sd_lifecycle_service` (`firmware/src/optical_main.cpp:9889`); the
+  cancel reuses `sd_flush_fill_cancel`, which already called
+  `web_cache_fill_cancel` then the scan cancel. The helper is
+  `aius_optical_sd_flush_preempt_root`.
+- **Delivery audit: FIX, folded.**
+  - The first cut gated with `sd_fifo_defer()`, which counts each true
+    return, so `sd_fifo_defers` would have counted epochs, not holds
+    (`firmware/sd/www/openapi.json:3909`). The non-counting
+    `aius_optical_admission_sd_fifo_short()`
+    (`firmware/src/aius_optical_app.cpp:3515`) holds the checks; the
+    counting wrapper calls it then counts, exactly as before.
+  - Gating the scan preempt under defer regressed 4zd (a scan keeps
+    stepping under defer); the gate is now fill-only.
+  - The prebuild-requested `terminal_seen` guard on `fill_cancels`
+    could never fire (terminal handling leaves RUNNING in the same call,
+    and every root start clears it); reverted.
+- **Clean-room: PASS.** Double-cancel ruled out (an HTTP-cancelled fill
+  keeps the gate closed through `http_deferred`; `cancelled_fill` stops
+  a repeat). W4 risk low: the new predicate is extern with no indirect
+  site and off the producer roots; the one residual is inlining drift
+  in `platform_service` moving the "fill walk app_read_directory" hop,
+  which the real-ELF run will show.
 
 ### Phase 4zg Explain the fault 9 SD failure records ✓ SHIPPED 2026-10-16
 
@@ -9470,49 +9495,75 @@ live-dependency: none
 ```yaml
 phase: 4zh
 title: A file-not-found open is not an SD fault
-status: planned # 2026-10-16: found in 4zg; contract by the orchestrator (autonomous), prebuild review pending
+status: planned # 2026-10-16: found in 4zg; contract amended by prebuild review (fourth run)
 depends-on: phase-4zg (the decode)
 outcome: >-
-  An open that misses because the file is absent (driver_fault() sees
-  sdErrorCode() 0 and counts open_misses) carries its own driver code and
-  maps to a not-found fault, distinct from SDDR and AIUS_SD_FAULT_OPEN.
-  A not-found DOWNLOAD (HTTP) and a not-found CONFIG_LOAD (root, an
-  optional file at boot) no longer latch sd_diag.last_failure and no
-  longer bump http_faults or root_faults; open_misses keeps counting
-  them. Behaviour is unchanged: the client still gets 404 sd_not_found,
-  boot still falls back to defaults for a missing optional file, and a
-  hard driver fault or a non-open primitive failure latches and counts
-  exactly as today.
+  An OPEN_READ that misses because the file is absent (driver_fault()
+  sees sdErrorCode() 0 and counts open_misses) carries a distinct miss
+  driver code, and on a DOWNLOAD or CONFIG_LOAD job only it maps to the
+  existing AIUS_SD_FAULT_NOT_FOUND (18). Such a miss no longer latches
+  sd_diag.last_failure and no longer bumps http_faults or root_faults;
+  open_misses keeps counting it. root_state still goes to FAILED and the
+  result kind stays FAULT. Behaviour is unchanged: the client still gets
+  404 sd_not_found, boot still falls back to defaults, and every other
+  action with the miss code (MKDIR, write and append opens, TRUNCATE,
+  SEEK, RENAME, REMOVE), every other job kind (UPLOAD resume, CACHE_FILL,
+  copy-before-write read-back) and every hard driver fault map, latch
+  and count exactly as today.
 seams:
-  - "firmware/src/aius_sd_teensy.h and aius_sd_teensy.cpp: a miss driver code (fourCC beside AIUS_SD_TEENSY_DRIVER_FAULT) emitted from driver_fault()'s miss branch (:155)"
-  - "firmware/lib/aius_sd/include/aius_sd.h and firmware/lib/aius_sd/src/aius_sd.c: map_driver_fault maps the miss code to a not-found fault (reuse an existing NOT_FOUND enum if present, else add one at the end of the enum so no shipped number moves)"
-  - "firmware/src/aius_runtime_storage.cpp: publish_failed (:190) and root_terminal (:265) skip latch_failure and the failure counter for a not-found fault on DOWNLOAD and CONFIG_LOAD"
-  - "firmware/lib/aius_http/src/aius_http_transaction.c: the DOWNLOAD open-to-404 mapping (:1070) and the :435 expectation accept the not-found fault"
+  - "firmware/lib/aius_sd/include/aius_sd.h: AIUS_SD_DRIVER_FAULT_MISS defined here (aius_sd_teensy.h is C++-only, :4)"
+  - "firmware/src/aius_sd_teensy.cpp: driver_fault()'s miss branch emits AIUS_SD_DRIVER_FAULT_MISS (:155); the eight miss sites (:383 to :550) keep their actions"
+  - "firmware/lib/aius_sd/src/aius_sd.c: map_driver_fault (:1863) takes driver_fault and maps MISS to NOT_FOUND only on AIUS_SD_ACTION_OPEN_READ of a DOWNLOAD or CONFIG_LOAD, after its phase checks (:1866); the offset-0 UPLOAD exemption (:1932) unchanged"
+  - "firmware/src/aius_runtime_storage.cpp: publish_failed (:190) and root_terminal (:265) skip latch_failure and the failure counter only when fault == NOT_FOUND and driver_fault == MISS and kind is DOWNLOAD or CONFIG_LOAD (DELETE's NOT_FOUND with driver 0, aius_sd.c:1628, still latches); no new noinline helper (it would need a W4 row)"
+  - "firmware/sd/www/openapi.json: http_faults, root_faults and driver_fault descriptions (:2148, :2343) name the exclusion and the miss code"
 targeted-proof:
-  - "host (sd-target or sd, whichever compiles aius_sd.c's map): a miss on OPEN_READ maps to the not-found fault with the miss driver code; a hard driver fault on OPEN_READ still maps to AIUS_SD_FAULT_OPEN with SDDR"
-  - "host (runtime-target): a not-found DOWNLOAD publishes 404 with http_failures and last_failure.seq unchanged; a not-found CONFIG_LOAD ends with root_failures and last_failure.seq unchanged and the config default in force; a non-miss DOWNLOAD open failure still latches and counts"
-  - "host (http suite that covers aius_http_transaction.c): a not-found DOWNLOAD still answers 404 sd_not_found"
+  - "host (sd, sd-overlay): MISS on OPEN_READ of a DOWNLOAD and of a CONFIG_LOAD maps to NOT_FOUND; MISS on OPEN_APPEND, OPEN_WRITE_BEGIN and on an UPLOAD-resume OPEN_READ keeps its current fault; SDDR on OPEN_READ still maps to OPEN"
+  - "host (sd-target): the miss case (test_aius_sd_teensy.cpp:1195) emits MISS; the SDDR pins (:260, :511, :1030, :1065, :1394) unchanged"
+  - "host (runtime-target): a not-found DOWNLOAD publishes FAULT with http_failures and last_failure.seq unchanged; a not-found CONFIG_LOAD ends FAILED with root_failures and last_failure.seq unchanged and the settings fallback taken; a DELETE NOT_FOUND and an SDDR DOWNLOAD open still latch and count"
+  - "host (http): NOT_FOUND on a DOWNLOAD still answers 404 sd_not_found (existing table, test_http_transaction.c:2789)"
+  - "host (sd-editor): openapi suite green"
   - "device (agent, source off, after the next OTA that carries it): /api/status after boot shows root_faults 0 and no boot last_failure while open_misses counts the boot misses; a GET of an absent /sd/www/ path answers 404 and leaves http_faults and last_failure unchanged"
 unit: implementer
 live-dependency: none
 ```
+
+- **Prebuild review (fourth run, 2026-10-16): AMEND, folded above.**
+  The first draft mapped every miss to NOT_FOUND. The miss branch fires
+  on eight actions, and a failed O_CREAT open with code 0 means a
+  missing parent, a full directory or a read-only file, not absence; an
+  UPLOAD resume also opens with OPEN_READ and answers 500 today. Mapping
+  either to NOT_FOUND would turn a 500 into a 404 through
+  `aius_http_transaction.c:1070`. NOT_FOUND 18 already exists, so the
+  HTTP mapping needs no change.
+- **Residual risk (accepted):** a code-0 failure on a read open can also
+  be FAT chain corruption, which would now read as not-found on a
+  DOWNLOAD or CONFIG_LOAD. `open_misses` still counts it.
 
 - **Decisions (orchestrator, autonomous, 2026-10-16).** Reclassify
   rather than document: a failure record that is routinely a missing
   optional file hides a real one, and `last_failure` is the only
   record of the last fault. `open_misses` is the not-found counter, so
   no new counter is added. The 404 and boot-default behaviour are out
-  of scope and must not move. Listed in "Interrogate the user: confirm
-  autonomous calls".
+  of scope and must not move. CACHE_FILL and copy-before-write
+  read-back misses still latch: a deliberate half-scope, since a cache
+  fill names a file the listing said exists, so a miss there is
+  surprising. Listed in "Interrogate the user: confirm autonomous
+  calls".
+- **Found work (out of scope here, from the review):**
+  `aius_http_transaction.c:434` rejects fault 19 VERIFY as malformed (it
+  accepts `<= NOT_FOUND`), and the openapi fault list
+  (`firmware/sd/www/openapi.json:2336`) omits 19; `select_sd_error`
+  records `AIUS_HTTP_FAULT_SD` on every not-found 404 (`:1067`). Phase
+  4zj.
 - **Owned paths are disjoint from 4zf's**, so the two run in parallel;
   their device proof shares one OTA image.
 
-### Phase 4zi The OTA tool waits out 409 sd_flush_pending
+### Phase 4zi The OTA tool waits out 409 sd_flush_pending ✓ SHIPPED 2026-10-16
 
 ```yaml
 phase: 4zi
 title: The OTA tool waits out 409 sd_flush_pending
-status: planned # 2026-10-16: found in 4zf prebuild review (out of scope there)
+status: shipped # 2026-10-16: no-change branch; the tool already does this (body)
 depends-on: none
 outcome: >-
   firmware/tools/ota/aius_ota_flash.py treats 409 sd_flush_pending on
@@ -9531,8 +9582,42 @@ unit: implementer
 live-dependency: none
 ```
 
-- **Disjoint from 4zf and 4zh**, so it runs beside them. Its live use is
-  the next OTA of their shared image.
+- **Shipped on the no-change branch.** `post_waiting_flush`
+  (`firmware/tools/ota/aius_ota_flash.py:229`) wraps enable-activation,
+  activate and rehearse; on `409 sd_flush_pending` it polls
+  `sd_flush.dirty` each second and re-posts once it reads 0, giving up
+  after `FLUSH_WAIT_S` 60 s with the refusal logged. Any other 409
+  returns at once. The contract's 10 s bound is superseded by the
+  existing 60 s, which its comment sizes to a full sync's drain (about
+  40 s). Tests already exist in `firmware/test/ota/test_ota_flash_client.py`
+  (14 tests OK, `python3 -m unittest discover -s firmware/test/ota -p
+  "test_ota_flash_client.py"`); no test pins a POST-verb 409
+  `ota_signature` without retry, true by construction.
+
+### Phase 4zj The HTTP layer knows fault 19 and a not-found is not an SD fault
+
+```yaml
+phase: 4zj
+title: The HTTP layer knows fault 19 and a not-found is not an SD fault
+status: planned # 2026-10-16: found in 4zh prebuild review
+depends-on: phase-4zh (shares firmware/sd/www/openapi.json)
+outcome: >-
+  aius_http_transaction.c's SD event validation (:434) accepts fault 19
+  VERIFY instead of reading a VERIFY FAILED event as malformed; the
+  openapi fault list (firmware/sd/www/openapi.json:2336) names 19; and
+  select_sd_error (:1067) no longer records AIUS_HTTP_FAULT_SD for a
+  not-found 404 if that transaction counter is surfaced anywhere
+  (status JSON, events, a tool); if it is not surfaced, that item is
+  recorded here as no-change.
+seams:
+  - "firmware/lib/aius_http/src/aius_http_transaction.c: the fault-range check (:434) and select_sd_error (:1067)"
+  - "firmware/sd/www/openapi.json: the SD fault enum list (:2336)"
+targeted-proof:
+  - "host (http): a VERIFY FAILED event is accepted and maps to its error; a not-found DOWNLOAD's 404 leaves the SD fault counter unchanged (if surfaced); the existing NOT_FOUND to 404 table unchanged"
+  - "host (sd-editor): openapi suite green"
+unit: implementer
+live-dependency: none
+```
 
 ### Phase 4c `test.sh` runs every `--suite` given ✓ SHIPPED 2026-10-06
 

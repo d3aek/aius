@@ -3405,6 +3405,13 @@ static FLASHMEM bool sd_fifo_defer(void)
 	return aius_optical_admission_sd_fifo_defer(&g_http_admission, &sample);
 }
 
+/* sd_fifo_defer()'s predicate without the sd_fifo_defers count (4zf). */
+static FLASHMEM bool sd_fifo_short(void)
+{
+	const AiusOpticalAdmitSample sample = admit_sample();
+	return aius_optical_admission_sd_fifo_short(&g_http_admission, &sample);
+}
+
 /* F2: one sample per epoch into the mounted mode's SD-start window, the
  * longest SD window segment between hooks since the last epoch. F-S3: POST
  * /api/sd/mode takes this sample before it switches (app_sd_set_mode), so the
@@ -9873,10 +9880,16 @@ static FLASHMEM void sd_lifecycle_service(uint32_t now_ms)
 			g_sd_usage_refresh_pending = true;
 	}
 
-	/* A due flush preempts a running free-space scan, before the RUNNING-root
-	 * return below. */
-	aius_optical_sd_flush_preempt_scan(&g_sd_flush, &g_sd_flush_ops, now_ms,
-	                                   sd_flush_usage_scan_running());
+	/* A due flush preempts a running free-space scan or cache fill (4zd,
+	 * 4zf), before the RUNNING-root return below. A scan is always
+	 * preemptable; a fill only pauses under FIFO defer (G8), so it is
+	 * preempted when sd_fifo_short() is clear. The non-counting predicate
+	 * keeps sd_fifo_defers per-epoch. The cancel is sd_flush_fill_cancel
+	 * (web_cache_fill_cancel: hold latch, fill_cancels; then the scan). */
+	aius_optical_sd_flush_preempt_root(
+		&g_sd_flush, &g_sd_flush_ops, now_ms,
+		sd_flush_usage_scan_running() ||
+			(web_cache_fill_in_flight() && !sd_fifo_short()));
 	if (g_runtime.storage.root_state ==
 	    AIUS_RUNTIME_STORAGE_ROOT_RUNNING)
 		return;

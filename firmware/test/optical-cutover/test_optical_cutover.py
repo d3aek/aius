@@ -5526,17 +5526,25 @@ def assert_bringup_latch_at_load_dsp_end(sources):
         r"\baius_optical_admission_sd_fifo_defer\s*\(\s*&\s*g_http_admission\s*,", defer
     ), "sd_fifo_defer() must decide through aius_optical_admission_sd_fifo_defer(&g_http_admission, ...) (F-B2)"
     app = _clean_definitions(sources[APP_SOURCE])
-    predicate = app.get("aius_optical_admission_sd_fifo_defer", "")
+    # 4zf: the checks live in the non-counting predicate; the counting
+    # wrapper calls it first, then counts.
+    wrapper = app.get("aius_optical_admission_sd_fifo_defer", "")
+    assert -1 < wrapper.find("aius_optical_admission_sd_fifo_short(") < (
+        wrapper.find("sd_fifo_defers")
+    ), "aius_optical_admission_sd_fifo_defer must call the predicate, then count"
+    assert "sd_fifo_defers" not in app.get(
+        "aius_optical_admission_sd_fifo_short", ""
+    ), "aius_optical_admission_sd_fifo_short must not count holds"
+    predicate = app.get("aius_optical_admission_sd_fifo_short", "")
     gate = re.search(
         r"if\s*\([^;{}]*(\bbringup_loaded\s*==\s*0u?\b|!\s*\w+\s*->\s*bringup_loaded\b)"
         r"[^;{}]*\)\s*return\s+false\s*;",
         predicate,
     )
     short = predicate.find("aius_optical_admission_short(")
-    count = predicate.find("sd_fifo_defers")
-    assert gate and -1 < short and gate.start() < short and gate.start() < count, (
-        "aius_optical_admission_sd_fifo_defer must return false while the "
-        "bring-up latch is clear, before the margin test and the hold count (F-B2)"
+    assert gate and -1 < short and gate.start() < short, (
+        "aius_optical_admission_sd_fifo_short must return false while the "
+        "bring-up latch is clear, before the margin test (F-B2)"
     )
     setter = app.get("aius_optical_admission_note_bringup_loaded", "")
     assert re.search(r"\bbringup_loaded\s*=\s*(1u?|true)\s*;", setter), (
@@ -6113,24 +6121,31 @@ def assert_usage_scan_yields_to_flush(sources):
     ), "the probe-tick usage arm must require aius_optical_sd_usage_may_start"
     # Preempt before the RUNNING-root return.
     life = defs.get("sd_lifecycle_service", "")
+    # 4zf: the argument covers a running scan, or a fill unless FIFO defer
+    # holds (only a fill pauses under defer); the cancel chain is the flush ops'
+    # sd_flush_fill_cancel -> web_cache_fill_cancel (checked above).
+    life = re.sub(r"\s+", "", life)
     preempt = life.find(
-        "aius_optical_sd_flush_preempt_scan(&g_sd_flush,&g_sd_flush_ops,"
-        "now_ms,sd_flush_usage_scan_running())"
+        "aius_optical_sd_flush_preempt_root(&g_sd_flush,&g_sd_flush_ops,"
+        "now_ms,sd_flush_usage_scan_running()||"
+        "(web_cache_fill_in_flight()&&!sd_fifo_short()))"
     )
-    if preempt == -1:
-        preempt = life.find("aius_optical_sd_flush_preempt_scan(")
+    assert "returnaius_optical_admission_sd_fifo_short(" in re.sub(
+        r"\s+", "", defs.get("sd_fifo_short", "")
+    ), "sd_fifo_short must be the non-counting admission predicate"
     running = life.find("AIUS_RUNTIME_STORAGE_ROOT_RUNNING")
     assert -1 < preempt < running, (
-        "sd_lifecycle_service must preempt a scan before the RUNNING-root return"
+        "sd_lifecycle_service must preempt a scan, or a fill unless "
+        "sd_fifo_short(), before the RUNNING-root return"
     )
-    assert "&g_sd_flush_ops" in life[preempt:running] and (
-        "sd_flush_usage_scan_running()" in life[preempt:running]
-    ), "the preempt call must pass the bound ops and the scan predicate"
+    assert "sd_flush_fill_cancel," in clean.replace(" ", ""), (
+        "the flush ops must bind sd_flush_fill_cancel as fill_cancel"
+    )
     # The preempt shares the flush start's gate (factored, not copied).
     app_defs = _clean_definitions(sources[APP_SOURCE])
     assert "sd_flush_gate(" in app_defs.get(
-        "aius_optical_sd_flush_preempt_scan", ""
-    ), "aius_optical_sd_flush_preempt_scan must consult sd_flush_gate"
+        "aius_optical_sd_flush_preempt_root", ""
+    ), "aius_optical_sd_flush_preempt_root must consult sd_flush_gate"
     # Every transition into SD_STEP_USAGE is guarded by usage_may_start: the
     # bring-up chain goes through sd_usage_step_or_idle (a standing
     # cancelled_fill defers the scan, re-arming the refresh); the probe-tick
@@ -6387,11 +6402,14 @@ def _admission_fixture():
         "\tif (aius_optical_app_sd_job_is_ota_staging(job))\n\t\treturn ADMIT;\n"
         "\tif (!aius_optical_admission_short(a, klass, sample))\n\t\treturn ADMIT;\n"
         "\treturn SHED;\n}\n"
-        "FLASHMEM bool aius_optical_admission_sd_fifo_defer(\n"
+        "FLASHMEM bool aius_optical_admission_sd_fifo_short(\n"
         "\tAiusOpticalAdmission *admission, const AiusOpticalAdmitSample *sample)\n{\n"
         "\tif (admission == NULL || sample == NULL || !sample->fifo_mode ||\n"
         "\t    admission->bringup_loaded == 0u)\n\t\treturn false;\n"
-        "\tif (!aius_optical_admission_short(admission, klass, sample))\n"
+        "\treturn aius_optical_admission_short(admission, klass, sample);\n}\n"
+        "FLASHMEM bool aius_optical_admission_sd_fifo_defer(\n"
+        "\tAiusOpticalAdmission *admission, const AiusOpticalAdmitSample *sample)\n{\n"
+        "\tif (!aius_optical_admission_sd_fifo_short(admission, sample))\n"
         "\t\treturn false;\n"
         "\tadmission->sd_fifo_defers++;\n\treturn true;\n}\n"
         "FLASHMEM void aius_optical_admission_note_bringup_loaded(\n"
