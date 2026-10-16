@@ -65,9 +65,13 @@ handover.
   owner's: the 4e, 4f, 4g and 4h runs listed in 4b, 4n's Firefox check,
   4i's post-removal check. A bench run is a last resort, batched, never
   mixed with listening (aius CLAUDE.md).
-- **Next action: Phase 4za** (pin removal, fixed read path proven from
-  slot 2). Its first device step is an OTA into slot 2 and needs the
-  owner's word. The auto-mode classifier has refused card writes
+- **Next action: Phase 4za** (D2 set/way fix in build 1 into slot 2,
+  then pin removal in build 2, rehearsed from slot 2 and activated into
+  slot 1). Prebuild review round 1 NOT READY, folded; round 2 was in
+  flight at the 2026-10-16 handover (re-run it if no verdict is
+  recorded in the contract). Then build 1 (`unit: implementer`, opus
+  tier: the dark-window path), delivery audit, and three owner-gated
+  device steps. The auto-mode classifier has refused card writes
   before ("Remote Shell Writes") but ran the 2026-10-13 sync once the
   owner said to try; if it refuses, the owner runs it with `!`.
 - **What landed this run** (aius commits, each followed by a upstream repository
@@ -8566,32 +8570,65 @@ unit: parent-only
 
 ```yaml
 outcome: >-
-  the 4z bridge pin and its sign-time check are removed once neither
-  slot's revision reads 57977135e472 in /api/status (a rollback to it
-  needs the pin again), and the identity-window read path is proven on
-  the device from slot 2
+  the activation read path leaves no identity-window line in the M7
+  D-cache or the FlexSPI AHB buffer after a restore (D2 closed by
+  construction and a post-link guard); the 4z bridge pin, its sign-time
+  check and its CLAUDE.md paragraph are removed once slot 2's revision
+  reads build 1's revision after its self-commit and slot 1 reads
+  f075872c8b82 or later (null counts as unknown, possibly
+  57977135e472); and the identity-window read path is proven on the
+  device from slot 2
 seams:
-  - firmware/link/aius_teensy41.ld
-  - firmware/tools/ota/aius_ota_sign.py
+  - "firmware/src/optical_main.cpp ota_flash_read restore side: a dsb between IOMUXC_GPR_GPR32 = saved and the restore SWRESET (S2; the flip side stays as is, a wrong read there fails safe at verify); then SWRESET poll, dsb/isb, ONE set/way clean+invalidate pass over the whole D-cache, which REPLACES the post-copy arm_dcache_delete range invalidate (S3), then the existing dsb, ICIALLU, dsb/isb"
+  - "the set/way pass: hand-written on SCB_CACHE_DCCISW (imxrt.h) with fixed set << 5 | way << 30 for 256 sets x 4 ways, immediates only, no CMSIS core_cm7.h (N1); clean+invalidate, never DCISW, and the code comment says why (N2: the staged PSRAM image and OCRAM DMAMEM lines may be dirty, and dropping them would make program and compare read stale PSRAM backing, so verify could pass on bytes that were never signature-checked); the loop lives in ONE AIUS_OTA_DARK_WINDOW_FN noinline helper (or ota_flash_read is noinline) so ota_flash_read_inject_head_fault cannot duplicate it (S4)"
+  - "ITCM: record the nm --size delta; slot-A ITCM stays at or above 13,284 B (80 B headroom today). Fallback if breached (S4): one pass at the top of ota_activate_run_and_finalize's READY_TO_RESET branch before ab_activation_mark_pending, plus one after ota_rehearse_run returns; valid because no step-loop code outside ota_flash_read reads canonical flash D-side (the 4z closure guard)"
+  - "firmware/test/itcm-placement/verify_target.py (S1): a check that ota_flash_read (or its helper) stores to DCCISW (0xE000EF74) in a loop after its last IOMUXC_GPR32 (0x400AC080) store, with a planted negative that fails without the loop; the 4z closure guard still passes (no veneer, no flash literal)"
+  - "build 2: firmware/link/aius_teensy41.ld pin and anchor removed; firmware/tools/ota/aius_ota_sign.py bridge_pin_mismatch and its call removed, BridgePinTests removed, a positive control that a pinless canonical payload signs; firmware/test/boot-target/test_ldscript_drift.py BRIDGE_PIN_BLOCK, the anchor and next checks and the drop-the-pin mutation arms removed (a leftover ORIGIN + 0x1B80 then fails drift by itself); image floors rechecked (_flashimagelen shrinks by about 0x400) (N4)"
+  - "CLAUDE.md: the 'Until plan Phase 4za, aius_ota_sign.py sign refuses' paragraph removed by the release-promotion step in build 2's commit (S5)"
 targeted-proof: >-
-  boot-target and ota suites green with no pin; device (owner's word):
-  with the board on slot 2 running fixed code, a rehearsal of an image
-  that differs from it on most 32-byte lines (dropping the pad shifts
-  every .flashmem byte by about 0x588; the fraction recorded) reads
-  COMPLETED
-unit: parent-only
+  build 1 (D2 fix, pin kept): all four images at their floors with every
+  post-link guard; itcm-placement (with the new DCCISW check and its
+  planted negative), boot-target, ota, ab and optical-app suites green;
+  the nm size delta recorded. D2 is proven closed by construction and
+  that guard; the device steps prove the identity path and no
+  regression, not D2 itself (S1). Device, each step on the owner's word,
+  three stagings in all with the audio cost stated before each (S6):
+  (1) stage and activate build 1 into slot 2; the trial boot
+  self-commits on slot 2 and revisions read {1: f075872c8b82, 2: build
+  1}. Build 2 (pin removed): boot-target and ota suites green, the
+  pinless positive control signs, floors held. (2) stage build 2 and
+  rehearse it from slot 2 (it differs from slot 2's image on most
+  32-byte lines, the fraction recorded): ota_dark COMPLETED, rehearsal
+  true, dark_window_cycles and max step cycles recorded against 4z
+  step 2's 4,025,210,828 (N3). (3) stage build 2 again (the rehearsal
+  consumed the session) and activate it into slot 1; self-commit on
+  slot 1
+unit: implementer
+prebuild-review: round 1 NOT READY 2026-10-16 (B1, S1 to S6, N1 to N5), folded; round 2 pending
 ```
 
-- Needs the board on slot 2 running 4z's fixed code: one more OTA after
-  4z lands in slot 1 (4z review F4).
-- From 4z's delivery audit (D2, fixed path only, not the bridge): a
-  speculative D-fill of a canonical line outside `[address, length)`
-  in the identity window survives the restore, because only the read
-  range is invalidated, and a later FLASHMEM literal load (for example
-  `ab_activation_mark_pending`'s) could read slot 1 bytes. It is
-  nondeterministic. Decide here: record it as accepted beside 4z's F5,
-  or clean and invalidate the whole D-cache by set/way after the
-  restore (1,024 lines; safe for write-back OCRAM).
+- **Decision (owner, 2026-10-16), D2:** fix it. A full D-cache clean and
+  invalidate by set/way after every identity-window restore, in build 1,
+  so slot 2 carries the final read path before the rehearsal proves it.
+- **D2 (4z delivery audit, fixed path only):** a speculative D-fill of a
+  canonical line outside `[address, length)` in the identity window
+  survives the restore, because only the read range is invalidated, and
+  a later FLASHMEM literal load (for example `ab_activation_mark_pending`'s)
+  could read slot 1 bytes. It is nondeterministic.
+- **Why the pin condition is positive (review B1).** `revisions` read
+  null for any slot written before 4y, and a rehearsal nulls the
+  inactive slot, so "neither reads 57977135e472" is true today with
+  that image still in slot 2. Build 1's first erase of slot 2 destroys
+  57977135e472 whatever the outcome, and a rollback during build 1's
+  trial lands on f075872c8b82, which has the fix.
+- **Re-bridge route (N5).** There is no anti-rollback: a re-staged
+  57977135e472 container still verifies. If it ever runs again, the
+  next pinless OTA fails safe at VERIFY 0x1B80; the pin bytes are in
+  4z's contract and in git history.
+- **Time cost (N3, estimate):** about 2,400 identity reads x one
+  1,024-line pass, mostly clean lines, plus PSRAM re-misses on the
+  compare: 25 ms or less on a 6.7 s window. The watchdog is fed before
+  every primitive (`aius_ota_activate.c:381`), so nothing bounds it.
 
 ### Phase 4c `test.sh` runs every `--suite` given ✓ SHIPPED 2026-10-06
 
