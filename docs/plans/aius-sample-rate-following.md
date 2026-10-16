@@ -41,7 +41,7 @@ handover.
   Phase 4 (gate 7 at fill-write cadence on the U24 bench), 4e, 4f, 4g,
   4h, 4j, 4k, 4l; 4e run 1 and 4g run 1 are partly agent-run
   (2026-10-16, source off; the stall witness failed, Phase 4zd). 4zd
-  PLANNED. 4b (acceptance umbrella) closes after its device runs (4e to
+  BUILT (its device steps are agent-run, outstanding); 4zf PLANNED. 4b (acceptance umbrella) closes after its device runs (4e to
   4h, plus its 4k and 4l items).
 - **Board.** Runs `5766cce3f0f9` (4za build 2, no pin) in slot 1,
   self-committed 2026-10-16: `ab.active_slot` 1, sequence 35,
@@ -80,15 +80,15 @@ handover.
   the owner's: the 4e to 4h, 4k and 4l runs listed in 4b. A bench run
   is a last resort, batched, never mixed with listening (aius
   CLAUDE.md).
-- **Next action: Phase 4zd implementation.** Diagnosis, repro and
-  contract are done (prebuild-review ready). Dispatch slices A, B and C
-  in parallel (`implementer`, `model: sonnet`, owned paths exactly as
-  4zd's "Implementation slices" bullet), then D after C (it needs C's
-  helper signatures). Then, one build target at a time: the memory and
-  itcm-placement link, `build_ab.sh`, sign, OTA activate (allowed), the
-  no-sync PIO boot check, and the ONE remaining owner-allowed
+- **Next action: Phase 4zd device steps.** 4zd is BUILT (host and link
+  proof, delivery audit and clean-room PASS; run 3, 2026-10-16). Rebuild
+  from the committed tree (`build.sh teensy41-optical`, then
+  `build_ab.sh` last), rerun stack-bound and producer-isolation on the
+  fresh ELFs, sign, OTA activate (allowed), the no-sync PIO boot check,
+  the passive `config_error_count` and `/aius/config.json` check, the
+  `.lottery-probe.txt` DELETE, and the ONE remaining owner-allowed
   source-off sync (two of three spent on the repro; a further sync
-  needs the owner's word). Then a delivery audit (`reviewer`, opus).
+  needs the owner's word). Then 4zf.
   4e's image 2 OTA and E7 wait on 4zd. 4za and 4zc SHIPPED; the owner answered the
   autonomous calls 2026-10-16 (4za body). Open owner-run device proofs:
   Phase 4 gate 7 on the bench, 4e to 4h (their remaining steps), 4k and
@@ -8933,7 +8933,7 @@ unit: implementer
 ```yaml
 phase: 4zd
 title: A DMA-armed card sync does not stall the main loop for 4 s
-status: planned # 2026-10-16: found by the agent-run 4e run 1 (source off), diagnosed and reproduced the same day (the first free-cluster scan after a mount); blocks 4e's image 2 OTA and the E7 verdict
+status: built # 2026-10-16: host and link proof green (sd-free-scan, sd 910 trials, sd-target, sdfat-vendor, fake-fidelity, optical-app, optical-cutover, runtime, runtime-target, registry; memory, itcm-placement, stack-bound 23,316 of 27,424 B, producer-isolation); delivery audit rounds 1 to 3 folded, PASS; clean-room PASS (nits folded). Device steps outstanding. Found by the agent-run 4e run 1 (source off); blocks 4e's image 2 OTA and the E7 verdict
 depends-on: phase-4e (image 1, DMA runtime-armed)
 outcome: >-
   The USAGE_REFRESH used-size read is a bounded, resumable scan in either
@@ -9155,7 +9155,12 @@ prebuild-review: ready # 2026-10-16: rounds 1 to 5 HOLD folded, round 6 PASS (ni
   window after a sync), and a polled card route cannot restart it. Cost:
   card routes answer 503 for at most about 5 s once per mount, since the
   count is stored after (inside the sync client's 15 s retry). The
-  pending flag stays a plain bool.
+  pending flag stays a plain bool. Accepted (clean-room nit 2,
+  2026-10-16): under a flush that keeps failing, its S5 backoff
+  (`aius_sd_overlay.h:47-48`) makes it due again at 1, 2 and 4 s, and
+  each time it preempts a restarted scan, so card routes answer
+  `sd_busy` across several multi-second windows until the backoff
+  outgrows the scan; bounded by the 60 s backoff cap, no stall.
 - **A due flush preempts a scan before the RUNNING-root return
   (orchestrator call, autonomous, 2026-10-16, round 5; listed in Phase
   4ze).** `aius_optical_sd_flush_start` runs only from the idle step
@@ -9187,8 +9192,8 @@ prebuild-review: ready # 2026-10-16: rounds 1 to 5 HOLD folded, round 6 PASS (ni
   to today's CACHE_FILL flush cancel.** A running fill is a RUNNING root
   too, so the flush's fill cancel at `aius_optical_app.cpp:2423-2427`
   is also unreachable behind `:9848`; a fill file in flight yields to an
-  HTTP SD request and the freeze, not to a due flush. Pre-existing; a later phase extends the preempt
-  to fills or records why not.
+  HTTP SD request and the freeze, not to a due flush. Pre-existing;
+  Phase 4zf extends the preempt to fills or records why not.
 - **The busy answer is a clean 503, no edit needed.** The card routes
   check `app->sd_busy` first (`aius_optical_app.cpp:1182`, `:1388`,
   `:1493`, `:1887`), bound to `sd_job_active_for_http`
@@ -9214,6 +9219,42 @@ prebuild-review: ready # 2026-10-16: rounds 1 to 5 HOLD folded, round 6 PASS (ni
   suppressed, bringing the 4zd stall back. So the pending USAGE step
   does not start while `cancelled_fill` is set; the refresh runs after
   the flush settles.
+- **The bring-up chain obeys the same rule (orchestrator call,
+  autonomous, delivery audit F2, 2026-10-16).** A preempt followed by a
+  card pull leaves `cancelled_fill` set (only a flush start or settle
+  clears it), and the re-insert chain (LOAD_DSP and RESTORE_DSP into
+  SD_STEP_USAGE) started USAGE without asking, so the scan ran with
+  preempts suppressed. Both transitions now consult
+  `aius_optical_sd_usage_may_start`; on false they set
+  `g_sd_usage_refresh_pending` and go idle, so the flush runs first and
+  the probe tick starts the refresh. Not chosen: releasing
+  `cancelled_fill` on card loss, which would add a second release path
+  beside settle. Accepted residual (audit round 2): if the dirty entries
+  stop being due with no flush (a CRC drop of the only entry),
+  `cancelled_fill` and the fill hold stay set, deferring the refresh and
+  cache fills until the next upload's flush; no stall results.
+- **W4 tables follow the moved call graph (orchestrator call,
+  autonomous, link proof 2026-10-16).** The SD library row's taken-by
+  set gains `aius_sd_free_scan.cpp.o`, whose three counter callbacks
+  (`count_fat16`, `count_fat32`, `count_bitmap`) are leaf loops with no
+  indirect site, the role upstream's `freeClusterCount_cb_*` plays; the
+  producer-isolation walker accepts `lr` as a jump-table base
+  (`aius_walk.py` `_ldr_pc`), the in-function entry check unchanged;
+  `aius_sd_teensy_execute` drops from 17 to 13 sites (no inlined
+  `SD.usedSize()`), `aius_optical_sd_flush_start` from 11 to 6 (the gate
+  moved into `sd_flush_gate`). The linker now keeps the ITCM
+  `readSectorsCallback` COMDAT from `aius_sd_free_scan.cpp.o` instead of
+  `FatPartition.cpp.o` (same code, ITCM free unchanged). The ops-call
+  sites in `sd_flush_gate` and the preempt sit on no walked root, as the
+  flush start's did not before.
+- **A scan preempt or freeze also latches the fill hold (audit F8,
+  accepted).** `www_cache.fill_holds` advances once per scan cancel and
+  cache fills wait the hold after that flush, as after a CACHE_FILL
+  cancel; only `fill_cancels` is scan-exempt.
+- **A cancel that lands with the final SIZE pending ends CANCELLED
+  (audit F3, pinned in the sd suite).** On FAT the count is already
+  stored, so the re-armed refresh answers with 0 reads; on exFAT it
+  rescans, accepted as rare.
 - **Implementation slices.** The protocol is frozen in the contract
   (the aius_sd.c seam) before any slice starts.
   - **A, vendor plus adapter**: `firmware/vendor/SdFat/src/FatLib/FatPartition.h`,
@@ -9245,8 +9286,21 @@ prebuild-review: ready # 2026-10-16: rounds 1 to 5 HOLD folded, round 6 PASS (ni
   would decide E7 if real, so neither runs first.
 - **Investigate, do not assume a defect:**
   - `/api/status` shows `config_valid` 0 and `config_error` "not loaded"
-    (code 10) with `sd_present` 1. Find why the mount's config load
-    reports not loaded with a card present.
+    (code 10) with `sd_present` 1. **Investigated (agent, 2026-10-16,
+    code only): expected, not a defect.** The fields report `g_config`,
+    the optional `/aius/config.json` feature-flag file, not the DSP
+    model (`optical_main.cpp:6625`, `:6675`). Every mount loads it
+    (`:8945-8954`, `:8872-8880`); a missing, empty or oversized file
+    re-applies the NOT_LOADED defaults and increments
+    `config_error_count` (`aius_optical_app.cpp:2954-2961`,
+    `optical_main.cpp:8647-8656`). Nothing creates the file
+    (`firmware/sd` holds only `web.json` and `www/`) and no firmware
+    path consumes its three flags (`sd/www/status.js:151-157`, whose
+    "never loaded" wording is stale: the mount does read it). Confirm
+    passively in the 4zd device session: `config_error_count` at least
+    1 after boot, and a card GET of `/aius/config.json` answers not
+    found. A count of 0 means the load never ran or the overlay
+    shadowed the path, which is new 4zd found work.
   - A stray `/sd/www/.lottery-probe.txt` (8,192 B) sits on the card.
     It is not in the cache (`www_cache.entries` 25 counts 16 www files,
     6 fonts and 3 presets). Owner 2026-10-16: the agent may delete it;
@@ -9262,6 +9316,32 @@ prebuild-review: ready # 2026-10-16: rounds 1 to 5 HOLD folded, round 6 PASS (ni
   recommendation and cannot evaluate them; at the end of 4zd's
   implementation, report a plain-language summary of their impact**
   (what a sync, a reboot and an OTA now do differently, and the cost).
+
+### Phase 4zf A due flush also preempts a running cache fill
+
+```yaml
+phase: 4zf
+title: A due flush also preempts a running cache fill
+status: planned # 2026-10-16: found in 4zd prebuild review round 5 (4zd body, "Found work")
+depends-on: phase-4zd (the preempt helper and its sd_lifecycle_service call)
+outcome: >-
+  A due flush stops a running CACHE_FILL root job at its next primitive
+  boundary, as 4zd's preempt does for a USAGE_REFRESH scan, so a reboot
+  or OTA activation with dirty entries behind a fill reaches the flush
+  inside the 500 ms drain deadline (AIUS_REBOOT_DRAIN_MS) instead of
+  answering DRAIN and abandoning with FLUSH_PENDING. Alternative outcome,
+  if the worst-case fill hold provably fits that deadline: no code change,
+  and the bound and its derivation are recorded in this body.
+seams:
+  - "firmware/src/optical_main.cpp sd_lifecycle_service: the preempt call's scan_running argument widened to a running CACHE_FILL root"
+  - "firmware/src/aius_optical_app.cpp: the 4zd preempt helper (renamed if it no longer only means a scan); www_cache.fill_cancels counts a preempted fill (unlike a scan); the fill's restart after the flush settles"
+targeted-proof:
+  - "host (optical-app): a running fill with a due flush is cancelled once, the flush starts the next epoch, fill_cancels advances by one, and the fill restarts after the flush settles; a reboot request with a dirty entry behind a fill reaches the flush, not DRAIN, inside 500 ms when the flush fits"
+  - "host (optical-cutover): a text check for the widened preempt argument"
+  - "or, on the no-change branch: the worst-case fill-file hold, computed from the largest cached file and the measured per-sector cost, recorded against AIUS_REBOOT_DRAIN_MS"
+unit: implementer
+live-dependency: none
+```
 
 ### Phase 4c `test.sh` runs every `--suite` given ✓ SHIPPED 2026-10-06
 

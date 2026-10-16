@@ -50,6 +50,10 @@ public:
 	 * 4h CR4-B2): the mounted partition's cacheClear(), nullptr on a failed
 	 * sync or with no volume. Signature checked by test_fake_fidelity.py. */
 	uint8_t* cacheClear();
+	/* The Aius vendor forwarder (Phase 4zd; vendor/SdFat/NOTICE.md), FAT only.
+	 * Declared for the signature check; the adapter reaches it only through
+	 * aius_sd_free_scan.cpp, which this host build does not compile. */
+	int32_t aiusFreeClusters(int32_t store);
 };
 
 class SdFs {
@@ -67,6 +71,7 @@ private:
 class FatPartition {
 public:
 	uint8_t* cacheClear();
+	int32_t aiusFreeClusters(int32_t store);
 };
 
 class ExFatPartition {

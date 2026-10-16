@@ -110,7 +110,6 @@ static void validate_action(const AiusSdAction *action)
 	case AIUS_SD_ACTION_MEDIA_PRESENT:
 	case AIUS_SD_ACTION_CLOSE:
 	case AIUS_SD_ACTION_TOTAL_SIZE:
-	case AIUS_SD_ACTION_USED_SIZE:
 	case AIUS_SD_ACTION_COMPLETE:
 	case AIUS_SD_ACTION_CACHE_DROP:
 		CHECK(action->path == NULL, "unexpected path");
@@ -132,6 +131,13 @@ static void validate_action(const AiusSdAction *action)
 		CHECK(action->length == 0u, "unexpected length");
 		CHECK(action->offset == 0u, "unexpected offset");
 		CHECK(action->fault == 0u, "unexpected fault");
+		break;
+	case AIUS_SD_ACTION_USED_SIZE:
+		/* offset is the scan's sector cursor, length its free clusters. */
+		CHECK(action->path == NULL && action->path_to == NULL &&
+		      action->buffer == NULL,
+		      "used-size carried path or buffer");
+		CHECK(action->fault == 0u, "used-size carried fault");
 		break;
 	case AIUS_SD_ACTION_TRUNCATE:
 		CHECK(action->path == NULL && action->path_to == NULL,
@@ -500,6 +506,111 @@ static void test_probe_usage_delete(void)
 	              AIUS_SD_RESULT_FAULT,
 	              AIUS_SD_FAULT_PROTOCOL,
 	              0u);
+
+	scenario = "usage resumable scan";
+	request = request_for(AIUS_SD_JOB_USAGE_REFRESH);
+	start_valid(&job, buffer, sizeof(buffer), &request);
+	action = begin_job(&job);
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_TOTAL_SIZE);
+	action = step_action(
+		&job, 0u, size_event(action.action_id, 1000u), AIUS_SD_ACTION_USED_SIZE);
+	CHECK(action.offset == 0u && action.length == 0u, "first cursor mismatch");
+	action = step_action(
+		&job, 0u, bytes_event(action.action_id, 7u), AIUS_SD_ACTION_USED_SIZE);
+	CHECK(job.phase == AIUS_SD_PHASE_USAGE_USED, "scan left used phase");
+	CHECK(action.offset == AIUS_SD_USAGE_CHUNK_SECTORS && action.length == 7u,
+	      "second cursor or accumulator mismatch");
+	/* An all-used chunk is legal and still advances the cursor. */
+	action = step_action(
+		&job, 0u, bytes_event(action.action_id, 0u), AIUS_SD_ACTION_USED_SIZE);
+	CHECK(action.offset == 2u * AIUS_SD_USAGE_CHUNK_SECTORS &&
+	      action.length == 7u,
+	      "all-used chunk cursor or accumulator mismatch");
+	action = step_action(&job,
+	                     0u,
+	                     bytes_event(action.action_id,
+	                                 AIUS_SD_USAGE_CHUNK_MAX_ENTRIES),
+	                     AIUS_SD_ACTION_USED_SIZE);
+	CHECK(action.offset == 3u * AIUS_SD_USAGE_CHUNK_SECTORS &&
+	      action.length == 7u + AIUS_SD_USAGE_CHUNK_MAX_ENTRIES,
+	      "max chunk accumulator mismatch");
+	/* One primitive per epoch: a no-event step re-emits nothing new. */
+	step_action(&job, 0u, none_event(), AIUS_SD_ACTION_NONE);
+	step_action(&job,
+	            0u,
+	            size_event(action.action_id, 333u),
+	            AIUS_SD_ACTION_COMPLETE);
+	expect_result(&job, AIUS_SD_RESULT_USAGE, AIUS_SD_FAULT_NONE, 0u);
+	CHECK(job.result.total_bytes == 1000u, "scan total size mismatch");
+	CHECK(job.result.used_bytes == 333u, "scan used size mismatch");
+
+	scenario = "usage scan chunk over bound";
+	start_valid(&job, buffer, sizeof(buffer), &request);
+	action = begin_job(&job);
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_TOTAL_SIZE);
+	action = step_action(
+		&job, 0u, size_event(action.action_id, 1000u), AIUS_SD_ACTION_USED_SIZE);
+	step_action(&job,
+	            0u,
+	            bytes_event(action.action_id,
+	                        AIUS_SD_USAGE_CHUNK_MAX_ENTRIES + 1u),
+	            AIUS_SD_ACTION_NONE);
+	/* Refused like any oversize BYTES: nothing accumulated, then FAIL. */
+	CHECK(job.captured_size == 0u && job.transferred == 0u,
+	      "refused chunk still advanced the scan");
+	step_action(&job,
+	            0u,
+	            bytes_event(action.action_id, 1u),
+	            AIUS_SD_ACTION_FAIL);
+	expect_result(&job, AIUS_SD_RESULT_FAULT, AIUS_SD_FAULT_PROTOCOL, 0u);
+
+	scenario = "usage scan cancel with BYTES pending";
+	start_valid(&job, buffer, sizeof(buffer), &request);
+	action = begin_job(&job);
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_TOTAL_SIZE);
+	action = step_action(
+		&job, 0u, size_event(action.action_id, 1000u), AIUS_SD_ACTION_USED_SIZE);
+	action = step_action(
+		&job, 0u, bytes_event(action.action_id, 3u), AIUS_SD_ACTION_USED_SIZE);
+	aius_sd_job_cancel(&job);
+	step_action(&job,
+	            0u,
+	            bytes_event(action.action_id, 2u),
+	            AIUS_SD_ACTION_FAIL);
+	expect_result(&job, AIUS_SD_RESULT_FAULT, AIUS_SD_FAULT_CANCELLED, 0u);
+	CHECK(job.result.transferred_bytes == 0u,
+	      "failed usage scan reported a sector cursor as bytes");
+
+	scenario = "usage scan cancel with final SIZE pending";
+	start_valid(&job, buffer, sizeof(buffer), &request);
+	action = begin_job(&job);
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_TOTAL_SIZE);
+	action = step_action(
+		&job, 0u, size_event(action.action_id, 1000u), AIUS_SD_ACTION_USED_SIZE);
+	action = step_action(
+		&job, 0u, bytes_event(action.action_id, 3u), AIUS_SD_ACTION_USED_SIZE);
+	aius_sd_job_cancel(&job);
+	step_action(&job,
+	            0u,
+	            size_event(action.action_id, 333u),
+	            AIUS_SD_ACTION_FAIL);
+	expect_result(&job, AIUS_SD_RESULT_FAULT, AIUS_SD_FAULT_CANCELLED, 0u);
+	CHECK(job.result.transferred_bytes == 0u,
+	      "cancelled usage scan reported a sector cursor as bytes");
+
+	scenario = "usage scan fault mid-scan";
+	start_valid(&job, buffer, sizeof(buffer), &request);
+	action = begin_job(&job);
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_TOTAL_SIZE);
+	action = step_action(
+		&job, 0u, size_event(action.action_id, 1000u), AIUS_SD_ACTION_USED_SIZE);
+	action = step_action(
+		&job, 0u, bytes_event(action.action_id, 3u), AIUS_SD_ACTION_USED_SIZE);
+	step_action(&job,
+	            0u,
+	            fault_event(action.action_id, 71u),
+	            AIUS_SD_ACTION_FAIL);
+	expect_result(&job, AIUS_SD_RESULT_FAULT, AIUS_SD_FAULT_IO, 71u);
 
 	scenario = "delete optional missing defaults to success";
 	request = request_for(AIUS_SD_JOB_DELETE);
@@ -4684,12 +4795,35 @@ static size_t matrix_run_fixture(const MatrixFixture *fixture)
 	for (size_t index = 0; index < ARRAY_COUNT(candidate_kinds); ++index) {
 		if (candidate_kinds[index] == success_kind)
 			continue;
+		/* USED_SIZE legitimately answers BYTES (a non-final chunk). */
+		if (fixture->action == AIUS_SD_ACTION_USED_SIZE &&
+		    candidate_kinds[index] == AIUS_SD_EVENT_BYTES)
+			continue;
 		malformed = matrix_wrong_kind_event(
 			candidate_kinds[index], base.action.action_id);
 		matrix_malformed_then_resolve(&base, fixture, malformed);
 		++cases;
 	}
 
+	if (fixture->action == AIUS_SD_ACTION_USED_SIZE) {
+		/* A BYTES answer to USED_SIZE carries nothing but bytes. */
+		malformed = bytes_event(base.action.action_id, 1u);
+		malformed.size = 1u;
+		matrix_malformed_then_resolve(&base, fixture, malformed);
+		++cases;
+		malformed = bytes_event(base.action.action_id, 1u);
+		malformed.value = true;
+		matrix_malformed_then_resolve(&base, fixture, malformed);
+		++cases;
+		malformed = bytes_event(base.action.action_id, 1u);
+		malformed.filesystem = AIUS_SD_FILESYSTEM_FAT32;
+		matrix_malformed_then_resolve(&base, fixture, malformed);
+		++cases;
+		malformed = bytes_event(base.action.action_id, 1u);
+		malformed.fault = 1u;
+		matrix_malformed_then_resolve(&base, fixture, malformed);
+		++cases;
+	}
 	if (success_kind != AIUS_SD_EVENT_BYTES) {
 		malformed = valid;
 		malformed.bytes = 1u;
@@ -5782,7 +5916,9 @@ int main(void)
 	/* 64 until Phase 4i retired the six REPLAY_REFILL rows. */
 	CHECK(ARRAY_COUNT(matrix_fixtures) == 58u,
 	      "phase-10 fixture registry count drifted");
-	CHECK(matrix_trials == 907u, /* 1001 less the refill rows' 94 */
+	/* 1001 less the refill rows' 94, less 1 for usage-used's BYTES answer
+	 * becoming legal, plus 4 malformed-BYTES rows (Phase 4zd). */
+	CHECK(matrix_trials == 910u,
 	      "phase-10 matrix trial count drifted");
 	CHECK(lifecycle_cases == 27u,
 	      "phase-10 lifecycle case count drifted");

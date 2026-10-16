@@ -8916,6 +8916,17 @@ static FLASHMEM bool sd_start_step(SdLifecycleStep step)
 /* Consumes the terminal result of the step that was running and chooses the
  * next. The result pointer is valid only until another job of either owner
  * starts, which is why this runs before any start in the same pass. */
+/* The bring-up chain's entry to the free-space scan: a preempt's
+ * cancelled_fill still standing (the card left before the flush started)
+ * defers the scan to the probe-tick arm, after the flush settles. */
+static FLASHMEM SdLifecycleStep sd_usage_step_or_idle(void)
+{
+	if (aius_optical_sd_usage_may_start(&g_sd_flush))
+		return SD_STEP_USAGE;
+	g_sd_usage_refresh_pending = true;
+	return SD_STEP_NONE;
+}
+
 static FLASHMEM void sd_step_complete(uint32_t now_ms)
 {
 	const AiusSdResult *result =
@@ -8969,7 +8980,8 @@ static FLASHMEM void sd_step_complete(uint32_t now_ms)
 			 * agree. Memory only. */
 			aius_sd_teensy_invalidate_mount(
 				&g_runtime.storage.target);
-		} else if (present && g_sd_usage_refresh_pending) {
+		} else if (present && g_sd_usage_refresh_pending &&
+		           aius_optical_sd_usage_may_start(&g_sd_flush)) {
 			g_sd_step = SD_STEP_USAGE;
 		}
 		return;
@@ -9007,7 +9019,7 @@ static FLASHMEM void sd_step_complete(uint32_t now_ms)
 		                    &g_settings_mount, &g_settings_ops,
 		                    AIUS_OPTICAL_SETTINGS_DSP, false, ok)
 		                    ? SD_STEP_RESTORE_DSP
-		                    : SD_STEP_USAGE;
+		                    : sd_usage_step_or_idle();
 		return;
 	case SD_STEP_RESTORE_CONFIG:
 	case SD_STEP_RESTORE_DSP:
@@ -9019,16 +9031,20 @@ static FLASHMEM void sd_step_complete(uint32_t now_ms)
 			                               : AIUS_OPTICAL_SETTINGS_DSP,
 			true, ok);
 		g_sd_step = step == SD_STEP_RESTORE_CONFIG ? SD_STEP_LOAD_DSP
-		                                           : SD_STEP_USAGE;
+		                                           : sd_usage_step_or_idle();
 		return;
 	case SD_STEP_USAGE:
 		if (ok) {
 			g_sd_total_bytes = result->total_bytes;
 			g_sd_used_bytes = result->used_bytes;
 		}
-		/* Cleared either way: a failed refresh is re-armed by the next
-		 * committed write, not retried by spinning on the card. */
-		g_sd_usage_refresh_pending = false;
+		/* Cleared on success or failure: a failed refresh is re-armed by
+		 * the next committed write, not retried by spinning on the card.
+		 * A CANCELLED terminal (a due flush preempted the scan) stays
+		 * owed and re-arms. */
+		g_sd_usage_refresh_pending =
+			result != nullptr && result->kind == AIUS_SD_RESULT_FAULT &&
+			result->fault == AIUS_SD_FAULT_CANCELLED;
 		return;
 	case SD_STEP_NONE:
 	default:
@@ -9212,14 +9228,26 @@ static FLASHMEM bool sd_flush_http_deferred(void *)
 	       g_runtime.network_http.deferred_dispatch_present;
 }
 
+/* A USAGE_REFRESH root job (the free-space scan) is running. */
+static FLASHMEM bool sd_flush_usage_scan_running(void)
+{
+	const AiusRuntimeStorage &storage = g_runtime.storage;
+	return storage.root_state == AIUS_RUNTIME_STORAGE_ROOT_RUNNING &&
+	       storage.job.kind == AIUS_SD_JOB_USAGE_REFRESH;
+}
+
 static FLASHMEM bool sd_flush_fill_in_flight(void *)
 {
-	return web_cache_fill_in_flight();
+	return web_cache_fill_in_flight() || sd_flush_usage_scan_running();
 }
 
 static FLASHMEM void sd_flush_fill_cancel(void *)
 {
+	/* The fill's counter argument stays CACHE_FILL-only, so a scan never
+	 * inflates www_cache.fill_cancels. */
 	web_cache_fill_cancel();
+	if (sd_flush_usage_scan_running())
+		(void)aius_runtime_storage_cancel_root(&g_runtime.storage);
 }
 
 static FLASHMEM void sd_flush_fill_hold_release(void *)
@@ -9845,6 +9873,10 @@ static FLASHMEM void sd_lifecycle_service(uint32_t now_ms)
 			g_sd_usage_refresh_pending = true;
 	}
 
+	/* A due flush preempts a running free-space scan, before the RUNNING-root
+	 * return below. */
+	aius_optical_sd_flush_preempt_scan(&g_sd_flush, &g_sd_flush_ops, now_ms,
+	                                   sd_flush_usage_scan_running());
 	if (g_runtime.storage.root_state ==
 	    AIUS_RUNTIME_STORAGE_ROOT_RUNNING)
 		return;

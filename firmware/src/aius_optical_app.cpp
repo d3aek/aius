@@ -2394,6 +2394,57 @@ FLASHMEM AiusOpticalSdIdleStep aius_optical_sd_idle_step(
 	return AIUS_OPTICAL_SD_IDLE_PROBE;
 }
 
+/* The flush start's gate prefix, shared with the scan preempt: RUNNING when a
+ * flush already runs, OPEN when every check holds, CLOSED otherwise. */
+typedef enum {
+	SD_FLUSH_GATE_CLOSED = 0,
+	SD_FLUSH_GATE_RUNNING,
+	SD_FLUSH_GATE_OPEN
+} SdFlushGate;
+
+static FLASHMEM SdFlushGate sd_flush_gate(AiusOpticalSdFlush *flush,
+                                          const AiusOpticalSdFlushOps *ops,
+                                          uint32_t now_ms)
+{
+	void *const context = ops->context;
+
+	if (flush->running)
+		return SD_FLUSH_GATE_RUNNING;
+	if (!ops->present(context) || flush->frozen || !ops->ready(context) ||
+	    ops->held(context))
+		return SD_FLUSH_GATE_CLOSED;
+	/* D-S9: after a fault on a present card the flush waits for the fault
+	 * remount (D-S8's schedule), and no flush BEGIN starts against the
+	 * BEGIN gate. */
+	if (flush->fault_remount ||
+	    aius_optical_sd_begin_blocked(flush, ops, now_ms) !=
+		    AIUS_OPTICAL_SD_BEGIN_NONE)
+		return SD_FLUSH_GATE_CLOSED;
+	if (!ops->due(context, now_ms))
+		return SD_FLUSH_GATE_CLOSED;
+	/* G6: an HTTP SD start or a card-reading DISPATCH held behind the fill
+	 * runs first. */
+	if (ops->http_deferred(context))
+		return SD_FLUSH_GATE_CLOSED;
+	return SD_FLUSH_GATE_OPEN;
+}
+
+FLASHMEM void aius_optical_sd_flush_preempt_scan(
+	AiusOpticalSdFlush *flush, const AiusOpticalSdFlushOps *ops,
+	uint32_t now_ms, bool scan_running)
+{
+	if (!scan_running || flush->cancelled_fill ||
+	    sd_flush_gate(flush, ops, now_ms) != SD_FLUSH_GATE_OPEN)
+		return;
+	ops->fill_cancel(ops->context);
+	flush->cancelled_fill = true;
+}
+
+FLASHMEM bool aius_optical_sd_usage_may_start(const AiusOpticalSdFlush *flush)
+{
+	return !flush->cancelled_fill;
+}
+
 FLASHMEM bool aius_optical_sd_flush_start(AiusOpticalSdFlush *flush,
                                           const AiusOpticalSdFlushOps *ops,
                                           uint32_t now_ms)
@@ -2401,25 +2452,10 @@ FLASHMEM bool aius_optical_sd_flush_start(AiusOpticalSdFlush *flush,
 	void *const context = ops->context;
 	AiusOpticalSdFlushJob job;
 	AiusOpticalSdFlushStart started;
+	const SdFlushGate gate = sd_flush_gate(flush, ops, now_ms);
 
-	if (flush->running)
-		return true;
-	if (!ops->present(context) || flush->frozen || !ops->ready(context) ||
-	    ops->held(context))
-		return false;
-	/* D-S9: after a fault on a present card the flush waits for the fault
-	 * remount (D-S8's schedule), and no flush BEGIN starts against the
-	 * BEGIN gate. */
-	if (flush->fault_remount ||
-	    aius_optical_sd_begin_blocked(flush, ops, now_ms) !=
-		    AIUS_OPTICAL_SD_BEGIN_NONE)
-		return false;
-	if (!ops->due(context, now_ms))
-		return false;
-	/* G6: an HTTP SD start or a card-reading DISPATCH held behind the fill
-	 * runs first. */
-	if (ops->http_deferred(context))
-		return false;
+	if (gate != SD_FLUSH_GATE_OPEN)
+		return gate == SD_FLUSH_GATE_RUNNING;
 	if (ops->fill_in_flight(context)) {
 		if (!flush->cancelled_fill) {
 			ops->fill_cancel(context);

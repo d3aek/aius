@@ -132,6 +132,17 @@ class FsVolume {
     return m_fVol ? m_fVol->cacheClear() :
            m_xVol ? m_xVol->cacheClear() : nullptr;
   }
+  // Aius patch (Phase 4zd): m_fVol is private, so forward the FAT-only
+  // FatPartition::aiusFreeClusters(); -1 on exFAT or with no volume (the
+  // adapter never stores or reads a count there).
+  int32_t aiusFreeClusters(int32_t store) {
+    return m_fVol ? m_fVol->aiusFreeClusters(store) : -1;
+  }
+  // Aius patch (Phase 4zd): m_blockDev is private; the chunked scan reads raw
+  // FAT or bitmap sectors through the device the volume was mounted on.
+  FsBlockDevice* aiusBlockDevice() const {
+    return m_blockDev;
+  }
   /** \return the free cluster count. */
   uint32_t freeClusterCount() const {
     return m_fVol ? m_fVol->freeClusterCount() :

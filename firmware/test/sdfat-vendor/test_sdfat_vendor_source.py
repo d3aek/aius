@@ -36,6 +36,7 @@ SDFAT_PATCHED = {
     "src/FatLib/FatPartition.cpp",
     "src/FatLib/FatPartition.h",
     "src/FsLib/FsVolume.h",
+    "src/SdFatConfig.h",
     "src/SdCard/SdioCard.h",
     "src/SdCard/SdioTeensy.cpp",
 }
@@ -354,6 +355,62 @@ class CacheClearForwarder(unittest.TestCase):
         ):
             self.assertIn(original, volume)
             self.assertNotRegex(volume.replace(original, mutated, 1), self.FORWARDER)
+
+
+class FreeClustersForwarder(unittest.TestCase):
+    """Phase 4zd: the FAT-only, out-of-line, FLASHMEM free-count forwarder."""
+
+    def test_partition_definition_is_out_of_line_flashmem(self):
+        raw = FAT_PARTITION_CPP.read_text()
+        self.assertRegex(raw, r"\nFLASHMEM int32_t FatPartition::aiusFreeClusters\(int32_t store\) \{")
+        body = one_body(code(FAT_PARTITION_CPP), "FatPartition::aiusFreeClusters")
+        self.assertIn("return -2;", body)
+        self.assertIn("m_fatCache.sync()", body)
+        self.assertRegex(body, r"if \(store < 0\) return m_freeClusterCount;")
+        self.assertRegex(body, r"m_freeClusterCount = store;")
+
+    def test_flashmem_resolves_after_arduino_h(self):
+        text = FAT_PARTITION_CPP.read_text()
+        self.assertNotRegex(text, r"#\s*define\s+FLASHMEM")
+        self.assertIn('#include "FatLib.h"', text)
+        self.assertLess(text.index('#include "FatLib.h"'), text.index("FatPartition::aiusFreeClusters"))
+
+    def test_header_declares_it_without_inline_body(self):
+        header = code(FAT_PARTITION_H)
+        self.assertRegex(header, r"int32_t aiusFreeClusters\(int32_t store\);")
+        self.assertNotRegex(header, r"aiusFreeClusters\(int32_t store\)\s*\{")
+
+    def test_volume_forwards_fat_only(self):
+        volume = code(FS_VOLUME_H)
+        self.assertRegex(
+            volume,
+            r"int32_t aiusFreeClusters\(int32_t store\) \{\s*return m_fVol \? m_fVol->aiusFreeClusters\(store\) : -1;\s*\}",
+        )
+        self.assertNotIn("m_xVol->aiusFreeClusters", volume)
+
+    def test_volume_block_device_accessor(self):
+        volume = code(FS_VOLUME_H)
+        body = volume[volume.index("class FsVolume {"):]
+        accessor = re.search(
+            r"FsBlockDevice\* aiusBlockDevice\(\) const \{\s*return m_blockDev;\s*\}", body
+        )
+        self.assertIsNotNone(accessor)
+        forwarder = re.search(r"int32_t aiusFreeClusters\(int32_t store\) \{", body)
+        self.assertIsNotNone(forwarder)
+        # Both are in-class (implicitly inline) members of the public section, so
+        # neither emits an out-of-line symbol into ITCM.
+        for match in (accessor, forwarder):
+            self.assertIn("public:", body[: match.start()])
+            self.assertNotRegex(body[: match.start()], r"\b(private|protected):")
+        self.assertNotRegex(code(FS_VOLUME_H.with_name("FsVolume.cpp")), r"aiusBlockDevice|aiusFreeClusters")
+
+    def test_separate_fat_cache_default_is_guarded(self):
+        config = (SDFAT_ROOT / "src" / "SdFatConfig.h").read_text()
+        self.assertRegex(
+            config,
+            r"#ifndef USE_SEPARATE_FAT_CACHE\n#ifdef __arm__\n#define USE_SEPARATE_FAT_CACHE 1\n"
+            r"#else  // __arm__\n#define USE_SEPARATE_FAT_CACHE 0\n#endif  // __arm__\n#endif  // USE_SEPARATE_FAT_CACHE",
+        )
 
 
 class SdWrapperApi(unittest.TestCase):

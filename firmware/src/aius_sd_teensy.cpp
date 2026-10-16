@@ -1,5 +1,7 @@
 #include "aius_sd_teensy.h"
 
+#include "aius_sd_free_scan.h"
+
 #include <limits.h>
 
 /* Cold code -> FLASH. Nothing here runs on the audio block path (this is the
@@ -59,6 +61,15 @@ FLASHMEM bool rename_payload(const AiusSdAction *action)
 	return action->path != nullptr && action->path_to != nullptr &&
 	       action->buffer == nullptr && action->length == 0u &&
 	       action->offset == 0u && action->fault == 0u;
+}
+
+/* USED_SIZE carries the scan cursor: offset = sector cursor, length = free
+ * clusters so far (Phase 4zd). Any value is accepted: the scan step refuses a
+ * cursor past the scan as a protocol fault. */
+FLASHMEM bool used_size_payload(const AiusSdAction *action)
+{
+	return action->path == nullptr && action->path_to == nullptr &&
+	       action->buffer == nullptr && action->fault == 0u;
 }
 
 FLASHMEM bool seek_payload(const AiusSdAction *action);
@@ -169,6 +180,15 @@ FLASHMEM bool action_id_valid(const AiusSdAction *action)
 FLASHMEM bool sd_cache_clear()
 {
 	return SD.sdfs.vol()->cacheClear() != nullptr;
+}
+
+/* One chunk of the used-size scan (aius_sd_free_scan.cpp), reached through
+ * this helper so the execute body names the one primitive site. */
+FLASHMEM AiusSdFreeScanResult sd_used_size_step(
+	uint64_t cursor, uint64_t free_so_far, bool mounted)
+{
+	return aius_sd_free_scan_step(
+		SD.sdfs.vol(), cursor, free_so_far, mounted);
 }
 
 FLASHMEM AiusSdFilesystem filesystem_of(uint8_t fat_type)
@@ -558,17 +578,33 @@ FLASHMEM AiusSdEvent aius_sd_teensy_execute(
 	}
 
 	case AIUS_SD_ACTION_USED_SIZE: {
-		if (!action_id_valid(action) || !empty_payload(action))
+		if (!action_id_valid(action) || !used_size_payload(action))
 			return protocol_fault(adapter, action);
 		SD.clearError();
 		const uint32_t started = micros();
-		const uint64_t size = SD.usedSize();
+		const AiusSdFreeScanResult scan = sd_used_size_step(
+			action->offset, action->length, adapter->mounted);
 		const uint32_t ended = micros();
 		record_duration(adapter, started, ended);
-		AiusSdEvent event =
-			action_event(AIUS_SD_EVENT_SIZE, action->action_id);
-		event.size = size;
-		return event;
+		switch (scan.status) {
+		case AIUS_SD_FREE_SCAN_MORE: {
+			AiusSdEvent event =
+				action_event(AIUS_SD_EVENT_BYTES, action->action_id);
+			event.bytes = scan.chunk_free;
+			return event;
+		}
+		case AIUS_SD_FREE_SCAN_DONE: {
+			AiusSdEvent event =
+				action_event(AIUS_SD_EVENT_SIZE, action->action_id);
+			event.size = scan.used_bytes;
+			return event;
+		}
+		case AIUS_SD_FREE_SCAN_PROTOCOL:
+			return protocol_fault(adapter, action);
+		case AIUS_SD_FREE_SCAN_DRIVER:
+			break;
+		}
+		return hard_driver_fault(adapter, action->action_id);
 	}
 
 	case AIUS_SD_ACTION_CACHE_DROP: {

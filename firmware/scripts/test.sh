@@ -13,7 +13,7 @@
 #         rate-runner, rate-gate-capture, latency-runner,
 #         recovery-runner, flash, http,
 #         usb-control, iec-fixtures, tx-gate, tx-governor, tx-fill-sensor, tx-fill-witness, underrun-episodes, input-liveness, input-dark, event-ring, recorder, boot, boot-target, fault-target, ota,
-#         build-metadata, runtime, network-transport, sd, sd-target, optical-app,
+#         build-metadata, runtime, network-transport, sd, sd-target, sd-free-scan, optical-app,
 #         optical-cutover, status-body-bound, runtime-target, memory, itcm-placement, fake-fidelity,
 #         sdfat-vendor, producer-yield, producer-isolation, stack-bound, www-bundle, measure-vectors, web-cache, sd-overlay, registry, sd-editor.
 #
@@ -1257,6 +1257,7 @@ runtime-target)
 		"$fw_root/src/aius_cdc_teensy.cpp" \
 		"$fw_root/src/aius_network_teensy.cpp" \
 		"$fw_root/src/aius_sd_teensy.cpp" \
+		"$fw_root/test/sd-target/fake/aius_sd_free_scan_stub.cpp" \
 		"$fw_root/src/aius_optical_app.cpp" \
 		"$fw_root/src/aius_runtime_network_http.cpp" \
 		"$fw_root/src/aius_runtime_storage.cpp" \
@@ -1278,6 +1279,40 @@ sd-target)
 		"$fw_root/src/aius_sd_teensy.cpp" \
 		-o "$sd_target_out"
 	"$sd_target_out"
+	;;
+sd-free-scan)
+	# Phase 4zd: the chunked used-size scan (src/aius_sd_free_scan.cpp) against
+	# the REAL vendored SdFat mounted through FsVolume::begin over a RAM block
+	# device. -DARDUINO (SysCall.h:41-47 errors otherwise) with the Arduino.h
+	# shim in the suite directory; the FAT cache, the maintained free count and
+	# FAT12 are switched on to match the target (USE_SEPARATE_FAT_CACHE through
+	# the SdFatConfig.h #ifndef guard). Vendored sources compile without
+	# warnings-as-errors; the Aius files are checked strict first.
+	sd_free_scan_out="$build_dir/sd-free-scan"
+	sdfat_src="$fw_root/vendor/SdFat/src"
+	sd_free_scan_flags=(
+		-std=c++17 -DARDUINO -DUSE_SEPARATE_FAT_CACHE=1
+		-DMAINTAIN_FREE_CLUSTER_COUNT=1 -DFAT12_SUPPORT=1
+		-DSPI_DRIVER_SELECT=3
+		"-I$fw_root/test/sd-free-scan" "-I$sdfat_src"
+		"-I$fw_root/src" "-I$fw_root/lib/aius_sd/include"
+	)
+	"$cxx" "${sd_free_scan_flags[@]}" -Wall -Wextra -Werror -fsyntax-only \
+		"$fw_root/test/sd-free-scan/test_sd_free_scan.cpp" \
+		"$fw_root/src/aius_sd_free_scan.cpp"
+	sd_free_scan_vendor=()
+	for sd_free_scan_dir in FatLib ExFatLib FsLib common; do
+		for sd_free_scan_file in "$sdfat_src/$sd_free_scan_dir"/*.cpp; do
+			sd_free_scan_vendor+=("$sd_free_scan_file")
+		done
+	done
+	"$cxx" "${sd_free_scan_flags[@]}" -w -O1 -g \
+		-fsanitize=address,undefined -fno-sanitize=enum \
+		"$fw_root/test/sd-free-scan/test_sd_free_scan.cpp" \
+		"$fw_root/src/aius_sd_free_scan.cpp" \
+		"${sd_free_scan_vendor[@]}" \
+		-o "$sd_free_scan_out"
+	"$sd_free_scan_out"
 	;;
 memory)
 	# The per-bank report plus the optical audio-memory post-link verifier.

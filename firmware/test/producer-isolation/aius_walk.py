@@ -280,7 +280,9 @@ class Image:
     def _ldr_pc(self, a, f, body, k, ia, mn, ops):
         if re.match(r"^pc, \[sp\]", ops):
             return  # pop-shaped return
-        if re.match(r"^pc, \[(r\d+|ip|sl|fp), (r\d+|ip|sl|fp), lsl #2\]", ops):
+        # The base may be lr: `addw lr, pc, #4` then `ldr.w pc, [lr, rN, lsl #2]`
+        # (Phase 4zd link: aius_sd_job_step), the table following as words.
+        if re.match(r"^pc, \[(r\d+|ip|sl|fp|lr), (r\d+|ip|sl|fp), lsl #2\]", ops):
             # The table's length is the bounds check before it (`cmp rN, #k`
             # then `bhi`): k + 1 entries. Without it the run of .word lines
             # is the table; with it, words past the table are a literal pool

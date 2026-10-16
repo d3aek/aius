@@ -176,10 +176,13 @@ static FLASHMEM void finish_failure(AiusSdJob *job)
 
 	clear_result(&job->result);
 	job->result.kind = AIUS_SD_RESULT_FAULT;
+	/* A USAGE_REFRESH's transferred is a FAT sector cursor, not bytes. */
 	job->result.transferred_bytes =
-		job->kind == AIUS_SD_JOB_CONFIG_LOAD
-			? (uint64_t)job->config_bytes
-			: job->transferred;
+		job->kind == AIUS_SD_JOB_USAGE_REFRESH
+			? 0u
+			: job->kind == AIUS_SD_JOB_CONFIG_LOAD
+				? (uint64_t)job->config_bytes
+				: job->transferred;
 	job->result.fault = job->last_fault;
 	job->result.driver_fault = job->last_driver_fault;
 	mirror_copy_result(job);
@@ -1092,8 +1095,14 @@ static FLASHMEM void emit_for_phase(AiusSdJob *job, AiusSdAction *action)
 		                      AIUS_SD_ACTION_TOTAL_SIZE, false);
 		break;
 	case AIUS_SD_PHASE_USAGE_USED:
-		(void)emit_correlated(job, action,
-		                      AIUS_SD_ACTION_USED_SIZE, false);
+		/* Resumable scan: offset is the sector cursor, length the free
+		 * clusters so far; both live in job fields because the action is
+		 * cleared on advance. */
+		if (emit_correlated(job, action, AIUS_SD_ACTION_USED_SIZE,
+		                    false)) {
+			action->offset = job->transferred;
+			action->length = (size_t)job->captured_size;
+		}
 		break;
 
 	case AIUS_SD_PHASE_PATH_EXISTS:
@@ -1754,7 +1763,8 @@ static FLASHMEM void handle_size_event(AiusSdJob *job, uint64_t size)
 
 static FLASHMEM void handle_bytes_event(AiusSdJob *job, size_t bytes)
 {
-	if (bytes == 0u) {
+	/* An all-used chunk legitimately answers 0 in the resumable scan. */
+	if (bytes == 0u && job->phase != AIUS_SD_PHASE_USAGE_USED) {
 		record_fault(job,
 		             job->phase ==
 				             AIUS_SD_PHASE_INSTALL_PUBLISH_READ
@@ -1768,6 +1778,11 @@ static FLASHMEM void handle_bytes_event(AiusSdJob *job, size_t bytes)
 	}
 
 	switch (job->phase) {
+	case AIUS_SD_PHASE_USAGE_USED:
+		job->captured_size += (uint64_t)bytes;
+		job->transferred += AIUS_SD_USAGE_CHUNK_SECTORS;
+		set_phase(job, AIUS_SD_PHASE_USAGE_USED, AIUS_SD_PREPARE);
+		break;
 	case AIUS_SD_PHASE_CONFIG_READ:
 	case AIUS_SD_PHASE_INSTALL_PUBLISH_READ:
 		job->config_bytes += bytes;
@@ -2006,6 +2021,8 @@ static FLASHMEM size_t outstanding_byte_length(const AiusSdJob *job)
 	if (job->phase == AIUS_SD_PHASE_CONFIG_READ ||
 	    job->phase == AIUS_SD_PHASE_INSTALL_PUBLISH_READ)
 		return publication_read_length(job);
+	if (job->phase == AIUS_SD_PHASE_USAGE_USED)
+		return AIUS_SD_USAGE_CHUNK_MAX_ENTRIES;
 	if (job->phase == AIUS_SD_PHASE_VERIFY_READ)
 		return copy_chunk_length(job, job->transferred);
 	if (job->phase == AIUS_SD_PHASE_DOWNLOAD_READ) {
@@ -2093,6 +2110,11 @@ static FLASHMEM AiusSdEventDisposition consume_event(AiusSdJob *job,
 	}
 
 	AiusSdEventKind expected = expected_event_kind(action);
+	/* The resumable used-size scan answers BYTES (a non-final chunk) or
+	 * SIZE (final). */
+	if (action == AIUS_SD_ACTION_USED_SIZE &&
+	    event.kind == AIUS_SD_EVENT_BYTES)
+		expected = AIUS_SD_EVENT_BYTES;
 	if (event.kind != expected ||
 	    !success_payload_is_valid(event, expected) ||
 	    !filesystem_payload_is_valid(event, action)) {

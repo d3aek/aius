@@ -193,6 +193,20 @@ SIGNATURES = [
         "FsVolume",
         "cacheClear",
     ),
+    (
+        # The Phase 4zd free-count forwarder the chunked used-size scan calls
+        # (vendor/SdFat/NOTICE.md).
+        "test/sd-target/fake/SD.h",
+        "vendor/SdFat/src/FatLib/FatPartition.h",
+        "FatPartition",
+        "aiusFreeClusters",
+    ),
+    (
+        "test/sd-target/fake/SD.h",
+        "vendor/SdFat/src/FsLib/FsVolume.h",
+        "FsVolume",
+        "aiusFreeClusters",
+    ),
 ]
 
 # Kept as a switch for a future vendor bump that removes the forwarder; live

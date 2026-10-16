@@ -36,6 +36,12 @@ typedef enum {
 /* A CACHE_FILL's initial_offset granularity: the web cache's chunk. */
 #define AIUS_SD_CACHE_FILL_ALIGN 512u
 
+/* USAGE_REFRESH's resumable used-size scan: FAT (or exFAT bitmap) sectors per
+ * USED_SIZE primitive, and the largest free-cluster count one chunk may answer
+ * (32 sectors x 4,096 exFAT bitmap bits). */
+#define AIUS_SD_USAGE_CHUNK_SECTORS 32u
+#define AIUS_SD_USAGE_CHUNK_MAX_ENTRIES 131072u
+
 typedef enum {
 	AIUS_SD_INSTALL_REPLACE,
 	AIUS_SD_INSTALL_APPEND_PART,

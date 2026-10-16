@@ -56,7 +56,11 @@ FLASHMEM void latch_failure(AiusRuntimeStorage *service,
 	record->mounts_in_job =
 		service->target.mounts - service->job_mounts_at_start;
 	record->longest_primitive_us = service->target.longest_duration_us;
-	record->transferred = service->job.transferred;
+	/* A USAGE_REFRESH's transferred is a FAT sector cursor, not bytes. */
+	record->transferred =
+		service->job.kind == AIUS_SD_JOB_USAGE_REFRESH
+			? 0u
+			: service->job.transferred;
 	if (refused) {
 		/* No job of the refused owner's ever existed, so the fault
 		 * fields would describe the running root job's history rather

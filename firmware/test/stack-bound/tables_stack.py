@@ -216,7 +216,7 @@ EXTRA_SITES = [
     # Phase 4h: the flush policy's calls through g_sd_flush_ops.
     SiteRow(n, APP, c, SD_FLUSH_OPS) for n, c in [
         ("aius_optical_sd_flush_drained", 2), ("aius_optical_sd_flush_note_probe", 3),
-        ("aius_optical_sd_flush_settle", 7), ("aius_optical_sd_flush_start", 11),
+        ("aius_optical_sd_flush_settle", 7), ("aius_optical_sd_flush_start", 6),
         ("aius_optical_sd_flush_sweep_orphan", 1), ("aius_optical_sd_freeze_release", 1),
         ("aius_optical_sd_idle_step", 11), ("aius_optical_sd_service_final", 3),
         ("aius_optical_sd_service_gate", 2), ("aius_optical_sd_write_gate", 6)]

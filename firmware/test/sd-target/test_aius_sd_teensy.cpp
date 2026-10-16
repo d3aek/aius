@@ -1,4 +1,5 @@
 #include "aius_sd_teensy.h"
+#include "aius_sd_free_scan.h"
 
 #include <assert.h>
 #include <limits.h>
@@ -91,6 +92,9 @@ struct Fake {
 };
 
 Fake g_fake;
+AiusSdFreeScanResult g_scan_result;
+uint64_t g_scan_cursor, g_scan_so_far;
+bool g_scan_mounted;
 uint8_t g_buffer[16];
 const char kPath[] = "/path";
 const char kPathTo[] = "/path-to";
@@ -124,6 +128,11 @@ void reset_fake()
 	g_fake.size_result = UINT64_C(123);
 	g_fake.total_size = UINT64_C(1000);
 	g_fake.used_size = UINT64_C(400);
+	g_scan_result.status = AIUS_SD_FREE_SCAN_DONE;
+	g_scan_result.chunk_free = 0;
+	g_scan_result.used_bytes = g_fake.used_size;
+	g_scan_cursor = g_scan_so_far = UINT64_MAX;
+	g_scan_mounted = false;
 	g_fake.clocks[0] = 100;
 	g_fake.clocks[1] = 107;
 }
@@ -628,6 +637,8 @@ uint32_t named_fields(AiusSdActionKind kind)
 		       FIELD_BIT(FIELD_OFFSET);
 	case AIUS_SD_ACTION_RENAME:
 		return FIELD_BIT(FIELD_PATH) | FIELD_BIT(FIELD_PATH_TO);
+	case AIUS_SD_ACTION_USED_SIZE:
+		return FIELD_BIT(FIELD_LENGTH) | FIELD_BIT(FIELD_OFFSET);
 	default:
 		return 0;
 	}
@@ -686,7 +697,7 @@ void test_exact_payload_validation()
 		id_trials++;
 	}
 	assert(id_trials == 17);
-	assert(unnamed_trials == 86);
+	assert(unnamed_trials == 84);
 
 	static const AiusSdActionKind path_actions[] = {
 		AIUS_SD_ACTION_MKDIR,
@@ -750,6 +761,75 @@ void test_exact_payload_validation()
 	for (size_t i = 0;
 	     i < sizeof(file_actions) / sizeof(file_actions[0]); ++i)
 		expect_protocol_rejection(make_action(file_actions[i]), false);
+}
+
+/* Phase 4zd: USED_SIZE takes the scan-cursor payload (offset = sector cursor,
+ * length = free clusters so far) and still refuses the old non-empty shapes. */
+void test_used_size_cursor_payload()
+{
+	reset_fake();
+	AiusSdTeensy adapter;
+	reset_adapter(&adapter);
+	adapter.mounted = true;
+	AiusSdAction action = make_action(AIUS_SD_ACTION_USED_SIZE);
+	action.offset = 64;
+	action.length = 1234;
+	g_scan_result.status = AIUS_SD_FREE_SCAN_MORE;
+	g_scan_result.chunk_free = 0;
+	AiusSdEvent event = aius_sd_teensy_execute(&adapter, &action);
+	assert_event(event, AIUS_SD_EVENT_BYTES, 47, 0, 0, false, 0);
+	assert(g_scan_cursor == 64 && g_scan_so_far == 1234 && g_scan_mounted);
+	assert(g_fake.call_count == 1 && g_fake.calls[0] == PRIMITIVE_USED_SIZE);
+	assert(adapter.last_fault == 0);
+
+	g_scan_result.chunk_free = 4096;
+	g_fake.clock_calls = 0;
+	event = aius_sd_teensy_execute(&adapter, &action);
+	assert_event(event, AIUS_SD_EVENT_BYTES, 47, 4096, 0, false, 0);
+
+	g_scan_result.status = AIUS_SD_FREE_SCAN_DONE;
+	g_scan_result.used_bytes = UINT64_C(3955871744);
+	g_fake.clock_calls = 0;
+	event = aius_sd_teensy_execute(&adapter, &action);
+	assert_event(event, AIUS_SD_EVENT_SIZE, 47, 0, UINT64_C(3955871744),
+	             false, 0);
+
+	g_scan_result.status = AIUS_SD_FREE_SCAN_PROTOCOL;
+	g_fake.clock_calls = 0;
+	event = aius_sd_teensy_execute(&adapter, &action);
+	assert_protocol_event(event, 47);
+	assert(adapter.mounted);
+
+	g_scan_result.status = AIUS_SD_FREE_SCAN_DRIVER;
+	g_fake.clock_calls = 0;
+	event = aius_sd_teensy_execute(&adapter, &action);
+	assert_driver_event(event, 47);
+	assert(!adapter.mounted);
+
+	/* The old non-empty shapes and over-wide cursors stay refused. */
+	for (unsigned shape = 0; shape < 4; ++shape) {
+		AiusSdAction bad = make_action(AIUS_SD_ACTION_USED_SIZE);
+		switch (shape) {
+		case 0: bad.path = kPath; break;
+		case 1: bad.path_to = kPathTo; break;
+		case 2: bad.buffer = g_buffer; break;
+		case 3: bad.fault = 1; break;
+		}
+		expect_protocol_rejection(bad, false);
+	}
+	/* Any offset and length reach the scan step, which owns the bound. */
+	g_scan_result.status = AIUS_SD_FREE_SCAN_MORE;
+	g_scan_result.chunk_free = 0;
+	AiusSdAction wide_action = make_action(AIUS_SD_ACTION_USED_SIZE);
+	wide_action.offset = UINT64_MAX;
+	wide_action.length = SIZE_MAX;
+	g_fake.clock_calls = 0;
+	event = aius_sd_teensy_execute(&adapter, &wide_action);
+	assert_event(event, AIUS_SD_EVENT_BYTES, 47, 0, 0, false, 0);
+	assert(g_scan_cursor == UINT64_MAX && g_scan_so_far == SIZE_MAX);
+	AiusSdAction no_id = make_action(AIUS_SD_ACTION_USED_SIZE);
+	no_id.action_id = 0;
+	expect_protocol_rejection(no_id, false);
 }
 
 void test_inert_null_unknown_and_duplicate()
@@ -1682,8 +1762,22 @@ uint64_t SDClass::totalSize()
 
 uint64_t SDClass::usedSize()
 {
-	record(PRIMITIVE_USED_SIZE);
+	/* The unbounded walk the chunked scan replaced: never reached. */
+	assert(0);
 	return g_fake.used_size;
+}
+
+/* The free-scan unit is not compiled here (its real FsVolume is SdFat's, this
+ * fake's is its own); a programmable step stands in. It is the one primitive
+ * USED_SIZE spends. */
+AiusSdFreeScanResult aius_sd_free_scan_step(
+	FsVolume *, uint64_t cursor, uint64_t free_so_far, bool mounted)
+{
+	record(PRIMITIVE_USED_SIZE);
+	g_scan_cursor = cursor;
+	g_scan_so_far = free_so_far;
+	g_scan_mounted = mounted;
+	return g_scan_result;
 }
 
 /* Deliberately not recorded as a primitive: the real fatType() reads a member
@@ -1731,6 +1825,7 @@ int main()
 	test_read_write_result_boundaries();
 	test_boolean_and_integer_boundaries();
 	test_exact_payload_validation();
+	test_used_size_cursor_payload();
 	test_inert_null_unknown_and_duplicate();
 	test_media_present_reports_the_volume_type();
 	test_durations_and_counter_saturation();

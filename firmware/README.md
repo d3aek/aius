@@ -453,6 +453,7 @@ Suites (all build with `-Wall -Wextra -Werror` + ASan/UBSan):
 | `recorder` | The flight recorder's portable core: freeze state machine, trigger edges/qualification, exact eight-step × 512-frame staging burst, PSRAM carve geometry, drain + gap accounting, chunk arithmetic, and the firmware-wide extmem-heap ban. |
 | `boot`, `boot-target` | Retained ledger and recovery-mode rules; the Teensy boot adapter + its post-link verifier. |
 | `sd`, `sd-target` | Portable SD job machine; the one-shot Teensy SD adapter. |
+| `sd-free-scan` | The chunked used-size scan (Phase 4zd) against the real vendored SdFat over a RAM block device: FAT12/16/32/exFAT chunk boundaries, upstream total, FAT cache sync, stored count, protocol bounds. |
 | `runtime`, `runtime-target` | Epoch scheduler; the composed runtime against fake primitives. |
 | `network-transport` | NativeEthernet behaviour + the vendor-header source contract. |
 | `optical-app` | One bounded dispatch decision per HTTP route and USB command. |

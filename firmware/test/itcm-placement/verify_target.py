@@ -83,6 +83,7 @@ COLD_OBJECTS = (
     "lib/aius_sd/src/aius_sd.c.o",
     "src/aius_boot_teensy.cpp.o",
     "src/aius_sd_teensy.cpp.o",
+    "src/aius_sd_free_scan.cpp.o",
 )
 
 # Sections that are framework code the annotated source cannot reach. GCC's

@@ -20,6 +20,7 @@ Aius additions. The only files intentionally different from upstream are:
 - `src/FatLib/FatPartition.cpp`
 - `src/FatLib/FatPartition.h`
 - `src/FsLib/FsVolume.h`
+- `src/SdFatConfig.h`
 - `library.properties`, whose library name becomes `AiusSdFat` (as does the
   added `library.json`) so PlatformIO can ignore the framework copy by name.
 
@@ -65,3 +66,26 @@ Phase 4h (CR4-B2, owner decision 2026-10-10) adds one more patch to
   `m_fVol` and `m_xVol` private with no accessor, and the adapter's
   `AIUS_SD_ACTION_CACHE_DROP` (`src/aius_sd_teensy.cpp`) needs it so a
   copy-before-write read-back reads the card, not SdFat's cache.
+
+Phase 4zd (bounded resumable used-size scan) adds three more patches:
+
+- **Block device accessor (4zd).** `FsBlockDevice* FsVolume::aiusBlockDevice()
+  const` in `src/FsLib/FsVolume.h` returns the device the volume was mounted on
+  (`m_blockDev` is private). The chunked scan reads raw FAT or bitmap sectors
+  through it. No card read.
+
+- **Free-count forwarder (4zd).** `int32_t FatPartition::aiusFreeClusters(int32_t
+  store)` in `src/FatLib/FatPartition.h` and `FatPartition.cpp`, plus the
+  `FsVolume::aiusFreeClusters()` forwarder in `src/FsLib/FsVolume.h`. FAT only,
+  out of line and `FLASHMEM` (resolved through `FatLib.h`, `SysCall.h` and
+  `Arduino.h`; no fallback define, so the body never lands in ITCM). It syncs the
+  FAT cache (`m_fatCache`, or `m_cache` without a separate FAT cache) and returns
+  -2 if the sync fails. Then `store < 0` returns the maintained
+  `m_freeClusterCount` (-1 unknown) and `store >= 0` sets it. The chunked scan in
+  `src/aius_sd_free_scan.cpp` uses it so a finished count makes later refreshes
+  on the same mount read no FAT sectors. FAT12 and exFAT are not touched;
+  `FsVolume` returns -1 for exFAT or no volume.
+- **FAT cache guard (4zd).** `USE_SEPARATE_FAT_CACHE` in `src/SdFatConfig.h` is
+  wrapped in `#ifndef`, so a host build can set it (it is otherwise defined from
+  `__arm__` with no guard, and a host build would have no `m_fatCache`). The
+  default is unchanged.

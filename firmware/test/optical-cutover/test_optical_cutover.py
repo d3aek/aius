@@ -5991,12 +5991,21 @@ def assert_sd_overlay_wiring(sources):
         "with BUSY (N2)"
     )
     assert "aius_optical_sd_step_begin_blocked(" in defs.get("sd_step_begin_blocked", "")
-    for site in ("aius_optical_sd_flush_start", "aius_optical_sd_idle_step"):
-        assert "aius_optical_sd_begin_blocked(" in app_defs.get(site, ""), (
-            f"{site} must consult aius_optical_sd_begin_blocked (D-S9)"
-        )
-    assert "flush->fault_remount" in app_defs.get("aius_optical_sd_flush_start", ""), (
-        "aius_optical_sd_flush_start must wait for the fault remount (D-S9 a)"
+    # Phase 4zd: the flush start's gate is the shared sd_flush_gate helper
+    # (also read by the scan preempt), so the BEGIN gate and the fault-remount
+    # wait live there and the start must go through it.
+    gate_helper = app_defs.get("sd_flush_gate", "")
+    assert "sd_flush_gate(" in app_defs.get("aius_optical_sd_flush_start", ""), (
+        "aius_optical_sd_flush_start must consult sd_flush_gate (D-S9)"
+    )
+    assert "aius_optical_sd_begin_blocked(" in app_defs.get(
+        "aius_optical_sd_idle_step", ""
+    ), "aius_optical_sd_idle_step must consult aius_optical_sd_begin_blocked (D-S9)"
+    assert "aius_optical_sd_begin_blocked(" in gate_helper, (
+        "sd_flush_gate must consult aius_optical_sd_begin_blocked (D-S9)"
+    )
+    assert "flush->fault_remount" in gate_helper, (
+        "sd_flush_gate must wait for the fault remount (D-S9 a)"
     )
     # CR-B1: the remount schedule is read only through sd_remount_waiting
     # (an armed flag, lapsed once due) and written only through
@@ -6057,8 +6066,104 @@ def assert_sd_overlay_wiring(sources):
     )
 
 
+def assert_usage_scan_yields_to_flush(sources):
+    """Phase 4zd slice D: a due flush preempts the free-space scan. The flush
+    ops see a scan as a fill in flight and cancel it (counter argument still
+    CACHE_FILL-only), a CANCELLED terminal re-arms the refresh, the probe-tick
+    arm waits on cancelled_fill, the preempt precedes the RUNNING-root return,
+    and the card-path sites stay keyed on web_cache_fill_in_flight()."""
+    clean = without_comments_and_literals(sources[OPTICAL_MAIN_SOURCE])
+    defs = _clean_definitions(sources[OPTICAL_MAIN_SOURCE])
+    scan = defs.get("sd_flush_usage_scan_running", "")
+    assert "AIUS_SD_JOB_USAGE_REFRESH" in scan and "ROOT_RUNNING" in scan, (
+        "sd_flush_usage_scan_running must test a RUNNING USAGE_REFRESH root job"
+    )
+    in_flight = defs.get("sd_flush_fill_in_flight", "")
+    assert "web_cache_fill_in_flight()" in in_flight and (
+        "sd_flush_usage_scan_running()" in in_flight
+    ), "sd_flush_fill_in_flight must answer true for a fill or a scan"
+    cancel = defs.get("sd_flush_fill_cancel", "")
+    assert "web_cache_fill_cancel()" in cancel, (
+        "sd_flush_fill_cancel must still cancel a fill via web_cache_fill_cancel()"
+    )
+    assert re.search(
+        r"if\s*\(\s*sd_flush_usage_scan_running\s*\(\s*\)\s*\)\s*"
+        r"\(void\)\s*aius_runtime_storage_cancel_root\s*\(",
+        cancel,
+    ), "sd_flush_fill_cancel must cancel a running scan's root job"
+    assert cancel.find("web_cache_fill_cancel()") < cancel.find(
+        "aius_runtime_storage_cancel_root("
+    ), "the fill cancel precedes the scan cancel"
+    fill_cancel = defs.get("web_cache_fill_cancel", "")
+    assert re.search(
+        r"aius_optical_web_fill_cancel\s*\(\s*&g_web_fill\s*,\s*"
+        r"web_cache_fill_in_flight\s*\(\s*\)\s*\)", fill_cancel
+    ), "the fill cancel's counter argument must stay CACHE_FILL-only"
+    # Terminal handler: CANCELLED re-arms, other outcomes clear.
+    assert re.search(
+        r"case\s+SD_STEP_USAGE\s*:.*?g_sd_usage_refresh_pending\s*=\s*"
+        r"[^;]*==\s*AIUS_SD_FAULT_CANCELLED\s*;",
+        defs.get("sd_step_complete", ""), re.S,
+    ), "SD_STEP_USAGE must re-arm g_sd_usage_refresh_pending on CANCELLED"
+    # Probe-tick arm.
+    assert re.search(
+        r"else\s+if\s*\(\s*present\s*&&\s*g_sd_usage_refresh_pending\s*&&\s*"
+        r"aius_optical_sd_usage_may_start\s*\(\s*&g_sd_flush\s*\)\s*\)",
+        defs.get("sd_step_complete", ""),
+    ), "the probe-tick usage arm must require aius_optical_sd_usage_may_start"
+    # Preempt before the RUNNING-root return.
+    life = defs.get("sd_lifecycle_service", "")
+    preempt = life.find(
+        "aius_optical_sd_flush_preempt_scan(&g_sd_flush,&g_sd_flush_ops,"
+        "now_ms,sd_flush_usage_scan_running())"
+    )
+    if preempt == -1:
+        preempt = life.find("aius_optical_sd_flush_preempt_scan(")
+    running = life.find("AIUS_RUNTIME_STORAGE_ROOT_RUNNING")
+    assert -1 < preempt < running, (
+        "sd_lifecycle_service must preempt a scan before the RUNNING-root return"
+    )
+    assert "&g_sd_flush_ops" in life[preempt:running] and (
+        "sd_flush_usage_scan_running()" in life[preempt:running]
+    ), "the preempt call must pass the bound ops and the scan predicate"
+    # The preempt shares the flush start's gate (factored, not copied).
+    app_defs = _clean_definitions(sources[APP_SOURCE])
+    assert "sd_flush_gate(" in app_defs.get(
+        "aius_optical_sd_flush_preempt_scan", ""
+    ), "aius_optical_sd_flush_preempt_scan must consult sd_flush_gate"
+    # Every transition into SD_STEP_USAGE is guarded by usage_may_start: the
+    # bring-up chain goes through sd_usage_step_or_idle (a standing
+    # cancelled_fill defers the scan, re-arming the refresh); the probe-tick
+    # arm carries the call itself.
+    helper = defs.get("sd_usage_step_or_idle", "")
+    assert ("aius_optical_sd_usage_may_start(&g_sd_flush)" in helper
+            and "g_sd_usage_refresh_pending=true" in helper.replace(" ", "")
+            and "SD_STEP_NONE" in helper), (
+        "sd_usage_step_or_idle must gate on usage_may_start, else re-arm and idle"
+    )
+    complete = defs.get("sd_step_complete", "")
+    bare = re.findall(r":\s*SD_STEP_USAGE\s*;|=\s*SD_STEP_USAGE\s*;", complete)
+    assert len(bare) == 1, (
+        "sd_step_complete must enter SD_STEP_USAGE directly only from the "
+        f"guarded probe-tick arm ({len(bare)} sites)"
+    )
+    assert complete.count("sd_usage_step_or_idle()") == 2, (
+        "both bring-up transitions into the scan must use sd_usage_step_or_idle"
+    )
+    # The card-path sites stay keyed on the CACHE_FILL-only predicate.
+    assert len(re.findall(
+        r"aius_optical_web_fill_route\s*\(\s*&g_web_fill\s*,\s*"
+        r"web_cache_fill_in_flight\s*\(\s*\)", clean)) >= 1, (
+        "the direct-card route must stay keyed on web_cache_fill_in_flight()"
+    )
+    assert "sd_flush_usage_scan_running" not in defs.get(
+        "web_cache_fill_in_flight", ""
+    ), "web_cache_fill_in_flight must stay CACHE_FILL-only"
+
+
 SD_OVERLAY_CHECKS = (
     ("sd-overlay-wiring", assert_sd_overlay_wiring),
+    ("usage-scan-yields-to-flush", assert_usage_scan_yields_to_flush),
 )
 
 

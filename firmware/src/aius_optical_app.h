@@ -1293,6 +1293,16 @@ AiusOpticalSdIdleStep aius_optical_sd_idle_step(AiusOpticalSdFlush *flush,
 bool aius_optical_sd_flush_start(AiusOpticalSdFlush *flush,
                                  const AiusOpticalSdFlushOps *ops,
                                  uint32_t now_ms);
+/* 4zd: a due flush preempts a running USAGE_REFRESH scan. When `scan_running`
+ * (root RUNNING and job kind USAGE_REFRESH), flush_start's gate prefix holds
+ * and cancelled_fill is clear, calls ops->fill_cancel once and sets
+ * cancelled_fill; else nothing. Call before the RUNNING-root return. */
+void aius_optical_sd_flush_preempt_scan(AiusOpticalSdFlush *flush,
+                                        const AiusOpticalSdFlushOps *ops,
+                                        uint32_t now_ms, bool scan_running);
+/* 4zd: false while cancelled_fill is set (a preempted scan waits for its
+ * flush), true otherwise: gates the pending USAGE_REFRESH start. */
+bool aius_optical_sd_usage_may_start(const AiusOpticalSdFlush *flush);
 /* The running flush job reached its terminal (the caller checks the engine's
  * root job is no longer running): the pass and read-back notes, then
  * job_end; a card-gone outcome is noted (N5); the fill hold is released only

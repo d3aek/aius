@@ -413,6 +413,26 @@ int32_t FatPartition::freeClusterCount() {
 
 
 //------------------------------------------------------------------------------
+// Aius patch (Phase 4zd). FLASHMEM resolves through FatLib.h -> SysCall.h ->
+// Arduino.h above; no fallback define here (an early empty one would leave the
+// body in ITCM).
+FLASHMEM int32_t FatPartition::aiusFreeClusters(int32_t store) {
+#if USE_SEPARATE_FAT_CACHE
+  if (!m_fatCache.sync()) return -2;
+#else   // USE_SEPARATE_FAT_CACHE
+  if (!m_cache.sync()) return -2;
+#endif  // USE_SEPARATE_FAT_CACHE
+#if MAINTAIN_FREE_CLUSTER_COUNT
+  if (store < 0) return m_freeClusterCount;
+  m_freeClusterCount = store;
+  return store;
+#else   // MAINTAIN_FREE_CLUSTER_COUNT
+  (void)store;
+  return -1;
+#endif  // MAINTAIN_FREE_CLUSTER_COUNT
+}
+
+//------------------------------------------------------------------------------
 bool FatPartition::init(FsBlockDevice* dev, uint8_t part) {
 //  Serial.printf(" FatPartition::init(%x %u)\n", (uint32_t)dev, part);
   uint32_t clusterCount;

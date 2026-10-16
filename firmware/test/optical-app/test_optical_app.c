@@ -5797,6 +5797,233 @@ static void test_sd_flush_write_gate(void)
 	assert(g_ff.web.latches == 1u);
 }
 
+/* Phase 4zd: a USAGE_REFRESH scan is fill_in_flight true with fill_rel NULL.
+ * A flush start and the H9 freeze cancel it through the one fill_cancel op;
+ * a card request and a STORE put do not. */
+static void test_sd_scan_flush_and_freeze(void)
+{
+	AiusOpticalSdFlush flush;
+	bool requested;
+	uint32_t fill_cancels = 0u;
+	static const char rel[] = "www/presets/x.json";
+
+	/* A flush start cancels the scan once and waits for the root to stop. */
+	ff_reset(&flush);
+	g_ff.due = true;
+	g_ff.fill_in_flight = true;
+	assert(g_ff.fill_rel == NULL);
+	assert(aius_optical_sd_flush_start(&flush, &g_ff_ops, 0u));
+	assert(g_ff.fill_cancels == 1u && flush.cancelled_fill && g_ff.starts == 0u);
+	assert(aius_optical_sd_flush_start(&flush, &g_ff_ops, 1u));
+	assert(g_ff.fill_cancels == 1u && g_ff.starts == 0u);
+	g_ff.fill_in_flight = false;
+	assert(aius_optical_sd_flush_start(&flush, &g_ff_ops, 2u));
+	assert(g_ff.starts == 1u && flush.running);
+
+	/* The H9 freeze (reboot and OTA: reset_on_busy false) cancels the scan
+	 * and does not abandon while it stops inside the 2 s ceiling. */
+	ff_reset(&flush);
+	g_ff.settled = false;
+	g_ff.fill_in_flight = true;
+	requested = true;
+	assert(aius_optical_sd_service_gate(&flush, &g_ff_ops, &requested, 0u,
+	                                    false) == AIUS_OPTICAL_SD_SERVICE_WAIT);
+	assert(flush.frozen && requested && g_ff.fill_cancels == 1u);
+	assert(aius_optical_sd_service_gate(&flush, &g_ff_ops, &requested,
+	                                    AIUS_OPTICAL_SD_FREEZE_MS - 1u, false) ==
+	       AIUS_OPTICAL_SD_SERVICE_WAIT);
+	assert(requested && flush.frozen);
+	g_ff.fill_in_flight = false;
+	g_ff.settled = true;
+	assert(aius_optical_sd_service_gate(&flush, &g_ff_ops, &requested,
+	                                    AIUS_OPTICAL_SD_FREEZE_MS - 1u, false) ==
+	       AIUS_OPTICAL_SD_SERVICE_RUN);
+	assert(g_ff.fill_cancels == 1u);
+
+	/* A STORE put during a scan cancels nothing. */
+	ff_reset(&flush);
+	g_ff.fill_in_flight = true;
+	assert(aius_optical_sd_flush_put_begin(&flush, &g_ff_ops, &fill_cancels,
+	                                       rel, strlen(rel), 12u) ==
+	       AIUS_OPTICAL_APP_STORE_OK);
+	assert(g_ff.cancel_roots == 0u && g_ff.fill_cancels == 0u &&
+	       fill_cancels == 0u && g_ff.put_begins == 1u);
+	g_ff.put_result = AIUS_OPTICAL_APP_STORE_BUSY;
+	aius_optical_sd_flush_put_abort(&flush, &g_ff_ops);
+	assert(aius_optical_sd_flush_put_begin(&flush, &g_ff_ops, &fill_cancels,
+	                                       rel, strlen(rel), 12u) ==
+	       AIUS_OPTICAL_APP_STORE_BUSY);
+	assert(g_ff.cancel_roots == 0u && g_ff.fill_cancels == 0u &&
+	       fill_cancels == 0u);
+}
+
+/* A card route with sd_busy (a scan owns the root) answers 503 sd_busy and
+ * calls no cancel. */
+static void test_sd_scan_card_route_busy(void)
+{
+	Fixture fixture;
+	AiusOpticalSdFlush flush;
+
+	ff_reset(&flush);
+	g_ff.fill_in_flight = true;
+	fixture_init(&fixture);
+	fixture.fake.sd_busy = true;
+	expect_immediate(dispatch_get(&fixture, "GET /sd/www/index.html"), 503,
+	                 "{\"ok\":false,\"error\":\"sd_busy\"}");
+	/* The fixture is not wired to g_ff_ops: the card-route no-cancel
+	 * guarantee is pinned by the optical-cutover text checks. */
+}
+
+/* The preempt, the shared prefix and the usage-start gate. */
+static void test_sd_flush_preempt_scan(void)
+{
+	AiusOpticalSdFlush flush;
+
+	/* Due flush + running scan: cancels once; a second call does not. */
+	ff_reset(&flush);
+	g_ff.due = true;
+	g_ff.fill_in_flight = true;
+	assert(aius_optical_sd_usage_may_start(&flush));
+	aius_optical_sd_flush_preempt_scan(&flush, &g_ff_ops, 0u, true);
+	assert(g_ff.fill_cancels == 1u && flush.cancelled_fill);
+	aius_optical_sd_flush_preempt_scan(&flush, &g_ff_ops, 1u, true);
+	assert(g_ff.fill_cancels == 1u);
+	assert(!aius_optical_sd_usage_may_start(&flush));
+
+	/* Nothing happens with no scan, nothing due, held, frozen, an HTTP start
+	 * deferred, or a flush already running. */
+	ff_reset(&flush);
+	g_ff.due = true;
+	aius_optical_sd_flush_preempt_scan(&flush, &g_ff_ops, 0u, false);
+	g_ff.due = false;
+	aius_optical_sd_flush_preempt_scan(&flush, &g_ff_ops, 0u, true);
+	g_ff.due = true;
+	g_ff.held = true;
+	aius_optical_sd_flush_preempt_scan(&flush, &g_ff_ops, 0u, true);
+	g_ff.held = false;
+	flush.frozen = true;
+	aius_optical_sd_flush_preempt_scan(&flush, &g_ff_ops, 0u, true);
+	flush.frozen = false;
+	g_ff.http_deferred = true;
+	aius_optical_sd_flush_preempt_scan(&flush, &g_ff_ops, 0u, true);
+	g_ff.http_deferred = false;
+	flush.fault_remount = true;
+	aius_optical_sd_flush_preempt_scan(&flush, &g_ff_ops, 0u, true);
+	flush.fault_remount = false;
+	flush.running = true;
+	aius_optical_sd_flush_preempt_scan(&flush, &g_ff_ops, 0u, true);
+	flush.running = false;
+	assert(g_ff.fill_cancels == 0u && !flush.cancelled_fill);
+	assert(aius_optical_sd_usage_may_start(&flush));
+
+	/* The factored prefix answers true for a running flush, so the idle step
+	 * answers IDLE_WAIT. */
+	ff_reset(&flush);
+	flush.running = true;
+	assert(aius_optical_sd_flush_start(&flush, &g_ff_ops, 0u));
+	assert(aius_optical_sd_idle_step(&flush, &g_ff_ops, 0u, true) ==
+	       AIUS_OPTICAL_SD_IDLE_WAIT);
+
+	/* A preempted scan waits for its flush: with cancelled_fill set and the
+	 * next epoch's prefix failing, the usage refresh may not start. */
+	ff_reset(&flush);
+	g_ff.due = true;
+	g_ff.fill_in_flight = true;
+	aius_optical_sd_flush_preempt_scan(&flush, &g_ff_ops, 0u, true);
+	g_ff.fill_in_flight = false;
+	g_ff.http_deferred = true;
+	assert(!aius_optical_sd_flush_start(&flush, &g_ff_ops, 1u));
+	assert(!aius_optical_sd_usage_may_start(&flush));
+	g_ff.http_deferred = false;
+	g_ff.held = true;
+	assert(!aius_optical_sd_flush_start(&flush, &g_ff_ops, 2u));
+	assert(!aius_optical_sd_usage_may_start(&flush));
+	g_ff.held = false;
+	flush.fault_remount = true;
+	assert(!aius_optical_sd_flush_start(&flush, &g_ff_ops, 3u));
+	assert(!aius_optical_sd_usage_may_start(&flush));
+	flush.fault_remount = false;
+	/* BEGIN blocked: no mount, live playback, DAT3 reads no card. */
+	g_ff.adapter_mounted = false;
+	g_ff.playback = true;
+	g_ff.card_detected = false;
+	assert(aius_optical_sd_begin_blocked(&flush, &g_ff_ops, 3u) !=
+	       AIUS_OPTICAL_SD_BEGIN_NONE);
+	assert(!aius_optical_sd_flush_start(&flush, &g_ff_ops, 3u));
+	assert(!aius_optical_sd_usage_may_start(&flush));
+	g_ff.adapter_mounted = true;
+	g_ff.playback = false;
+	g_ff.card_detected = true;
+	/* Once the flush settles, the refresh may run. */
+	assert(aius_optical_sd_flush_start(&flush, &g_ff_ops, 4u));
+	{
+		AiusOpticalSdFlushEnd end = ff_end_ok(0u);
+		aius_optical_sd_flush_settle(&flush, &g_ff_ops, &end, 5u);
+	}
+	assert(aius_optical_sd_usage_may_start(&flush));
+}
+
+/* A reboot request with a dirty entry behind a scan reaches the flush, not
+ * DRAIN, inside the 500 ms deadline when the flush itself fits. The epoch
+ * composes sd_lifecycle_service: preempt, return while the root runs, else
+ * the idle step. */
+static void test_sd_scan_reboot_reaches_flush(void)
+{
+	AiusOpticalSdFlush flush;
+	uint32_t t;
+	bool flush_started = false;
+	bool drained = false;
+
+	ff_reset(&flush);
+	g_ff.due = true;
+	g_ff.drained = false;
+	g_ff.fill_in_flight = true; /* the scan */
+	{
+		/* The firmware polls the drain gate with the request pending; the
+		 * 500 ms deadline (optical_main.cpp) is its last poll. DRAIN abandons,
+		 * so the gate is consulted when drained or at the deadline. */
+		volatile bool requested = true;
+		bool passed = false;
+
+		for (t = 0u; t < 500u; t += 10u) {
+			const bool scan_running = g_ff.fill_in_flight;
+			AiusOpticalSdService svc;
+
+			aius_optical_sd_flush_preempt_scan(&flush, &g_ff_ops, t,
+			                                   scan_running);
+			/* The scan stops at its next chunk boundary after the cancel. */
+			if (g_ff.fill_cancels != 0u && t >= 30u)
+				g_ff.fill_in_flight = false;
+			if (!scan_running) {
+				if (flush.running) {
+					if (t >= 60u) {
+						AiusOpticalSdFlushEnd end = ff_end_ok(0u);
+						aius_optical_sd_flush_settle(&flush, &g_ff_ops, &end,
+						                             t);
+						g_ff.drained = true;
+					}
+				} else if (aius_optical_sd_idle_step(&flush, &g_ff_ops, t,
+				                                     false) ==
+				               AIUS_OPTICAL_SD_IDLE_WAIT &&
+				           flush.running) {
+					flush_started = true;
+				}
+			}
+			if (!g_ff.drained && t + 10u < 500u)
+				continue;
+			svc = aius_optical_sd_service_gate(&flush, &g_ff_ops, &requested, t,
+			                                   false);
+			/* Never abandoned: not FLUSH_PENDING, request kept. */
+			assert(svc == AIUS_OPTICAL_SD_SERVICE_RUN && requested);
+			passed = true;
+			break;
+		}
+		drained = passed;
+	}
+	assert(flush_started && drained && g_ff.starts == 1u && t < 500u);
+	assert(g_ff.fill_cancels == 1u);
+}
+
 /* R4-B1, R5-S2, the freeze ceiling: the services' SD step. */
 static void test_sd_service_gate(void)
 {
@@ -7045,6 +7272,10 @@ int main(void)
 	RUN_TEST(test_dsp_config_serves_stored_headroom_under_clipfree);
 	RUN_TEST(test_card_ops_and_reput);
 	RUN_TEST(test_sd_service_gate);
+	RUN_TEST(test_sd_scan_flush_and_freeze);
+	RUN_TEST(test_sd_scan_card_route_busy);
+	RUN_TEST(test_sd_flush_preempt_scan);
+	RUN_TEST(test_sd_scan_reboot_reaches_flush);
 	RUN_TEST(test_sd_flush_put_stops_fill);
 	RUN_TEST(test_sd_flush_start_and_settle);
 	RUN_TEST(test_sd_flush_remount_retry);

@@ -28,7 +28,9 @@ SDFAT = r"libSdFat\.a\(|libSD\.a\("
 # - SdioTeensy's busy and completion functions (m_busyFcn), address-taken
 #   only by SdioTeensy.cpp.o;
 # - the sector callbacks readSectorsCallback is passed: FatPartition's
-#   freeClusterCount callbacks, taken by FatPartition.cpp.o.
+#   freeClusterCount callbacks, taken by FatPartition.cpp.o, and the
+#   chunked used-size scan's counters (count_fat16, count_fat32,
+#   count_bitmap; Phase 4zd), taken by aius_sd_free_scan.cpp.o.
 # Not a target: Print (SDClass::format and the formatters write progress to
 # a Print). format is reachable only through SDClass's FS vtable, which no
 # row targets, and writeSectorsCallback's callback comes only from the
@@ -38,6 +40,7 @@ SD_LIBRARY_ROW = ("union", [
     ("names", [("_ZL12dateTimeMs10PtS_Ph", "FsDateTime.cpp.o"), ("_ZN7SDClass8dateTimeEPtS0_", "SD.cpp.o")]),
     ("taken_by", r"libSdFat\.a\(SdioTeensy\.cpp\.o\)"),
     ("taken_by", r"libSdFat\.a\(FatPartition\.cpp\.o\)"),
+    ("taken_by", r"aius_sd_free_scan\.cpp\.o"),
 ])
 # FS.h File's FileImpl calls (File::read, File::openNextFile, FS.h:167, :216,
 # and the rest of the inline File API) inlined into the SD roots resolve to
@@ -77,7 +80,9 @@ SD_ROWS = [SiteRow(n, o, c, SD_LIBRARY_ROW) for n, o, c in [
     ("_ZN16DedicatedSpiCard15setDedicatedSpiEb", "SdSpiCard.cpp.o", 2),
     ("_ZN16DedicatedSpiCard19readSectorsCallbackEmPhjPFvmS0_PvES1_", "SdSpiCard.cpp.o", 1),
     ("_ZN16DedicatedSpiCard20writeSectorsCallbackEmjPFPKhmPvES2_", "SdSpiCard.cpp.o", 4),
-    ("_ZN22FsBlockDeviceInterface19readSectorsCallbackEmPhjPFvmS0_PvES1_", "FatPartition.cpp.o", 2),
+    # The header-inline base's COMDAT copy links from the first object that
+    # instantiates it: aius_sd_free_scan.cpp.o since Phase 4zd.
+    ("_ZN22FsBlockDeviceInterface19readSectorsCallbackEmPhjPFvmS0_PvES1_", "aius_sd_free_scan.cpp.o", 2),
     ("_ZN22FsBlockDeviceInterface20writeSectorsCallbackEmjPFPKhmPvES2_", "FatFormatter.cpp.o", 2),
     ("_ZN7FatFile9timestampEhthhhhh", "FatFile.cpp.o", 1),
     ("_ZN9ExFatFile9timestampEhthhhhh", "ExFatFileWrite.cpp.o", 1),
@@ -86,6 +91,10 @@ SD_ROWS = [SiteRow(n, o, c, SD_LIBRARY_ROW) for n, o, c in [
     ("_ZN8SdioCard11writeSectorEmPKh", "SdioTeensy.cpp.o", 3),
     ("_ZN8SdioCard12writeSectorsEmPKhj", "SdioTeensy.cpp.o", 2),
     ("_ZN8SdioCard6isBusyEv", "SdioTeensy.cpp.o", 1),
+    # Phase 4zd: USED_SIZE's chunk (sd_used_size_step, inlined into
+    # aius_sd_teensy_execute): readSectorsCallback devirtualised in line
+    # (the readSector slot and the counter) plus the generic virtual call.
+    ("_Z22aius_sd_free_scan_stepP8FsVolumeyyb", "aius_sd_free_scan.cpp.o", 3),
 ]] + [
     # Under the hook: aius_producer_yield_wait > nested_pass > ledger record >
     # the boot-ledger commit, which calls its storage primitives. Registration
@@ -96,7 +105,8 @@ SD_ROWS = [SiteRow(n, o, c, SD_LIBRARY_ROW) for n, o, c in [
     # 25 since Phase 4g round 5 (SD.clearError and direct_card_settle(SD.sdErrorCode())).
     SiteRow("_ZL18app_read_directoryPvPKcP22AiusOpticalAppDirBatch", MAIN, 25, SDFILE_ROW),
     SiteRow("_ZL24ota_copy_staged_to_psramPhm", MAIN, 14, SDFILE_ROW),
-    SiteRow("_Z22aius_sd_teensy_executeP12AiusSdTeensyPK12AiusSdAction", "aius_sd_teensy.cpp.o", 17,
+    # 13 since Phase 4zd (USED_SIZE scans through aius_sd_free_scan_step, not SD.usedSize()).
+    SiteRow("_Z22aius_sd_teensy_executeP12AiusSdTeensyPK12AiusSdAction", "aius_sd_teensy.cpp.o", 13,
             ("vtables", ["_ZTV6SDFile", "_ZTV6FsFile", "_ZTV10StreamFileI10FsBaseFileyE"])),
     # yield, reached from the SD stack's yieldTimeout and never from a producer
     # root: serial-event and EventResponder dispatch, whose targets are the
@@ -219,7 +229,7 @@ TABLES = Tables(
                  ("_ZL18app_read_directoryPvPKcP22AiusOpticalAppDirBatch", MAIN),
                  ],
     sd_unwindowed=[("_ZL24ota_copy_staged_to_psramPhm", MAIN)],
-    sd_stack_obj=r"libSdFat\.a\(|libSD\.a\(|aius_sd_teensy\.cpp\.o",
+    sd_stack_obj=r"libSdFat\.a\(|libSD\.a\(|aius_sd_teensy\.cpp\.o|aius_sd_free_scan\.cpp\.o",
     sites=SITES,
     libc_row=LIBC_ROW,
     vtables=VTABLES,

@@ -26,7 +26,9 @@ ELIGIBLE = {
     "REMOVE": r"\bSD\s*\.\s*remove\s*\(",
     "CLOSE": r"\.\s*close\s*\(",
     "TOTAL_SIZE": r"\bSD\s*\.\s*totalSize\s*\(",
-    "USED_SIZE": r"\bSD\s*\.\s*usedSize\s*\(",
+    # One chunk of the bounded free-cluster scan (Phase 4zd), reached through
+    # the adapter's helper; SD.usedSize() is the unbounded walk it replaces.
+    "USED_SIZE": r"\bsd_used_size_step\s*\(",
     # The read-back's cache drop (Phase 4h H1, CR4-B2): one call to the
     # adapter's partition-cache helper, whose route to cacheClear() is the
     # owner's open decision (FsVolume keeps its partitions private).

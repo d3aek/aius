@@ -132,6 +132,10 @@ class FatPartition {
    * \return Count of free clusters for success or -1 if an error occurs.
    */
   int32_t freeClusterCount();
+  // Aius patch (Phase 4zd): out of line, FLASHMEM, FAT only. Syncs the FAT
+  // cache, then store < 0 returns the maintained free count (-1 unknown) and
+  // store >= 0 sets it. -2 when the sync fails.
+  int32_t aiusFreeClusters(int32_t store);
   /** Initialize a FAT partition.
    *
    * \param[in] dev FsBlockDevice for this partition.

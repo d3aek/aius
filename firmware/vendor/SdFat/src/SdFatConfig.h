@@ -370,11 +370,14 @@ typedef uint8_t SdCsPin_t;
  * for FAT16/FAT32 table entries.  This improves performance for large
  * writes that are not a multiple of 512 bytes.
  */
+// Aius patch (Phase 4zd): overridable so a host build can exercise the FAT cache.
+#ifndef USE_SEPARATE_FAT_CACHE
 #ifdef __arm__
 #define USE_SEPARATE_FAT_CACHE 1
 #else  // __arm__
 #define USE_SEPARATE_FAT_CACHE 0
 #endif  // __arm__
+#endif  // USE_SEPARATE_FAT_CACHE
 //------------------------------------------------------------------------------
 /**
  * Set USE_EXFAT_BITMAP_CACHE nonzero to use a second 512 byte cache
