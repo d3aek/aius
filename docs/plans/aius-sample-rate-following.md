@@ -34,8 +34,8 @@ in prebuild review); replace wholesale on the next handover.
 - **Status.** Phases 1, 2, 3 DONE; 4a, 4c, 4d, 4i, 4n to 4u, 4v, 4w,
   4x, 4xa, 4y, 4z DONE. BUILT, with their device proof the owner's and
   not yet run: Phase 4 (gate 7 at fill-write cadence on the U24 bench),
-  4e, 4f, 4g, 4h, 4j, 4k, 4l, 4m. **4za** SHIPPED 2026-10-16; **4zb**
-  (confirm autonomous calls) is the owner's.
+  4e, 4f, 4g, 4h, 4j, 4k, 4l, 4m. **4za** SHIPPED 2026-10-16; **4zc**
+  (guard hardening, owner's answer) IN PROGRESS.
   4b (acceptance umbrella) closes after 4e to 4h's device runs.
 - **Board.** Runs `5766cce3f0f9` (4za build 2, no pin) in slot 1,
   self-committed 2026-10-16: `ab.active_slot` 1, sequence 34,
@@ -73,9 +73,14 @@ in prebuild review); replace wholesale on the next handover.
   slot 1). Build 1 (`3939dfa1476f`) runs self-committed in slot 2
   (device step 1 PASS 2026-10-16). 4za SHIPPED: build 2
   (`5766cce3f0f9`, no pin) was rehearsed from slot 2 and activated into
-  slot 1. Next: ask Phase 4zb (confirm autonomous calls). After that the
-  plan holds only owner-run device proofs (Phase 4 gate 7 on the bench,
-  4e to 4h via 4b, 4j to 4m). Card syncs ran from the agent this run once the owner
+  slot 1. The owner answered the autonomous calls 2026-10-16 (4za
+  body). In flight: Phase 4zc (guard-only, dispatched), and a queued
+  `the release-promotion step` of `CLAUDE.md` deleting the
+  pre-`f075872c8b82` warning, which awaits the owner's approval. Check
+  `the repo tooling git -C git_modules/aius status --short` for either
+  landing uncommitted, and commit both with 4zc. After that the plan
+  holds only owner-run device proofs (Phase 4 gate 7 on the bench, 4e
+  to 4h via 4b, 4j to 4m). Card syncs ran from the agent this run once the owner
   said "sync"; if the classifier refuses one, the owner runs it with
   `!`.
 - **What landed this run** (aius commits, each followed by a upstream repository
@@ -8802,30 +8807,25 @@ prebuild-review: round 2 READY 2026-10-16, S1 to S4 and N1 to N3 folded; round 1
   and the self-test scratch sector (`optical_main.cpp:5309-5310`) is
   slot B's last sector, also outside the canonical window.
 
-### Phase 4zb Interrogate the user: confirm autonomous calls
+- **Autonomous calls confirmed or overturned (owner, 2026-10-16).**
+  - The dark-window cost (+128 ms, +1.9%) is kept.
+  - The CLAUDE.md warning against running a pre-`f075872c8b82` image from
+    slot 2 is deleted (owner): the plan's 4z and 4za carry the history.
+  - The guard review loop is overturned: one more round, Phase 4zc.
+
+### Phase 4zc The identity-restore guard also catches the loud shapes
 
 ```yaml
-outcome: each call below confirmed or overturned; an overturned call becomes new plan work
-seams: [this plan's 4za body]
-targeted-proof: no entry below remains unanswered
-unit: parent-only
+outcome: verify_identity_restore fails on the three shapes 4za accepted as loud: a branch that skips the whole restore, a poll loop with an unconditional exit, and a backward branch from the tail to before the restore
+seams:
+  - firmware/test/itcm-placement/verify_target.py (verify_identity_restore)
+  - firmware/test/itcm-placement/test_verify_target.py (planted negatives on fixtures/slot-a-identity-restore.objdump)
+targeted-proof: one planted negative per shape fails; the real slot-a and slot-b ELFs still PASS via the CLI; itcm-placement and boot-target suites green; no firmware change, so no OTA
+unit: implementer
 ```
 
-- **4za, CLAUDE.md wording.** The removed signing-refusal paragraph
-  became one warning: "an image older than `f075872c8b82` must not run
-  again from slot 2". The alternative was to delete it outright and
-  leave the history to the plan. Reversing it is a one-paragraph
-  promote.
-- **4za, the guard review loop.** It stopped after clean-room round 2,
-  accepting three shapes that pass the guard but fail loudly on the
-  device (a whole-restore skip, an unconditional poll, a backward branch
-  out of the tail). The alternative was another hardening round.
-  Reversing it means one guard pass, with no firmware change.
-- **4za, dark-window cost.** The set/way pass added about 128 ms (+1.9%)
-  per activation, against N3's 25 ms estimate. It was accepted as far
-  inside the watchdog bound. The alternative was a once-per-window pass
-  (round 2 S2: it saves time, not bytes). Reversing it means a firmware
-  change and another OTA pair.
+- **Asked (owner, 2026-10-16):** one more hardening round, overturning
+  4za's acceptance (N4).
 
 ### Phase 4c `test.sh` runs every `--suite` given ✓ SHIPPED 2026-10-06
 
