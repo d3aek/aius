@@ -27,26 +27,31 @@ buffer and no intermediate DSP quantisation.
 
 ## Current state
 
-Handover 2026-10-16, third run (session 1e78e700, orchestrate-plan,
-autonomous posture: 4zd implemented in four slices, audited, shipped
-on the device; 4zf and 4zg anchored). Earlier runs: fe0bd501 (4zd
+Handover 2026-10-16, fourth run (session e173e26c, orchestrate-plan,
+autonomous posture: 4zf, 4zg, 4zh, 4zi, 4zj shipped; image
+`96d60373c6b7` deployed). Earlier runs: 1e78e700 (4zd), fe0bd501 (4zd
 found and contracted, 4m), e173e26c (4z, 4u to 4y, 4xa, 4za, 4zc).
-Replace wholesale on the next handover.
+Fourth-run commits (aius, each with a upstream pointer bump): `fcb69f9`
+(4zg; contracts), `54427c3` (4zf), `2e0108d` (4zh), `96d6037` (4zj),
+then this handover. Bullets below that still name the third run are
+superseded by the Status, Board and Next action bullets. Replace
+wholesale on the next handover.
 
 - **Status.** Phases 1, 2, 3 DONE; 4a, 4c, 4d, 4i, 4m, 4n to 4u, 4v,
-  4w, 4x, 4xa, 4y, 4z, 4za, 4zc and 4zd DONE. BUILT, with their device
+  4w, 4x, 4xa, 4y, 4z, 4za, 4zc, 4zd and 4zf to 4zj DONE. BUILT, with their device
   proof the owner's and not yet run: Phase 4 (gate 7 at fill-write
   cadence on the U24 bench), 4e, 4f, 4g, 4h, 4j, 4k, 4l; 4e run 1 and 4g
   run 1 are partly agent-run (2026-10-16, source off). 4zf and 4zg
   PLANNED (contracts written, not prebuild-reviewed). 4b (acceptance
   umbrella) closes after its device runs (4e to 4h, plus its 4k and 4l
   items).
-- **Board.** Runs `3c2c3df0b952` (4zd) in slot 2, self-committed
-  2026-10-16: `ab.active_slot` 2, sequence 37, `trial_budget` 0,
-  `rollback_observed` false, `boot_generation` 27; slot 1 holds
-  `5766cce3f0f9` (4za build 2) as the bootable fallback. Slot-a OCRAM
-  free 264,736 B, exactly the floor; ITCM free 13,300 B (16 B over its
-  floor); `_ebss` at its ceiling. The card serves the 4u to 4xa pages
+- **Board.** Runs `96d60373c6b7` (4zf, 4zh, 4zj) in slot 1,
+  self-committed 2026-10-16 (fourth run): `ab.active_slot` 1, sequence
+  40, `trial_budget` 0, `rollback_observed` false; slot 2 holds
+  `3c2c3df0b952` (4zd) as the bootable fallback. Slot-a OCRAM free
+  264,736 B, exactly the floor; ITCM free 13,300 B (16 B over its
+  floor); `_ebss` at its ceiling; stack-bound worst 23,316 of 27,424 B.
+  The reboot returned `sd_mode` to fifo. The card serves the 4u to 4xa pages
   (full sync of 22 files 2026-10-16 in the 4zd proof).
   Rollback is via `df966f17b370` only, the owner's **fail-safe
   rollback candidate**: tag
@@ -75,13 +80,12 @@ Replace wholesale on the next handover.
   the owner's: the 4e to 4h, 4k and 4l runs listed in 4b. A bench run
   is a last resort, batched, never mixed with listening (aius
   CLAUDE.md).
-- **Next action (fourth run, 2026-10-16): the shared 4zf+4zh+4zj
-  image.** 4zf and 4zh are BUILT, 4zg, 4zi and 4zj SHIPPED. One clean
-  build from HEAD (`build.sh`, then `build_ab.sh` last), the real-ELF
-  stack-bound, producer-isolation, memory and itcm-placement suites, then
-  sign, OTA activate (source off), self-commit check, and 4zh's device
-  step; then flip 4zf and 4zh to SHIPPED. The paragraph below is the
-  third run's and is superseded where it disagrees.
+- **Next action (fourth run, 2026-10-16).** 4zf to 4zj all SHIPPED;
+  no agent-runnable phase remains. What is left is owner-run: Phase 4
+  gate 7 on the bench, 4e run 2 (then E7 and image 2, which also needs
+  a "DMA at boot" spec), 4f to 4h's remaining steps, 4j, and 4k and 4l
+  via 4b; then Phase 4zz (confirm autonomous calls). The paragraph below
+  is the third run's and is superseded where it disagrees.
 - **Previous next action: Phase 4zf.** Prebuild-review its contract (`reviewer`,
   opus), then dispatch one `implementer` (`model: sonnet`) owning
   `firmware/src/optical_main.cpp` (the `sd_lifecycle_service` preempt
@@ -182,8 +186,11 @@ Replace wholesale on the next handover.
     `--auth-file` / `--token-file` (`net/aius_http_runner.py` included).
   - `aius_http_runner.py reboot` returns the first `/api/status` that
     answers, which can be the old boot's; read `/api/status` again for
-    the new boot. `ab.ledger_boots` is the chooser's attempt count: 1 on
-    a trial boot, 0 on a committed one; `prev_boot.first_abort` 254 is
+    the new boot. `ab.ledger_boots` is the chooser's attempt count as of
+    boot (`firmware/src/optical_main.cpp:6213`, snapshotted at `:5097`):
+    1 on a trial boot and still 1 after the healthy-boot commit, which
+    rewrites only the flash record; it reads 0 only after the next
+    reboot. `prev_boot.first_abort` 254 is
     `AIUS_ABORT_NONE`.
   - The SD web suite lives at `test/sd-editor`, not
     under `firmware/test`. A verifier that checks the changed-file list
@@ -9353,12 +9360,12 @@ prebuild-review: ready # 2026-10-16: rounds 1 to 5 HOLD folded, round 6 PASS (ni
   implementation, report a plain-language summary of their impact**
   (what a sync, a reboot and an OTA now do differently, and the cost).
 
-### Phase 4zf A due flush also preempts a running cache fill
+### Phase 4zf A due flush also preempts a running cache fill ✓ SHIPPED 2026-10-16
 
 ```yaml
 phase: 4zf
 title: A due flush also preempts a running cache fill
-status: built # 2026-10-16: host proof green (optical-app, optical-cutover 62, runtime, registry); delivery audit FIX folded, clean-room PASS; W4 and memory real-ELF cases outstanding at the shared 4zf+4zh image build
+status: shipped # 2026-10-16: host proof green; delivery audit FIX folded, clean-room PASS; real-ELF stack-bound, producer-isolation, memory, itcm-placement green on 96d60373c6b7 with no recount; deployed and self-committed
 depends-on: phase-4zd (the preempt helper and its sd_lifecycle_service call)
 outcome: >-
   A due flush cancels a running CACHE_FILL root job at its next primitive
@@ -9497,12 +9504,12 @@ live-dependency: none
   The device proof of record A after a later boot is folded into 4zh's
   device step, since 4zh changes what that boot records.
 
-### Phase 4zh A file-not-found open is not an SD fault
+### Phase 4zh A file-not-found open is not an SD fault ✓ SHIPPED 2026-10-16
 
 ```yaml
 phase: 4zh
 title: A file-not-found open is not an SD fault
-status: built # 2026-10-16: host proof green (sd, sd-overlay, sd-target, runtime-target, http, sd-editor, registry); delivery audit and clean-room PASS; W4 real-ELF and device steps at the shared image
+status: shipped # 2026-10-16: host proof green; delivery audit and clean-room PASS; device step PASS on 96d60373c6b7 (body, "Device proof")
 depends-on: phase-4zg (the decode)
 outcome: >-
   An OPEN_READ that misses because the file is absent (driver_fault()
@@ -9572,6 +9579,15 @@ live-dependency: none
   re-publishes a NOT_FOUND result through `publish_cancelled`, which
   latches; reachable only if the transaction cancels after consuming
   FAILED.
+- **Device proof (agent, source off, 2026-10-16, `96d60373c6b7`):
+  PASS.** Before the OTA (`3c2c3df0b952`): `root_faults` 2,
+  `http_faults` 1, `open_misses` 3, a fault 9 `last_failure`. After the
+  self-committed boot: `root_faults` 0, `http_faults` 0, `open_misses` 2
+  (the two boot misses), `last_failure` none. `GET
+  /sd/www/no-such-file-4zh.txt` answered 404, then `open_misses` 3 with
+  `http_faults` 0 and `last_failure` still none. This also settles 4zg's
+  deferred boot-record check. Snapshots in
+  `.scratch/e173e26c-e337-49cc-b423-533c708ff340/4zfh-device/`.
 
 - **Decisions (orchestrator, autonomous, 2026-10-16).** Reclassify
   rather than document: a failure record that is routinely a missing
