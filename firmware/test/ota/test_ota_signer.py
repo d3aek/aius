@@ -85,15 +85,14 @@ def key_hex(path):
 CANONICAL_BASE = 0x60010000
 BOOT_BASE = 0x60000000
 IVT_OFFSET = 0x1000
-# 57977135e472's bytes at canonical 0x60011B80, as written out independently of
-# the tool's constant so the two are compared rather than aliased.
+# A fixed 32-byte pattern at payload 0x1B80 that sample images carry as marker
+# content (the signer no longer requires it).
 PIN_OFFSET = 0x1B80
 PIN_BYTES = bytes([
     0x02, 0x4a, 0x8b, 0x60, 0xc1, 0xe9, 0x00, 0xc2, 0x70, 0x47, 0x00, 0xbf,
     0x00, 0x80, 0x3e, 0x60, 0x00, 0x00, 0x01, 0x60, 0xbb, 0xb1, 0x4f, 0xf0,
     0x00, 0x0c, 0xd3, 0x18, 0x10, 0xb5, 0x4c, 0xeb,
 ])
-LD_SCRIPT = ROOT / "link" / "aius_teensy41.ld"
 IVT_ENTRY_OFFSET = 0x15F1  # where both 2026-09-03 builds' ResetHandler sits
 
 
@@ -113,7 +112,8 @@ def sample_image(path, length=8192, seed=0, link_base=CANONICAL_BASE,
     """A pseudo-random payload that IS an image: it carries the IVT of a
     build linked at `link_base`, since the device's verify (and therefore
     the signer's self-check) refuses anything that does not. A canonical
-    image also carries the Phase 4z bridge pin the signer checks."""
+    image also carries PIN_BYTES at PIN_OFFSET (a fixed pattern, no longer
+    required by the signer)."""
     body = bytearray((index * 31 + seed) % 256 for index in range(length))
     body[IVT_OFFSET:IVT_OFFSET + 32] = ivt_words(link_base, entry)
     if link_base == CANONICAL_BASE and length >= PIN_OFFSET + len(PIN_BYTES):
@@ -463,86 +463,22 @@ class SignTests(SignerTestCase):
         self.assertEqual(container.read_bytes(), before)
 
 
-class BridgePinTests(SignerTestCase):
-    """Phase 4z: a canonical image must carry 57977135e472's bytes at payload
-    offset 0x1B80 (Phase 4za removes the check)."""
+class NoBridgePinTests(SignerTestCase):
+    """Phase 4za: the 0x1B80 bridge pin is no longer required to sign."""
 
-    def sign(self, image, *extra):
-        container = self.work / "pin.aiuo"
-        code, evidence, stdout, stderr = run_signer(
-            "sign", "--image", str(image), "--secret", str(COMMITTED_SECRET),
-            "--target-id", TARGET_ID, "--build-revision", REVISION,
-            "--build-utc", BUILD_UTC, "--output", str(container), *extra,
-        )
-        return code, container, stdout, stderr
-
-    def test_the_tool_constant_is_the_reference_bytes(self):
-        self.assertEqual(aius_ota_sign.BRIDGE_PIN_OFFSET, PIN_OFFSET)
-        self.assertEqual(aius_ota_sign.BRIDGE_PIN_BYTES, PIN_BYTES)
-
-    def test_a_payload_carrying_the_pin_signs(self):
-        image = sample_image(self.work / "ok.bin")
-        code, container, stdout, stderr = self.sign(image)
-        self.assertEqual(code, EXIT_OK, f"{stdout}\n{stderr}")
-        self.assertTrue(container.exists())
-
-    def test_one_differing_byte_is_refused(self):
-        for position in (PIN_OFFSET, PIN_OFFSET + 31):
-            image = sample_image(self.work / f"bad{position}.bin")
-            body = bytearray(image.read_bytes())
-            body[position] ^= 0x01
-            image.write_bytes(bytes(body))
-            code, container, stdout, stderr = self.sign(image)
-            self.assertEqual(code, EXIT_REFUSED, f"{stdout}\n{stderr}")
-            self.assertIn("bridge pin mismatch", stderr)
-            self.assertFalse(container.exists())
-
-    def test_a_payload_too_short_for_the_pin_is_refused(self):
-        image = sample_image(self.work / "short.bin", length=0x1B90)
-        code, container, _, stderr = self.sign(image)
-        self.assertEqual(code, EXIT_REFUSED, stderr)
-        self.assertIn("bridge pin mismatch", stderr)
-
-    def test_the_offset_is_payload_not_container(self):
-        """The pin at CONTAINER offset 0x1B80 (header-shifted) is not the pin."""
-        header_bytes = int(self.sign_header_bytes())
-        image = sample_image(self.work / "shifted.bin")
+    def test_a_canonical_payload_without_the_pin_signs(self):
+        image = sample_image(self.work / "nopin.bin")
         body = bytearray(image.read_bytes())
         body[PIN_OFFSET:PIN_OFFSET + 32] = b"\x00" * 32
-        body[PIN_OFFSET - header_bytes:PIN_OFFSET - header_bytes + 32] = PIN_BYTES
         image.write_bytes(bytes(body))
-        code, _, _, stderr = self.sign(image)
-        self.assertEqual(code, EXIT_REFUSED, stderr)
-        # And the signed container really does hold the pin at payload offset.
-        good = sample_image(self.work / "good.bin")
-        code, container, stdout, stderr = self.sign(good)
+        container = self.work / "nopin.aiuo"
+        code, _, stdout, stderr = run_signer(
+            "sign", "--image", str(image), "--secret", str(COMMITTED_SECRET),
+            "--target-id", TARGET_ID, "--build-revision", REVISION,
+            "--build-utc", BUILD_UTC, "--output", str(container),
+        )
         self.assertEqual(code, EXIT_OK, f"{stdout}\n{stderr}")
-        raw = container.read_bytes()
-        self.assertEqual(raw[header_bytes + PIN_OFFSET:
-                             header_bytes + PIN_OFFSET + 32], PIN_BYTES)
-        self.assertNotEqual(raw[PIN_OFFSET:PIN_OFFSET + 32], PIN_BYTES)
-
-    def sign_header_bytes(self):
-        _, _, evidence = self.sign_sample(output_name="probe.aiuo")
-        return evidence["header_bytes"]
-
-    def test_the_plain_image_path_is_not_checked(self):
-        image = sample_image(self.work / "plain.bin", link_base=BOOT_BASE)
-        code, _, stdout, stderr = self.sign(image, "--link-window", "boot")
-        self.assertEqual(code, EXIT_OK, f"{stdout}\n{stderr}")
-
-    def test_the_ld_pin_words_equal_the_tool_constant(self):
-        text = LD_SCRIPT.read_text()
-        begin = text.find("/* aius-bridge-pin begin")
-        end = text.find("/* aius-bridge-pin end */")
-        if begin < 0 or end < 0:
-            self.skipTest("cross-check pending ld pin")
-        import re
-        block = text[begin:end]
-        words = re.findall(r"LONG\(\s*(0[xX][0-9a-fA-F]+)\s*\)", block)
-        self.assertEqual(len(words), 8)
-        decoded = b"".join(struct.pack("<I", int(w, 16)) for w in words)
-        self.assertEqual(decoded, aius_ota_sign.BRIDGE_PIN_BYTES)
+        self.assertTrue(container.exists())
 
 
 class VerifyTests(SignerTestCase):

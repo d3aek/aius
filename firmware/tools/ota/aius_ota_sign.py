@@ -114,29 +114,6 @@ Three tiers, owner decision 2026-08-04:
 """
 
 
-# Bridge pin: payload bytes 0x1B80..0x1B9F of a canonical image must equal
-# 57977135e472's bytes at 0x60011B80, which the running board reads stale during
-# activation. Plan: docs/plans/aius-sample-rate-following.md Phase 4z; Phase 4za removes this.
-BRIDGE_PIN_OFFSET = 0x1B80
-BRIDGE_PIN_BYTES = bytes.fromhex(
-    "024a8b60c1e900c2704700bf00803e6000000160bbb14ff0000cd31810b54ceb"
-)
-
-
-def bridge_pin_mismatch(payload: bytes) -> str | None:
-    """None when the payload carries the bridge pin at payload offset 0x1B80,
-    else a refusal message. The offset is into the payload, not the container."""
-    end = BRIDGE_PIN_OFFSET + len(BRIDGE_PIN_BYTES)
-    found = payload[BRIDGE_PIN_OFFSET:end]
-    if found == BRIDGE_PIN_BYTES:
-        return None
-    return (f"bridge pin mismatch: payload offset {BRIDGE_PIN_OFFSET:#x}..{end - 1:#x} "
-            f"is {found.hex() or '(past end of payload)'}, expected "
-            f"{BRIDGE_PIN_BYTES.hex()}; the running board's activation reads that "
-            f"line stale, so a canonical image must carry 57977135e472's bytes there "
-            f"(plan Phase 4z)")
-
-
 def fail(message: str, code: int = EXIT_ERROR) -> int:
     print(f"aius_ota_sign: {message}", file=sys.stderr)
     return code
@@ -313,11 +290,6 @@ def command_sign(args, cli: Path) -> int:
     args.output.parent.mkdir(parents=True, exist_ok=True)
     image_path = args.image
     flattened = flatten_intel_hex(args.image)
-    if not args.slot and (args.link_window or "canonical") == "canonical":
-        mismatch = bridge_pin_mismatch(
-            flattened if flattened is not None else args.image.read_bytes())
-        if mismatch:
-            return fail(mismatch, EXIT_REFUSED)
     if flattened is not None:
         image_path = args.output.with_suffix(".flattened.bin")
         if image_path.exists():

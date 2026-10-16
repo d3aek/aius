@@ -8740,6 +8740,22 @@ prebuild-review: round 2 READY 2026-10-16, S1 to S4 and N1 to N3 folded; round 1
   `3939dfa1476f`}, so the positive pin-removal condition holds:
   `57977135e472` is gone from both slots. Evidence:
   `ota-4za-step1.log`, `status-post-4za-step1.json` (session scratch).
+- **Build 2 built 2026-10-16 (pin removed).**
+  - The ld's `.text.code` is back to `KEEP(*(.startup))` then
+    `*(.flashmem*)`.
+  - The signer's `bridge_pin_mismatch` and its call are gone, and
+    `NoBridgePinTests` signs a canonical payload with 0x1B80..0x1B9F
+    zeroed.
+  - The drift test's pin block, anchor checks and pin mutation arms are
+    gone. A new self-test arm proves a leftover 0x1B80 anchor fails.
+  - The aius CLAUDE.md paragraph now warns that an image older than
+    `f075872c8b82` must not run again from slot 2 (promoted).
+  - `_flashimagelen`: slot-a and slot-b 0x96400 to 0x96000, plain and
+    fault 0x95c00 to 0x95400.
+  - OCRAM is at every floor, slot-A ITCM free 13,300 B, `_ebss` at the
+    ceiling, and every post-link guard passes.
+  - Proof: boot-target 16 plus drift, ota (signer 21, flash client 14,
+    core), itcm-placement 112, memory, ab, optical-app.
 - **Found in build 1 (plan work, not this phase).**
   - Slot-A and slot-B ITCM headroom is 16 B. The next ITCM growth needs
     a byte reclaim or the owner's decision on the 13,284 floor
