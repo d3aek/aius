@@ -27,32 +27,27 @@ buffer and no intermediate DSP quantisation.
 
 ## Current state
 
-Handover 2026-10-16, second run (session fe0bd501: source-off agent
-device checks, 4zd found, diagnosed, reproduced and contracted to
-prebuild-review ready; 4m shipped; 4ze asked, all calls confirmed and
-the step deleted: 4m's ship, 4k/4l in 4b and agent-run activations
-stand). Earlier run: session
-e173e26c (4z, 4u to 4y, 4xa, 4za, 4zc). Replace wholesale on the next
-handover.
+Handover 2026-10-16, third run (session 1e78e700, orchestrate-plan,
+autonomous posture: 4zd implemented in four slices, audited, shipped
+on the device; 4zf and 4zg anchored). Earlier runs: fe0bd501 (4zd
+found and contracted, 4m), e173e26c (4z, 4u to 4y, 4xa, 4za, 4zc).
+Replace wholesale on the next handover.
 
 - **Status.** Phases 1, 2, 3 DONE; 4a, 4c, 4d, 4i, 4m, 4n to 4u, 4v,
-  4w, 4x, 4xa, 4y, 4z, 4za and 4zc (guard hardening, owner's answer)
-  DONE. BUILT, with their device proof the owner's and not yet run:
-  Phase 4 (gate 7 at fill-write cadence on the U24 bench), 4e, 4f, 4g,
-  4h, 4j, 4k, 4l; 4e run 1 and 4g run 1 are partly agent-run
-  (2026-10-16, source off; the stall witness failed, Phase 4zd). 4zd
-  BUILT (its device steps are agent-run, outstanding); 4zf PLANNED. 4b (acceptance umbrella) closes after its device runs (4e to
-  4h, plus its 4k and 4l items).
-- **Board.** Runs `5766cce3f0f9` (4za build 2, no pin) in slot 1,
-  self-committed 2026-10-16: `ab.active_slot` 1, sequence 35,
-  `trial_budget` 0, `rollback_observed` false, `revisions` {1:
-  `5766cce3f0f9`, 2: null} (the 2026-10-16 4e run 1 rehearsal cleared
-  slot 2, so build 1 is gone and slot 2 holds no bootable fallback).
-  `boot_generation` 26 (`sd_mode` under "Board now" below). Slot-a OCRAM free 264,736 B, exactly the
-  floor; ITCM free 13,300 B (16 B over its floor); `_ebss` at its
-  ceiling. The card serves the 4u to 4xa pages (full sync of 22
-  files 2026-10-15, served files byte-identical to source). A
-  `/api/reboot` 2026-10-13 kept slot 1 and the record intact (4y).
+  4w, 4x, 4xa, 4y, 4z, 4za, 4zc and 4zd DONE. BUILT, with their device
+  proof the owner's and not yet run: Phase 4 (gate 7 at fill-write
+  cadence on the U24 bench), 4e, 4f, 4g, 4h, 4j, 4k, 4l; 4e run 1 and 4g
+  run 1 are partly agent-run (2026-10-16, source off). 4zf and 4zg
+  PLANNED (contracts written, not prebuild-reviewed). 4b (acceptance
+  umbrella) closes after its device runs (4e to 4h, plus its 4k and 4l
+  items).
+- **Board.** Runs `3c2c3df0b952` (4zd) in slot 2, self-committed
+  2026-10-16: `ab.active_slot` 2, sequence 37, `trial_budget` 0,
+  `rollback_observed` false, `boot_generation` 27; slot 1 holds
+  `5766cce3f0f9` (4za build 2) as the bootable fallback. Slot-a OCRAM
+  free 264,736 B, exactly the floor; ITCM free 13,300 B (16 B over its
+  floor); `_ebss` at its ceiling. The card serves the 4u to 4xa pages
+  (full sync of 22 files 2026-10-16 in the 4zd proof).
   Rollback is via `df966f17b370` only, the owner's **fail-safe
   rollback candidate**: tag
   `fw-rollback-df966f17b370`, signed container and USB `recovery.hex` in
@@ -80,17 +75,17 @@ handover.
   the owner's: the 4e to 4h, 4k and 4l runs listed in 4b. A bench run
   is a last resort, batched, never mixed with listening (aius
   CLAUDE.md).
-- **Next action: Phase 4zd device steps.** 4zd is BUILT (host and link
-  proof, delivery audit and clean-room PASS; run 3, 2026-10-16). Rebuild
-  from the committed tree (`build.sh teensy41-optical`, then
-  `build_ab.sh` last), rerun stack-bound and producer-isolation on the
-  fresh ELFs, sign, OTA activate (allowed), the no-sync PIO boot check,
-  the passive `config_error_count` and `/aius/config.json` check, the
-  `.lottery-probe.txt` DELETE, and the ONE remaining owner-allowed
-  source-off sync (two of three spent on the repro; a further sync
-  needs the owner's word). Then 4zf.
-  4e's image 2 OTA and E7 wait on 4zd. 4za and 4zc SHIPPED; the owner answered the
-  autonomous calls 2026-10-16 (4za body). Open owner-run device proofs:
+- **Next action: Phase 4zf.** Prebuild-review its contract (`reviewer`,
+  opus), then dispatch one `implementer` (`model: sonnet`) owning
+  `firmware/src/optical_main.cpp` (the `sd_lifecycle_service` preempt
+  argument), `firmware/src/aius_optical_app.cpp` and `.h` (the
+  preempt helper), `firmware/test/optical-app/` and
+  `firmware/test/optical-cutover/`; it may take the contract's
+  no-change branch if the worst-case fill hold fits 500 ms. Then 4zg
+  (one `Explore` agent, code only). 4e's image 2 OTA and E7 are
+  unblocked now that 4zd shipped; run them per 4e's body after 4zf, or
+  first if 4zf stalls. 4zd's three-sync allowance is spent; later
+  phases' syncs fall under the posture bullet above. Open owner-run device proofs:
   Phase 4 gate 7 on the bench, 4e to 4h (their remaining steps), 4k and
   4l via 4b, and 4j (a DSP model change); 4zd's device steps are
   agent-run. Card syncs ran from the agent this run once the owner
@@ -101,35 +96,19 @@ handover.
 
 | Commit | Contents | Proof |
 | --- | --- | --- |
-| `f075872` | Phase 4z: `ota_flash_read` reaches no flash (remap filled in `ab_compose`, DTCM `.data` static), dcache delete before the copy, I-cache invalidate; bridge pin in the ld; sign-time pin check; step-loop closure guard | itcm-placement 59, ota signer 27, boot-target, all four images at floors; review rounds 1 and 2, delivery audit D1 fixed |
-| `97fd2d2` | `aius_ota_flash.py --rehearse` | ota flash client 14 |
-| `27724d6` | aius CLAUDE.md bridge-pin paragraph (promoted) | promote diff |
-| `df6d5da` | 4z SHIPPED: three device steps (old image VERIFY 0x1B80, bridge rehearsal COMPLETED, activation self-committed) | device |
-| `2028041` | 4y reboot proof; `aius_http_runner.py --auth-file` | device; `--help` parse |
-| `b4b8630` | aius CLAUDE.md: the SD token is not sensitive (owner) (promoted) | promote diff |
-| `e71cd04` | 4y SHIPPED (owner's page check) | device |
-| `128f099` | 4xa: phone facts grid, sticky action bar at every width; 4u SHIPPED | sd-editor 428, www-bundle 35, optical-app (verifier) |
-| `cc37a42` | 4xa: request-body size dropped, loaded pill hidden | sd-editor 430, www-bundle 35, optical-app |
-| `a434e65` | 4xa: bar facts out, Model rate and json into signal, status DSP generation, no page heads | sd-editor 435, www-bundle 35, optical-app |
-| `558e023` | 4v, 4w, 4x, 4xa SHIPPED (owner's page check) | device |
-| `0d86027` | 4za contract: owner's D2 fix, round-1 review folded | review |
-| `3939dfa` | 4za build 1: whole D-cache clean+invalidate after restore, identity-restore guard | itcm-placement 112, boot-target, ota, ab, optical-app, memory, stack-bound, producer-isolation; delivery audit PASS, clean-room confirmed; device step 1 |
-| `5766cce` | 4za build 2: bridge pin, signer check and drift arms removed; CLAUDE.md note (promoted) | boot-target, ota, itcm-placement, memory, ab, optical-app; device steps 2 and 3 |
-| `42bffbf` | 4zc: guard catches the three loud shapes | itcm-placement 119, boot-target; CLI on both slot ELFs |
-| `093b93d` | aius CLAUDE.md: pre-`f075872c8b82` warning deleted (owner, promoted) | promote diff |
-| `833227a` | Second run: source-off evidence (4e run 1, 4g run 1, 4b counters), 4zd opened, 4m SHIPPED, 4k/4l items in 4b, posture ruling | device (agent, source off); doc only |
-| `3325ca9` | 4zd diagnosis (USED_SIZE full FAT walk after the DMA remount), repro, contract round 2 | saved status snapshots; repro 2 syncs |
-| `3ee7b37` | 4zd contract through review round 6; Phase 4ze confirm step | prebuild review rounds 1 to 6 |
-| (this handover) | 4zd clean-room rounds folded, prebuild-review ready; state block | clean-room confirmation PASS |
+| `3c2c3df` | 4zd build: chunked post-mount free-cluster scan (vendor forwarder, `aius_sd_free_scan`, resumable USED_SIZE), flush and freeze preempt with CANCELLED re-arm, gated bring-up USAGE; W4 tables; plan: 4zf anchored, config_valid 0 investigated | sd-free-scan, sd (910 trials), sd-target, sdfat-vendor, fake-fidelity, optical-app, optical-cutover, runtime, runtime-target, registry; memory, itcm-placement, stack-bound, producer-isolation; delivery audit 3 rounds PASS, clean-room PASS |
+| (this handover) | 4zd SHIPPED with its device proof; Phase 4zg anchored; state block | device (agent, source off): ELF suites on the clean rebuild, OTA self-commit, PIO boot, one DMA sync |
 
+  The pointer bump for `3c2c3df` is upstream repository `0efc46280`.
 - **Uncommitted tree.** Nothing of this session's in `git_modules/aius`
   after the handover commit. The firmware `.pio/build/` holds the
-  `fd5f9ab6ad50` images (the 4e run 1 rehearsal build); the board does
-  not run them.
-- **Board now** (last read 11:30Z): `sd_mode` dma (the repro's `POST
-  /api/sd/mode`; not persisted, a reboot returns fifo), mounts 2,
-  `stall_diag.events` 3, `longest_primitive_us` 4,029,839,
-  `boot_generation` 26. Read `/api/status` before the 4zd device steps.
+  clean `3c2c3df0b952` images the board runs.
+- **Board now** (last read about 20:00Z): `sd_mode` dma (the 4zd proof's
+  `POST /api/sd/mode`; not persisted, a reboot returns fifo), mounts 2,
+  `stall_diag.events` 1 (the boot's PHY stall), `longest_primitive_us`
+  27,969, `sd_used_bytes` 2,949,120, `.lottery-probe.txt` deleted,
+  `sd_diag.last_failure` the seq 3 fault 9 record (Phase 4zg). Read
+  `/api/status` before any device step.
 - **Hook item.** `stop-guard.action-reverify` is item 11 of
   `src/tools/hook/docs/plans/hook-daemon-feature-backlog.md` (owner:
   plan, do not dispatch).
@@ -137,6 +116,20 @@ handover.
   headers under `firmware/`: an editor include-path gap only;
   `firmware/scripts/test.sh` and the PlatformIO builds are the truth.
 - **Traps.**
+  - `build.sh` compiles the working tree but stamps HEAD: never let an
+    agent edit firmware source while a build runs, or the image holds
+    code its stamp does not name.
+  - The stack-bound and producer-isolation W4 tables pin per-function
+    indirect-site counts, so a source change that moves inlining fails
+    them without any defect; an `lr`-based jump table needed a walker
+    fix in 4zd. Recount from the disassembly; never loosen a count.
+  - `sd_diag.job_kind` reads 0 once a root job completes, so "kind X in
+    COMPLETE" is never sampled; read `root_jobs` and the faults instead.
+  - `sd_used_bytes` lags a write until the next USAGE_REFRESH, which
+    runs only after the overlay drains and the next probe tick.
+  - `/sd/` serves only `www/` paths plus the `aius/dsp.json` alias, so
+    a 404 on another `/sd/aius/` path is the route refusing it, not
+    evidence the file is absent.
   - `sd_diag.longest_primitive_us` and `stall_diag` are since-boot; read
     a baseline before any 4zd device step. `sd_flush.drained` is
     instantaneous: a 250 ms poll can miss a mid-sync drain.
@@ -223,7 +216,10 @@ handover.
     no HDMI-CEC link and no optical carrier when idle. Dark-input lock
     blips are on-board; their relock and capture effects are
     output-jitter Phase L's, and each now adds 2 to `source_changes`.
-- **Evidence in scratch** (reaped about 2026-10-23):
+- **Evidence in scratch** (reaped about 2026-10-23): the 4zd device
+  run in `.scratch/1e78e700-fd75-4d38-aff5-776e9c9572eb/4zd-device/`
+  (signed `aius-3c2c3df0b952.ota`, status snapshots, `sync-poll.jsonl`);
+  and earlier runs':
   `.scratch/e173e26c-e337-49cc-b423-533c708ff340/` holds the OTA logs,
   status snapshots, the signed `aius-f075872c8b82.ota`, and the 4xa
   render harness and screenshots (`4xa/`); everything durable is in 4y,
@@ -8928,12 +8924,12 @@ unit: implementer
     CLI; itcm-placement and boot-target green. No firmware change, so
     no OTA.
 
-### Phase 4zd A DMA-armed card sync does not stall the main loop for 4 s
+### Phase 4zd A DMA-armed card sync does not stall the main loop for 4 s ✓ SHIPPED 2026-10-16
 
 ```yaml
 phase: 4zd
 title: A DMA-armed card sync does not stall the main loop for 4 s
-status: built # 2026-10-16: host and link proof green (sd-free-scan, sd 910 trials, sd-target, sdfat-vendor, fake-fidelity, optical-app, optical-cutover, runtime, runtime-target, registry; memory, itcm-placement, stack-bound 23,316 of 27,424 B, producer-isolation); delivery audit rounds 1 to 3 folded, PASS; clean-room PASS (nits folded). Device steps outstanding. Found by the agent-run 4e run 1 (source off); blocks 4e's image 2 OTA and the E7 verdict
+status: shipped # 2026-10-16: device steps PASS on 3c2c3df0b952 (body, "Device proof"); host and link proof green (sd-free-scan, sd 910 trials, sd-target, sdfat-vendor, fake-fidelity, optical-app, optical-cutover, runtime, runtime-target, registry; memory, itcm-placement, stack-bound 23,316 of 27,424 B, producer-isolation); delivery audit rounds 1 to 3 folded, PASS; clean-room PASS (nits folded). Device steps outstanding. Found by the agent-run 4e run 1 (source off); blocks 4e's image 2 OTA and the E7 verdict
 depends-on: phase-4e (image 1, DMA runtime-armed)
 outcome: >-
   The USAGE_REFRESH used-size read is a bounded, resumable scan in either
@@ -8984,6 +8980,35 @@ live-dependency: none
 prebuild-review: ready # 2026-10-16: rounds 1 to 5 HOLD folded, round 6 PASS (nits folded); clean-room rounds 1 and 2 HOLD folded, confirmation PASS (nit folded). Next: dispatch slices A, B, C in parallel, then D
 ```
 
+- **Device proof (agent, 2026-10-16, about 19:40 to 19:56Z, source
+  off): PASS.** Rebuilt from clean `3c2c3df`; the four ELF suites
+  passed on the fresh images (slot-a OCRAM free 264,736 B at its floor,
+  ITCM free 13,300 B, `_ebss` at its ceiling, stack 23,316 of 27,424 B).
+  OTA activated untagged into slot 2: sequence 37, `trial_budget` 0,
+  `rollback_observed` false, `boot_generation` 27, `clock.master`
+  input; one 503 `sd_busy` retried during staging. No-sync PIO boot:
+  `stall_diag.events` 1, a 1,570,791 us boot stall at
+  `_fnet_fec_phy_read` (Ethernet PHY bring-up, not SD);
+  `longest_primitive_us` 27,969 (was 586,825), so no residual. DMA sync
+  (the last owner-allowed one; 22 PUTs, no 503): events delta 0,
+  `longest_primitive_us` flat at 27,969 with scan primitives about
+  17 ms; busy timeouts, driver and protocol faults and flush failures
+  delta 0. The scan ran RUNNING (`job_kind` 2, `root_state` 1) for 3.47 s
+  (cursor 640 to 7,040 of 7,546), then the next sample showed
+  `root_state` 2 with `root_jobs` +1 and no fault or cancel; `job_kind`
+  reads 0 once the root completes, so the criterion's "job_kind 2 with
+  root_state 2" cannot be sampled and the RUNNING stretch plus a clean
+  completion is its evidence (orchestrator call). `cancels` went 0 to 5:
+  three scans started mid-sync and were pre-empted by due flushes, as
+  designed. `sd_used_bytes` 2,957,312 before and after the sync, and
+  2,949,120 after the probe DELETE (8,192 B less). Config:
+  `config_error_count` 1 with "not loaded" confirms the missing
+  `/aius/config.json`; the card GET's 404 is the route refusing the
+  path (no read route serves it), not evidence of absence.
+  `.lottery-probe.txt` deleted (`aius-sd-sync.sh --delete`), GET 404
+  after. `/api/status` went dark for about 1.3 s twice during the PUTs
+  with `stall_diag` flat (one HTTP client served at a time). Evidence:
+  `.scratch/1e78e700-fd75-4d38-aff5-776e9c9572eb/4zd-device/`.
 - **Evidence (agent, 2026-10-16, about 11:00Z, source off, on
   `5766cce3f0f9`).** `stall_diag.events` went from 2 to 3 during the
   DMA-armed full sync (22 PUTs, `sync_drain_ms` 6,152) or its read-backs:
@@ -9340,6 +9365,32 @@ targeted-proof:
   - "host (optical-cutover): a text check for the widened preempt argument"
   - "or, on the no-change branch: the worst-case fill-file hold, computed from the largest cached file and the measured per-sector cost, recorded against AIUS_REBOOT_DRAIN_MS"
 unit: implementer
+live-dependency: none
+```
+
+### Phase 4zg Explain the fault 9 SD failure records
+
+```yaml
+phase: 4zg
+title: Explain the fault 9 SD failure records
+status: planned # 2026-10-16: found in the 4zd device run (source off, 3c2c3df0b952)
+depends-on: none
+outcome: >-
+  The cause of two sd_diag.last_failure records with fault 9 and
+  driver_fault 1396982866 is known and recorded: one at boot (job_kind 1,
+  at_ms 2221, also present on the 5766cce3f0f9 boot) and one during the
+  probe-file DELETE's flush (seq 3, at_ms 248,581, owner 1, job_kind 4,
+  job_state 16, fault_phase 23, bytes 0), neither of which moved
+  root_faults or sd_flush.failures, and the tombstone flushed. Either
+  the record is an expected refusal (then it is documented, and
+  reclassified if it should not read as a failure), or it is a defect,
+  which becomes a fix phase placed by dependency.
+seams:
+  - "firmware/lib/aius_sd/include/aius_sd.h fault and phase enums (decode 9 and 23), firmware/src/aius_sd_teensy.cpp driver-fault encoding (1396982866 is 0x53444552, ASCII-like; decode it), firmware/src/aius_runtime_storage.cpp failure record (:59)"
+targeted-proof:
+  - "code: the decode of fault 9, fault_phase 23, job_kind 1 and 4, and driver_fault 1396982866, each with path:line, and the causal chain for both records"
+  - "device (agent, passive GET only): the boot record's presence after the next boot, if a boot happens for another reason; no reboot is requested for this phase"
+unit: Explore
 live-dependency: none
 ```
 
