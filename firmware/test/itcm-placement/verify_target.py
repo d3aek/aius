@@ -861,6 +861,79 @@ BRANCH_MNEMONIC = re.compile(
     r"(?:eq|ne|cs|cc|hs|lo|mi|pl|vs|vc|hi|ls|ge|lt|gt|le|al)?"
     r"(?:\.n|\.w)?$"
 )
+DISASM_COMMENT = re.compile(r"[@;]")
+
+# aius-sample-rate-following.md Phase 4za (D2): the identity-window restore
+# in ota_flash_read must leave no canonical line in the D-cache or the
+# FlexSPI AHB buffer. The code addresses its registers as base plus offset
+# (GPR32 is `str [r3, #128]` from a `.word 0x400ac000` literal, SCB cache ops
+# `str [ip, #0xf74]` from `mov.w ip, #0xe000e000`), so the check resolves each
+# load/store address by tracking register immediates (mov/movs/mov.w/movw/
+# movt/mvn, register copies, add/sub of an immediate) and pc-relative literal
+# loads, then adding the offset. The scan is linear in address order and
+# ignores control flow: a value set before a loop label stays known inside
+# the loop. Anything that writes a register it cannot model forgets it, so an
+# unmodelled shape loses resolution and the check fails loudly rather than
+# passing. LIMIT: being linear, the trace proves address order, not that
+# every path runs the sequence; a forward branch could skip the pass or a
+# barrier and still read as ordered, and an IT block makes a store
+# conditional while it still reads as a plain store. So the check refuses,
+# from the GPR32 restore store to the PRIMASK restore, any forward branch,
+# any branch entering from outside, and any IT block or predicated
+# instruction (the SWRESET poll is backward); the helper gets the same
+# bans, and its two loops must each close on a branch fed by its own cmp.
+# Register values flowing into the DCCISW and SWRESET stores are checked by
+# a last-definition lookup in address order, which matches straight-line
+# code and loop bodies like the built ones; any other shape fails. Inside
+# the restore sequence a load or store through an unresolved base fails
+# (sp-relative stack slots excepted), as does any msr or cpsie before the
+# final PRIMASK restore. ACCEPTED (N4, clean-room round 2): a branch that
+# skips the whole restore, a poll whose exit is unconditional, and a
+# backward branch out of the tail are not proven absent; each leaves the
+# remap or the caches visibly wrong and fails loudly on the device (verify
+# or the next boot), not silently.
+DCACHE_HELPER = "ota_dcache_clean_invalidate_all"
+IDENTITY_READ_PATH = "ota_flash_read"
+IOMUXC_GPR_GPR32_ADDRESS = 0x400AC080
+FLEXSPI_MCR0_ADDRESS = 0x402A8000
+SCB_DCCISW_ADDRESS = 0xE000EF74
+SCB_DCISW_ADDRESS = 0xE000EF60
+SCB_ICIALLU_ADDRESS = 0xE000EF50
+# The helper's two loop bounds: set index stepped by the 32-byte line to
+# 256 x 32, and the way count.
+DCACHE_SET_SPAN = 8192
+DCACHE_WAYS = 4
+DCACHE_LINE_BYTES = 32
+# The way index sits in DCCISW bits 31:30.
+DCACHE_WAY_SHIFT = 30
+CONDITION_CODES = "eq|ne|cs|cc|hs|lo|mi|pl|vs|vc|hi|ls|ge|lt|gt|le"
+IT_MNEMONIC = re.compile(r"^it[te]{0,3}$")
+# A load/store carrying a condition suffix (`strne.w`, `ldrbeq`): objdump
+# prints one inside an IT block, and a fixture may plant one without.
+PREDICATED_MEMORY = re.compile(
+    rf"^(?:ldr|str)(?:ex[bhd]?|s[bh]|[bhd]|[bh]?t)?(?:{CONDITION_CODES})"
+    r"(?:\.w|\.n)?$"
+)
+CONDITIONAL_BRANCH = re.compile(rf"^b(?:{CONDITION_CODES})(?:\.w|\.n)?$")
+FLAG_SETTING = re.compile(
+    r"^(?:cmp|cmn|tst|teq|(?:mov|mvn|add|adc|sub|sbc|rsb|and|orr|eor|bic|orn"
+    r"|lsl|lsr|asr|ror|rrx|mul)s)(?:\.w|\.n)?$"
+)
+REGISTER_ALIASES = {"sb": "r9", "sl": "r10", "fp": "r11", "ip": "r12"}
+REGISTER_TOKEN = re.compile(r"\b(r1[0-5]|r[0-9]|sb|sl|fp|ip|sp|lr|pc)\b")
+CALLER_SAVED = ("r0", "r1", "r2", "r3", "r12", "lr")
+MEMORY_OPERAND = re.compile(
+    r"^(?P<regs>[^\[]*)\[(?P<base>\w+)(?:,\s*#(?P<offset>-?(?:0x[0-9a-f]+|\d+)))?\]"
+    r"(?P<writeback>!|,\s*#-?(?:0x[0-9a-f]+|\d+))?$"
+)
+IMMEDIATE_MOVE = re.compile(r"^(?:mov|movs|mvn|mvns|movw)(?:\.w|\.n)?$")
+CONDITION_SUFFIX = re.compile(
+    r"(?:eq|ne|cs|cc|hs|lo|mi|pl|vs|vc|hi|ls|ge|lt|gt|le)(?:\.n|\.w)?$"
+)
+NON_WRITING_MNEMONIC = re.compile(
+    r"^(?:cmp|cmn|tst|teq|dsb|dmb|isb|msr|cpsi[de]|nop|it[te]*|bx|bkpt|svc"
+    r"|wfi|wfe|sev|\.word|\.short|\.byte)(?:\.n|\.w)?(?:\s|$)"
+)
 
 
 def parse_primitive_assignments(source_text: str) -> list[tuple[str, str]]:
@@ -946,9 +1019,11 @@ def verify_primitive_fields_assigned(
 
 
 def parse_disassembly(output: str) -> dict[str, dict]:
-    """`objdump -d --no-show-raw-insn` -> symbol -> {start, branches, words}.
-    branches: (insn address, target address, target symbol); words: (address,
-    value) of every `.word` the disassembler placed under the symbol."""
+    """`objdump -d --no-show-raw-insn` -> symbol -> {start, branches, words,
+    insns}. branches: (insn address, target address, target symbol); words:
+    (address, value) of every `.word` the disassembler placed under the
+    symbol; insns: (address, mnemonic, operands) of every line, comment
+    (`@` from objdump, `;` in the fixtures) stripped."""
     functions: dict[str, dict] = {}
     current = None
     for line in output.splitlines():
@@ -956,7 +1031,12 @@ def parse_disassembly(output: str) -> dict[str, dict]:
         if header:
             current = functions.setdefault(
                 header.group(2),
-                {"start": int(header.group(1), 16), "branches": [], "words": []},
+                {
+                    "start": int(header.group(1), 16),
+                    "branches": [],
+                    "words": [],
+                    "insns": [],
+                },
             )
             continue
         if current is None:
@@ -966,6 +1046,9 @@ def parse_disassembly(output: str) -> dict[str, dict]:
             continue
         address = int(insn.group(1), 16)
         mnemonic = insn.group(2)
+        current["insns"].append(
+            (address, mnemonic, DISASM_COMMENT.split(insn.group(3) or "")[0].strip())
+        )
         operands = (insn.group(3) or "").split(";")[0].strip()
         if mnemonic == ".word":
             try:
@@ -1105,9 +1188,639 @@ def _sibling_tool(readelf: str, tool: str) -> str:
     return f"arm-none-eabi-{tool}"
 
 
-def verify_step_loop_closure_in_build(
-    build_dir: Path, readelf: str, project_dir: Path, environment: str
-) -> tuple[int, int, int, int | None]:
+def _register(token: str) -> str:
+    return REGISTER_ALIASES.get(token, token)
+
+
+def _immediate(text: str):
+    text = text.strip()
+    if not text.startswith("#"):
+        return None
+    try:
+        return int(text[1:], 0) & 0xFFFFFFFF
+    except ValueError:
+        return None
+
+
+def _operand_registers(text: str) -> list[str]:
+    return [_register(token) for token in REGISTER_TOKEN.findall(text)]
+
+
+def trace_memory_accesses(body: Mapping) -> list[tuple[str, int, object]]:
+    """Events of one disassembled function, in address order: ("store" |
+    "load", insn, resolved address or None), ("dsb" | "isb" | "msr" |
+    "return" | "cpsie", insn, None), ("cmp", insn, immediate or None), ("bl", insn,
+    target symbol), ("branch", insn, target address), ("it", insn,
+    mnemonic) for an IT instruction and ("pred", insn, mnemonic) for each
+    instruction it predicates or any condition-suffixed load/store (that
+    instruction's own event follows, unconditional in this model). See the
+    DCACHE_HELPER block for the register model and its limits."""
+    words = dict(body["words"])
+    known: dict[str, int] = {}
+    events: list[tuple[str, int, object]] = []
+
+    def forget(*registers: str) -> None:
+        for register in registers:
+            known.pop(register, None)
+
+    it_left = 0
+    for address, mnemonic, operands in sorted(body["insns"]):
+        parts = [part.strip() for part in operands.split(",")]
+        dest = _register(parts[0]) if parts and parts[0] else ""
+        if IT_MNEMONIC.match(mnemonic):
+            events.append(("it", address, mnemonic))
+            it_left = len(mnemonic) - 1
+            continue
+        if it_left or PREDICATED_MEMORY.match(mnemonic):
+            events.append(("pred", address, mnemonic))
+        it_left = max(it_left - 1, 0)
+        # `bls.n`, `blt`, `ble`, `blo` are conditional b, not calls.
+        if mnemonic in ("bl", "bl.w") or mnemonic.startswith("blx"):
+            target = DISASM_TARGET.match(operands)
+            if target:
+                events.append(("bl", address, target.group(2)))
+            forget(*CALLER_SAVED)
+        elif BRANCH_MNEMONIC.match(mnemonic):
+            target = DISASM_TARGET.match(operands)
+            if target:
+                events.append(("branch", address, int(target.group(1), 16)))
+        elif mnemonic.startswith(("dsb", "isb", "msr")):
+            events.append((mnemonic[:3], address, None))
+        elif mnemonic == "cpsie":
+            events.append(("cpsie", address, None))
+        elif mnemonic.startswith("cmp"):
+            events.append((
+                "cmp", address, _immediate(parts[1]) if len(parts) == 2 else None
+            ))
+        elif (mnemonic == "bx" and operands == "lr") or (
+            mnemonic.startswith("pop") and "pc" in _operand_registers(operands)
+        ):
+            events.append(("return", address, None))
+            forget(*_operand_registers(operands))
+        elif IMMEDIATE_MOVE.match(mnemonic) and len(parts) == 2:
+            value = _immediate(parts[1])
+            if value is None and parts[1] in REGISTER_TOKEN.findall(parts[1]):
+                value = known.get(_register(parts[1]))
+            elif value is not None and mnemonic.startswith("mvn"):
+                value = ~value & 0xFFFFFFFF
+            forget(dest)
+            if value is not None:
+                known[dest] = value
+        elif mnemonic in ("movt", "movt.w") and len(parts) == 2:
+            value = _immediate(parts[1])
+            low = known.pop(dest, None)
+            if value is not None and low is not None:
+                known[dest] = (low & 0xFFFF) | ((value & 0xFFFF) << 16)
+        elif re.match(r"^(?:add|adds|sub|subs)(?:\.w)?$|^(?:addw|subw)$", mnemonic):
+            source = _register(parts[1]) if len(parts) == 3 else dest
+            value = _immediate(parts[-1])
+            base = known.get(source)
+            forget(dest)
+            if value is not None and base is not None and len(parts) in (2, 3):
+                sign = -1 if mnemonic.startswith("sub") else 1
+                known[dest] = (base + sign * value) & 0xFFFFFFFF
+        elif mnemonic.startswith(("str", "ldr")):
+            memory = MEMORY_OPERAND.match(operands)
+            is_load = mnemonic.startswith("ldr")
+            if memory is None:
+                if is_load or mnemonic.startswith("strex"):
+                    forget(*_operand_registers(operands.split("[")[0]))
+                continue
+            base = _register(memory.group("base"))
+            offset = int(memory.group("offset") or "0", 0)
+            if base == "pc":
+                literal = words.get(((address + 4) & ~3) + offset)
+                forget(dest)
+                if mnemonic in ("ldr", "ldr.w", "ldr.n") and literal is not None:
+                    known[dest] = literal & 0xFFFFFFFF
+                continue
+            resolved = (
+                (known[base] + offset) & 0xFFFFFFFF if base in known else None
+            )
+            events.append(("load" if is_load else "store", address, resolved))
+            if is_load or mnemonic.startswith("strex"):
+                forget(*_operand_registers(memory.group("regs")))
+            if memory.group("writeback"):
+                forget(base)
+        elif mnemonic.startswith(("ldm", "pop")):
+            forget(*_operand_registers(operands))
+        elif mnemonic.startswith(("stm", "push")):
+            if "!" in operands:
+                forget(_register(operands.split("!")[0].strip()))
+        elif NON_WRITING_MNEMONIC.match(mnemonic):
+            continue
+        elif re.match(r"^[us](?:mull|mlal)", mnemonic):
+            forget(*_operand_registers(",".join(parts[:2])))
+        elif dest:
+            forget(dest)
+    return events
+
+
+def _split_operands(operands: str) -> list[str]:
+    return [part.strip() for part in operands.split(",")]
+
+
+def _is_register(text: str) -> bool:
+    return REGISTER_TOKEN.fullmatch(text) is not None
+
+
+def _written_registers(mnemonic: str, operands: str) -> tuple[str, ...]:
+    """Registers one instruction writes, conservatively (a call writes every
+    caller-saved register). Used for def lookups, never for resolution."""
+    if mnemonic in ("bl", "bl.w") or mnemonic.startswith("blx"):
+        return CALLER_SAVED
+    if (
+        BRANCH_MNEMONIC.match(mnemonic)
+        or IT_MNEMONIC.match(mnemonic)
+        or NON_WRITING_MNEMONIC.match(mnemonic)
+    ):
+        return ()
+    registers = _operand_registers(operands)
+    if mnemonic.startswith(("ldm", "pop")):
+        return tuple(registers)
+    memory = MEMORY_OPERAND.match(operands)
+    writeback = (
+        [_register(memory.group("base"))]
+        if memory and memory.group("writeback") else []
+    )
+    if mnemonic.startswith(("stm", "push")):
+        return tuple(registers[:1]) if "!" in operands else ()
+    if mnemonic.startswith("str"):
+        status = registers[:1] if mnemonic.startswith("strex") else []
+        return tuple(status + writeback)
+    if mnemonic.startswith("ldr"):
+        if memory is None:
+            return tuple(registers)
+        return tuple(_operand_registers(memory.group("regs")) + writeback)
+    if re.match(r"^[us](?:mull|mlal)", mnemonic):
+        return tuple(registers[:2])
+    return tuple(registers[:1])
+
+
+def _last_def(insns, register: str, before: int, low: int):
+    """The last instruction in [low, before) that writes `register`, in
+    address order, or None."""
+    for insn in reversed(insns):
+        address, mnemonic, operands = insn
+        if low <= address < before and register in _written_registers(
+            mnemonic, operands
+        ):
+            return insn
+    return None
+
+
+def _flag_source(insns, branch: int, low: int):
+    """The instruction whose flags a conditional branch at `branch` reads:
+    the last flag setter in [low, branch). None when a call (flags
+    clobbered) or nothing in the range sets them."""
+    for insn in reversed(insns):
+        address, mnemonic, _ = insn
+        if not low <= address < branch:
+            continue
+        if mnemonic in ("bl", "bl.w") or mnemonic.startswith("blx"):
+            return None
+        if FLAG_SETTING.match(mnemonic):
+            return insn
+    return None
+
+
+def _shift_amount(insn, source: str):
+    """N for `mov rd, <source>, lsl #N` or `lsl rd, <source>, #N`."""
+    _, mnemonic, operands = insn
+    parts = _split_operands(operands)
+    if len(parts) != 3 or _register(parts[1]) != source:
+        return None
+    if re.match(r"^movs?(?:\.w)?$", mnemonic):
+        shift = re.fullmatch(r"lsl #(\d+)", parts[2])
+        return int(shift.group(1)) if shift else None
+    if re.match(r"^lsls?(?:\.w)?$", mnemonic):
+        return _immediate(parts[2])
+    return None
+
+
+def _verify_dcache_helper(symbol: str, body: Mapping, events) -> int:
+    """The helper is straight-line apart from two nested counted loops: the
+    DCCISW store sits inside an inner backward conditional branch fed by
+    `cmp #8192` and an outer one fed by `cmp #4`, and stores (inner counter)
+    | (outer counter lsl #30). No IT block, predicated instruction or
+    forward branch. Returns the DCCISW store count."""
+    start = body["start"]
+    insns = sorted(body["insns"])
+    by_address = {insn[0]: insn for insn in insns}
+
+    def at(insn: int) -> str:
+        return f"{symbol}+0x{insn - start:x}"
+
+    predicated = [insn for kind, insn, _ in events if kind in ("it", "pred")]
+    if predicated:
+        raise VerificationError(
+            f"{at(predicated[0])} is an IT block or a predicated instruction "
+            f"({by_address[predicated[0]][1]}); the set/way pass must run "
+            "unconditionally"
+        )
+    forward = [
+        (insn, target) for kind, insn, target in events
+        if kind == "branch" and target > insn
+    ]
+    if forward:
+        insn, target = forward[0]
+        raise VerificationError(
+            f"{at(insn)} branches forward to 0x{target:x}; no path through "
+            "the set/way pass may skip the DCCISW store"
+        )
+    dccisw = [
+        insn for kind, insn, value in events
+        if kind == "store" and value == SCB_DCCISW_ADDRESS
+    ]
+    if not dccisw:
+        raise VerificationError(
+            f"{symbol} has no resolved store to SCB_CACHE_DCCISW "
+            f"(0x{SCB_DCCISW_ADDRESS:08x})"
+        )
+    loops = []
+    for kind, insn, target in events:
+        if kind != "branch" or not start <= target < insn:
+            continue
+        bound = counter = None
+        if CONDITIONAL_BRANCH.match(by_address[insn][1]):
+            source = _flag_source(insns, insn, target)
+            if source is not None and source[1].startswith("cmp"):
+                parts = _split_operands(source[2])
+                if len(parts) == 2 and _is_register(parts[0]):
+                    bound = _immediate(parts[1])
+                    counter = _register(parts[0])
+        loops.append((target, insn, bound, counter))
+    store = dccisw[0]
+    around = [loop for loop in loops if loop[0] <= store < loop[1]]
+    if len(around) < 2:
+        raise VerificationError(
+            f"{at(store)} DCCISW store sits inside {len(around)} backward "
+            "branch(es); the pass needs a set loop nested in a way loop, or "
+            "it does not cover the whole D-cache"
+        )
+    around.sort(key=lambda loop: loop[1] - loop[0])
+    inner, outer = around[0], around[-1]
+    for loop, bound, meaning in (
+        (inner, DCACHE_SET_SPAN, "inner (set) loop, 256 sets x 32-byte lines"),
+        (outer, DCACHE_WAYS, "outer (way) loop, 4 ways"),
+    ):
+        if loop[2] != bound:
+            seen = "no cmp" if loop[2] is None else f"cmp #{loop[2]}"
+            raise VerificationError(
+                f"{at(loop[1])} closes the {meaning} but its conditional "
+                f"branch is fed by {seen}, not cmp #{bound}; the pass would "
+                "not cover the whole 32 KiB D-cache"
+            )
+    if not (outer[0] <= inner[0] and inner[1] < outer[1]):
+        raise VerificationError(
+            f"{symbol} loops at {at(inner[1])} and {at(outer[1])} overlap "
+            "without nesting"
+        )
+    for loop, step, meaning in (
+        (inner, DCACHE_LINE_BYTES, "inner (set)"),
+        (outer, 1, "outer (way)"),
+    ):
+        target, branch, _, counter = loop
+        if not re.fullmatch(r"bne(?:\.n|\.w)?", by_address[branch][1]):
+            raise VerificationError(
+                f"{at(branch)} closes the {meaning} loop with "
+                f"{by_address[branch][1]}, not bne; the count must stop at "
+                "exactly its bound"
+            )
+        init = _last_def(insns, counter, target, start)
+        init_parts = _split_operands(init[2]) if init else []
+        if not (
+            init is not None
+            and IMMEDIATE_MOVE.match(init[1])
+            and not init[1].startswith("mvn")
+            and len(init_parts) == 2
+            and _immediate(init_parts[1]) == 0
+        ):
+            raise VerificationError(
+                f"{symbol} {meaning} loop counter {counter} does not start at "
+                f"0 before {at(target)}"
+                + (f" (set by {init[1]} {init[2]})" if init else "")
+            )
+        steps = [
+            insn for insn in insns
+            if target <= insn[0] < branch
+            and counter in _written_registers(insn[1], insn[2])
+        ]
+        step_parts = _split_operands(steps[0][2]) if len(steps) == 1 else []
+        if not (
+            len(steps) == 1
+            and re.fullmatch(r"adds?(?:\.w)?", steps[0][1])
+            and len(step_parts) in (2, 3)
+            and all(_register(p) == counter for p in step_parts[:-1])
+            and _immediate(step_parts[-1]) == step
+        ):
+            raise VerificationError(
+                f"{symbol} {meaning} loop counter {counter} is not stepped by "
+                f"exactly one `add {counter}, #{step}` inside its loop"
+                + (f" (found: {'; '.join(f'{m} {o}' for _, m, o in steps)})"
+                   if steps else "")
+            )
+    value = _register(_split_operands(by_address[store][2])[0])
+    combine = _last_def(insns, value, store, start)
+    composed = False
+    if combine is not None and combine[1].startswith("orr"):
+        parts = _split_operands(combine[2])
+        if len(parts) == 3 and all(_is_register(part) for part in parts[1:]):
+            first, second = _register(parts[1]), _register(parts[2])
+            for way, sets in ((first, second), (second, first)):
+                shift = _last_def(insns, way, combine[0], start)
+                if (
+                    sets == inner[3]
+                    and shift is not None
+                    and _shift_amount(shift, outer[3]) == DCACHE_WAY_SHIFT
+                ):
+                    composed = True
+    if not composed:
+        raise VerificationError(
+            f"{at(store)} DCCISW value {value} is not (set counter "
+            f"{inner[3]}) | (way counter {outer[3]} lsl #{DCACHE_WAY_SHIFT}); "
+            "the way index must land in bits 31:30"
+        )
+    return len(dccisw)
+
+
+def verify_identity_restore(functions: Mapping[str, dict]) -> tuple[int, int, int]:
+    """Phase 4za (D2). The helper: see _verify_dcache_helper. ota_flash_read's
+    restore side, from the GPR32 restore store to the PRIMASK restore, is
+    straight-line (no forward branch inside it, no branch into it from
+    outside, no IT block or predicated instruction) and runs: GPR32 restore
+    store, GPR32 read-back, dsb, MCR0 SWRESET store of a value through `orr
+    #1`, a backward MCR0-load poll loop, dsb, isb, exactly one bl to the
+    helper, dsb, ICIALLU store, dsb, isb, PRIMASK restore. Neither function
+    may store DCISW. Pure half; returns (helper DCCISW stores, restore store
+    offset, helper call offset) within ota_flash_read."""
+    helper = resolve_function(functions, DCACHE_HELPER)
+    reader = resolve_function(functions, IDENTITY_READ_PATH)
+    absent = [
+        name for name, symbol in (
+            (DCACHE_HELPER, helper), (IDENTITY_READ_PATH, reader)
+        ) if symbol is None
+    ]
+    if absent:
+        raise VerificationError(
+            "absent from the ITCM disassembly (inlined away or moved to "
+            "flash): " + ", ".join(absent)
+        )
+    helper_events = trace_memory_accesses(functions[helper])
+    reader_body = functions[reader]
+    reader_start = reader_body["start"]
+    reader_insns = sorted(reader_body["insns"])
+    reader_by_address = {insn[0]: insn for insn in reader_insns}
+    reader_events = trace_memory_accesses(reader_body)
+
+    def where(insn: int) -> str:
+        return f"+0x{insn - reader_start:x}"
+
+    for symbol, events in ((helper, helper_events), (reader, reader_events)):
+        if any(
+            kind == "store" and value == SCB_DCISW_ADDRESS
+            for kind, _, value in events
+        ):
+            raise VerificationError(
+                f"{symbol} stores SCB_CACHE_DCISW (0x{SCB_DCISW_ADDRESS:08x}); "
+                "the pass must clean+invalidate (DCCISW), or dirty PSRAM and "
+                "DMAMEM lines are dropped and verify can pass on stale bytes"
+            )
+    stores = _verify_dcache_helper(helper, functions[helper], helper_events)
+    gpr32 = [
+        insn for kind, insn, value in reader_events
+        if kind == "store" and value == IOMUXC_GPR_GPR32_ADDRESS
+    ]
+    if len(gpr32) < 2:
+        raise VerificationError(
+            f"{reader} has {len(gpr32)} resolved IOMUXC_GPR_GPR32 "
+            f"(0x{IOMUXC_GPR_GPR32_ADDRESS:08x}) store(s); the identity flip "
+            "and its restore need two"
+        )
+    restore = gpr32[-1]
+    swreset = next(
+        (
+            insn for kind, insn, value in reader_events
+            if kind == "store" and value == FLEXSPI_MCR0_ADDRESS
+            and insn > restore
+        ),
+        None,
+    )
+    if swreset is None:
+        raise VerificationError(
+            f"{reader} has no FLEXSPI_MCR0 (0x{FLEXSPI_MCR0_ADDRESS:08x}) "
+            f"SWRESET store after the GPR32 restore at {where(restore)}"
+        )
+    swreset_value = _register(
+        _split_operands(reader_by_address[swreset][2])[0]
+    )
+    source = _last_def(reader_insns, swreset_value, swreset, reader_start)
+    sets_bit0 = False
+    if source is not None:
+        parts = _split_operands(source[2])
+        immediate = _immediate(parts[-1]) if parts else None
+        sets_bit0 = immediate is not None and immediate & 1 == 1 and (
+            source[1].startswith("orr")
+            or (IMMEDIATE_MOVE.match(source[1]) and len(parts) == 2
+                and not source[1].startswith("mvn"))
+        )
+    if not sets_bit0:
+        raise VerificationError(
+            f"{reader} MCR0 store at {where(swreset)} writes {swreset_value}, "
+            "which no `orr #1` (or bit-0 immediate) produced; it is not a "
+            "SWRESET"
+        )
+    between = [
+        (kind, insn) for kind, insn, value in reader_events
+        if restore < insn < swreset
+        and (kind == "dsb" or (kind == "load" and value == IOMUXC_GPR_GPR32_ADDRESS))
+    ]
+    readback = next((insn for kind, insn in between if kind == "load"), None)
+    if readback is None:
+        raise VerificationError(
+            f"{reader} has no IOMUXC_GPR_GPR32 read-back between the GPR32 "
+            f"restore at {where(restore)} and the SWRESET at {where(swreset)}"
+        )
+    if not any(kind == "dsb" and insn > readback for kind, insn in between):
+        raise VerificationError(
+            f"{reader} has no dsb between the GPR32 restore at "
+            f"{where(restore)} (after its read-back) and the SWRESET at "
+            f"{where(swreset)}; an early AIPS ack can race the AHB buffer reset"
+        )
+    calls = [
+        insn for kind, insn, target in reader_events
+        if kind == "bl" and target == helper
+    ]
+    if len(calls) != 1:
+        raise VerificationError(
+            f"{reader} calls {helper} {len(calls)} times; the restore side "
+            "needs exactly one pass"
+        )
+    call = calls[0]
+    if call < restore:
+        raise VerificationError(
+            f"{reader}{where(call)} calls {helper} before the GPR32 restore "
+            f"store at {where(restore)}; a line filled after the pass "
+            "survives the restore"
+        )
+    if call < swreset:
+        raise VerificationError(
+            f"{reader}{where(call)} calls {helper} before the restore SWRESET "
+            f"at {where(swreset)}; the AHB buffer can refill a line after the "
+            "pass"
+        )
+    leave = next(
+        (
+            insn for kind, insn, _ in reader_events
+            if insn > call and kind in ("msr", "return")
+        ),
+        None,
+    )
+    if leave is None:
+        raise VerificationError(
+            f"{reader} has no PRIMASK restore or return after the {helper} "
+            f"call at {where(call)}"
+        )
+    for kind, insn, target in reader_events:
+        if kind != "branch":
+            continue
+        inside = restore <= insn < leave
+        if (inside and target > insn) or (
+            not inside and restore < target <= leave
+        ):
+            raise VerificationError(
+                f"{reader}{where(insn)} branches to 0x{target:x}, "
+                + ("forward inside" if inside else "into")
+                + f" the restore sequence ({where(restore)} to "
+                f"{where(leave)}); the linear trace cannot prove the pass and "
+                "its barriers run on every path"
+            )
+    predicated = [
+        insn for kind, insn, _ in reader_events
+        if kind in ("it", "pred") and restore <= insn <= leave
+    ]
+    if predicated:
+        raise VerificationError(
+            f"{reader}{where(predicated[0])} is an IT block or a predicated "
+            f"instruction ({reader_by_address[predicated[0]][1]}) inside the "
+            "restore sequence; every step must run unconditionally"
+        )
+    unmasked = [
+        (kind, insn) for kind, insn, _ in reader_events
+        if kind in ("msr", "cpsie") and restore < insn < leave
+    ]
+    if unmasked:
+        kind, insn = unmasked[0]
+        raise VerificationError(
+            f"{reader}{where(insn)} is an early {reader_by_address[insn][1]} "
+            f"{reader_by_address[insn][2]} inside the restore sequence (before "
+            f"the PRIMASK restore at {where(leave)}); an interrupt taken there "
+            "runs against a half-restored remap or an uncleaned D-cache"
+        )
+    for kind, insn, value in reader_events:
+        if kind not in ("load", "store") or value is not None:
+            continue
+        if not restore <= insn <= leave:
+            continue
+        memory = MEMORY_OPERAND.match(reader_by_address[insn][2])
+        if memory is not None and _register(memory.group("base")) == "sp":
+            continue
+        raise VerificationError(
+            f"{reader}{where(insn)} {reader_by_address[insn][1]} "
+            f"{reader_by_address[insn][2]} goes through an unresolved base "
+            "inside the restore sequence; the guard cannot tell which "
+            "peripheral it touches (only sp-relative stack slots are exempt)"
+        )
+    pre_dsb = next(
+        (i for k, i, _ in reader_events if k == "dsb" and swreset < i < call),
+        None,
+    )
+    pre_isb = next(
+        (
+            i for k, i, _ in reader_events
+            if k == "isb" and pre_dsb is not None and pre_dsb < i < call
+        ),
+        None,
+    )
+    if pre_isb is None:
+        raise VerificationError(
+            f"{reader} has no dsb then isb between the SWRESET at "
+            f"{where(swreset)} and the {helper} call at {where(call)}"
+        )
+    polls = [
+        i for k, i, v in reader_events
+        if k == "load" and v == FLEXSPI_MCR0_ADDRESS and swreset < i < pre_dsb
+    ]
+    loops = [
+        (i, target, poll) for poll in polls for k, i, target in reader_events
+        if k == "branch" and swreset < target <= poll < i < pre_dsb
+    ]
+    if not loops:
+        raise VerificationError(
+            f"{reader} has no backward MCR0-load poll loop between the "
+            f"SWRESET at {where(swreset)} and the dsb at {where(pre_dsb)}; "
+            "the pass could start before the AHB buffer reset completes"
+        )
+
+    def polls_bit0(branch: int, target: int, poll: int) -> bool:
+        source = _flag_source(reader_insns, branch, target)
+        if source is None or not re.fullmatch(
+            r"(?:ands|tst)(?:\.w)?", source[1]
+        ):
+            return False
+        parts = _split_operands(source[2])
+        tested = parts[1] if source[1].startswith("ands") and len(parts) == 3 \
+            else parts[0]
+        if not _is_register(tested) or _immediate(parts[-1]) != 1:
+            return False
+        loaded = _last_def(reader_insns, _register(tested), source[0], target)
+        return loaded is not None and loaded[0] == poll
+
+    if not any(polls_bit0(*loop) for loop in loops):
+        branch = loops[0][0]
+        raise VerificationError(
+            f"{reader}{where(branch)} poll branch is not fed by `ands`/`tst` "
+            "#1 of the MCR0 load; it does not wait on the SWRESET bit"
+        )
+    tail = [
+        (kind, insn, value) for kind, insn, value in reader_events
+        if call < insn < leave
+    ]
+    iciallu = next(
+        (
+            i for k, i, v in tail
+            if k == "store" and v == SCB_ICIALLU_ADDRESS
+        ),
+        None,
+    )
+    if iciallu is None:
+        raise VerificationError(
+            f"{reader} has no ICIALLU (0x{SCB_ICIALLU_ADDRESS:08x}) store "
+            f"between the {helper} call at {where(call)} and the PRIMASK "
+            f"restore at {where(leave)}; slot-A code may stay in the I-cache"
+        )
+    if not any(k == "dsb" and i < iciallu for k, i, _ in tail):
+        raise VerificationError(
+            f"{reader} has no dsb between the {helper} call at {where(call)} "
+            f"and the ICIALLU at {where(iciallu)}; the DCCISW pass is not "
+            "complete when the window closes"
+        )
+    i_dsb = next((i for k, i, _ in tail if k == "dsb" and i > iciallu), None)
+    if i_dsb is None:
+        raise VerificationError(
+            f"{reader} has no dsb after the ICIALLU at {where(iciallu)} and "
+            f"before the PRIMASK restore at {where(leave)}"
+        )
+    if not any(k == "isb" and i > i_dsb for k, i, _ in tail):
+        raise VerificationError(
+            f"{reader} has no isb after the dsb at {where(i_dsb)} and before "
+            f"the PRIMASK restore at {where(leave)}"
+        )
+    return stores, restore - reader_start, call - reader_start
+
+
+def _itcm_disassembly(build_dir: Path, readelf: str) -> tuple[str, int, str]:
+    """(nm output, _etext, objdump of ITCM [0, _etext)) of the linked image."""
     elf = build_dir / "firmware.elf"
     if not elf.exists():
         raise VerificationError(f"linked image not found: {elf}")
@@ -1119,7 +1832,7 @@ def verify_step_loop_closure_in_build(
     ).stdout
     etext = parse_nm_value(nm, "_etext")
     if etext is None:
-        raise VerificationError("step-loop closure: _etext absent from nm")
+        raise VerificationError("_etext absent from nm")
     disassembly = subprocess.run(
         [
             _sibling_tool(readelf, "objdump"),
@@ -1133,6 +1846,42 @@ def verify_step_loop_closure_in_build(
         text=True,
         capture_output=True,
     ).stdout
+    return nm, etext, disassembly
+
+
+def verify_identity_restore_in_build(
+    build_dir: Path, readelf: str, environment: str
+):
+    """Only the A/B slot envs compile the identity branch; None elsewhere."""
+    if environment not in REMAP_ENVS:
+        return None
+    _, _, disassembly = _itcm_disassembly(build_dir, readelf)
+    return verify_identity_restore(parse_disassembly(disassembly))
+
+
+def _identity_restore_summary(result, environment: str) -> str:
+    if result is None:
+        return (
+            f"identity-window restore: SKIP ({environment} compiles no remap)"
+        )
+    stores, restore, call = result
+    return (
+        "identity-window restore: PASS "
+        f"(GPR32 restore at +0x{restore:x}, read-back and dsb before the "
+        f"SWRESET, one bl to {DCACHE_HELPER} at +0x{call:x} then dsb, "
+        "ICIALLU, dsb, isb, no forward branch; "
+        f"{stores} DCCISW store(s) in a loop bounded by #{DCACHE_SET_SPAN} "
+        f"and #{DCACHE_WAYS}, no DCISW)"
+    )
+
+
+def verify_step_loop_closure_in_build(
+    build_dir: Path, readelf: str, project_dir: Path, environment: str
+) -> tuple[int, int, int, int | None]:
+    try:
+        nm, etext, disassembly = _itcm_disassembly(build_dir, readelf)
+    except VerificationError as error:
+        raise VerificationError(f"step-loop closure: {error}") from error
     source = (project_dir / PRIMITIVES_SOURCE).read_text(encoding="utf-8")
     table = primitive_roots(source)
     verify_primitive_fields_assigned(
@@ -1505,6 +2254,10 @@ def verify_cold_placement(source, target, env) -> None:
     print(_step_loop_summary(*verify_step_loop_closure_in_build(
         build_dir, readelf, project_dir, environment
     )))
+    print(_identity_restore_summary(
+        verify_identity_restore_in_build(build_dir, readelf, environment),
+        environment,
+    ))
     print(_tx_itcm_summary(verify_tx_itcm_residency(build_dir, readelf)))
     print(_flash_pinned_summary(
         verify_flash_pinned_residency(build_dir, readelf)
@@ -1597,6 +2350,14 @@ def _main(argv: list[str]) -> int:
         print(f"step-loop closure: FAIL: {error}", file=sys.stderr)
         return 1
     print(_step_loop_summary(*step_loop))
+    try:
+        identity = verify_identity_restore_in_build(
+            build_dir, args.readelf, environment
+        )
+    except (OSError, subprocess.CalledProcessError, VerificationError) as error:
+        print(f"identity-window restore: FAIL: {error}", file=sys.stderr)
+        return 1
+    print(_identity_restore_summary(identity, environment))
     try:
         tx_sizes = verify_tx_itcm_residency(build_dir, args.readelf)
     except (OSError, subprocess.CalledProcessError, VerificationError) as error:

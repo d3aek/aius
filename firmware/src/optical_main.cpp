@@ -5378,6 +5378,51 @@ FASTRUN static int ota_flash_program(void *ctx, uint32_t address,
 	return 0;
 }
 
+#if AIUS_AB_SLOT
+/* ONE set/way clean+invalidate pass over the whole M7 D-cache (32 KiB, 4 ways
+ * x 256 sets x 32-byte lines: set in bits 12:5, way in bits 31:30), run after
+ * every identity-window restore in ota_flash_read (Phase 4za, D2). A range
+ * invalidate of [address, length) is not enough: a speculative D-fill of any
+ * OTHER canonical line inside the identity window holds physical slot-A bytes
+ * at an address that now belongs to the running image, and a later FLASHMEM
+ * literal load would read them silently.
+ *
+ * CLEAN+invalidate (DCCISW), NEVER invalidate-only (DCISW): a set/way pass
+ * reaches every line, not just the flash ones, and the staged PSRAM image and
+ * OCRAM DMAMEM lines may be dirty. Dropping them would leave program and
+ * compare reading stale PSRAM backing, so verify could pass on bytes that
+ * were never signature-checked.
+ *
+ * Hand-written on SCB_CACHE_DCCISW (imxrt.h) with fixed geometry, no CMSIS.
+ * FASTRUN plus noinline, spelled out because AIUS_OTA_DARK_WINDOW_FN is
+ * defined further down (its comment is why noinline is load-bearing); the
+ * itcm-placement guard requires this symbol in ITCM, its DCCISW store and
+ * loop, and the one call from ota_flash_read's restore side. The caller
+ * issues the dsb that completes the pass. */
+static constexpr uint32_t kOtaDcacheLineBytes = 32u;
+static constexpr uint32_t kOtaDcacheSets = 256u;
+static constexpr uint32_t kOtaDcacheWays = 4u;
+static constexpr uint32_t kOtaDcacheSetShift = 5u;  /* DCCISW set: 12:5 */
+static constexpr uint32_t kOtaDcacheWayShift = 30u; /* DCCISW way: 31:30 */
+static_assert(kOtaDcacheSets * kOtaDcacheWays * kOtaDcacheLineBytes == 32768u,
+              "the set/way pass must cover the whole 32 KiB M7 D-cache");
+static_assert((1u << kOtaDcacheSetShift) == kOtaDcacheLineBytes,
+              "the set field starts at log2(line size)");
+static_assert(((kOtaDcacheSets - 1u) << kOtaDcacheSetShift) == 0x00001FE0u,
+              "256 sets fill DCCISW bits 12:5 exactly");
+static_assert(((kOtaDcacheWays - 1u) << kOtaDcacheWayShift) == 0xC0000000u &&
+                  kOtaDcacheWayShift + 2u == 32u,
+              "4 ways fill DCCISW bits 31:30 exactly");
+FASTRUN __attribute__((noinline)) static void
+ota_dcache_clean_invalidate_all(void)
+{
+	for (uint32_t way = 0u; way < kOtaDcacheWays; way++)
+		for (uint32_t set = 0u; set < kOtaDcacheSets; set++)
+			SCB_CACHE_DCCISW = (set << kOtaDcacheSetShift) |
+			                   (way << kOtaDcacheWayShift);
+}
+#endif
+
 FASTRUN static int ota_flash_read(void *ctx, uint32_t address, uint8_t *dest,
                                   uint32_t length)
 {
@@ -5423,10 +5468,13 @@ FASTRUN static int ota_flash_read(void *ctx, uint32_t address, uint8_t *dest,
 				(volatile const uint8_t *)(uintptr_t)address;
 			uint32_t i;
 			/* GPR32 (IOMUXC) and MCR0 (FlexSPI) are different Device-memory
-			 * peripherals, so their writes are unordered w.r.t. each other --
-			 * intentional: nothing fetches flash between them (ITCM code, the
-			 * poll only reads MCR0), and the dsb;isb below orders the remap
-			 * before the demand read. Do not "fix" by inserting a barrier. */
+			 * peripherals, so their writes are unordered w.r.t. each other.
+			 * On this flip side that stays unordered: nothing fetches flash
+			 * between them (ITCM code, the poll only reads MCR0), the dsb;isb
+			 * below orders the remap before the demand read, and a wrong read
+			 * here fails safe at verify. The restore side below IS ordered
+			 * (read-back, then dsb, before its SWRESET), because a stale
+			 * line there is silent. */
 			IOMUXC_GPR_GPR32 = 0u; /* identity: canonical -> physical A */
 			FLEXSPI_MCR0 |= FLEXSPI_MCR0_SWRESET;
 			while (FLEXSPI_MCR0 & FLEXSPI_MCR0_SWRESET)
@@ -5440,17 +5488,22 @@ FASTRUN static int ota_flash_read(void *ctx, uint32_t address, uint8_t *dest,
 			for (i = 0u; i < length; i++)
 				dest[i] = src[i];
 			IOMUXC_GPR_GPR32 = saved; /* restore the running slot's remap */
+			/* Read back so the AIPS write has landed, not merely been
+			 * acked, then dsb: the SWRESET must not race the remap, or the
+			 * AHB buffer could refill under the identity mapping. */
+			(void)IOMUXC_GPR_GPR32;
+			__asm__ volatile("dsb" : : : "memory");
 			FLEXSPI_MCR0 |= FLEXSPI_MCR0_SWRESET;
 			while (FLEXSPI_MCR0 & FLEXSPI_MCR0_SWRESET)
 				;
 			__asm__ volatile("dsb\n\tisb\n\t" : : : "memory");
-			/* The identity-window copy allocated D-cache lines holding
-			 * physical slot-A bytes at CANONICAL addresses; with the remap
-			 * restored those addresses belong to the RUNNING image, so drop
-			 * the aliased lines (SWRESET clears the FlexSPI, not the M7
-			 * D-cache). Without this the running image could later read its
-			 * own .rodata as the other slot's bytes. */
-			arm_dcache_delete((void *)(uintptr_t)address, length);
+			/* The identity window may have allocated D-cache lines holding
+			 * physical slot-A bytes at CANONICAL addresses, the copied range
+			 * and any speculative fill outside it; with the remap restored
+			 * those addresses belong to the RUNNING image (SWRESET clears
+			 * the FlexSPI, not the M7 D-cache). Clean+invalidate the whole
+			 * cache, which replaces the old range invalidate (D2). */
+			ota_dcache_clean_invalidate_all();
 			/* And the I-side: a speculative fetch inside the identity window
 			 * could have cached slot-A code at canonical addresses, which
 			 * now belong to the running image. */

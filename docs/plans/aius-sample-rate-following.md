@@ -64,13 +64,12 @@ in prebuild review); replace wholesale on the next handover.
   mixed with listening (aius CLAUDE.md).
 - **Next action: Phase 4za** (D2 set/way fix in build 1 into slot 2,
   then pin removal in build 2, rehearsed from slot 2 and activated into
-  slot 1). Prebuild review round 2 READY, folded. Build 1
-  (`unit: implementer`, opus tier: the dark-window path) was dispatched
-  2026-10-16; if 4za has no "Built" record, check
-  `the repo tooling git -C git_modules/aius status --short` for its
-  uncommitted work in `optical_main.cpp` and `verify_target.py` before
-  re-dispatching. Then a delivery audit (same reviewer) and three
-  owner-gated device steps. Card syncs ran from the agent this run once the owner
+  slot 1). Build 1 is committed (delivery audit PASS, clean-room
+  confirmed after the guard folds). Next: rebuild with `build_ab.sh` on
+  the clean commit, sign the canonical slot-a image without `--slot`
+  using the 12-char HEAD, then device step 1 on the owner's word (stage
+  and activate build 1 into slot 2; staging during playback costs
+  dropouts). Card syncs ran from the agent this run once the owner
   said "sync"; if the classifier refuses one, the owner runs it with
   `!`.
 - **What landed this run** (aius commits, each followed by a upstream repository
@@ -8647,6 +8646,93 @@ prebuild-review: round 2 READY 2026-10-16, S1 to S4 and N1 to N3 folded; round 1
   compare: 25 ms or less on a 6.7 s window. The watchdog is fed before
   every primitive (`aius_ota_activate.c:381`), so one pass per read
   stays far inside its 8 s bound (`optical_main.cpp:5786`).
+- **Build 1 built 2026-10-16 (delivery audit pending; device step 1 is
+  the owner's).**
+  - Restore: `GPR32 = saved`, read-back, `dsb`, SWRESET, poll,
+    dsb/isb, `bl ota_dcache_clean_invalidate_all` (42 B ITCM, DCCISW
+    256 x 4, no dsb of its own), then dsb, ICIALLU, dsb/isb. The
+    post-copy `arm_dcache_delete` is gone; the pre-copy one stays. The
+    helper is defined before `ota_flash_read` inside `#if AIUS_AB_SLOT`
+    as `FASTRUN __attribute__((noinline)) static`.
+  - Guard: `verify_target.py` "identity-window restore" traces each
+    function linearly with base+offset resolution. It requires the
+    helper's DCCISW store and backward branch, no DCISW, at least two
+    GPR32 stores, a read-back and a dsb between the restore and the
+    SWRESET, and exactly one `bl` to the helper after both. It runs on
+    slot-a and slot-b (SKIP on the plain and fault envs) in the
+    post-link hook and `_main`. Sixteen tests cover it, including the
+    three required planted negatives.
+  - Images: OCRAM at every floor; slot-a and slot-b ITCM free 13,300 B
+    (floor 13,284, was 13,364); `_ebss` at the ceiling. Code delta +30
+    B (`ota_flash_read` -12, helper +42); the other 34 B is
+    `.fastrun` alignment (not checked). Suites green: itcm-placement 75
+    plus real ELF, boot-target 16, ota, ab, optical-app, memory,
+    stack-bound 17, producer-isolation 26 and 7.
+  - Delivery audit PASS (same reviewer): the code and disassembly
+    match, and the slot-2 OTA is safe, because f075872c8b82's plain
+    path writes it and build 1's identity path first runs in build 2's
+    rehearsal, which fails safe. Folded:
+    - S1: a dsb required after the helper's `bl`.
+    - N2: ICIALLU, dsb and isb required before the PRIMASK restore.
+    - S2: the geometry is named with `static_assert`s; the DCCISW store
+      must sit inside a backward branch, with `cmp #8192` and `cmp #4`.
+    - N1: no forward branch is allowed between the SWRESET and the
+      PRIMASK restore, since the trace is linear.
+    Nine more planted negatives, 84 unit tests. The code bytes are
+    unchanged: same disassembly, ITCM free still 13,300. A hex sha256
+    changes every build through `build_utc`, so byte identity is judged
+    on sections, not hex hashes.
+  - Clean-room confirmation NOT CONFIRMED (2026-10-16), on the guard
+    only. The code, the pin and the slot-2 OTA's safety were confirmed
+    on the real ELF. Twenty-five mutations of the real disassembly
+    found regressions the guard passed:
+    - S1: one loop dropped.
+    - S2: a conditional skip before the SWRESET.
+    - S3: the post-poll dsb or isb dropped.
+    - S4: the poll dropped.
+    - S5 and N1: a forward branch or IT predication in the helper or
+      the tail.
+    - N2: the way shift.
+    - N3: an MCR0 store without the SWRESET bit.
+    - N4: the fixture was abridged.
+    Decision (orchestrator): tighten the guard to catch each, as planted
+    negatives on the unabridged real-ELF fixture, rather than narrow the
+    claim.
+  - Tightened. The fixture is
+    `firmware/test/itcm-placement/fixtures/slot-a-identity-restore.objdump`
+    (the helper and all of `ota_flash_read`, unabridged). The source
+    shifts use named constants with `static_assert`s. 99 unit tests;
+    the `.text.itcm` disassembly is byte-identical before and after.
+  - Clean-room round 2: items 1 to 4 CONFIRMED, and 23 of 24 round-1
+    mutations now fail. The 24th (step 64) is stopped by the
+    `static_assert`s. Twenty new mutations found more passes:
+    - S1: interrupts unmasked early.
+    - N1: partial loop coverage (branch condition, start, step).
+    - N2: the poll testing the wrong bit.
+    - N3: an unresolved store ignored.
+    S1 and N1 to N3 are folded:
+    - no `msr` or `cpsie` between the restore and the final PRIMASK
+      restore;
+    - each loop starts at 0, steps once by 32 (sets) or 1 (ways) and
+      closes with `bne`;
+    - the poll is fed by `ands`/`tst #1` of the MCR0 load;
+    - an unresolved base in the restore fails (sp slots exempt).
+    112 unit tests, with both slot ELFs passing and the code bytes
+    unchanged. Accepted (N4): a skip of the whole restore, an
+    unconditional poll, and a backward branch out of the tail all pass
+    the guard but fail loudly on the device (remap left at identity, a
+    watchdog hang). The review loop stops here (orchestrator): a static
+    guard can always meet one more mutation, and the remaining classes
+    are loud.
+- **Found in build 1 (plan work, not this phase).**
+  - Slot-A and slot-B ITCM headroom is 16 B. The next ITCM growth needs
+    a byte reclaim or the owner's decision on the 13,284 floor
+    (`firmware/test/memory/verify_target.py:75`); ask before it binds.
+  - The itcm-placement suite's real-ELF leg reads only
+    `teensy41-optical`, where the identity-restore check skips; on real
+    ELFs the check runs only in the slot-a and slot-b post-link hooks.
+    A slot-a leg in the suite would catch a regression without a full
+    `build_ab.sh`.
 - **Why the identity branch has no other caller (round 2 S3).**
   `ab_record_write` reads the head region, outside the remap window,
   and the self-test scratch sector (`optical_main.cpp:5309-5310`) is
