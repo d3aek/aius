@@ -8913,30 +8913,41 @@ outcome: >-
   threshold, which sits 80 times inside the 8 s WDOG1 timeout (the
   2026-10-16 passes were 4.04 s, half of it). On FAT the finished count
   is stored in SdFat's maintained free count, so later refreshes on the
-  same mount answer with 0 FAT reads. A card request, a flush start or
-  the reboot/OTA freeze stops the scan at its next chunk boundary and
-  re-arms the refresh. sd_used_bytes equals the one-shot scan's figure.
+  same mount answer with 0 FAT reads. A flush start or the reboot/OTA
+  freeze stops the scan at its next chunk boundary and re-arms the
+  refresh; a card request does not cancel it and answers 503 sd_busy, at
+  most about 5 s once per mount on FAT. sd_used_bytes equals the one-shot scan's figure.
   The one-job-at-a-time invariant (aius_runtime_storage.h:18-21) is kept:
   the scan is one USAGE_REFRESH job, one primitive per epoch. 4e's image
   2 OTA and the E7 verdict wait on this phase.
 seams:
-  - "firmware/vendor/SdFat/src/FatLib/FatPartition.h and FatPartition.cpp, firmware/vendor/SdFat/src/FsLib/FsVolume.h: one FAT-only forwarder, out of line and FLASHMEM, that syncs m_fatCache and reads or stores m_freeClusterCount (-1 unknown); a new firmware/vendor/SdFat/NOTICE.md entry"
-  - "firmware/src/aius_sd_teensy.cpp: the chunk loop (FLASHMEM) in AIUS_SD_ACTION_USED_SIZE (:560-572) and its validator (:561, empty_payload today), reading FAT sectors from fatStartSector() / sectorsPerFat() or exFAT bitmap sectors from clusterHeapStartSector() / clusterCount() into the cacheClear() buffer; FAT12 (at most 12 FAT sectors) stays one upstream call"
-  - "firmware/lib/aius_sd/src/aius_sd.c (AIUS_SD_PHASE_USAGE_USED :1094-1097, the expected-event check :1978-1981 and :2045-2046) and firmware/lib/aius_sd/include/aius_sd.h: the phase re-emits USED_SIZE on a BYTES event and ends on SIZE; cursor in job->transferred, accumulator in job->captured_size"
-  - "firmware/src/optical_main.cpp: sd_job_active_for_http (:1333-1337) and the G9 cancel entry (:1339 on) treat a scanning USAGE_REFRESH as CACHE_FILL is treated; a cancelled scan re-arms g_sd_usage_refresh_pending"
+  - "firmware/vendor/SdFat/src/FatLib/FatPartition.h and FatPartition.cpp, firmware/vendor/SdFat/src/FsLib/FsVolume.h: one FAT-only forwarder, out of line and FLASHMEM, int32_t aiusFreeClusters(int32_t store): syncs m_fatCache (a failed sync returns -2, which the adapter answers as a driver fault), then with store < 0 returns m_freeClusterCount (-1 unknown) and with store >= 0 sets it; no FAT12 or exFAT behaviour; a new firmware/vendor/SdFat/NOTICE.md entry"
+  - "firmware/src/aius_sd_teensy.cpp: the chunk loop (FLASHMEM) in AIUS_SD_ACTION_USED_SIZE (:560-572) and its validator (:561, empty_payload today). Geometry from FsVolume's existing public members only (FsVolume.h:59-139; no sectorsPerFat() or clusterHeapStartSector() there, m_fVol and m_xVol private): FAT16/FAT32 read ceil((clusterCount() + 2) x entry bytes / 512) sectors from fatStartSector(); exFAT reads ceil(clusterCount() / 4096) bitmap sectors from dataStartSector() (the heap start on exFAT, FsVolume.h:88-90, where upstream's scan starts); raw reads go into the cacheClear() buffer; FAT12 (at most 12 FAT sectors) stays one upstream call"
+  - "firmware/lib/aius_sd/src/aius_sd.c, three edits: consume_event (:2095-2101) accepts BYTES or SIZE for USED_SIZE (one expected kind today); outstanding_byte_length (:2002-2018) returns 131,072 in AIUS_SD_PHASE_USAGE_USED (the largest chunk's entry count: 32 x 4,096 exFAT bits; FAT32 is 4,096, FAT16 8,192; the job has no exFAT filesystem value, aius_sd.h:174-179, so the adapter enforces the per-type bound, proven by a scan-suite case); handle_bytes_event (:1755-1768) takes 0 as legal in USAGE_USED (an all-used chunk), not SHORT_IO. Plus AIUS_SD_PHASE_USAGE_USED (:1094-1097) re-emits with cursor job->transferred and accumulator job->captured_size"
+  - "firmware/src/optical_main.cpp, flush ops binding only (:9215-9223, bound at :9353-9354): sd_flush_fill_in_flight answers a CACHE_FILL or a USAGE_REFRESH root job running; sd_flush_fill_cancel calls web_cache_fill_cancel() as today (latches the hold; its counter argument stays web_cache_fill_in_flight(), CACHE_FILL only, so a scan never inflates www_cache.fill_cancels, aius_optical_app.cpp:3609) and then, for a running scan, aius_runtime_storage_cancel_root. The flush start and the H9 freeze both reach the scan through this one op (aius_optical_app.cpp:2423-2427, :2513-2515, aius_optical_app.h:1141), so no canceller identity is needed. Unchanged on purpose: the cancel entry (:1346), the SD_START DEFER arm (:3345), the direct-card route arm (:3356) and sd_job_active_for_http (:1336), so card requests never cancel a scan"
+  - "firmware/src/optical_main.cpp, SD_STEP_USAGE terminal handler (:9024-9031): sets g_sd_usage_refresh_pending on AIUS_SD_FAULT_CANCELLED (aius_sd.h:295) instead of clearing it unconditionally; the flag stays a plain bool and the other five sites (:555, :8764, :8959, :8972, :9845) are untouched"
+  - "firmware/src/aius_optical_app.cpp, the STORE put_begin site (:2560-2564): with the widened fill_in_flight, fill_rel is null for USAGE_REFRESH, so a STORE put during a scan cancels nothing and gets put_begin's existing answer; no edit"
+  - "firmware/src/aius_optical_app.cpp and aius_optical_app.h: a FLASHMEM portable aius_optical_sd_flush_preempt_scan(flush, ops, now_ms, scan_running) that, when scan_running and aius_optical_sd_flush_start's own gate prefix holds (:2405-2422: not running, present, not frozen, ready, not held, no fault remount, BEGIN not blocked, due, no HTTP deferral) and cancelled_fill is clear, calls ops->fill_cancel and sets cancelled_fill, so the next epoch's idle step starts the flush; the prefix is factored out of flush_start, not copied, and keeps its two-valued return: true when a flush is already running (so the idle step WAITs through the D-S7 settle, :2461-2462), false for every other failed check"
+  - "firmware/src/optical_main.cpp sd_lifecycle_service (FLASHMEM, :9830): the preempt call sits before the RUNNING-root return (:9848-9850), with scan_running = root RUNNING and job.kind USAGE_REFRESH; aius_optical_sd_flush_start is reached only from aius_optical_sd_idle_step (aius_optical_app.cpp:2376, run at optical_main.cpp:9870), after that return"
+  - "firmware/test/optical-cutover/test_optical_cutover.py: no native suite compiles optical_main.cpp (:395, :565, :1050), so the widened flush binding, the cancelled re-arm, and the four card-path sites still keyed on web_cache_fill_in_flight() (existing pins :5611, :5660, :6130 stay) are text checks"
   - "a new host scan suite in firmware/scripts/test.sh (name chosen at build, e.g. sd-free-scan), firmware/test/sd-target/, firmware/test/sdfat-vendor/test_sdfat_vendor_source.py, the sd suite's job tests"
 targeted-proof:
   - "host (new scan suite): the real chunk code and the vendored FatPartition / ExFatPartition built with USE_SEPARATE_FAT_CACHE 1 and FAT12_SUPPORT 1 over a RAM block device; FAT12, FAT16, FAT32 and exFAT images with free entries on both sides of every 32-sector chunk boundary and in the final partial sector; chunked total equals upstream freeClusterCount(); a dirty FAT cache sector is synced before the scan reads it; fails before the fix (no chunked entry point)"
   - "host (new scan suite): with m_freeClusterCount >= 0 the first step answers done with 0 FAT reads, so a second refresh on the same mount reads 0 sectors; a mount dropped mid-scan (mode switch) skips the store"
-  - "host (sd): USAGE_REFRESH re-emits USED_SIZE on BYTES and ends on SIZE (value false), one primitive per epoch; a cursor beyond the FAT is a protocol fault; a fault mid-scan fails the job as a one-shot fault does"
+  - "host (sd): USAGE_REFRESH re-emits USED_SIZE on BYTES and ends on SIZE (value false), one primitive per epoch; an all-used chunk (BYTES 0) continues the scan; BYTES above 131,072 is a protocol fault; a cursor beyond the FAT is a protocol fault; a fault mid-scan fails the job as a one-shot fault does"
+  - "host (optical-app): with fill_in_flight true and fill_rel null (a scan), a flush start calls fill_cancel and waits for the root to stop; the H9 freeze (reboot and OTA, reset_on_busy false) calls fill_cancel and does not abandon while the scan stops inside the 2 s ceiling; a card route with sd_busy true answers 503 sd_busy and calls no cancel; a STORE put during a scan cancels nothing; fill_cancels does not move for a scan"
+  - "host (optical-app): flush_preempt_scan cancels a running scan once when a flush is due (cancelled_fill set, a second call does not cancel again), and does nothing when no flush is due, the flush is held or frozen, an HTTP start is deferred, or no scan runs; the factored prefix returns true for a running flush, so the idle step answers IDLE_WAIT; a reboot request with a dirty entry behind a scan reaches the flush, not DRAIN, inside the 500 ms deadline when the flush itself fits"
+  - "host (optical-cutover): the text checks named in seams, including the cancelled-terminal re-arm and the preempt call ordered before the RUNNING-root return in sd_lifecycle_service"
+  - "host (new scan suite): the adapter refuses a chunk over its type's entry count (4,096 FAT32, 8,192 FAT16, 131,072 exFAT) as a protocol fault"
   - "host (sd-target): the USED_SIZE validator accepts the cursor payload and refuses the old non-empty shapes it refused before"
   - "host (sdfat-vendor): the patched-source contract names the forwarder and its FLASHMEM, out-of-line placement"
   - "memory and itcm-placement: slot-a OCRAM at or above its floor (AiusSdJob and AiusSdTeensy live in the DMAMEM runtime object, aius_runtime_storage.h:64-65, :188, so no new fields), ITCM free at or above 13,284 B (13,300 today), _ebss not above its ceiling; no forwarder COMDAT lands in ITCM"
-  - "device, no sync (agent, source off, after OTA activate of the fix image): the PIO boot gives stall_diag.events 1 (today 2) and sd_diag.longest_primitive_us under 100,000 (today 586,825, the boot PIO scan)"
-  - "device, the one remaining owner-allowed sync (agent, source off): GET /api/status with tx_gate.open 0, POST /api/sd/mode {\"dma\":true}, one full aius-sd-sync.sh; stall_diag.events delta 0, longest_primitive_us unchanged from the after-boot baseline across the mode POST and the sync, busy_timeouts, driver_faults, protocol_faults and sd_flush.failures delta 0"
+  - "device, no sync (agent, source off, after OTA activate of the fix image): the PIO boot gives stall_diag.events at most 1 (today 2) and sd_diag.longest_primitive_us strictly below 586,825 (today's boot PIO scan); a residual at or above 100,000 is recorded with its primitive identified and becomes a 4zd found-work item, not a 4zd failure"
+  - "device, the one remaining owner-allowed sync (agent, source off): GET /api/status with tx_gate.open 0, POST /api/sd/mode {\"dma\":true}, one full aius-sd-sync.sh while polling /api/status at 4 Hz until at least 15 s after the sync prints done; stall_diag.events delta 0, longest_primitive_us unchanged from the after-boot baseline across the mode POST and the sync, busy_timeouts, driver_faults, protocol_faults and sd_flush.failures delta 0. Non-vacuous: the poll shows sd_diag.job_kind 2 (USAGE_REFRESH) with sd_diag.root_state 2 (COMPLETE) right after a stretch of root_state 1 (RUNNING) of about 3 s or more; sd_diag.cancels has three sources (aius_runtime_storage.cpp:175, :238, :657), so its delta is reported for information only"
+  - "memory and itcm-placement also cover the optical_main.cpp edits: FLASHMEM, no ITCM growth (16 B free over the floor)"
 unit: implementer
 live-dependency: none
-prebuild-review: round 2 pending # round 1 HOLD (8 findings), folded 2026-10-16
+prebuild-review: rounds 1-6 PASS 2026-10-16; clean-room pending # rounds 1 to 5 HOLD, folded; round 6 PASS with two nits, folded
 ```
 
 - **Evidence (agent, 2026-10-16, about 11:00Z, source off, on
@@ -8986,10 +8997,13 @@ prebuild-review: round 2 pending # round 1 HOLD (8 findings), folded 2026-10-16
   taken at `optical_main.cpp:9842-9845`; the `:8761-8764` arm serves
   HTTP-owned direct jobs). That predicate is instantaneous: no dirty
   entry and no owed re-put (`aius_sd_overlay_drained`, `:591-605`).
-  The status `sd_flush.drained` also needs the sync burst closed
-  (`:1185-1213`), so it reads 0 while the flusher, faster than the
-  client, empties the cache between two PUTs mid-sync and arms the
-  refresh. The next probe tick starts USAGE_REFRESH (`:8972-8973`),
+  The status `sd_flush.drained` is the same instantaneous predicate
+  (`:1185-1213`; `hint_pending`, `:584-589`, covers the same states).
+  The flusher, faster than the client, emptied the cache between two
+  PUTs mid-sync (`mixer.css` flushed, `flushed` 7 to 8, before
+  `upgrade.js` was accepted at about 12.89 s), and that drain moment
+  fell between two 250 ms polls, which is why no poll shows `drained`
+  1 before 23.2 s. The next probe tick starts USAGE_REFRESH (`:8972-8973`),
   whose USED_SIZE primitive
   (`aius_sd_teensy.cpp:560-572`) calls `SD.usedSize()`: a full FAT walk
   (`FatPartition.cpp:363-412`) through the default one-sector
@@ -9017,8 +9031,8 @@ prebuild-review: round 2 pending # round 1 HOLD (8 findings), folded 2026-10-16
   15.97 s, inside the `upgrade.html` PUT (12.898 to 17.134, held 4.2 s
   for the stalled loop); `sd_flush.flushed` went 7 to 8 across the
   stall with `dirty` 1 either side, so a flush emptied the cache
-  between the `upgrade.js` and `upgrade.html` PUTs and the scan ran
-  before the next flush; `drained` stayed 0 until 23.2 s; the later
+  before `upgrade.js` was accepted and the scan ran before the next
+  flush; `drained` stayed 0 until 23.2 s; the later
   `openapi.json` PUT left `longest` unchanged. Sync 2 on the same mount:
   events delta 0, `longest` unchanged, so the cost is once per mount.
   Two of the owner's three allowed syncs were spent here.
@@ -9038,9 +9052,9 @@ prebuild-review: round 2 pending # round 1 HOLD (8 findings), folded 2026-10-16
   one small FAT-only SdFat forwarder that stores the finished count so
   later refreshes stay O(1), with a new `firmware/vendor/SdFat/NOTICE.md`
   entry; the exFAT path is chunked too. ExFatPartition keeps no free
-  count, so an exFAT refresh rescans in chunks every time, through the
-  public `clusterHeapStartSector()` and `clusterCount()` that upstream's
-  own scan uses (`ExFatPartition.cpp:240-266`).
+  count, so an exFAT refresh rescans in chunks every time, from
+  FsVolume's `dataStartSector()` (the heap start, where upstream's own
+  scan begins, `ExFatPartition.cpp:240-266`) over `clusterCount()` bits.
 - **Protocol (prebuild round 1, finding 5).** USED_SIZE gains its own
   validator in place of `empty_payload` (`aius_sd_teensy.cpp:561`):
   `offset` is the sector cursor, `length` the free clusters so far, and a
@@ -9051,12 +9065,23 @@ prebuild-review: round 2 pending # round 1 HOLD (8 findings), folded 2026-10-16
   job does not). The action is cleared on advance, so the cursor and the
   accumulator live in `job->transferred` and `job->captured_size`.
   When the forwarder reports a known count at cursor 0 the step is final
-  with 0 FAT reads (finding 1).
+  with 0 FAT reads (finding 1). Round 2 (finding 1): the portable machine
+  rejects this today in three places, all edited (seams):
+  `consume_event` takes one expected kind (`aius_sd.c:2095-2101`),
+  `outstanding_byte_length` returns 0 outside its listed phases
+  (`:2002-2018`, checked at `:2102-2106`), and `handle_bytes_event`
+  faults a 0 as SHORT_IO (`:1755-1768`), which an all-used chunk
+  legitimately returns.
 - **FAT cache and store guard.** `USE_SEPARATE_FAT_CACHE` is 1
   (`SdFatConfig.h:374`): the forwarder syncs `m_fatCache` before the
   adapter reads raw FAT sectors, as upstream's `m_fatCache.clear()` does,
   and the reads land in the `cacheClear()` data-cache buffer (no new
-  stack buffer). The count is stored only if `adapter->mounted` still
+  stack buffer). A failed FAT-cache sync is the card failing: the
+  adapter answers a hard driver fault. FsVolume exposes no
+  `sectorsPerFat()` or `clusterHeapStartSector()` (`FsVolume.h:59-139`),
+  so the scan length comes from `clusterCount()` and the start from
+  `fatStartSector()` or `dataStartSector()` (seams); the forwarder adds
+  only the free count. The count is stored only if `adapter->mounted` still
   holds at the final chunk; one job at a time
   (`aius_runtime_storage.h:18-21`) means no remount can happen inside
   the job, so that equals `mounts` unchanged since chunk 0 with no
@@ -9069,17 +9094,83 @@ prebuild-review: round 2 pending # round 1 HOLD (8 findings), folded 2026-10-16
 - **Volume hold call: stop at a chunk boundary and restart (agent,
   finding 7).** A chunked DMA scan holds the volume for about 4 to 5 s
   (236 chunks, one per epoch). USAGE_REFRESH is an uncancellable root
-  job today, so card routes would answer 503 for that long (the sync
-  retries for 15 s), and flushes and the reboot/OTA drain gate
-  (`optical_main.cpp:11214-11228`) would wait. The scan instead takes
-  the CACHE_FILL treatment (`:1320-1337` and the G9 cancel entry): a
-  card request, a flush start or the H9 freeze stops it at its next
-  primitive boundary, the job ends cancelled with nothing stored, and
-  `g_sd_usage_refresh_pending` is re-armed, so the scan restarts from
-  chunk 0 at the next idle probe tick. Every waiter is then bounded by
-  one chunk, not the scan. Cost: under steady card traffic the usage
-  figures stay stale until an idle window of about 5 s (DMA) or 0.6 s
-  (PIO); they are display figures, so that is accepted.
+  job today, so flushes and the reboot/OTA drain gate
+  (`optical_main.cpp:11214-11228`) would wait behind it, and the H9
+  freeze's 2 s ceiling (`AIUS_OPTICAL_SD_FREEZE_MS`,
+  `aius_optical_app.h:1094`, enforced at `aius_optical_app.cpp:2513-2521`)
+  would abandon an OTA activation or rehearsal, which call the gate with
+  `reset_on_busy` false (`optical_main.cpp:11314-11316`, `:11470-11472`).
+  So the flush path and the freeze cancel a scan at its next primitive
+  boundary; the job ends cancelled with nothing stored, and the
+  SD_STEP_USAGE handler, which clears the pending flag unconditionally
+  today (`:9024-9031`), re-arms it on AIUS_SD_FAULT_CANCELLED, so the
+  scan restarts from chunk 0 at the next idle probe tick.
+- **Card requests do not cancel a scan (orchestrator call, autonomous,
+  2026-10-16, replacing the round-3 starvation bound; listed in Phase
+  4ze).** Round 4 found that the flush start and the freeze share one op
+  (`ops->fill_in_flight` / `fill_cancel`, `aius_optical_app.cpp:2423-2427`,
+  `:2513-2515`, `aius_optical_app.h:1141`, bound at
+  `optical_main.cpp:9215-9223`, `:9353-9354`) and
+  `aius_runtime_storage_cancel_root` takes no reason, so a counter could
+  not count flushes and exempt the freeze. The counter and the bound are
+  dropped. Rule: only that op cancels a scan; card requests (the SD_START
+  DEFER arm `:3345`, the direct-card route arm `:3356`,
+  `sd_job_active_for_http` `:1336`, all still keyed on CACHE_FILL)
+  answer busy as for any running root job. Why: flush starts only follow
+  uploads, so they cannot starve the scan (it completes in the idle
+  window after a sync), and a polled card route cannot restart it. Cost:
+  card routes answer 503 for at most about 5 s once per mount, since the
+  count is stored after (inside the sync client's 15 s retry). The
+  pending flag stays a plain bool.
+- **A due flush preempts a scan before the RUNNING-root return
+  (orchestrator call, autonomous, 2026-10-16, round 5; listed in Phase
+  4ze).** `aius_optical_sd_flush_start` runs only from the idle step
+  (`aius_optical_app.cpp:2376`, at `optical_main.cpp:9870`), after
+  `sd_lifecycle_service` has returned for a RUNNING root (`:9848-9850`),
+  so the widened `fill_in_flight` at `aius_optical_app.cpp:2423` is never
+  consulted while a scan runs and the flush would wait the whole scan
+  (about 5 s DMA). With dirty entries behind a scan, a reboot or OTA
+  activation then passes its 500 ms drain deadline
+  (`AIUS_REBOOT_DRAIN_MS`, `optical_main.cpp:11151`), the gate answers
+  DRAIN (`aius_optical_app.cpp:2507-2508`, `:2624-2627`) and the request
+  is abandoned with FLUSH_PENDING. So a portable preempt (seams), called
+  before that return, cancels the scan when the flush gate would
+  otherwise start; the cancelled terminal re-arms the refresh. Why: it
+  keeps the flush's start rule in one portable place and leaves the
+  card-request rule above intact. Window: the scan stops at its next
+  primitive boundary (at most one chunk, about 17 ms DMA, plus one or
+  two epochs), then the flush runs, so a scan adds tens of ms to the
+  drain; whether the whole drain fits 500 ms is the flush's own bound,
+  unchanged by 4zd. ITCM: the helper is FLASHMEM (aius_optical_app.cpp's
+  host fallback at `:24-26` is empty only off target) and the call sits
+  in FLASHMEM `sd_lifecycle_service` (`:9830`), so no loop-path code
+  lands in ITCM (16 B free); itcm-placement proves it. Accepted (round
+  6 nit): a freeze between the preempt and the flush start leaves
+  `cancelled_fill` set (`aius_optical_app.cpp:2407`), which suppresses
+  further preempts until a later flush settles, the same as for
+  CACHE_FILL today.
+- **Found work (not fixed here): the same unreachability already applies
+  to today's CACHE_FILL flush cancel.** A running fill is a RUNNING root
+  too, so the flush's fill cancel at `aius_optical_app.cpp:2423-2427`
+  is also unreachable behind `:9848`; a fill file in flight yields to an
+  HTTP SD request and the freeze, not to a due flush. Pre-existing; a later phase extends the preempt
+  to fills or records why not.
+- **The busy answer is a clean 503, no edit needed.** The card routes
+  check `app->sd_busy` first (`aius_optical_app.cpp:1182`, `:1388`,
+  `:1493`, `:1887`), bound to `sd_job_active_for_http`
+  (`optical_main.cpp:7029-7032`), which is true for any running root job
+  other than a fill, so they answer `503 sd_busy` before any SD start.
+  The `busy_refusals` path (`publish_busy`,
+  `aius_runtime_storage.cpp:212-223`, the client's 500) is reached only
+  by an HTTP action that passes that check while a root job owns the
+  service, the same race as for any root job today.
+- **Residual: exFAT holds the volume on every refresh.** ExFatPartition
+  stores no free count, so on a large exFAT card each refresh rescans
+  and card routes answer 503 for up to about 5 s per overlay drain, not
+  once per mount. This card is FAT32 (4 GB), so 4zd accepts it.
+- **FAT12 (round 3, finding 6).** A FAT12 scan stays one upstream call,
+  bounded at about 30 reads through `m_fatCache`
+  (`FatPartition.cpp:158-188`); no change.
 - **Sync posture.** The owner allows up to three source-off DMA-armed
   syncs for 4zd (2026-10-16). The repro spent two, so one remains, for
   the post-fix device proof above. Any further sync needs the owner's
@@ -9134,6 +9225,52 @@ committed (`5d7c05d`). B1's promote landed on owner approval; the diff
 carries exactly B1's lines (fill stamps, the pending pad counter, the
 three write counters, the full signing form, `python3` for the flash
 tool).
+
+### Phase 4ze Interrogate the user: confirm autonomous calls
+
+```yaml
+phase: 4ze
+outcome: each call below confirmed or overturned by the owner; an overturned call becomes plan work in the phase it touches
+seams: [this plan, the phases each call names]
+targeted-proof: [every entry answered and deleted; overturned calls appear as items in their phases]
+unit: parent-only
+```
+
+Asked at the end of the run or at handover; nothing waits on it.
+
+- **4zd, card requests do not cancel a usage scan.** Only the flush
+  path and the H9 freeze (one shared op) cancel it; a card request gets
+  `503 sd_busy` for at most about 5 s once per mount on FAT, inside the
+  sync's 15 s retry. Why: flush starts only follow uploads, so the scan
+  cannot starve, and a polled card route cannot restart it; the earlier
+  3-cancel bound could not tell a flush from the freeze. Alternative:
+  card requests cancel too, plus a starvation bound with a canceller
+  reason on `aius_runtime_storage_cancel_root`. Reversal cost: that
+  reason parameter, a counter and their host cases.
+- **4zd, a due flush preempts a usage scan.** Before the RUNNING-root
+  return in `sd_lifecycle_service`, a portable check cancels a running
+  scan when a flush is due, so a reboot or OTA activation with dirty
+  entries is not abandoned at the 500 ms drain deadline behind a 5 s
+  scan. Alternative: let the flush wait and accept DRAIN abandons while
+  a scan runs. Reversal cost: the preempt call, its helper and their
+  host and text cases.
+- **4zd, cancel and restart, not prove the drain ceiling.** A flush or
+  the freeze stops the scan at a chunk boundary and the refresh
+  restarts from chunk 0, so during a sync the usage figures stay stale
+  until the idle window after it (about 5 s DMA, 0.6 s PIO); they are
+  display-only. Reversal cost: drop the flush op's USAGE arm and prove
+  the reboot/OTA drain ceiling exceeds the scan.
+- **4zd, 32 FAT sectors per primitive** (about 17 ms DMA, 2.5 ms PIO).
+  Reversal cost: one constant.
+- **4zd, stray `/sd/www/.lottery-probe.txt` left on the card** for the
+  owner's `DELETE`, with no sync-script change.
+- **4m shipped on its host and Chromium proof**, with no device check.
+- **4k and 4l device checks placed in 4b as owner-run items** (4l a
+  source-off 17th-preset `409 preset_limit`; 4k's playback case via
+  4h's card-disconnect run plus `GET /sd/aius/4k-probe.txt`).
+- **Activations stay "no owner word"** although the owner's 2026-10-16
+  source-off list names only stage plus rehearse; the earlier same-day
+  ruling covers activations.
 
 ## Acceptance
 
