@@ -34,10 +34,8 @@ handover.
 - **Status.** Phases 1, 2, 3 DONE; 4a, 4c, 4d, 4n, 4o, 4p, 4q, 4r, 4s,
   4t, 4i DONE. BUILT, with their device proof the owner's and not yet
   run: Phase 4 (gate 7 at fill-write cadence on the U24 bench), 4e, 4f,
-  4g, 4h, 4j, 4k, 4l, 4m. **4u** SHIPPED 2026-10-14. **4v, 4w, 4x**
-  (SD page layout) synced 2026-10-13, and **4xa** (phone facts, sticky
-  actions) built 2026-10-14; they await 4xa's sync and the owner's phone
-  and desktop check. **4y** (slot card and boot-other) SHIPPED 2026-10-14 (reboot
+  4g, 4h, 4j, 4k, 4l, 4m. **4u** SHIPPED 2026-10-14; **4v, 4w, 4x,
+  4xa** (SD page layout) SHIPPED 2026-10-16. **4y** (slot card and boot-other) SHIPPED 2026-10-14 (reboot
   and page proof passed). **4z** SHIPPED (bridge OTA 2026-10-13); **4za** (pin
   removal, fixed path proven from slot 2) is next firmware work. 4b
   (acceptance umbrella) closes after 4e to 4h's device
@@ -67,12 +65,9 @@ handover.
   owner's: the 4e, 4f, 4g and 4h runs listed in 4b, 4n's Firefox check,
   4i's post-removal check. A bench run is a last resort, batched, never
   mixed with listening (aius CLAUDE.md).
-- **Next action: the owner's phone and desktop check of the DSP, status
-  and firmware pages after the 2026-10-15 sync**: the slim sticky bar
-  (4xa, 4v), Model rate and the json link in signal, the pane order
-  signal, presets, matrix (4w), the audio path on the DSP page (4x), no
-  page heads on status and firmware, and DSP generation on status. It marks 4v to 4xa SHIPPED (4u shipped
-  2026-10-14). Then 4za. The auto-mode classifier has refused card writes
+- **Next action: Phase 4za** (pin removal, fixed read path proven from
+  slot 2). Its first device step is an OTA into slot 2 and needs the
+  owner's word. The auto-mode classifier has refused card writes
   before ("Remote Shell Writes") but ran the 2026-10-13 sync once the
   owner said to try; if it refuses, the owner runs it with `!`.
 - **What landed this run** (aius commits, each followed by a upstream repository
@@ -7887,7 +7882,7 @@ unit: implementer
   applies to any page (each carries `--wrap`). It stays; it costs
   nothing and keeps a page without `--wrap` from overflowing.
 
-### Phase 4v The DSP editor's top panel and buttons fit a phone
+### Phase 4v The DSP editor's top panel and buttons fit a phone ✓ SHIPPED 2026-10-16
 
 ```yaml
 outcome: at 760px and below, the DSP editor's top panel keeps the loaded-state pill on the row it belongs to rather than its own row, and the editor's buttons (Revert, Apply and the rest) sit right-aligned
@@ -7921,7 +7916,7 @@ depends-on: phase-4u # both edit firmware/sd/www/index.html; dispatched after 4u
   348.9 vs 318.0 at 360), without page overflow. Folded into 4w, which
   moves presets.
 
-### Phase 4w The DSP page merges live into signal and moves presets up
+### Phase 4w The DSP page merges live into signal and moves presets up ✓ SHIPPED 2026-10-16
 
 ```yaml
 outcome: the DSP page has no separate live pane; its fields join the signal pane, with DSP load and peak shown as one readout; the presets pane sits after signal and before matrix
@@ -7973,7 +7968,7 @@ depends-on: phase-4v # same files
   stage controls (bypassed, enabled, reset) wrap under the output pill
   and the DSP load value wraps to two lines.
 
-### Phase 4x The audio path moves from the status page into signal
+### Phase 4x The audio path moves from the status page into signal ✓ SHIPPED 2026-10-16
 
 ```yaml
 outcome: the DSP page's signal pane shows the audio path (flow line; input source, audio state, carrier, format, sample rate, blocks, overruns, gate open, gate carrier lock), each fact once beside the diagram's pills; status.html no longer has the Audio path pane and renumbers its panes
@@ -8029,7 +8024,7 @@ depends-on: phase-4w # same files
   `index.html`. Reaching a page moves the optical-app suite into its
   proof.
 
-### Phase 4xa The DSP page's top facts sit cleanly on a phone and its actions stay in view
+### Phase 4xa The DSP page's top facts sit cleanly on a phone and its actions stay in view ✓ SHIPPED 2026-10-16
 
 ```yaml
 outcome: at 360 and 320 px the DSP editor's top-panel facts (config, gen, rate and the rest) read as tidy label and value pairs with no awkward stacking; the action bar holding Revert and Apply sticks to the top of the viewport while the page scrolls, at every width
@@ -8152,6 +8147,8 @@ depends-on: phase-4x # same files
     every 10 s.
   - Render at 1280, 360 and 320 px: no overflow. Proof: sd-editor 435,
     www-bundle 35, optical-app green.
+- **Device check (owner, 2026-10-16): PASS** for 4v, 4w, 4x and 4xa
+  after the 2026-10-15 sync.
 
 ### Phase 4y The firmware page shows both slots and boots the other on request ✓ SHIPPED 2026-10-14
 
