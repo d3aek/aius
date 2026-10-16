@@ -11,6 +11,12 @@ extern "C" {
 
 #define AIUS_SD_PATH_STORAGE 128u
 
+/* Driver code of a failed primitive the card answered with no error code (not
+ * found, missing parent, full directory): "MISS". Only a read open of a
+ * download or config load becomes fault 18 and is not latched. Distinct from
+ * the adapter's generic SDDR. */
+#define AIUS_SD_DRIVER_FAULT_MISS UINT32_C(0x4D495353)
+
 /* Explicit values: a kind is a wire value (job events, /api/status). 6 was
  * REPLAY_REFILL, retired with replay (Phase 4i) and never reused, so
  * CACHE_FILL keeps 7. */

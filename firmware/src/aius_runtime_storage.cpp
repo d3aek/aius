@@ -205,6 +205,12 @@ FLASHMEM void publish_failed(AiusRuntimeStorage *service, uint32_t now_ms)
 	publish_http(service, AIUS_HTTP_SD_FAILED);
 	service->pending_http_event.sd_fault = fault;
 	service->pending_http_event.sd_driver_fault = driver_fault;
+	/* A not-found open on a DOWNLOAD is the expected refusal, not a fault:
+	 * open_misses counts it, the client still gets 404. */
+	if (fault == AIUS_SD_FAULT_NOT_FOUND &&
+	    driver_fault == AIUS_SD_DRIVER_FAULT_MISS &&
+	    service->job.kind == AIUS_SD_JOB_DOWNLOAD)
+		return;
 	if (service->diag.http_failures != UINT32_MAX)
 		service->diag.http_failures++;
 	latch_failure(service, AIUS_RUNTIME_STORAGE_OWNER_HTTP, false, now_ms);
@@ -259,6 +265,13 @@ FLASHMEM void root_terminal(AiusRuntimeStorage *service, bool failed,
 	if ((service->flags_4h & AIUS_RUNTIME_STORAGE_FLAG_ROOT_INPUT_FAULT) &&
 	    (service->job.last_fault == AIUS_SD_FAULT_PROTOCOL ||
 	     service->job.last_fault == AIUS_SD_FAULT_SHORT_IO))
+		return;
+	/* A not-found open of an optional file (DOWNLOAD or CONFIG_LOAD) is
+	 * expected: root_state stays FAILED, nothing latches or counts. */
+	if (service->job.last_fault == AIUS_SD_FAULT_NOT_FOUND &&
+	    service->job.last_driver_fault == AIUS_SD_DRIVER_FAULT_MISS &&
+	    (service->job.kind == AIUS_SD_JOB_DOWNLOAD ||
+	     service->job.kind == AIUS_SD_JOB_CONFIG_LOAD))
 		return;
 	if (service->diag.root_failures != UINT32_MAX)
 		service->diag.root_failures++;
@@ -411,9 +424,8 @@ FLASHMEM bool route_action(AiusRuntimeStorage *service, const AiusSdAction *acti
 		    service->draining) {
 			if (service->diag.drains != UINT32_MAX)
 				service->diag.drains++;
-			latch_failure(service,
-			              AIUS_RUNTIME_STORAGE_OWNER_DRAIN, false,
-			              now_ms);
+			latch_failure(service, AIUS_RUNTIME_STORAGE_OWNER_DRAIN,
+			              false, now_ms);
 		}
 		service->draining = false;
 		root_terminal(service, true, now_ms);

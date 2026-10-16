@@ -2145,8 +2145,8 @@
             "minimum": 0,
             "description": "Root-initiated jobs started (the boot CONFIG_LOAD, PROBE and USAGE_REFRESH loads), saturating."
           },
-          "http_faults": { "type": "integer", "minimum": 0, "description": "HTTP-owned jobs that failed." },
-          "root_faults": { "type": "integer", "minimum": 0, "description": "Root-initiated jobs that failed." },
+          "http_faults": { "type": "integer", "minimum": 0, "description": "HTTP-owned jobs that failed. A not-found open (fault 18 with driver_fault 1296651091) of a download is not counted." },
+          "root_faults": { "type": "integer", "minimum": 0, "description": "Root-initiated jobs that failed. A not-found open (fault 18 with driver_fault 1296651091) of a config load is not counted." },
           "busy_refusals": {
             "type": "integer",
             "minimum": 0,
@@ -2343,7 +2343,7 @@
           "driver_fault": {
             "type": "integer",
             "minimum": 0,
-            "description": "The adapter's own word for what went wrong beneath the engine."
+            "description": "The adapter's own word for what went wrong beneath the engine. 1296651091 (MISS): the card answered with no error code (not found, missing parent, full directory). Only a read open of a download or config load becomes fault 18 and is not latched."
           },
           "adapter_fault": {
             "type": "integer",

@@ -301,6 +301,7 @@ struct SdFake {
 	 * (clearError() zeroes it), DAT3 card detection, the 1 s busy-timeout
 	 * count, and the mode the last begin() asked for. */
 	uint8_t error_code;
+	uint8_t open_fail_code;
 	bool card_detected;
 	uint32_t busy_timeouts;
 	unsigned clear_error_calls;
@@ -493,8 +494,10 @@ File SDClass::open(const char *path, uint8_t mode)
 	(void)path;
 	sd_primitive();
 	g_sd.open_calls++;
-	if (!g_sd.open_ok)
+	if (!g_sd.open_ok) {
+		g_sd.error_code = g_sd.open_fail_code;
 		return File(false);
+	}
 	g_sd.file_open = true;
 	g_sd.read_offset = mode == FILE_WRITE ? g_sd.data_length : 0u;
 	return File(true);
@@ -3736,7 +3739,7 @@ static void test_storage_diagnostics(void)
 		"diag.clean",         "diag.busy-refusal",
 		"diag.card-refuses-write", "diag.mount-failure",
 		"diag.json-shape",    "diag.upload-progress",
-		"diag.json-capacity",  "diag.null-guards"
+		"diag.json-capacity",  "diag.null-guards", "diag.open-miss"
 	};
 	const AiusRuntimeBudget *budget =
 		aius_runtime_budget(AIUS_BOOT_CHECKPOINT_SD);
@@ -3747,7 +3750,7 @@ static void test_storage_diagnostics(void)
 	size_t length;
 	uint32_t now_ms = 1u;
 
-	validate_unique_keys("registry.diag", keys, ARRAY_COUNT(keys), 8u);
+	validate_unique_keys("registry.diag", keys, ARRAY_COUNT(keys), 9u);
 
 	current_key = "diag.clean";
 	{
@@ -3892,6 +3895,205 @@ static void test_storage_diagnostics(void)
 		CHECK(storage.diag.last_failure.mounts_in_job == 1u);
 		CHECK(storage.target.driver_faults == 1u);
 		CHECK(storage.target.protocol_faults == 0u);
+	}
+
+	current_key = "diag.open-miss";
+	{
+		AiusHttpAction miss_action;
+		unsigned miss_guard;
+
+		/* HTTP DOWNLOAD, absent file: FAILED/NOT_FOUND, nothing latched. */
+		arm_root_storage(&storage, 10u, true);
+		g_sd.open_ok = false;
+		memset(&request, 0, sizeof(request));
+		request.kind = AIUS_SD_JOB_DOWNLOAD;
+		request.target_path = "/aius/data.bin";
+		request.content_type = "application/octet-stream";
+		memset(&miss_action, 0, sizeof(miss_action));
+		miss_action.kind = AIUS_HTTP_ACTION_SD_START;
+		miss_action.action_id = 301u;
+		miss_action.sd_request = &request;
+		CHECK(aius_runtime_storage_service(&storage, budget, 1u,
+		                                   &miss_action, &event));
+		miss_action.kind = AIUS_HTTP_ACTION_SD_STEP;
+		miss_action.sd_operation = AIUS_HTTP_SD_OP_ADVANCE;
+		miss_action.sd_request = nullptr;
+		for (miss_guard = 0u; miss_guard < 24u &&
+		     event.sd_kind != AIUS_HTTP_SD_FAILED &&
+		     event.sd_kind != AIUS_HTTP_SD_COMPLETE; ++miss_guard) {
+			miss_action.action_id = 310u + miss_guard;
+			storage.http_event_present = false;
+			CHECK(aius_runtime_storage_service(&storage, budget,
+			                                   2u + miss_guard,
+			                                   &miss_action, &event));
+		}
+		CHECK(event.sd_kind == AIUS_HTTP_SD_FAILED);
+		CHECK(event.sd_fault == AIUS_SD_FAULT_NOT_FOUND);
+		CHECK(event.sd_driver_fault == AIUS_SD_DRIVER_FAULT_MISS);
+		CHECK(storage.diag.http_failures == 0u);
+		CHECK(storage.diag.last_failure.sequence == 0u);
+		CHECK(storage.target.open_misses >= 1u);
+
+		/* HTTP DOWNLOAD, card error on the open: still latched. */
+		arm_root_storage(&storage, 10u, true);
+		g_sd.open_ok = false;
+		g_sd.open_fail_code = 7u;
+		memset(&miss_action, 0, sizeof(miss_action));
+		miss_action.kind = AIUS_HTTP_ACTION_SD_START;
+		miss_action.action_id = 401u;
+		miss_action.sd_request = &request;
+		CHECK(aius_runtime_storage_service(&storage, budget, 1u,
+		                                   &miss_action, &event));
+		miss_action.kind = AIUS_HTTP_ACTION_SD_STEP;
+		miss_action.sd_operation = AIUS_HTTP_SD_OP_ADVANCE;
+		miss_action.sd_request = nullptr;
+		for (miss_guard = 0u; miss_guard < 24u &&
+		     event.sd_kind != AIUS_HTTP_SD_FAILED &&
+		     event.sd_kind != AIUS_HTTP_SD_COMPLETE; ++miss_guard) {
+			miss_action.action_id = 410u + miss_guard;
+			storage.http_event_present = false;
+			CHECK(aius_runtime_storage_service(&storage, budget,
+			                                   2u + miss_guard,
+			                                   &miss_action, &event));
+		}
+		CHECK(event.sd_kind == AIUS_HTTP_SD_FAILED);
+		CHECK(event.sd_fault == AIUS_SD_FAULT_OPEN);
+		CHECK(storage.diag.http_failures == 1u);
+		CHECK(storage.diag.last_failure.sequence == 1u);
+		CHECK(storage.target.driver_faults == 1u);
+
+		/* Root CONFIG_LOAD, absent file: FAILED, nothing latched. */
+		arm_root_storage(&storage, 10u, true);
+		g_sd.open_ok = false;
+		now_ms = 1u;
+		request = config_load_request(64u);
+		CHECK(aius_runtime_storage_start_root_job(&storage, &request,
+		                                          now_ms++));
+		drive_root_job(&storage, &now_ms, 32u);
+		CHECK(storage.root_state == AIUS_RUNTIME_STORAGE_ROOT_FAILED);
+		CHECK(aius_runtime_storage_root_result(&storage) != nullptr);
+		CHECK(aius_runtime_storage_root_result(&storage)->kind ==
+		      AIUS_SD_RESULT_FAULT);
+		CHECK(aius_runtime_storage_root_result(&storage)->fault ==
+		      AIUS_SD_FAULT_NOT_FOUND);
+		CHECK(storage.diag.root_failures == 0u);
+		CHECK(storage.diag.last_failure.sequence == 0u);
+		CHECK(storage.target.open_misses >= 1u);
+
+		/* Drain: the client leaves, the open then misses. Counted as a
+		 * drain, latched as CANCELLED. */
+		arm_root_storage(&storage, 10u, true);
+		g_sd.open_ok = false;
+		memset(&request, 0, sizeof(request));
+		request.kind = AIUS_SD_JOB_DOWNLOAD;
+		request.target_path = "/aius/data.bin";
+		request.content_type = "application/octet-stream";
+		memset(&miss_action, 0, sizeof(miss_action));
+		miss_action.kind = AIUS_HTTP_ACTION_SD_START;
+		miss_action.action_id = 501u;
+		miss_action.sd_request = &request;
+		CHECK(aius_runtime_storage_service(&storage, budget, 1u,
+		                                   &miss_action, &event));
+		miss_action.kind = AIUS_HTTP_ACTION_SD_STEP;
+		miss_action.sd_operation = AIUS_HTTP_SD_OP_ADVANCE;
+		miss_action.sd_request = nullptr;
+		for (miss_guard = 0u; miss_guard < 24u && g_sd.open_calls == 0u;
+		     ++miss_guard) {
+			miss_action.action_id = 510u + miss_guard;
+			storage.http_event_present = false;
+			CHECK(aius_runtime_storage_service(&storage, budget,
+			                                   2u + miss_guard,
+			                                   &miss_action, &event));
+		}
+		CHECK(g_sd.open_calls == 1u);
+		/* The cancel lands before the miss reaches the job, so the job's
+		 * fault is CANCELLED and the drain latches. */
+		aius_runtime_storage_release_http(&storage);
+		CHECK(storage.draining);
+		for (miss_guard = 0u; miss_guard < 24u && !storage.terminal_seen;
+		     ++miss_guard)
+			CHECK(aius_runtime_storage_service(&storage, budget,
+			                                   2u + miss_guard, nullptr,
+			                                   &event));
+		CHECK(storage.terminal_seen);
+		CHECK(storage.diag.drains == 1u);
+		CHECK(storage.diag.http_failures == 0u);
+		CHECK(storage.diag.last_failure.sequence == 1u);
+		CHECK(storage.diag.last_failure.fault ==
+		      AIUS_SD_FAULT_CANCELLED);
+
+		/* Cancelled download whose open already missed: counted as a
+		 * cancellation, latched as CANCELLED. */
+		arm_root_storage(&storage, 10u, true);
+		g_sd.open_ok = false;
+		memset(&miss_action, 0, sizeof(miss_action));
+		miss_action.kind = AIUS_HTTP_ACTION_SD_START;
+		miss_action.action_id = 601u;
+		miss_action.sd_request = &request;
+		CHECK(aius_runtime_storage_service(&storage, budget, 1u,
+		                                   &miss_action, &event));
+		miss_action.kind = AIUS_HTTP_ACTION_SD_STEP;
+		miss_action.sd_operation = AIUS_HTTP_SD_OP_ADVANCE;
+		miss_action.sd_request = nullptr;
+		for (miss_guard = 0u; miss_guard < 24u && g_sd.open_calls == 0u;
+		     ++miss_guard) {
+			miss_action.action_id = 610u + miss_guard;
+			storage.http_event_present = false;
+			CHECK(aius_runtime_storage_service(&storage, budget,
+			                                   2u + miss_guard,
+			                                   &miss_action, &event));
+		}
+		CHECK(g_sd.open_calls == 1u);
+		miss_action.kind = AIUS_HTTP_ACTION_SD_CANCEL;
+		miss_action.action_id = 650u;
+		storage.http_event_present = false;
+		CHECK(aius_runtime_storage_service(&storage, budget, 40u,
+		                                   &miss_action, &event));
+		miss_action.kind = AIUS_HTTP_ACTION_SD_STEP;
+		for (miss_guard = 0u; miss_guard < 24u &&
+		     event.sd_kind != AIUS_HTTP_SD_CANCELLED; ++miss_guard) {
+			miss_action.action_id = 660u + miss_guard;
+			storage.http_event_present = false;
+			CHECK(aius_runtime_storage_service(&storage, budget,
+			                                   41u + miss_guard,
+			                                   &miss_action, &event));
+		}
+		CHECK(event.sd_kind == AIUS_HTTP_SD_CANCELLED);
+		/* Cancel wins over the in-flight miss: CANCELLED, still latched. */
+		CHECK(event.sd_fault == AIUS_SD_FAULT_CANCELLED);
+		CHECK(storage.diag.cancellations == 1u);
+		CHECK(storage.diag.last_failure.sequence == 1u);
+
+		/* CACHE_FILL OPEN_READ miss stays OPEN and latches. */
+		arm_root_storage(&storage, 10u, true);
+		g_sd.open_ok = false;
+		now_ms = 1u;
+		request = cache_fill_request();
+		CHECK(aius_runtime_storage_start_root_job(&storage, &request,
+		                                          now_ms++));
+		drive_root_job(&storage, &now_ms, 32u);
+		CHECK(storage.root_state == AIUS_RUNTIME_STORAGE_ROOT_FAILED);
+		CHECK(aius_runtime_storage_root_result(&storage)->fault ==
+		      AIUS_SD_FAULT_OPEN);
+		CHECK(storage.diag.root_failures == 1u);
+		CHECK(storage.diag.last_failure.sequence == 1u);
+
+		/* Root DELETE required-but-absent: NOT_FOUND with driver 0 latches. */
+		arm_root_storage(&storage, 10u, true);
+		g_sd.exists_result = false;
+		now_ms = 1u;
+		memset(&request, 0, sizeof(request));
+		request.kind = AIUS_SD_JOB_DELETE;
+		request.target_path = "/aius/gone.bin";
+		request.require_existing = true;
+		CHECK(aius_runtime_storage_start_root_job(&storage, &request,
+		                                          now_ms++));
+		drive_root_job(&storage, &now_ms, 32u);
+		CHECK(storage.root_state == AIUS_RUNTIME_STORAGE_ROOT_FAILED);
+		CHECK(storage.diag.root_failures == 1u);
+		CHECK(storage.diag.last_failure.sequence == 1u);
+		CHECK(storage.diag.last_failure.fault ==
+		      AIUS_SD_FAULT_NOT_FOUND);
 	}
 
 	current_key = "diag.json-shape";

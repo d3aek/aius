@@ -157,7 +157,9 @@ FLASHMEM AiusSdEvent driver_fault(AiusSdTeensy *adapter, uint64_t action_id)
 	if (SD.sdErrorCode() == 0u) {
 		if (adapter->open_misses != UINT32_MAX)
 			adapter->open_misses++;
-		return fault_event(action_id);
+		AiusSdEvent miss = fault_event(action_id);
+		miss.fault = AIUS_SD_DRIVER_FAULT_MISS;
+		return miss;
 	}
 	return hard_driver_fault(adapter, action_id);
 }

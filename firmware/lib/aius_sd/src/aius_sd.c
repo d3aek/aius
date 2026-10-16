@@ -1861,7 +1861,8 @@ static FLASHMEM bool is_post_commit_publish_phase(AiusSdPhase phase)
 }
 
 static FLASHMEM AiusSdFault map_driver_fault(const AiusSdJob *job,
-	                            AiusSdActionKind action)
+	                            AiusSdActionKind action,
+	                            uint32_t driver_fault)
 {
 	if (job->phase == AIUS_SD_PHASE_PATH_EXISTS) {
 		switch (job->existence_purpose) {
@@ -1891,6 +1892,11 @@ static FLASHMEM AiusSdFault map_driver_fault(const AiusSdJob *job,
 		return AIUS_SD_FAULT_ROLLBACK;
 	if (action == AIUS_SD_ACTION_MEDIA_PRESENT)
 		return AIUS_SD_FAULT_MEDIA;
+	if (action == AIUS_SD_ACTION_OPEN_READ &&
+	    driver_fault == AIUS_SD_DRIVER_FAULT_MISS &&
+	    (job->kind == AIUS_SD_JOB_DOWNLOAD ||
+	     job->kind == AIUS_SD_JOB_CONFIG_LOAD))
+		return AIUS_SD_FAULT_NOT_FOUND;
 	if (action == AIUS_SD_ACTION_OPEN_READ ||
 	    action == AIUS_SD_ACTION_OPEN_WRITE_BEGIN ||
 	    action == AIUS_SD_ACTION_OPEN_APPEND)
@@ -1912,7 +1918,7 @@ static FLASHMEM void handle_fault_event(AiusSdJob *job,
 	AiusSdPhase phase = job->phase;
 	AiusSdExistencePurpose existence_purpose =
 		job->existence_purpose;
-	AiusSdFault fault = map_driver_fault(job, action);
+	AiusSdFault fault = map_driver_fault(job, action, driver_fault);
 
 	if (action == AIUS_SD_ACTION_CLOSE)
 		job->file_open = false;
@@ -1926,7 +1932,7 @@ static FLASHMEM void handle_fault_event(AiusSdJob *job,
 	 * offset with no .part stays the fault below: the resume contract cannot
 	 * be verified against a file that is not there. Found on hardware, where
 	 * every fresh PUT /sd/replays/<id> answered 500 sd_failure at this phase
-	 * (fault 9 = OPEN, driver SDDR, zero bytes moved) while the web-tree
+	 * (fault 9 = OPEN, driver MISS since 4zh, zero bytes moved) while the web-tree
 	 * REPLACE path -- which never sizes a .part -- uploaded fine; the flow
 	 * had not been exercised on-device since the storage cutover. */
 	if (phase == AIUS_SD_PHASE_PART_SIZE_OPEN &&

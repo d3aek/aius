@@ -1209,6 +1209,7 @@ void test_fault_split_and_absence()
 	g_fake.fail_code = 0;
 	event = aius_sd_teensy_execute(&adapter, &open_read);
 	assert(event.kind == AIUS_SD_EVENT_FAULT);
+	assert(event.fault == AIUS_SD_DRIVER_FAULT_MISS);
 	assert(adapter.open_misses == 1);
 	assert(adapter.driver_faults == 0);
 	assert(adapter.mounted);
@@ -1220,6 +1221,7 @@ void test_fault_split_and_absence()
 	g_fake.fail_code = 7;
 	event = aius_sd_teensy_execute(&adapter, &open_read);
 	assert(event.kind == AIUS_SD_EVENT_FAULT);
+	assert(event.fault == AIUS_SD_TEENSY_DRIVER_FAULT);
 	assert(adapter.open_misses == 1);
 	assert(adapter.driver_faults == 1);
 	assert(!adapter.mounted);

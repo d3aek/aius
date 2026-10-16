@@ -9495,7 +9495,7 @@ live-dependency: none
 ```yaml
 phase: 4zh
 title: A file-not-found open is not an SD fault
-status: planned # 2026-10-16: found in 4zg; contract amended by prebuild review (fourth run)
+status: built # 2026-10-16: host proof green (sd, sd-overlay, sd-target, runtime-target, http, sd-editor, registry); delivery audit and clean-room PASS; W4 real-ELF and device steps at the shared image
 depends-on: phase-4zg (the decode)
 outcome: >-
   An OPEN_READ that misses because the file is absent (driver_fault()
@@ -9538,6 +9538,33 @@ live-dependency: none
 - **Residual risk (accepted):** a code-0 failure on a read open can also
   be FAT chain corruption, which would now read as not-found on a
   DOWNLOAD or CONFIG_LOAD. `open_misses` still counts it.
+- **Build (2026-10-16).** `AIUS_SD_DRIVER_FAULT_MISS` is `0x4D495353`
+  ("MISS", 1296651091) in `aius_sd.h`; the adapter emits it for every
+  code-0 failure, and `map_driver_fault` turns it into NOT_FOUND only for
+  `action == OPEN_READ && driver_fault == MISS && kind in {DOWNLOAD, CONFIG_LOAD}`.
+  The runtime-target fake gained `open_fail_code` (registry key count 8
+  to 9).
+- **Delivery audit: PASS, minors folded.** No consumer compares a
+  driver_fault against SDDR; `last_driver_fault` resets at each job start
+  (`firmware/lib/aius_sd/src/aius_sd.c:1388`), so `root_terminal` reads
+  the current job. Folded: the openapi and header text say MISS is any
+  code-0 answer, not only absence; a CACHE_FILL miss is pinned as still
+  fault 9 and counted; the dead CONFIG_LOAD clause in `publish_failed`
+  dropped. The audit's drain (owner 3) and cancel latch-path finding was
+  a false positive: a cancel or drain lands before the miss, so the
+  job's fault is CANCELLED, not NOT_FOUND. runtime-target pins that
+  (still latched, `drains` and `cancellations` each 1) and no skip was
+  added there.
+- **Clean-room: PASS.** No boot file is required: a missing
+  `config.json` falls back to defaults and still bumps
+  `g_config_error_count` (`firmware/src/optical_main.cpp:8662`), so it
+  stays visible; a missing `dsp.json` keeps the current model. Folded: a
+  MISS on OPEN_WRITE_BEGIN pinned; stale "not latched" test comments.
+  **Accepted residual (low):** an `SD_CANCEL` arriving after
+  `terminal_seen` (`firmware/src/aius_runtime_storage.cpp:1053`)
+  re-publishes a NOT_FOUND result through `publish_cancelled`, which
+  latches; reachable only if the transaction cancels after consuming
+  FAILED.
 
 - **Decisions (orchestrator, autonomous, 2026-10-16).** Reclassify
   rather than document: a failure record that is routinely a missing

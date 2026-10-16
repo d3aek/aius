@@ -1035,6 +1035,43 @@ static void open_sized_seek(
 		job, 0u, size_event(action->action_id, file_size), AIUS_SD_ACTION_SEEK);
 }
 
+static void test_open_miss_mapping(void)
+{
+	uint8_t buffer[CONFIG_LIMIT];
+	AiusSdJob job;
+	AiusSdAction action;
+	AiusSdJobRequest request = request_for(AIUS_SD_JOB_DOWNLOAD);
+
+	scenario = "download open MISS maps to NOT_FOUND";
+	start_valid(&job, buffer, sizeof(buffer), &request);
+	action = begin_job(&job);
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_OPEN_READ);
+	action = step_action(&job, 0u,
+	                     fault_event(action.action_id, AIUS_SD_DRIVER_FAULT_MISS),
+	                     AIUS_SD_ACTION_FAIL);
+	expect_result(&job, AIUS_SD_RESULT_FAULT, AIUS_SD_FAULT_NOT_FOUND,
+	              AIUS_SD_DRIVER_FAULT_MISS);
+
+	scenario = "download open SDDR still maps to OPEN";
+	start_valid(&job, buffer, sizeof(buffer), &request);
+	action = begin_job(&job);
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_OPEN_READ);
+	action = step_action(&job, 0u, fault_event(action.action_id, 0x53444452u),
+	                     AIUS_SD_ACTION_FAIL);
+	expect_result(&job, AIUS_SD_RESULT_FAULT, AIUS_SD_FAULT_OPEN, 0x53444452u);
+
+	scenario = "config load open MISS maps to NOT_FOUND";
+	request = request_for(AIUS_SD_JOB_CONFIG_LOAD);
+	start_valid(&job, buffer, sizeof(buffer), &request);
+	action = begin_job(&job);
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_OPEN_READ);
+	action = step_action(&job, 0u,
+	                     fault_event(action.action_id, AIUS_SD_DRIVER_FAULT_MISS),
+	                     AIUS_SD_ACTION_FAIL);
+	expect_result(&job, AIUS_SD_RESULT_FAULT, AIUS_SD_FAULT_NOT_FOUND,
+	              AIUS_SD_DRIVER_FAULT_MISS);
+}
+
 static void test_download_ranges(void)
 {
 	uint8_t buffer[4];
@@ -1179,6 +1216,17 @@ static void test_cache_fill(void)
 	start_valid(&job, buffer, sizeof(buffer), &request);
 	expect_terminal(&job, AIUS_SD_ACTION_FAIL, AIUS_SD_RESULT_FAULT,
 	                AIUS_SD_FAULT_INVALID_REQUEST, 0u);
+
+	scenario = "cache fill open MISS stays OPEN";
+	request = request_for(AIUS_SD_JOB_CACHE_FILL);
+	start_valid(&job, buffer, sizeof(buffer), &request);
+	action = begin_job(&job);
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_OPEN_READ);
+	action = step_action(&job, 0u,
+	                     fault_event(action.action_id, AIUS_SD_DRIVER_FAULT_MISS),
+	                     AIUS_SD_ACTION_FAIL);
+	expect_result(&job, AIUS_SD_RESULT_FAULT, AIUS_SD_FAULT_OPEN,
+	              AIUS_SD_DRIVER_FAULT_MISS);
 
 	scenario = "cache fill reads a file chunk by chunk";
 	request = request_for(AIUS_SD_JOB_CACHE_FILL);
@@ -1654,6 +1702,31 @@ static void test_upload_modes(void)
 	action = step_action(&job, 0u, fault_event(action.action_id, 78u),
 	                     AIUS_SD_ACTION_FAIL);
 	expect_result(&job, AIUS_SD_RESULT_FAULT, AIUS_SD_FAULT_OPEN, 78u);
+
+	scenario = "upload resume MISS on the size open keeps OPEN";
+	action = begin_upload(
+		&job, &request, buffer, sizeof(buffer), AIUS_SD_ACTION_OPEN_READ);
+	action = step_action(&job, 0u,
+	                     fault_event(action.action_id, AIUS_SD_DRIVER_FAULT_MISS),
+	                     AIUS_SD_ACTION_FAIL);
+	expect_result(&job, AIUS_SD_RESULT_FAULT, AIUS_SD_FAULT_OPEN,
+	              AIUS_SD_DRIVER_FAULT_MISS);
+
+	scenario = "append open MISS keeps OPEN";
+	request = upload_request(AIUS_SD_INSTALL_APPEND_PART);
+	request.initial_offset = 4u;
+	request.total = sizeof(abc);
+	action = begin_upload(
+		&job, &request, buffer, sizeof(buffer), AIUS_SD_ACTION_OPEN_READ);
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_FILE_SIZE);
+	action = step_action(
+		&job, 0u, size_event(action.action_id, 4u), AIUS_SD_ACTION_CLOSE);
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_OPEN_APPEND);
+	action = step_action(&job, 0u,
+	                     fault_event(action.action_id, AIUS_SD_DRIVER_FAULT_MISS),
+	                     AIUS_SD_ACTION_FAIL);
+	expect_result(&job, AIUS_SD_RESULT_FAULT, AIUS_SD_FAULT_OPEN,
+	              AIUS_SD_DRIVER_FAULT_MISS);
 
 	scenario = "upload finalize-part";
 	request = upload_request(AIUS_SD_INSTALL_FINALIZE_PART);
@@ -2986,6 +3059,16 @@ static void test_complete_action_fault_matrix(void)
 	action = remove_disposable_temp(
 		&job, action, true, AIUS_SD_ACTION_FAIL);
 	expect_result(&job, AIUS_SD_RESULT_FAULT, AIUS_SD_FAULT_OPEN, 61u);
+
+	scenario = "OPEN_WRITE_BEGIN MISS keeps OPEN, not NOT_FOUND";
+	action = reach_replace_open(&job, buffer, sizeof(buffer), 1u);
+	action = step_action(
+		&job, 0u, fault_event(action.action_id, AIUS_SD_DRIVER_FAULT_MISS),
+		AIUS_SD_ACTION_EXISTS);
+	action = remove_disposable_temp(
+		&job, action, true, AIUS_SD_ACTION_FAIL);
+	expect_result(&job, AIUS_SD_RESULT_FAULT, AIUS_SD_FAULT_OPEN,
+	              AIUS_SD_DRIVER_FAULT_MISS);
 
 	scenario = "TRUNCATE fault closes and cleans disposable temp";
 	action = reach_replace_open(&job, buffer, sizeof(buffer), 1u);
@@ -5886,6 +5969,7 @@ int main(void)
 	test_probe_usage_delete();
 	test_config_load();
 	test_publish_buffer();
+	test_open_miss_mapping();
 	test_download_ranges();
 	test_cache_fill();
 	test_upload_modes();
