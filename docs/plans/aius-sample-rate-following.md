@@ -36,40 +36,45 @@ in prebuild review); replace wholesale on the next handover.
   not yet run: Phase 4 (gate 7 at fill-write cadence on the U24 bench),
   4e, 4f, 4g, 4h, 4j, 4k, 4l, 4m. **4za** IN PROGRESS (prebuild review).
   4b (acceptance umbrella) closes after 4e to 4h's device runs.
-- **Board.** Runs `f075872c8b82` in slot 1 (4z bridge OTA 2026-10-13,
-  carrying 4y and 4z; self-committed, `ab.active_slot` 1, sequence 29,
-  `trial_budget` 0, `rollback_observed` false, `revisions` {1:
-  `f075872c8b82`, 2: null}). Slot 2 still holds `57977135e472` (4q to
-  4t; null because it predates recorded revisions), so the 4z bridge pin
-  stays until 4za's build 1 overwrites it. Slot-a OCRAM free 264,736 B,
-  exactly the floor; ITCM free 13,364 B (80 B over its floor); `_ebss`
-  at its ceiling. The card serves the 4u to 4xa pages (full sync of 22
+- **Board.** Runs `3939dfa1476f` (4za build 1) in slot 2, self-committed
+  2026-10-16: `ab.active_slot` 2, sequence 31, `trial_budget` 0,
+  `rollback_observed` false, `revisions` {1: `f075872c8b82`, 2:
+  `3939dfa1476f`}. `57977135e472` is in neither slot, so the bridge pin
+  can come out (build 2). Slot-a OCRAM free 264,736 B, exactly the
+  floor; ITCM free 13,300 B (16 B over its floor); `_ebss` at its
+  ceiling. The card serves the 4u to 4xa pages (full sync of 22
   files 2026-10-15, served files byte-identical to source). A
   `/api/reboot` 2026-10-13 kept slot 1 and the record intact (4y).
   `df966f17b370` stays
   the owner's **fail-safe rollback candidate**: tag
   `fw-rollback-df966f17b370`, signed container and USB `recovery.hex` in
   LFS, steps in `firmware/releases/df966f17b370/README.md`.
-- **Orchestration posture: checkpoint** (owner, 2026-10-10): surface each
-  decision point and human-review gate as it arises and wait for the
-  owner; one line per call. Every device session (OTAs and source-off
+- **Orchestration posture: autonomous** (owner, 2026-10-16, replacing
+  checkpoint from 2026-10-10): resolve A-or-B calls from the plan, the
+  code and convention, record each in the phase it settles, and push
+  through. Calls the owner may want to overturn go to the closing
+  "Interrogate the user: confirm autonomous calls" phase. **Builds, OTA
+  stagings, rehearsals, activations and card syncs need no owner word
+  for the rest of this plan** (owner, 2026-10-16); state the audio cost
+  in the report. Destructive or irreversible acts beyond these still
+  stop the run. Every device session (OTAs and source-off
   checks included) and anything destructive goes to the owner. **Card
   edge cases are not owner questions** (owner, 2026-10-11): pick the
   simplest sensible handling, record it in the phase. Card reads and
   GETs need no owner word.
-- **Owner gates (not questions).** (1) No OTA stage, rehearsal or
-  activation without the owner's word. (2) Every device session is the
-  owner's: the 4e, 4f, 4g and 4h runs listed in 4b, 4n's Firefox check,
+- **Owner gates (not questions).** (1) Superseded 2026-10-16: OTA
+  stagings, rehearsals, activations, builds and syncs for this plan run
+  without the owner's word. (2) Listening and bench device sessions stay
+  the owner's: the 4e, 4f, 4g and 4h runs listed in 4b, 4n's Firefox check,
   4i's post-removal check. A bench run is a last resort, batched, never
   mixed with listening (aius CLAUDE.md).
 - **Next action: Phase 4za** (D2 set/way fix in build 1 into slot 2,
   then pin removal in build 2, rehearsed from slot 2 and activated into
-  slot 1). Build 1 is committed (delivery audit PASS, clean-room
-  confirmed after the guard folds). Next: rebuild with `build_ab.sh` on
-  the clean commit, sign the canonical slot-a image without `--slot`
-  using the 12-char HEAD, then device step 1 on the owner's word (stage
-  and activate build 1 into slot 2; staging during playback costs
-  dropouts). Card syncs ran from the agent this run once the owner
+  slot 1). Build 1 (`3939dfa1476f`) runs self-committed in slot 2
+  (device step 1 PASS 2026-10-16). Next: build 2 (pin removal, the
+  signer check, the drift-test arms and the CLAUDE.md paragraph via
+  `the release-promotion step`), then device step 2 (rehearse build 2 from slot 2)
+  and step 3 (activate it into slot 1), each on the owner's word. Card syncs ran from the agent this run once the owner
   said "sync"; if the classifier refuses one, the owner runs it with
   `!`.
 - **What landed this run** (aius commits, each followed by a upstream repository
@@ -8724,6 +8729,17 @@ prebuild-review: round 2 READY 2026-10-16, S1 to S4 and N1 to N3 folded; round 1
     watchdog hang). The review loop stops here (orchestrator): a static
     guard can always meet one more mutation, and the remaining classes
     are loud.
+- **Device step 1 (owner's "go", 2026-10-16): PASS.** Build 1 was
+  committed as `3939dfa`, rebuilt clean, and signed without `--slot`
+  (container sha256 `9ed5802c…e464c45e`). It staged with 0 retried
+  chunks, and its activation from slot 1 completed: `ota_dark` state 4,
+  2,555 of 2,555 steps, `dark_window_cycles` 3,880,832,160. The trial
+  boot self-committed on slot 2: `active_slot` 2, sequence 31,
+  `trial_budget` 0, `rollback_observed` false,
+  `prev_boot.first_abort` 254. `revisions` read {1: `f075872c8b82`, 2:
+  `3939dfa1476f`}, so the positive pin-removal condition holds:
+  `57977135e472` is gone from both slots. Evidence:
+  `ota-4za-step1.log`, `status-post-4za-step1.json` (session scratch).
 - **Found in build 1 (plan work, not this phase).**
   - Slot-A and slot-B ITCM headroom is 16 B. The next ITCM growth needs
     a byte reclaim or the owner's decision on the 13,284 floor
