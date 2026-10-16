@@ -31,22 +31,26 @@ Handover 2026-10-16 (orchestration run, session e173e26c: 4z diagnosed,
 bridged and shipped; 4u to 4y and the new 4xa shipped; 4za planned and
 in prebuild review); replace wholesale on the next handover.
 
-- **Status.** Phases 1, 2, 3 DONE; 4a, 4c, 4d, 4i, 4n to 4u, 4v, 4w,
-  4x, 4xa, 4y, 4z DONE. BUILT, with their device proof the owner's and
-  not yet run: Phase 4 (gate 7 at fill-write cadence on the U24 bench),
-  4e, 4f, 4g, 4h, 4j, 4k, 4l, 4m. **4za** SHIPPED 2026-10-16; **4zc**
-  (guard hardening, owner's answer) SHIPPED 2026-10-16.
-  4b (acceptance umbrella) closes after 4e to 4h's device runs.
+- **Status.** Phases 1, 2, 3 DONE; 4a, 4c, 4d, 4i, 4m, 4n to 4u, 4v,
+  4w, 4x, 4xa, 4y, 4z, 4za and 4zc (guard hardening, owner's answer)
+  DONE. BUILT, with their device proof the owner's and not yet run:
+  Phase 4 (gate 7 at fill-write cadence on the U24 bench), 4e, 4f, 4g,
+  4h, 4j, 4k, 4l; 4e run 1 and 4g run 1 are partly agent-run
+  (2026-10-16, source off; the stall witness failed, Phase 4zd). 4zd
+  PLANNED. 4b (acceptance umbrella) closes after its device runs (4e to
+  4h, plus its 4k and 4l items).
 - **Board.** Runs `5766cce3f0f9` (4za build 2, no pin) in slot 1,
-  self-committed 2026-10-16: `ab.active_slot` 1, sequence 34,
+  self-committed 2026-10-16: `ab.active_slot` 1, sequence 35,
   `trial_budget` 0, `rollback_observed` false, `revisions` {1:
-  `5766cce3f0f9`, 2: `3939dfa1476f`}. Both slots carry the D2 fix. Slot-a OCRAM free 264,736 B, exactly the
+  `5766cce3f0f9`, 2: null} (the 2026-10-16 4e run 1 rehearsal cleared
+  slot 2, so build 1 is gone and slot 2 holds no bootable fallback).
+  `sd_mode` fifo, `boot_generation` 26. Slot-a OCRAM free 264,736 B, exactly the
   floor; ITCM free 13,300 B (16 B over its floor); `_ebss` at its
   ceiling. The card serves the 4u to 4xa pages (full sync of 22
   files 2026-10-15, served files byte-identical to source). A
   `/api/reboot` 2026-10-13 kept slot 1 and the record intact (4y).
-  `df966f17b370` stays
-  the owner's **fail-safe rollback candidate**: tag
+  Rollback is via `df966f17b370` only, the owner's **fail-safe
+  rollback candidate**: tag
   `fw-rollback-df966f17b370`, signed container and USB `recovery.hex` in
   LFS, steps in `firmware/releases/df966f17b370/README.md`.
 - **Orchestration posture: autonomous** (owner, 2026-10-16, replacing
@@ -56,28 +60,30 @@ in prebuild review); replace wholesale on the next handover.
   "Interrogate the user: confirm autonomous calls" phase. **Builds, OTA
   stagings, rehearsals, activations and card syncs need no owner word
   for the rest of this plan** (owner, 2026-10-16); state the audio cost
-  in the report. Destructive or irreversible acts beyond these still
-  stop the run. Every device session (OTAs and source-off
-  checks included) and anything destructive goes to the owner. **Card
-  edge cases are not owner questions** (owner, 2026-10-11): pick the
-  simplest sensible handling, record it in the phase. Card reads and
-  GETs need no owner word.
+  in the report. **Source-off device work the agent may run alone**
+  (owner, 2026-10-16): GETs and card reads, one card sync, `POST
+  /api/sd/mode` to arm DMA, OTA stage plus rehearse (the board resets).
+  **Owner only:** `POST /api/clear`, `POST /api/reboot`, DSP model
+  changes (`aius_dsp_set.py`), the 4f and 4b source-off runs, listening
+  and bench sessions; any other destructive or irreversible act stops
+  the run. Every agent device run starts with one `GET /api/status` and
+  proceeds only if no source plays (`tx_gate.open` 0). **Card edge cases
+  are not owner questions** (owner, 2026-10-11): pick the simplest
+  sensible handling, record it in the phase.
 - **Owner gates (not questions).** (1) Superseded 2026-10-16: OTA
   stagings, rehearsals, activations, builds and syncs for this plan run
   without the owner's word. (2) Listening and bench device sessions stay
-  the owner's: the 4e, 4f, 4g and 4h runs listed in 4b, 4n's Firefox check,
-  4i's post-removal check. A bench run is a last resort, batched, never
-  mixed with listening (aius CLAUDE.md).
-- **Next action: Phase 4za** (D2 set/way fix in build 1 into slot 2,
-  then pin removal in build 2, rehearsed from slot 2 and activated into
-  slot 1). Build 1 (`3939dfa1476f`) runs self-committed in slot 2
-  (device step 1 PASS 2026-10-16). 4za SHIPPED: build 2
-  (`5766cce3f0f9`, no pin) was rehearsed from slot 2 and activated into
-  slot 1. The owner answered the autonomous calls 2026-10-16 (4za
-  body), 4zc SHIPPED, and the CLAUDE.md warning is deleted (promoted).
-  The plan
-  holds only owner-run device proofs (Phase 4 gate 7 on the bench, 4e
-  to 4h via 4b, 4j to 4m). Card syncs ran from the agent this run once the owner
+  the owner's: the 4e to 4h, 4k and 4l runs listed in 4b. A bench run
+  is a last resort, batched, never mixed with listening (aius
+  CLAUDE.md).
+- **Next action: Phase 4zd** (the 4.04 s stall witness event during the
+  DMA-armed sync in the agent-run 4e run 1, 2026-10-16): map pc and lr,
+  reproduce source-off, fix with a host regression. 4e's image 2 OTA
+  and E7 wait on it. 4za and 4zc SHIPPED; the owner answered the
+  autonomous calls 2026-10-16 (4za body). Open owner-run device proofs:
+  Phase 4 gate 7 on the bench, 4e to 4h (their remaining steps), 4k and
+  4l via 4b, and 4j (a DSP model change); 4zd's device steps are
+  agent-run. Card syncs ran from the agent this run once the owner
   said "sync"; if the classifier refuses one, the owner runs it with
   `!`.
 - **What landed this run** (aius commits, each followed by a upstream repository
@@ -2130,6 +2136,8 @@ targeted-proof:
   - "device (owner, PCM through the U24 bench loop per CLAUDE.md's bench-loop note, the mixer at unity, POST /api/clear at start, 10 min or more): full /api/status at 1 Hz with at least 95% answered 200, three DSP Applies each answered 200 with config_generation advancing, and underrun_episode_count and tx_underrun_frames delta 0; PCM has the smallest ring margin (128 to 225 frames, 4f F1), where round 2 B5's shedding lived (CR3-S1)"
   - "device (source off, /api/status tx_gate.open 0, at the session's start or in the card-swap step): a cold page load, 60 s of 1 Hz full status and one preset save: no request answers 503, every request answers its expected status at its first attempt (200, except the browser's GET /favicon.ico, which answers 404: no page links an icon and no route serves one, CR3-B4), and http_shed and sd_fifo_defers delta 0 (4f F11, CR-B1)"
   - "device: content check: every plain (non-bundle) file aius-sd-sync.sh uploads from firmware/sd/www/ downloaded byte-equal to its source (owner presets saved under /sd/www/presets/ have no sync source and are checked against their PUT bodies below, CR3-S4), and every bundle, gzip-decoded, byte-equal to firmware/tools/www_bundle.py's inlined page for the synced sources, as 4g run 1 checks (the decoded bundle is the inlined page, not any one source file, CR-S8); GET /sd/aius/dsp.json and every saved preset under /sd/www/presets/ equal to their PUT bodies, and /api/status showing the PUT public config (config.json has no read route), once sd_flush.dirty is 0 and again after a reboot (read from the card)"
+  - "device (owner, source off, /api/status tx_gate.open 0; Phase 4l): with 16 presets saved, a save under a 17th new name answers 409 preset_limit and the editor shows the limit message"
+  - "device (Phase 4k, playback case): proven inside Phase 4h's card-disconnect run (4h targeted-proof, the 'accidental disconnect' item, its AC-3 card-pulled step): while the card is out, one GET /sd/aius/4k-probe.txt (a path the card does not hold, outside www, so no PSRAM entry serves it and only a card read can answer) answers 503 sd_unavailable, or sd_busy inside a remount window (4k's accepted deviation), never 404; with the card back it answers 404. The DISPATCH gate (app_sd_ready, once dat3_remuxed is set) and the SD_START gate (before the re-mux) give the same body, so the device run proves the client answer and the host suites prove which arm gave it"
   - "the promoted CLAUDE.md diff carries exactly the replacement paragraph below, with {ALARM} replaced by the ingress alarm this session derived from D, and the 'Two DTCM layout traps' paragraph after it; no foreign hunk reverted"
 acceptance-examples:
   - the index page's presets listing (the likely 20.9 ms dispatch of 2026-10-07) is served from the PSRAM manifest and touches no card
@@ -2138,6 +2146,17 @@ acceptance-examples:
   - an OTA verify during playback may still underrun; no proof, counter or CLAUDE.md line claims otherwise
 review-intensity: active
 ```
+
+**Fault-delta item, agent-run since-boot read (2026-10-16, FIFO, the
+2026-10-16 boot; evidence
+`.scratch/e173e26c-e337-49cc-b423-533c708ff340/source-off-1016/`).**
+Every fault counter the item names reads 0. `root_faults` reads 2
+from boot (fault 9 at `at_ms` 2,222) and `stall_diag` 2 at boot (581,850
+us); both predate the session. The DMA-armed sync then added one stall
+event (Phase 4zd). Still the owner's: the clear-based deltas across the
+playback runs (`POST /api/clear` is owner-only) and the card-out
+interval. `input_diag` `sis_symerr` and `lockloss` rise with no source
+playing, so they are not fault evidence here.
 
 **Re-plan 2026-10-07: 4b is the acceptance umbrella.** The owner's
 second decision block (below) selected A-DMA over B2 and widened the work
@@ -2830,7 +2849,7 @@ clean-room, and implementation carries a delivery audit per phase.
 ```yaml
 phase: 4e
 title: Every SD-card wait and checkpoint boundary runs pending live-input production
-status: built # 2026-10-07: host proof green (22 suites), all four images build with every post-link guard, delivery audit FAIL (D-B1 boot fault) then closure PASS; device runs 1 and 2 and the E7 gate are the owner's (no OTA until the owner's go-ahead)
+status: built # 2026-10-07: host proof green (22 suites), all four images build with every post-link guard, delivery audit FAIL (D-B1 boot fault) then closure PASS; device run 1 partly agent-run 2026-10-16 (body; stall witness FAIL, Phase 4zd); its card pull and clear-based deltas, run 2 and the E7 gate are the owner's; image 2 and E7 wait on 4zd
 depends-on: phase-4 (device session done 2026-10-07)
 prebuild-review: ready # 2026-10-07: rounds 2 to 5, clean-room, clean-room closure, clean-room round 3 and two closures; second closure READY; CR5-S1 to S4 folded; no further clean-room: the closing reviewer was itself clean-room and implementation carries a delivery audit per phase
 outcome: >-
@@ -3054,13 +3073,16 @@ main loop and the producer stay mutually exclusive exactly as today.
   (8,000 us producer budget + D) x 96 words per ms + one 256-word chunk:
   1,264 words at 2,500 us, 1,216 at 2,000 us; re-derived from the
   measured D after run 2.
-- **Epoch period (R4-N2).** About 115 epochs/s, about 8.7 ms per epoch
-  (`firmware/src/optical_main.cpp:8715`, `:9342`). Run 1 (source off)
+- **Epoch period (R4-N2).** Measured source-off: 5,201 epochs/s (about
+  0.19 ms per epoch, 30.04 s on `5766cce3f0f9`, 4e run 1, 2026-10-16).
+  The 115 epochs/s (8.7 ms) estimate from
+  `firmware/src/optical_main.cpp:8715`, `:9342` is stale. Run 1 (source off)
   and run 2 (playback) measure it from `/api/status` `loop_epoch` deltas
   (`:5945`) against wall time; nested passes lengthen epochs under
   playback, so the SD job rate (one primitive per epoch) falls there.
   Every duration in 4e to 4h that counts epochs (4g's mount fill, about
-  17 s; 4h H4's settings save, about 0.78 s, 90 epochs) is stated at 115 epochs/s and
+  17 s; 4h H4's settings save, about 0.78 s, 90 epochs) was stated at
+  115 epochs/s, so it overstates the source-off time; each is
   re-derived from run 2's measured playback rate. A wall-clock bound
   (4f F9's 500 ms) is a `millis()` timer, never an epoch count (Phase 5
   E13).
@@ -4005,6 +4027,32 @@ delivery audit per phase. Each item is followed by its resolution.
   that went with the journal, owner overturn 2026-10-07, and 4h no
   longer edits them. The serial accessor stays: H3 needs it.)
 
+**Device run 1, agent-run part (2026-10-16, about 11:00Z, source off,
+`5766cce3f0f9`; evidence
+`.scratch/e173e26c-e337-49cc-b423-533c708ff340/source-off-1016/`).**
+- **FIFO baseline: PASS.** The 17 plain `/sd/www` files equal their sync
+  source; the `/sd/www/presets/` and `/sd/www/` listings equal the
+  expected sets; `GET /sd/www/missing.js` answers 404 with `open_misses`
+  2 to 3. `/sd/aius/dsp.json` answers 200, 857 B, not content-checked
+  (no sync source). `loop_epoch` ran at 5,201 epochs/s over 30.04 s
+  (§Epoch period).
+- **DMA arm: PASS.** `POST /api/sd/mode {"dma":true}` answered 200,
+  `sd_mode` dma; the armed content checks repeated 25/25 equal, the
+  missing-file 404 counted once more, bundles answered 304, faults 0.
+- **Full sync, armed: PASS except the stall witness.** 22 PUTs ok;
+  `sd_flush` flushed 22, `failures` 0, `sync_drain_ms` 6,152; faults,
+  CRC rejects, underruns, missed fills, `http_shed` and `sd_fifo_defers`
+  0. `stall_diag.events` 2 to 3 (4.04 s), Phase 4zd's.
+- **OTA stage plus rehearse in DMA mode: PASS.** Container
+  `fd5f9ab6ad50` (sha256
+  `91cedd22204d3ee3b5e4400afe8459983bb4851dc16a462fe4b058015488b1e9`),
+  151 chunks, 0 retries; `ota_dark` state 4, `rehearsal` true, fault 0,
+  steps 2,550/2,550; `reset_source` software, `sd_mode` back to fifo,
+  `boot_generation` 26.
+- **Still the owner's:** the card pull and reinsert (physical) and
+  `POST /api/clear` after arming (owner-only), so the run's deltas are
+  before/after reads, not clear-based. Image 2 and E7 wait on Phase 4zd.
+
 ### Phase 4f HTTP is best-effort: shedding, render yields, lighter polling
 
 ```yaml
@@ -4562,7 +4610,7 @@ clean-room, and implementation carries a delivery audit per phase.
 ```yaml
 phase: 4g
 title: The web app is served from a CRC-checked PSRAM cache as gzip page bundles with ETag validation
-status: built # 2026-10-10: host proof green (18 suites, verifier run), both images with every post-link guard and OCRAM at each floor, delivery audit FAIL then closure PASS, clean-room HOLD (fill restart livelock) then closure; device runs 1 and 2 are the owner's (no OTA until the owner's go-ahead)
+status: built # 2026-10-10: host proof green (18 suites, verifier run), both images with every post-link guard and OCRAM at each floor, delivery audit FAIL then closure PASS, clean-room HOLD (fill restart livelock) then closure; device run 1 partly agent-run 2026-10-16 (body: PASS except the stall witness, Phase 4zd); its post-reboot mount-fill step and run 2 are the owner's
 depends-on: phase-4f
 prebuild-review: ready # 2026-10-07: rounds 2 to 5, clean-room, clean-room closure, clean-room round 3 and two closures; second closure READY; CR5-S1 to S4 folded; no further clean-room: the closing reviewer was itself clean-room and implementation carries a delivery audit per phase
 outcome: >-
@@ -4597,7 +4645,7 @@ targeted-proof:
   - "host: web-cache (new): placement is the pad-2 tail from 0x70808000 on a 16 MiB fitment and absent on 8 MiB fitments, disjoint from the recorder ring and every aius_ota_staging_place result; fill, read-back and publish; _fill_chunk calls the flush-delete hook and CRCs that chunk before returning, a chunk whose read-back CRC differs from the card bytes fails the fill, and _publish of a 175,913 B entry reads no chunk (a counting fake PSRAM reader sees zero reads at publish, G10, CR-S6); verify calls the flush-delete hook for each chunk before its CRC; a flipped bit in any chunk fails verify and drops the entry; a lease holds an entry across invalidate while the replacement serves the next request; capacity full falls back to SD; the listing comes from the manifest"
   - "host: http: If-None-Match and Accept-Encoding parse (absent, gzip, q=0, lists); ETag, Content-Encoding and Vary headers; a 304 has no body"
   - "host: sd (CACHE_FILL job, one file; a cancel at any primitive boundary closes the file, issues no write and leaves the job idle at the next step), optical-app (hit, miss, 304, gzip negotiated and plain fallback, a pre-header CRC fault falls back to the SD job, a mid-stream fault closes the connection and schedules a refill, a page miss and an upload PUT arriving while a fill file is in flight are not refused: the fill stops at its next primitive boundary, its entry stays unpublished and the file is re-queued, and the request's job starts the epoch after with no fill file started between; a fill file starts only once the hold has lapsed and 2 s have passed since the last HTTP SD job; a cancel followed by a release and no HTTP SD job, the 4h flush and freeze shape driven here through the cancel and release entries, starts the next fill file 2 s after the release and never before it, and a cancel with no release yet keeps the hold, R5-S1), optical-cutover (the fill start site consults sd_fifo_defer()), memory (no EXTMEM, no extmem heap, OCRAM free unchanged; on the canonical image ITCM growth at most 1,000 B, DTCM statics growth at most 256 B), stack-bound (the send loop with its 512 B copy buffer under a yield-point pass), producer-isolation (the send loop in the yield-root table), runtime-target (aius_optical_app.cpp and aius_runtime_storage.cpp against the fakes), status-body-bound (www_cache keys), sd-editor (openapi), itcm-placement and registry green; both images build"
-  - "device run 1 (source off, 4g image, synced www): every plain file and every decoded bundle equals the source and www_bundle.py output; a repeat load answers 304; a page load and a full aius-sd-sync.sh started right after a reboot (during the mount fill, about 17 s at one 512 B read per epoch at about 115 epochs/s source-off, 4e §Epoch period; under playback it is longer, re-derived from 4e run 2's measured rate, R4-N2) both complete, the page load with no retry, with www_cache.fill_holds and fill_cancels recorded; http_shed and sd_fifo_defers delta 0 with /api/status tx_gate.open 0 throughout (4f F11, CR-B1); www_cache.crc_faults and stall-witness events delta 0; www_cache.entries equals the synced set"
+  - "device run 1 (source off, 4g image, synced www): every plain file and every decoded bundle equals the source and www_bundle.py output; a repeat load answers 304; a page load and a full aius-sd-sync.sh started right after a reboot (during the mount fill, one 512 B read per epoch at the measured 5,201 epochs/s source-off, 4e §Epoch period, so its length is recorded, not derived; under playback it is longer, re-derived from 4e run 2's measured rate, R4-N2) both complete, the page load with no retry, with www_cache.fill_holds and fill_cancels recorded; http_shed and sd_fifo_defers delta 0 with /api/status tx_gate.open 0 throughout (4f F11, CR-B1); www_cache.crc_faults and stall-witness events delta 0; www_cache.entries equals the synced set"
   - "device run 2 (owner, AC-3): ten cold and warm page loads give underrun_episode_count delta 0 and no SD job primitive during the warm loads"
 contract-artifact: spec-only
 fan-out: # www-bundle, web-cache and http-cache-headers concurrently; parent-wiring after web-cache's header lands
@@ -5005,6 +5053,16 @@ clean-room, and implementation carries a delivery audit per phase.
   include check, libc row figures, `SHF_ALLOC` relocations, stored
   volume serial); nothing changes here.
 
+**Device run 1, agent-run part (2026-10-16, source off, `5766cce3f0f9`):
+PASS except the stall witness.** Every decoded bundle equals
+`www_bundle.py`'s output, a repeat load answers 304, `www_cache.entries`
+is 25 (16 www files, 6 fonts, 3 presets: the synced set plus the card's
+presets), `crc_faults` 0. Stall-witness events rose by 1 during the
+DMA-armed sync (Phase 4zd). Still the owner's: the page load and full
+sync right after a reboot (during the mount fill), since `POST
+/api/reboot` is owner-only. Evidence:
+`.scratch/e173e26c-e337-49cc-b423-533c708ff340/source-off-1016/`.
+
 ### Phase 4h Write-behind settings flush, disconnect hold, copy-before-write saves
 
 ```yaml
@@ -5093,7 +5151,7 @@ targeted-proof:
   - "host: optical-cutover: platform_publish_config consults the overlay before writing g_config or g_pending_dsp_model; a shadowed path is acknowledged and not applied; the flush job start consults sd_fifo_defer() and calls web_cache_fill_cancel() when a fill file is in flight; in both OTA services the first drain re-check precedes the freeze latch and a second drain query is the statement immediately before aius_recorder_bank_park, with no epoch return between them; in the reboot service the second drain query immediately precedes tx_gate_actuate and reset_application (R4-B1)"
   - "host: ota (test_ota_flash_client.py: the 409 wait up to 60 s, stopping once sd_flush drains, N6, and activation_fault ota_flush_pending and ota_sd_busy each reported as abandoned), http, status-body-bound (sd_flush, crc_drops included; sd_diag settings_restores and settings_restore_faults), sd-editor (dsp-editor pending and saved states; openapi), stack-bound (accept and flush roots, and the Q2 re-put root through http_dsp_config_json, D1), producer-isolation (accept and flush roots in the yield-root table), runtime-target (aius_optical_app.cpp and aius_runtime_storage.cpp against the fakes), memory (firmware/test/memory/verify_target.py as 4g left it: slot-a ITCM free at least 11,900 B, so 4h's 1,000 B is whole since 4g used none of its own; _ebss at most 0x20049A00, 4g's 0x20049900 plus 4h's 256 B; _VectorsRam at 0x20007c00, so new strings and tables go in flash; OCRAM free unchanged, and since OCRAM sits exactly at every env's floor, any OCRAM growth is paid by reuse, as 4g's was; per-entry state lives in the carve's manifest, so 4h's DTCM statics are H19's list, about 105 B against the 256 B budget, B1; 4h's commit then moves the ITCM floor, the _ebss ceiling and the _VectorsRam address to its own link and records the figures), http (Accept-Encoding * negotiates gzip; *;q=0 does not; *, gzip;q=0 stays plain, N2), www-bundle (sync --file of a non-page, non-inlined file with a page missing from --www exits 0 and runs no bundle step; with a page selected and an asset missing it exits 1 before any upload; a script containing <!-- fails the build naming its page and asset), registry and itcm-placement (aius_ab and aius_sd_overlay in EXPECTED_LDF_LIBS; a link missing either fails, N4) green; both images build"
   - "device (owner, AC-3, sd_mode DMA asserted at start and end): one full sync with one Apply during it (its latency recorded, not bounded); once sd_flush.dirty is 0, POST /api/clear, then three Applies, two preset saves and one preset delete, each made only once sd_flush.dirty reads 0 after the previous one, so each is measured with no settings file queued ahead (H8, CR-S10): underrun_episode_count delta 0 throughout, sd_flush.max_settings_latency_ms at most 5,000, sd_flush.sync_drain_ms recorded, sd_flush.failures 0; once drained, and again after a reboot, GET /sd/aius/dsp.json and every saved preset (GET /sd/www/presets/...) equal their PUT bodies and /api/status shows the PUT public config (config.json has no read route)"
-  - "device (owner's hands, accidental disconnect, source off, /api/status tx_gate.open 0): every Apply and save below answered 200 at its first attempt, http_shed and sd_fifo_defers delta 0 (4f F11, CR-B1); card pulled, an Apply and a preset saved (sd_flush.held true once the probe or a card operation finds the card gone, the preset and GET /sd/aius/dsp.json served from PSRAM); the same card reinserted: GET /api/dsp/config still the Apply's model and config_generation not advanced by the reload, the preset (GET /sd/www/presets/...) still the saved body after the post-mount refill, then sd_flush.held false, both flushed, and GET /sd/aius/dsp.json and the preset equal to their PUT bodies; sd_diag absent_mounts recorded and fault deltas taken outside the card-out interval. Then with AC-3 playing: card pulled, one Apply (held true), the same card reinserted: held clears within about AIUS_SD_FLUSH_REMOUNT_MS of the reinsert and the Apply flushes with the source still on (its latency recorded), sd_window_nonyield_max_us across the held interval and underrun_episode_count delta recorded (S1: SdioCard::begin's CMD0 and CMD8 path is not hooked, so any BEGIN with no card behind a stale DAT3 read would not yield). No different-card step: a card swap while powered is unsupported (owner, 2026-10-10)"
+  - "device (owner's hands, accidental disconnect, source off, /api/status tx_gate.open 0): every Apply and save below answered 200 at its first attempt, http_shed and sd_fifo_defers delta 0 (4f F11, CR-B1); card pulled, an Apply and a preset saved (sd_flush.held true once the probe or a card operation finds the card gone, the preset and GET /sd/aius/dsp.json served from PSRAM); the same card reinserted: GET /api/dsp/config still the Apply's model and config_generation not advanced by the reload, the preset (GET /sd/www/presets/...) still the saved body after the post-mount refill, then sd_flush.held false, both flushed, and GET /sd/aius/dsp.json and the preset equal to their PUT bodies; sd_diag absent_mounts recorded and fault deltas taken outside the card-out interval. Then with AC-3 playing: card pulled, one Apply (held true), one GET /sd/aius/4k-probe.txt answering 503 sd_unavailable, or sd_busy inside a remount window (Phase 4k's check, 4b's 'Phase 4k, playback case' item), the same card reinserted: held clears within about AIUS_SD_FLUSH_REMOUNT_MS of the reinsert and the Apply flushes with the source still on (its latency recorded), sd_window_nonyield_max_us across the held interval and underrun_episode_count delta recorded (S1: SdioCard::begin's CMD0 and CMD8 path is not hooked, so any BEGIN with no card behind a stale DAT3 read would not yield). No different-card step: a card swap while powered is unsupported (owner, 2026-10-10)"
 contract-artifact: spec-only
 fan-out: # sd-overlay, copy-before-write, ota-tool, ui-pending and www-tools concurrently; parent-wiring after sd-overlay's header lands; sd-overlay's job-request cases and power-cut model cases after copy-before-write reports (FR-S7)
   - name: sd-overlay
@@ -7309,7 +7367,7 @@ stack-bound row was needed; OCRAM is unchanged at every floor.
 ```yaml
 phase: 4k
 title: A blocked SD start with no card answers sd_unavailable
-status: built # 2026-10-11: host proof green (8 suites, verifier run), all four optical images with every post-link guard and OCRAM at each floor, delivery audit (normal-operation scope, owner direction) PASS with nits N2 and N3 fixed; no device run needed beyond 4b's
+status: built # 2026-10-11: host proof green (8 suites, verifier run), all four optical images with every post-link guard and OCRAM at each floor, delivery audit (normal-operation scope, owner direction) PASS with nits N2 and N3 fixed; device check is 4b's "device (Phase 4k, playback case)" targeted-proof item, run inside 4h's card-disconnect run
 depends-on: phase-4h
 prebuild-review: ready # folded 2026-10-11; owner waives further closure rounds on card edge cases. NOT READY 2026-10-11 (B1, S1 to S4, N1 to N3), folded with owner answer S4
 outcome: >-
@@ -7400,7 +7458,7 @@ fixed.
 ```yaml
 phase: 4l
 title: At most 16 saved presets
-status: built # 2026-10-11: host proof green (8 suites, verifier rerun after audit fixes), all four optical images with every post-link guard and OCRAM at each floor, delivery audit (normal-operation scope) FAIL (B1 first preset on a card with no presets dir, S1 quadratic count, S2 hidden names) then closure PASS; device check is part of 4b's runs
+status: built # 2026-10-11: host proof green (8 suites, verifier rerun after audit fixes), all four optical images with every post-link guard and OCRAM at each floor, delivery audit (normal-operation scope) FAIL (B1 first preset on a card with no presets dir, S1 quadratic count, S2 hidden names) then closure PASS; device check is 4b's "device (owner, source off ...; Phase 4l)" targeted-proof item
 depends-on: phase-4h
 prebuild-review: ready # folded 2026-10-11; owner waives further closure rounds on card edge cases. NOT READY 2026-10-11 (B1 to B3, S1 to S5, N1 to N3), folded with owner answers B1 and the overfull card
 outcome: >-
@@ -7530,7 +7588,7 @@ cap.
   with nothing counted (closure N2), a card fault outside the owner's
   scope.
 
-### Phase 4m Mixer Phase 1e: bypass note truth and trim on the EQ curve
+### Phase 4m Mixer Phase 1e: bypass note truth and trim on the EQ curve ✓ SHIPPED 2026-10-16
 
 The mixer plan's Phase 1e
 ([`aius-sd-mixer-dashboard.md`](aius-sd-mixer-dashboard.md) §Phase 1e),
@@ -7539,11 +7597,11 @@ the design 2026-10-11 ("incorporate the mixer session changes, the new
 design is approved").
 
 ```yaml
-outcome: the input_eq bypass note says "EQ and trim bypassed"; each channel's EQ curve sits at its trim offset on both SD pages; the stale +-24 gain-bound comment reads +-12
+outcome: the input_eq bypass note says "EQ and trim bypassed"; each channel's EQ curve sits at its trim offset on the DSP page (both SD pages when built; Phase 4r deleted the classic page); the stale +-24 gain-bound comment reads +-12
 seams: [firmware/sd/www/dsp-editor.js, test/sd-editor/dsp-editor.test.js]
 targeted-proof: dsp-editor.test.js cases for the note text, a curve point shifting by exactly the trim dB, per-member offsets on a bonded pair, and no offset with input_eq off; sd-editor vitest green; Chromium probe of the mixer preview showing the curve move on a trim step
 unit: implementer
-status: built # 2026-10-11
+status: shipped # 2026-10-16: host tests and the Chromium probe were its whole proof (built 2026-10-11); no device item
 ```
 
 - **Decision (orchestrator, 2026-10-11).** With `features.input_eq` off
@@ -8838,6 +8896,64 @@ unit: implementer
   - Seven planted negatives; 119 unit tests. Both slot ELFs pass via the
     CLI; itcm-placement and boot-target green. No firmware change, so
     no OTA.
+
+### Phase 4zd A DMA-armed card sync does not stall the main loop for 4 s
+
+```yaml
+phase: 4zd
+title: A DMA-armed card sync does not stall the main loop for 4 s
+status: planned # 2026-10-16: found by the agent-run 4e run 1 (source off); blocks 4e's image 2 OTA and the E7 verdict
+depends-on: phase-4e (image 1, DMA runtime-armed)
+outcome: >-
+  With the source off and DMA armed (POST /api/sd/mode {"dma":true}),
+  one full aius-sd-sync.sh and the 4e run 1 read-backs leave
+  stall_diag.events unchanged. The cause of the 2026-10-16 event (4.04 s,
+  pc 0x0001cfc4, lr 0x20049284) is named and fixed, or shown to be a
+  witness artefact and the witness corrected. 4e's image 2 OTA and the
+  E7 verdict wait on this phase.
+seams:
+  - "the code the stall pc maps to (named by the diagnosis; candidates firmware/vendor/SdFat/src/SdCard/SdioTeensy.cpp DMA paths, firmware/src/aius_sd_teensy.cpp, firmware/src/optical_main.cpp)"
+  - "the stall_diag witness source, if the event is a witness artefact"
+  - "a host suite at the fixed seam (sdfat-vendor, sd-target, producer-yield or runtime-target)"
+targeted-proof:
+  - "diagnosis: pc and lr mapped in the 5766cce3f0f9 slot ELF (link map or addr2line), function and line recorded"
+  - "reproduce (agent, source off, allowed by the posture): one GET /api/status with tx_gate.open 0, POST /api/sd/mode {\"dma\":true}, one full aius-sd-sync.sh and the 4e run 1 read-backs; stall_diag.events delta, last_us, pc and lr recorded per run; stop at the first reproduction or after three clean runs"
+  - "host: a regression case at the fixed seam that fails before the fix"
+  - "device (agent, source off, after the fix's OTA): the same armed sync and read-backs give stall_diag.events delta 0, driver_faults, protocol_faults, busy_timeouts and sd_flush.failures delta 0"
+unit: implementer
+live-dependency: none
+```
+
+- **Evidence (agent, 2026-10-16, about 11:00Z, source off, on
+  `5766cce3f0f9`).** `stall_diag.events` went from 2 to 3 during the
+  DMA-armed full sync (22 PUTs, `sync_drain_ms` 6,152) or its read-backs:
+  `last_us` 4,039,466 (4.04 s), pc `0x0001cfc4` (ITCM), lr `0x20049284`
+  (a DTCM address, so not a code return address as captured).
+  `sd_window_nonyield_max_us` stayed at its boot value 581,677, so the
+  stall did not register inside an SD window. No watchdog, no reset;
+  `busy_timeouts`, driver and protocol faults, `underrun`, missed fills,
+  `http_shed` and `sd_fifo_defers` all stayed 0. Logs and status
+  snapshots: `.scratch/e173e26c-e337-49cc-b423-533c708ff340/source-off-1016/`
+  (`dma/`, `sync.out`, `pre-sync-status.json`, `post-sync-status.json`).
+- **Steps** ([diagnose guide](../../../../docs/guides/diagnose.md)):
+  map pc and lr in the matching ELF; reproduce with another armed sync
+  (the posture allows it); list hypotheses against the evidence (a DMA
+  wait outside the window clock; a stretch the window never opens
+  around; a witness that stamps across a long but yielding path); fix
+  and add a host regression at the seam; prove on the device as above.
+- **4e's image 2 and E7 wait on 4zd.** A 4 s main-loop stall under DMA
+  would decide E7 if real, so neither runs first.
+- **Investigate, do not assume a defect:**
+  - `/api/status` shows `config_valid` 0 and `config_error` "not loaded"
+    (code 10) with `sd_present` 1. Find why the mount's config load
+    reports not loaded with a card present.
+  - A stray `/sd/www/.lottery-probe.txt` (8,192 B) sits on the card.
+    Agent call (card edge case): leave it in place. It is not in the
+    cache (`www_cache.entries` 25 counts 16 www files, 6 fonts and 3
+    presets). The owner deletes it in a later session with one `DELETE`,
+    since deletion is outside the agent-run list; no sync-script change.
+  - `input_diag` `sis_symerr` and `lockloss` rise with no source, so
+    they are not fault evidence (noted in 4b).
 
 ### Phase 4c `test.sh` runs every `--suite` given ✓ SHIPPED 2026-10-06
 
