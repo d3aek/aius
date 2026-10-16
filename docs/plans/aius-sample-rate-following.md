@@ -64,11 +64,13 @@ in prebuild review); replace wholesale on the next handover.
   mixed with listening (aius CLAUDE.md).
 - **Next action: Phase 4za** (D2 set/way fix in build 1 into slot 2,
   then pin removal in build 2, rehearsed from slot 2 and activated into
-  slot 1). Prebuild review round 1 NOT READY, folded; round 2 was in
-  flight at the 2026-10-16 handover (re-run it if no verdict is
-  recorded in the contract). Then build 1 (`unit: implementer`, opus
-  tier: the dark-window path), delivery audit, and three owner-gated
-  device steps. Card syncs ran from the agent this run once the owner
+  slot 1). Prebuild review round 2 READY, folded. Build 1
+  (`unit: implementer`, opus tier: the dark-window path) was dispatched
+  2026-10-16; if 4za has no "Built" record, check
+  `the repo tooling git -C git_modules/aius status --short` for its
+  uncommitted work in `optical_main.cpp` and `verify_target.py` before
+  re-dispatching. Then a delivery audit (same reviewer) and three
+  owner-gated device steps. Card syncs ran from the agent this run once the owner
   said "sync"; if the classifier refuses one, the owner runs it with
   `!`.
 - **What landed this run** (aius commits, each followed by a upstream repository
@@ -8594,10 +8596,10 @@ outcome: >-
   57977135e472); and the identity-window read path is proven on the
   device from slot 2
 seams:
-  - "firmware/src/optical_main.cpp ota_flash_read restore side: a dsb between IOMUXC_GPR_GPR32 = saved and the restore SWRESET (S2; the flip side stays as is, a wrong read there fails safe at verify); then SWRESET poll, dsb/isb, ONE set/way clean+invalidate pass over the whole D-cache, which REPLACES the post-copy arm_dcache_delete range invalidate (S3), then the existing dsb, ICIALLU, dsb/isb"
-  - "the set/way pass: hand-written on SCB_CACHE_DCCISW (imxrt.h) with fixed set << 5 | way << 30 for 256 sets x 4 ways, immediates only, no CMSIS core_cm7.h (N1); clean+invalidate, never DCISW, and the code comment says why (N2: the staged PSRAM image and OCRAM DMAMEM lines may be dirty, and dropping them would make program and compare read stale PSRAM backing, so verify could pass on bytes that were never signature-checked); the loop lives in ONE AIUS_OTA_DARK_WINDOW_FN noinline helper (or ota_flash_read is noinline) so ota_flash_read_inject_head_fault cannot duplicate it (S4)"
-  - "ITCM: record the nm --size delta; slot-A ITCM stays at or above 13,284 B (80 B headroom today). Fallback if breached (S4): one pass at the top of ota_activate_run_and_finalize's READY_TO_RESET branch before ab_activation_mark_pending, plus one after ota_rehearse_run returns; valid because no step-loop code outside ota_flash_read reads canonical flash D-side (the 4z closure guard)"
-  - "firmware/test/itcm-placement/verify_target.py (S1): a check that ota_flash_read (or its helper) stores to DCCISW (0xE000EF74) in a loop after its last IOMUXC_GPR32 (0x400AC080) store, with a planted negative that fails without the loop; the 4z closure guard still passes (no veneer, no flash literal)"
+  - "firmware/src/optical_main.cpp ota_flash_read restore side: a GPR32 read-back ((void)IOMUXC_GPR_GPR32, so an early AIPS write ack cannot race) then a dsb between IOMUXC_GPR_GPR32 = saved and the restore SWRESET (S2, round 2 S4); the comment at :5425-5429 ('Do not fix by inserting a barrier') is rewritten to say the flip side stays unordered because a wrong read there fails safe at verify, and the restore side is ordered because a stale line there is silent (round 2 N2); then SWRESET poll, dsb/isb, ONE set/way clean+invalidate pass over the whole D-cache, which REPLACES the post-copy arm_dcache_delete range invalidate (S3), then the existing dsb, ICIALLU, dsb/isb"
+  - "the set/way pass: hand-written on SCB_CACHE_DCCISW (imxrt.h) with fixed set << 5 | way << 30 for 256 sets x 4 ways, immediates only, no CMSIS core_cm7.h (N1); clean+invalidate, never DCISW, and the code comment says why (N2: the staged PSRAM image and OCRAM DMAMEM lines may be dirty, and dropping them would make program and compare read stale PSRAM backing, so verify could pass on bytes that were never signature-checked); the loop lives in ONE noinline ITCM helper named ota_dcache_clean_invalidate_all (S4); AIUS_OTA_DARK_WINDOW_FN is defined at :5527, after ota_flash_read at :5381, so move the macro above it or spell out a FASTRUN __attribute__((noinline)) static forward declaration (round 2 N1)"
+  - "ITCM: record the nm --size delta; slot-A ITCM stays at or above 13,284 B (80 B headroom today). If breached, a once-per-window pass saves no bytes (round 2 S2: the helper costs the same, and the range invalidate would return), so the fallback is a byte reclaim elsewhere in the step-loop closure or the owner's decision to lower the floor (firmware/test/memory/verify_target.py:75), asked as an interrogate step. A once-per-window pass stays only as a time fallback, not expected (N3); if ever used, the rehearsal's pass goes inside ota_rehearse_run before it returns, not after (service_ota_rehearsal restores interrupt sources right after it, :11549-11551) (round 2 S3)"
+  - "firmware/test/itcm-placement/verify_target.py (S1, round 2 S1 and S4): the code addresses its registers as base plus offset (GPR32 is str [r3, #128] from a .word 0x400ac000 literal; SCB cache ops are str [ip, #0xF5C-style] from mov.w ip, #0xe000e000), so the guard resolves stores by tracking mov.w/movw/movt immediates and ldr-pc literals into registers and adding the str offset; it requires a DCCISW (0xE000EF74) store and a backward branch in ota_dcache_clean_invalidate_all, a bl from ota_flash_read to it after the resolved GPR32 (0x400AC080) restore store, and a dsb between that store and the MCR0 (base 0x402A8000) SWRESET store; planted negatives: the loop dropped, the bl moved before the GPR32 store, the dsb dropped; the 4z closure guard still passes (no veneer, no flash literal)"
   - "build 2: firmware/link/aius_teensy41.ld pin and anchor removed; firmware/tools/ota/aius_ota_sign.py bridge_pin_mismatch and its call removed, BridgePinTests removed, a positive control that a pinless canonical payload signs; firmware/test/boot-target/test_ldscript_drift.py BRIDGE_PIN_BLOCK, the anchor and next checks and the drop-the-pin mutation arms removed (a leftover ORIGIN + 0x1B80 then fails drift by itself); image floors rechecked (_flashimagelen shrinks by about 0x400) (N4)"
   - "CLAUDE.md: the 'Until plan Phase 4za, aius_ota_sign.py sign refuses' paragraph removed by the release-promotion step in build 2's commit (S5)"
 targeted-proof: >-
@@ -8619,7 +8621,7 @@ targeted-proof: >-
   consumed the session) and activate it into slot 1; self-commit on
   slot 1
 unit: implementer
-prebuild-review: round 1 NOT READY 2026-10-16 (B1, S1 to S6, N1 to N5), folded; round 2 pending
+prebuild-review: round 2 READY 2026-10-16, S1 to S4 and N1 to N3 folded; round 1 NOT READY (B1, S1 to S6, N1 to N5), folded
 ```
 
 - **Decision (owner, 2026-10-16), D2:** fix it. A full D-cache clean and
@@ -8643,7 +8645,12 @@ prebuild-review: round 1 NOT READY 2026-10-16 (B1, S1 to S6, N1 to N5), folded; 
 - **Time cost (N3, estimate):** about 2,400 identity reads x one
   1,024-line pass, mostly clean lines, plus PSRAM re-misses on the
   compare: 25 ms or less on a 6.7 s window. The watchdog is fed before
-  every primitive (`aius_ota_activate.c:381`), so nothing bounds it.
+  every primitive (`aius_ota_activate.c:381`), so one pass per read
+  stays far inside its 8 s bound (`optical_main.cpp:5786`).
+- **Why the identity branch has no other caller (round 2 S3).**
+  `ab_record_write` reads the head region, outside the remap window,
+  and the self-test scratch sector (`optical_main.cpp:5309-5310`) is
+  slot B's last sector, also outside the canonical window.
 
 ### Phase 4c `test.sh` runs every `--suite` given ✓ SHIPPED 2026-10-06
 
