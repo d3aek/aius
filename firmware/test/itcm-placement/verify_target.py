@@ -887,11 +887,14 @@ DISASM_COMMENT = re.compile(r"[@;]")
 # code and loop bodies like the built ones; any other shape fails. Inside
 # the restore sequence a load or store through an unresolved base fails
 # (sp-relative stack slots excepted), as does any msr or cpsie before the
-# final PRIMASK restore. ACCEPTED (N4, clean-room round 2): a branch that
-# skips the whole restore, a poll whose exit is unconditional, and a
-# backward branch out of the tail are not proven absent; each leaves the
-# remap or the caches visibly wrong and fails loudly on the device (verify
-# or the next boot), not silently.
+# final PRIMASK restore. The three shapes 4za first accepted as loud on the
+# device (N4) are caught too (Phase 4zc): a branch from inside the identity
+# window (flip store on) past the PRIMASK restore, or a return there, which
+# skips the whole restore; a poll whose backward branch is anything but
+# `bne` after its `ands`/`tst` #1, so its exit is unconditional or
+# inverted; and a backward branch from inside the restore sequence to
+# before the restore store. Branches before the flip store (the span-check
+# error exit) may cross the whole sequence: the window is not open there.
 DCACHE_HELPER = "ota_dcache_clean_invalidate_all"
 IDENTITY_READ_PATH = "ota_flash_read"
 IOMUXC_GPR_GPR32_ADDRESS = 0x400AC080
@@ -1547,10 +1550,12 @@ def _verify_dcache_helper(symbol: str, body: Mapping, events) -> int:
 def verify_identity_restore(functions: Mapping[str, dict]) -> tuple[int, int, int]:
     """Phase 4za (D2). The helper: see _verify_dcache_helper. ota_flash_read's
     restore side, from the GPR32 restore store to the PRIMASK restore, is
-    straight-line (no forward branch inside it, no branch into it from
-    outside, no IT block or predicated instruction) and runs: GPR32 restore
-    store, GPR32 read-back, dsb, MCR0 SWRESET store of a value through `orr
-    #1`, a backward MCR0-load poll loop, dsb, isb, exactly one bl to the
+    straight-line (no forward branch inside it, no backward branch out of
+    it, no branch into it from outside, no branch or return from the
+    identity window past it, no IT block or predicated instruction) and
+    runs: GPR32 restore store, GPR32 read-back, dsb, MCR0 SWRESET store of a
+    value through `orr #1`, a backward MCR0-load poll loop closed by bne on
+    `ands`/`tst` #1, dsb, isb, exactly one bl to the
     helper, dsb, ICIALLU store, dsb, isb, PRIMASK restore. Neither function
     may store DCISW. Pure half; returns (helper DCCISW stores, restore store
     offset, helper call offset) within ota_flash_read."""
@@ -1681,17 +1686,33 @@ def verify_identity_restore(functions: Mapping[str, dict]) -> tuple[int, int, in
             f"{reader} has no PRIMASK restore or return after the {helper} "
             f"call at {where(call)}"
         )
+    # The identity window opens at the GPR32 flip store. A branch before it
+    # (the span-check error exit at the top) may cross everything; one from
+    # inside it must not leave without passing the restore store.
+    flip = gpr32[0]
     for kind, insn, target in reader_events:
+        if kind == "return" and flip <= insn < restore:
+            raise VerificationError(
+                f"{reader}{where(insn)} returns inside the identity window "
+                f"(flip at {where(flip)}) before the GPR32 restore at "
+                f"{where(restore)}; the running slot's remap is never restored"
+            )
         if kind != "branch":
             continue
         inside = restore <= insn < leave
-        if (inside and target > insn) or (
-            not inside and restore < target <= leave
-        ):
+        problem = None
+        if inside and target > insn:
+            problem = "forward inside"
+        elif inside and target < restore:
+            problem = "backward out of"
+        elif not inside and restore < target <= leave:
+            problem = "into"
+        elif flip <= insn < restore and target > leave:
+            problem = "from the identity window past"
+        if problem is not None:
             raise VerificationError(
-                f"{reader}{where(insn)} branches to 0x{target:x}, "
-                + ("forward inside" if inside else "into")
-                + f" the restore sequence ({where(restore)} to "
+                f"{reader}{where(insn)} branches to 0x{target:x}, {problem}"
+                f" the restore sequence ({where(restore)} to "
                 f"{where(leave)}); the linear trace cannot prove the pass and "
                 "its barriers run on every path"
             )
@@ -1776,11 +1797,23 @@ def verify_identity_restore(functions: Mapping[str, dict]) -> tuple[int, int, in
         loaded = _last_def(reader_insns, _register(tested), source[0], target)
         return loaded is not None and loaded[0] == poll
 
-    if not any(polls_bit0(*loop) for loop in loops):
+    fed = [loop for loop in loops if polls_bit0(*loop)]
+    if not fed:
         branch = loops[0][0]
         raise VerificationError(
             f"{reader}{where(branch)} poll branch is not fed by `ands`/`tst` "
             "#1 of the MCR0 load; it does not wait on the SWRESET bit"
+        )
+    if not any(
+        re.fullmatch(r"bne(?:\.n|\.w)?", reader_by_address[loop[0]][1])
+        for loop in fed
+    ):
+        branch = fed[0][0]
+        raise VerificationError(
+            f"{reader}{where(branch)} poll branch is "
+            f"{reader_by_address[branch][1]}, not bne; after `ands`/`tst` #1 "
+            "only bne loops while SWRESET is still set, so this exit is "
+            "unconditional, inverted or never taken"
         )
     tail = [
         (kind, insn, value) for kind, insn, value in reader_events

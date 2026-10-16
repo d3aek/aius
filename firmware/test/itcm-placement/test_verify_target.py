@@ -1076,6 +1076,51 @@ class IdentityRestoreTests(unittest.TestCase):
         self.assertIn(("load", 0x942, None), events)
         self.check(listing())
 
+    # Phase 4zc: the shapes 4za first accepted as loud.
+    def test_planted_negative_branch_skips_the_whole_restore(self) -> None:
+        self.assertFails(
+            inserted(listing(), 0x90d, f"beq.n\t956 <{READER}+0x10e>"),
+            r"\+0xc5 branches to 0x956, from the identity window past the "
+            r"restore sequence \(\+0xc6 to \+0x108\)",
+        )
+
+    def test_a_return_inside_the_identity_window_fails(self) -> None:
+        self.assertFails(
+            inserted(listing(), 0x8f9, "pop\t{r4, r5, r6, r7, pc}"),
+            r"\+0xb1 returns inside the identity window \(flip at \+0x72\) "
+            r"before the GPR32 restore at \+0xc6",
+        )
+
+    def test_the_error_exit_before_the_flip_may_cross_the_sequence(self) -> None:
+        # 0x85a bne.n 956 in the real link: the window is not open yet.
+        functions = VERIFY.parse_disassembly("\n".join(listing()))
+        self.assertIn((0x85a, 0x956, READER), functions[READER]["branches"])
+        self.check(listing())
+
+    def test_planted_negative_poll_exit_inverted(self) -> None:
+        self.assertFails(
+            replaced(listing(), 0x92a, "bne.n", "beq.n"),
+            r"\+0xe2 poll branch is beq\.n, not bne",
+        )
+
+    def test_planted_negative_poll_exit_unconditional(self) -> None:
+        self.assertFails(
+            replaced(listing(), 0x92a, "bne.n", "b.n"),
+            r"\+0xe2 poll branch is b\.n, not bne",
+        )
+
+    def test_planted_negative_backward_branch_from_the_tail(self) -> None:
+        self.assertFails(
+            inserted(listing(), 0x946, f"bne.n\t8ac <{READER}+0x64>"),
+            r"\+0xfe branches to 0x8ac, backward out of the restore sequence",
+        )
+
+    def test_a_backward_branch_out_before_the_call_fails(self) -> None:
+        self.assertFails(
+            inserted(listing(), 0x919, f"bne.n\t8ac <{READER}+0x64>"),
+            r"\+0xd1 branches to 0x8ac, backward out of",
+        )
+
     def test_an_invalidate_only_pass_fails(self) -> None:
         self.assertFails(
             replaced(listing(), 0x6c8, "#3956]", "#3936]"),

@@ -35,7 +35,7 @@ in prebuild review); replace wholesale on the next handover.
   4x, 4xa, 4y, 4z DONE. BUILT, with their device proof the owner's and
   not yet run: Phase 4 (gate 7 at fill-write cadence on the U24 bench),
   4e, 4f, 4g, 4h, 4j, 4k, 4l, 4m. **4za** SHIPPED 2026-10-16; **4zc**
-  (guard hardening, owner's answer) IN PROGRESS.
+  (guard hardening, owner's answer) SHIPPED 2026-10-16.
   4b (acceptance umbrella) closes after 4e to 4h's device runs.
 - **Board.** Runs `5766cce3f0f9` (4za build 2, no pin) in slot 1,
   self-committed 2026-10-16: `ab.active_slot` 1, sequence 34,
@@ -74,11 +74,11 @@ in prebuild review); replace wholesale on the next handover.
   (device step 1 PASS 2026-10-16). 4za SHIPPED: build 2
   (`5766cce3f0f9`, no pin) was rehearsed from slot 2 and activated into
   slot 1. The owner answered the autonomous calls 2026-10-16 (4za
-  body). In flight: Phase 4zc (guard-only, dispatched), and a queued
-  `the release-promotion step` of `CLAUDE.md` deleting the
-  pre-`f075872c8b82` warning, which awaits the owner's approval. Check
-  `the repo tooling git -C git_modules/aius status --short` for either
-  landing uncommitted, and commit both with 4zc. After that the plan
+  body), and 4zc SHIPPED. Open: a queued `the release-promotion step` of
+  `CLAUDE.md` deleting the pre-`f075872c8b82` warning,
+  awaiting the owner's approval. When `the repo tooling git -C
+  git_modules/aius status --short` shows `CLAUDE.md` modified, commit
+  it. After that the plan
   holds only owner-run device proofs (Phase 4 gate 7 on the bench, 4e
   to 4h via 4b, 4j to 4m). Card syncs ran from the agent this run once the owner
   said "sync"; if the classifier refuses one, the owner runs it with
@@ -8813,7 +8813,7 @@ prebuild-review: round 2 READY 2026-10-16, S1 to S4 and N1 to N3 folded; round 1
     slot 2 is deleted (owner): the plan's 4z and 4za carry the history.
   - The guard review loop is overturned: one more round, Phase 4zc.
 
-### Phase 4zc The identity-restore guard also catches the loud shapes
+### Phase 4zc The identity-restore guard also catches the loud shapes ✓ SHIPPED 2026-10-16
 
 ```yaml
 outcome: verify_identity_restore fails on the three shapes 4za accepted as loud: a branch that skips the whole restore, a poll loop with an unconditional exit, and a backward branch from the tail to before the restore
@@ -8826,6 +8826,19 @@ unit: implementer
 
 - **Asked (owner, 2026-10-16):** one more hardening round, overturning
   4za's acceptance (N4).
+- **Built 2026-10-16.** The identity window opens at the GPR32 flip
+  store. The three shapes now fail:
+  - A branch from inside that window to past the PRIMASK restore fails,
+    and so does a return inside it. A branch before the flip store may
+    still cross: the real span-check error exit at 0x85a is pinned as
+    passing.
+  - The poll's backward branch must be exactly `bne`; a `b.n` or `beq`
+    there fails.
+  - A branch inside the restore sequence targeting before the restore
+    store fails.
+  - Seven planted negatives; 119 unit tests. Both slot ELFs pass via the
+    CLI; itcm-placement and boot-target green. No firmware change, so
+    no OTA.
 
 ### Phase 4c `test.sh` runs every `--suite` given ✓ SHIPPED 2026-10-06
 
