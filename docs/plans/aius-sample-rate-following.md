@@ -29,7 +29,9 @@ buffer and no intermediate DSP quantisation.
 
 Handover 2026-10-16, second run (session fe0bd501: source-off agent
 device checks, 4zd found, diagnosed, reproduced and contracted to
-prebuild-review ready; 4m shipped; 4ze added). Earlier run: session
+prebuild-review ready; 4m shipped; 4ze asked, all calls confirmed and
+the step deleted: 4m's ship, 4k/4l in 4b and agent-run activations
+stand). Earlier run: session
 e173e26c (4z, 4u to 4y, 4xa, 4za, 4zc). Replace wholesale on the next
 handover.
 
@@ -9246,12 +9248,20 @@ prebuild-review: ready # 2026-10-16: rounds 1 to 5 HOLD folded, round 6 PASS (ni
     (code 10) with `sd_present` 1. Find why the mount's config load
     reports not loaded with a card present.
   - A stray `/sd/www/.lottery-probe.txt` (8,192 B) sits on the card.
-    Agent call (card edge case): leave it in place. It is not in the
-    cache (`www_cache.entries` 25 counts 16 www files, 6 fonts and 3
-    presets). The owner deletes it in a later session with one `DELETE`,
-    since deletion is outside the agent-run list; no sync-script change.
+    It is not in the cache (`www_cache.entries` 25 counts 16 www files,
+    6 fonts and 3 presets). Owner 2026-10-16: the agent may delete it;
+    one authenticated `DELETE`, source off (`tx_gate.open` 0), during
+    the 4zd device session; no sync-script change.
   - `input_diag` `sis_symerr` and `lockloss` rise with no source, so
     they are not fault evidence (noted in 4b).
+- **Owner confirmed (2026-10-16, Phase 4ze executed):** card requests do
+  not cancel a scan (flush and freeze only); cancel and restart from
+  chunk 0 rather than proving the drain ceiling; the one-line SdFatConfig.h
+  `#ifndef` guard; 32 FAT sectors per primitive; the flush-due preempt.
+  **The owner delegates SD flush and drain-cycle calls to the agent's
+  recommendation and cannot evaluate them; at the end of 4zd's
+  implementation, report a plain-language summary of their impact**
+  (what a sync, a reboot and an OTA now do differently, and the cost).
 
 ### Phase 4c `test.sh` runs every `--suite` given ✓ SHIPPED 2026-10-06
 
@@ -9288,56 +9298,6 @@ committed (`5d7c05d`). B1's promote landed on owner approval; the diff
 carries exactly B1's lines (fill stamps, the pending pad counter, the
 three write counters, the full signing form, `python3` for the flash
 tool).
-
-### Phase 4ze Interrogate the user: confirm autonomous calls
-
-```yaml
-phase: 4ze
-outcome: each call below confirmed or overturned by the owner; an overturned call becomes plan work in the phase it touches
-seams: [this plan, the phases each call names]
-targeted-proof: [every entry answered and deleted; overturned calls appear as items in their phases]
-unit: parent-only
-```
-
-Asked at the end of the run or at handover; nothing waits on it.
-
-- **4zd, card requests do not cancel a usage scan.** Only the flush
-  path and the H9 freeze (one shared op) cancel it; a card request gets
-  `503 sd_busy` for at most about 5 s once per mount on FAT, inside the
-  sync's 15 s retry. Why: flush starts only follow uploads, so the scan
-  cannot starve, and a polled card route cannot restart it; the earlier
-  3-cancel bound could not tell a flush from the freeze. Alternative:
-  card requests cancel too, plus a starvation bound with a canceller
-  reason on `aius_runtime_storage_cancel_root`. Reversal cost: that
-  reason parameter, a counter and their host cases.
-- **4zd, a second one-line SdFat edit (the #ifndef guard).** Taken
-  under the owner's minimal-forwarder answer, so the host scan suite can
-  build with the target's separate FAT cache. Reversal cost: a
-  host-only copy of the config.
-- **4zd, a due flush preempts a usage scan.** Before the RUNNING-root
-  return in `sd_lifecycle_service`, a portable check cancels a running
-  scan when a flush is due, so a reboot or OTA activation with dirty
-  entries is not abandoned at the 500 ms drain deadline behind a 5 s
-  scan. Alternative: let the flush wait and accept DRAIN abandons while
-  a scan runs. Reversal cost: the preempt call, its helper and their
-  host and text cases.
-- **4zd, cancel and restart, not prove the drain ceiling.** A flush or
-  the freeze stops the scan at a chunk boundary and the refresh
-  restarts from chunk 0, so during a sync the usage figures stay stale
-  until the idle window after it (about 5 s DMA, 0.6 s PIO); they are
-  display-only. Reversal cost: drop the flush op's USAGE arm and prove
-  the reboot/OTA drain ceiling exceeds the scan.
-- **4zd, 32 FAT sectors per primitive** (about 17 ms DMA, 2.5 ms PIO).
-  Reversal cost: one constant.
-- **4zd, stray `/sd/www/.lottery-probe.txt` left on the card** for the
-  owner's `DELETE`, with no sync-script change.
-- **4m shipped on its host and Chromium proof**, with no device check.
-- **4k and 4l device checks placed in 4b as owner-run items** (4l a
-  source-off 17th-preset `409 preset_limit`; 4k's playback case via
-  4h's card-disconnect run plus `GET /sd/aius/4k-probe.txt`).
-- **Activations stay "no owner word"** although the owner's 2026-10-16
-  source-off list names only stage plus rehearse; the earlier same-day
-  ruling covers activations.
 
 ## Acceptance
 
