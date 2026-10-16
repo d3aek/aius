@@ -34,13 +34,13 @@ in prebuild review); replace wholesale on the next handover.
 - **Status.** Phases 1, 2, 3 DONE; 4a, 4c, 4d, 4i, 4n to 4u, 4v, 4w,
   4x, 4xa, 4y, 4z DONE. BUILT, with their device proof the owner's and
   not yet run: Phase 4 (gate 7 at fill-write cadence on the U24 bench),
-  4e, 4f, 4g, 4h, 4j, 4k, 4l, 4m. **4za** IN PROGRESS (prebuild review).
+  4e, 4f, 4g, 4h, 4j, 4k, 4l, 4m. **4za** SHIPPED 2026-10-16; **4zb**
+  (confirm autonomous calls) is the owner's.
   4b (acceptance umbrella) closes after 4e to 4h's device runs.
-- **Board.** Runs `3939dfa1476f` (4za build 1) in slot 2, self-committed
-  2026-10-16: `ab.active_slot` 2, sequence 31, `trial_budget` 0,
-  `rollback_observed` false, `revisions` {1: `f075872c8b82`, 2:
-  `3939dfa1476f`}. `57977135e472` is in neither slot, so the bridge pin
-  can come out (build 2). Slot-a OCRAM free 264,736 B, exactly the
+- **Board.** Runs `5766cce3f0f9` (4za build 2, no pin) in slot 1,
+  self-committed 2026-10-16: `ab.active_slot` 1, sequence 34,
+  `trial_budget` 0, `rollback_observed` false, `revisions` {1:
+  `5766cce3f0f9`, 2: `3939dfa1476f`}. Both slots carry the D2 fix. Slot-a OCRAM free 264,736 B, exactly the
   floor; ITCM free 13,300 B (16 B over its floor); `_ebss` at its
   ceiling. The card serves the 4u to 4xa pages (full sync of 22
   files 2026-10-15, served files byte-identical to source). A
@@ -71,10 +71,11 @@ in prebuild review); replace wholesale on the next handover.
 - **Next action: Phase 4za** (D2 set/way fix in build 1 into slot 2,
   then pin removal in build 2, rehearsed from slot 2 and activated into
   slot 1). Build 1 (`3939dfa1476f`) runs self-committed in slot 2
-  (device step 1 PASS 2026-10-16). Next: build 2 (pin removal, the
-  signer check, the drift-test arms and the CLAUDE.md paragraph via
-  `the release-promotion step`), then device step 2 (rehearse build 2 from slot 2)
-  and step 3 (activate it into slot 1), each on the owner's word. Card syncs ran from the agent this run once the owner
+  (device step 1 PASS 2026-10-16). 4za SHIPPED: build 2
+  (`5766cce3f0f9`, no pin) was rehearsed from slot 2 and activated into
+  slot 1. Next: ask Phase 4zb (confirm autonomous calls). After that the
+  plan holds only owner-run device proofs (Phase 4 gate 7 on the bench,
+  4e to 4h via 4b, 4j to 4m). Card syncs ran from the agent this run once the owner
   said "sync"; if the classifier refuses one, the owner runs it with
   `!`.
 - **What landed this run** (aius commits, each followed by a upstream repository
@@ -94,6 +95,8 @@ in prebuild review); replace wholesale on the next handover.
 | `a434e65` | 4xa: bar facts out, Model rate and json into signal, status DSP generation, no page heads | sd-editor 435, www-bundle 35, optical-app |
 | `558e023` | 4v, 4w, 4x, 4xa SHIPPED (owner's page check) | device |
 | `0d86027` | 4za contract: owner's D2 fix, round-1 review folded | review |
+| `3939dfa` | 4za build 1: whole D-cache clean+invalidate after restore, identity-restore guard | itcm-placement 112, boot-target, ota, ab, optical-app, memory, stack-bound, producer-isolation; delivery audit PASS, clean-room confirmed; device step 1 |
+| `5766cce` | 4za build 2: bridge pin, signer check and drift arms removed; CLAUDE.md note (promoted) | boot-target, ota, itcm-placement, memory, ab, optical-app; device steps 2 and 3 |
 
 - **Uncommitted tree.** Nothing of this session's in `git_modules/aius`.
 - **Hook item.** `stop-guard.action-reverify` is item 11 of
@@ -8587,7 +8590,7 @@ unit: parent-only
 - Evidence from the diagnosis: session scratch `diag-ota/` and
   `diag-ota-scripts/` (payload compares).
 
-### Phase 4za The bridge pin comes out and the fixed read path is proven on the device
+### Phase 4za The bridge pin comes out and the fixed read path is proven on the device ✓ SHIPPED 2026-10-16
 
 ```yaml
 outcome: >-
@@ -8756,6 +8759,35 @@ prebuild-review: round 2 READY 2026-10-16, S1 to S4 and N1 to N3 folded; round 1
     ceiling, and every post-link guard passes.
   - Proof: boot-target 16 plus drift, ota (signer 21, flash client 14,
     core), itcm-placement 112, memory, ab, optical-app.
+- **Device step 2 (autonomous, 2026-10-16): PASS. The fixed read path
+  is proven from slot 2.**
+  - Build 2 was committed as `5766cce`, rebuilt clean, and signed
+    without `--slot` (container sha256 `7595c499…593c47ab`). 18,648 of
+    its 19,232 32-byte lines (96.96%) differ from slot 2's
+    `3939dfa1476f`, the 0x1B80 line included.
+  - Staged with 0 retried chunks, then rehearsed from slot 2: `ota_dark`
+    state 4 (COMPLETED), rehearsal true, fault 0, 2,550 of 2,550 steps,
+    614,400 B programmed and verified, digest prefix `94b48df68c9ded2b`.
+  - The board came back on slot 2, record intact (sequence 32,
+    `rollback_observed` false), with slot 1's revision nulled by the
+    rehearsal as designed.
+  - Time: `dark_window_cycles` 4,101,769,565 against 4z step 2's
+    4,025,210,828, so +76.6M cycles (about 128 ms, +1.9%). That is above
+    N3's 25 ms estimate and still far inside the watchdog bound;
+    `/api/status` has no max step cycles field.
+  - Evidence: `ota-4za-step2.log`, `status-post-4za-step2.json`
+    (session scratch).
+- **Device step 3 (autonomous, 2026-10-16): PASS.** The same container
+  was restaged with 0 retried chunks and activated from slot 2, which
+  runs build 1's identity read path for real.
+  - `ota_dark`: state 4, 2,550 of 2,550 steps, `dark_window_cycles`
+    4,091,716,135.
+  - The trial boot self-committed on slot 1: `active_slot` 1, sequence
+    34, `trial_budget` 0, `rollback_observed` false,
+    `prev_boot.first_abort` 254.
+  - `revisions` read {1: `5766cce3f0f9`, 2: `3939dfa1476f`}. Both slots
+    carry the D2 fix, and neither carries the pin.
+  - Evidence: `ota-4za-step3.log`, `status-post-4za-step3.json`.
 - **Found in build 1 (plan work, not this phase).**
   - Slot-A and slot-B ITCM headroom is 16 B. The next ITCM growth needs
     a byte reclaim or the owner's decision on the 13,284 floor
@@ -8769,6 +8801,31 @@ prebuild-review: round 2 READY 2026-10-16, S1 to S4 and N1 to N3 folded; round 1
   `ab_record_write` reads the head region, outside the remap window,
   and the self-test scratch sector (`optical_main.cpp:5309-5310`) is
   slot B's last sector, also outside the canonical window.
+
+### Phase 4zb Interrogate the user: confirm autonomous calls
+
+```yaml
+outcome: each call below confirmed or overturned; an overturned call becomes new plan work
+seams: [this plan's 4za body]
+targeted-proof: no entry below remains unanswered
+unit: parent-only
+```
+
+- **4za, CLAUDE.md wording.** The removed signing-refusal paragraph
+  became one warning: "an image older than `f075872c8b82` must not run
+  again from slot 2". The alternative was to delete it outright and
+  leave the history to the plan. Reversing it is a one-paragraph
+  promote.
+- **4za, the guard review loop.** It stopped after clean-room round 2,
+  accepting three shapes that pass the guard but fail loudly on the
+  device (a whole-restore skip, an unconditional poll, a backward branch
+  out of the tail). The alternative was another hardening round.
+  Reversing it means one guard pass, with no firmware change.
+- **4za, dark-window cost.** The set/way pass added about 128 ms (+1.9%)
+  per activation, against N3's 25 ms estimate. It was accepted as far
+  inside the watchdog bound. The alternative was a once-per-window pass
+  (round 2 S2: it saves time, not bytes). Reversing it means a firmware
+  change and another OTA pair.
 
 ### Phase 4c `test.sh` runs every `--suite` given ✓ SHIPPED 2026-10-06
 
