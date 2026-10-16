@@ -74,11 +74,8 @@ in prebuild review); replace wholesale on the next handover.
   (device step 1 PASS 2026-10-16). 4za SHIPPED: build 2
   (`5766cce3f0f9`, no pin) was rehearsed from slot 2 and activated into
   slot 1. The owner answered the autonomous calls 2026-10-16 (4za
-  body), and 4zc SHIPPED. Open: a queued `the release-promotion step` of
-  `CLAUDE.md` deleting the pre-`f075872c8b82` warning,
-  awaiting the owner's approval. When `the repo tooling git -C
-  git_modules/aius status --short` shows `CLAUDE.md` modified, commit
-  it. After that the plan
+  body), 4zc SHIPPED, and the CLAUDE.md warning is deleted (promoted).
+  The plan
   holds only owner-run device proofs (Phase 4 gate 7 on the bench, 4e
   to 4h via 4b, 4j to 4m). Card syncs ran from the agent this run once the owner
   said "sync"; if the classifier refuses one, the owner runs it with
