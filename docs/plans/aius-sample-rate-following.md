@@ -99,6 +99,8 @@ in prebuild review); replace wholesale on the next handover.
 | `0d86027` | 4za contract: owner's D2 fix, round-1 review folded | review |
 | `3939dfa` | 4za build 1: whole D-cache clean+invalidate after restore, identity-restore guard | itcm-placement 112, boot-target, ota, ab, optical-app, memory, stack-bound, producer-isolation; delivery audit PASS, clean-room confirmed; device step 1 |
 | `5766cce` | 4za build 2: bridge pin, signer check and drift arms removed; CLAUDE.md note (promoted) | boot-target, ota, itcm-placement, memory, ab, optical-app; device steps 2 and 3 |
+| `42bffbf` | 4zc: guard catches the three loud shapes | itcm-placement 119, boot-target; CLI on both slot ELFs |
+| `093b93d` | aius CLAUDE.md: pre-`f075872c8b82` warning deleted (owner, promoted) | promote diff |
 
 - **Uncommitted tree.** Nothing of this session's in `git_modules/aius`.
 - **Hook item.** `stop-guard.action-reverify` is item 11 of
