@@ -8902,26 +8902,41 @@ unit: implementer
 ```yaml
 phase: 4zd
 title: A DMA-armed card sync does not stall the main loop for 4 s
-status: planned # 2026-10-16: found by the agent-run 4e run 1 (source off); blocks 4e's image 2 OTA and the E7 verdict
+status: planned # 2026-10-16: found by the agent-run 4e run 1 (source off), diagnosed and reproduced the same day (the first free-cluster scan after a mount); blocks 4e's image 2 OTA and the E7 verdict
 depends-on: phase-4e (image 1, DMA runtime-armed)
 outcome: >-
-  With the source off and DMA armed (POST /api/sd/mode {"dma":true}),
-  one full aius-sd-sync.sh and the 4e run 1 read-backs leave
-  stall_diag.events unchanged. The cause of the 2026-10-16 event (4.04 s,
-  pc 0x0001cfc4, lr 0x20049284) is named and fixed, or shown to be a
-  witness artefact and the witness corrected. 4e's image 2 OTA and the
-  E7 verdict wait on this phase.
+  The USAGE_REFRESH used-size read is a bounded, resumable scan in either
+  mode: each USED_SIZE primitive reads at most 32 FAT (or exFAT bitmap)
+  sectors (about 17 ms in DMA at the measured 535 us per sector, about
+  2.5 ms in PIO) and the job resumes on the next epoch, so no loop() pass
+  of the boot or of a DMA-armed full sync reaches the 100 ms stall_diag
+  threshold, which sits 80 times inside the 8 s WDOG1 timeout (the
+  2026-10-16 passes were 4.04 s, half of it). On FAT the finished count
+  is stored in SdFat's maintained free count, so later refreshes on the
+  same mount answer with 0 FAT reads. A card request, a flush start or
+  the reboot/OTA freeze stops the scan at its next chunk boundary and
+  re-arms the refresh. sd_used_bytes equals the one-shot scan's figure.
+  The one-job-at-a-time invariant (aius_runtime_storage.h:18-21) is kept:
+  the scan is one USAGE_REFRESH job, one primitive per epoch. 4e's image
+  2 OTA and the E7 verdict wait on this phase.
 seams:
-  - "the code the stall pc maps to (named by the diagnosis; candidates firmware/vendor/SdFat/src/SdCard/SdioTeensy.cpp DMA paths, firmware/src/aius_sd_teensy.cpp, firmware/src/optical_main.cpp)"
-  - "the stall_diag witness source, if the event is a witness artefact"
-  - "a host suite at the fixed seam (sdfat-vendor, sd-target, producer-yield or runtime-target)"
+  - "firmware/vendor/SdFat/src/FatLib/FatPartition.h and FatPartition.cpp, firmware/vendor/SdFat/src/FsLib/FsVolume.h: one FAT-only forwarder, out of line and FLASHMEM, that syncs m_fatCache and reads or stores m_freeClusterCount (-1 unknown); a new firmware/vendor/SdFat/NOTICE.md entry"
+  - "firmware/src/aius_sd_teensy.cpp: the chunk loop (FLASHMEM) in AIUS_SD_ACTION_USED_SIZE (:560-572) and its validator (:561, empty_payload today), reading FAT sectors from fatStartSector() / sectorsPerFat() or exFAT bitmap sectors from clusterHeapStartSector() / clusterCount() into the cacheClear() buffer; FAT12 (at most 12 FAT sectors) stays one upstream call"
+  - "firmware/lib/aius_sd/src/aius_sd.c (AIUS_SD_PHASE_USAGE_USED :1094-1097, the expected-event check :1978-1981 and :2045-2046) and firmware/lib/aius_sd/include/aius_sd.h: the phase re-emits USED_SIZE on a BYTES event and ends on SIZE; cursor in job->transferred, accumulator in job->captured_size"
+  - "firmware/src/optical_main.cpp: sd_job_active_for_http (:1333-1337) and the G9 cancel entry (:1339 on) treat a scanning USAGE_REFRESH as CACHE_FILL is treated; a cancelled scan re-arms g_sd_usage_refresh_pending"
+  - "a new host scan suite in firmware/scripts/test.sh (name chosen at build, e.g. sd-free-scan), firmware/test/sd-target/, firmware/test/sdfat-vendor/test_sdfat_vendor_source.py, the sd suite's job tests"
 targeted-proof:
-  - "diagnosis: pc and lr mapped in the 5766cce3f0f9 slot ELF (link map or addr2line), function and line recorded"
-  - "reproduce (agent, source off, allowed by the posture): one GET /api/status with tx_gate.open 0, POST /api/sd/mode {\"dma\":true}, one full aius-sd-sync.sh and the 4e run 1 read-backs; stall_diag.events delta, last_us, pc and lr recorded per run; stop at the first reproduction or after three clean runs"
-  - "host: a regression case at the fixed seam that fails before the fix"
-  - "device (agent, source off, after the fix's OTA): the same armed sync and read-backs give stall_diag.events delta 0, driver_faults, protocol_faults, busy_timeouts and sd_flush.failures delta 0"
+  - "host (new scan suite): the real chunk code and the vendored FatPartition / ExFatPartition built with USE_SEPARATE_FAT_CACHE 1 and FAT12_SUPPORT 1 over a RAM block device; FAT12, FAT16, FAT32 and exFAT images with free entries on both sides of every 32-sector chunk boundary and in the final partial sector; chunked total equals upstream freeClusterCount(); a dirty FAT cache sector is synced before the scan reads it; fails before the fix (no chunked entry point)"
+  - "host (new scan suite): with m_freeClusterCount >= 0 the first step answers done with 0 FAT reads, so a second refresh on the same mount reads 0 sectors; a mount dropped mid-scan (mode switch) skips the store"
+  - "host (sd): USAGE_REFRESH re-emits USED_SIZE on BYTES and ends on SIZE (value false), one primitive per epoch; a cursor beyond the FAT is a protocol fault; a fault mid-scan fails the job as a one-shot fault does"
+  - "host (sd-target): the USED_SIZE validator accepts the cursor payload and refuses the old non-empty shapes it refused before"
+  - "host (sdfat-vendor): the patched-source contract names the forwarder and its FLASHMEM, out-of-line placement"
+  - "memory and itcm-placement: slot-a OCRAM at or above its floor (AiusSdJob and AiusSdTeensy live in the DMAMEM runtime object, aius_runtime_storage.h:64-65, :188, so no new fields), ITCM free at or above 13,284 B (13,300 today), _ebss not above its ceiling; no forwarder COMDAT lands in ITCM"
+  - "device, no sync (agent, source off, after OTA activate of the fix image): the PIO boot gives stall_diag.events 1 (today 2) and sd_diag.longest_primitive_us under 100,000 (today 586,825, the boot PIO scan)"
+  - "device, the one remaining owner-allowed sync (agent, source off): GET /api/status with tx_gate.open 0, POST /api/sd/mode {\"dma\":true}, one full aius-sd-sync.sh; stall_diag.events delta 0, longest_primitive_us unchanged from the after-boot baseline across the mode POST and the sync, busy_timeouts, driver_faults, protocol_faults and sd_flush.failures delta 0"
 unit: implementer
 live-dependency: none
+prebuild-review: round 2 pending # round 1 HOLD (8 findings), folded 2026-10-16
 ```
 
 - **Evidence (agent, 2026-10-16, about 11:00Z, source off, on
@@ -8935,12 +8950,141 @@ live-dependency: none
   `http_shed` and `sd_fifo_defers` all stayed 0. Logs and status
   snapshots: `.scratch/e173e26c-e337-49cc-b423-533c708ff340/source-off-1016/`
   (`dma/`, `sync.out`, `pre-sync-status.json`, `post-sync-status.json`).
-- **Steps** ([diagnose guide](../../../../docs/guides/diagnose.md)):
-  map pc and lr in the matching ELF; reproduce with another armed sync
-  (the posture allows it); list hypotheses against the evidence (a DMA
-  wait outside the window clock; a stretch the window never opens
-  around; a witness that stamps across a long but yielding path); fix
-  and add a host regression at the seam; prove on the device as above.
+- **Diagnosis (agent, 2026-10-16, from code and the saved snapshots).**
+  pc `0x0001cfc4` is ITCM `micros()` just after its ldrex/strex loop;
+  lr `0x20049284` is `&systick_cycle_count` (micros reuses lr as
+  scratch), so the caller is uncaptured: main context was polling
+  `micros()` in a wait loop. `stall_diag.last_us` is one whole `loop()`
+  pass over 100 ms
+  ([`optical_main.cpp:11700-11720`](../../firmware/src/optical_main.cpp)),
+  pc and lr come from the GPT1 1 kHz witness ISR (`:1131-1152`), and
+  WDOG1 WT(15) is 8 s, fed once per epoch
+  ([`aius_boot_teensy.cpp:494`](../../firmware/src/aius_boot_teensy.cpp)):
+  the stall was half the watchdog. Between the snapshots
+  `sd_diag.longest_primitive_us` went 581,674 to 4,039,252 (the stall's
+  4,039,466), `busy_timeouts` 0, `stall_diag.last_deficit_ms` 0,
+  `hook_calls` +16.6M: one SD primitive lasted 4.04 s, hooked (the
+  producer kept running), interrupts live, no busy timeout. Refuted: a
+  missed DMA-complete (1 s BUSY_TIMEOUT expiries) and a non-SD stall.
+  Also refuted: one large file write as one primitive. A WRITE carries
+  at most 512 B (`kMaximumTransfer`,
+  [`aius_sd_teensy.cpp:26`](../../firmware/src/aius_sd_teensy.cpp),
+  `:86`, WRITE at `:460-476`), so the largest synced file
+  (`firmware/sd/www/openapi.json`, 257,575 B, 504 sectors) is 504
+  primitives; `sd_window_nonyield_max_us` misses hooked waits because
+  each hook call resets it
+  ([`aius_producer_yield.c:154-167`](../../firmware/lib/aius_producer_yield/src/aius_producer_yield.c)).
+- **Cause: the first free-cluster scan after the DMA remount.** POST
+  `/api/sd/mode` drops the mount (`aius_sd_teensy_set_mode`,
+  `aius_sd_teensy.cpp:246-257`); the next job's BEGIN remounts, and
+  `FatPartition::init` sets the cached free count unknown
+  ([`FatPartition.cpp:502`](../../firmware/vendor/SdFat/src/FatLib/FatPartition.cpp)).
+  Under the 4h overlay a synced PUT lands in the write-behind cache, and
+  the refresh is armed only when a flush leaves the overlay drained
+  (`after_flush`,
+  [`aius_sd_overlay.c:932-933`](../../firmware/lib/aius_sd_overlay/src/aius_sd_overlay.c),
+  taken at `optical_main.cpp:9842-9845`; the `:8761-8764` arm serves
+  HTTP-owned direct jobs). That predicate is instantaneous: no dirty
+  entry and no owed re-put (`aius_sd_overlay_drained`, `:591-605`).
+  The status `sd_flush.drained` also needs the sync burst closed
+  (`:1185-1213`), so it reads 0 while the flusher, faster than the
+  client, empties the cache between two PUTs mid-sync and arms the
+  refresh. The next probe tick starts USAGE_REFRESH (`:8972-8973`),
+  whose USED_SIZE primitive
+  (`aius_sd_teensy.cpp:560-572`) calls `SD.usedSize()`: a full FAT walk
+  (`FatPartition.cpp:363-412`) through the default one-sector
+  `readSectorsCallback`
+  ([`FsBlockDeviceInterface.h:78-85`](../../firmware/vendor/SdFat/src/common/FsBlockDeviceInterface.h)),
+  each sector one `SdioCard::readSector` with hooked `yieldTimeout`
+  waits. The card is FAT32 with 4 KiB clusters (`sd_total_bytes`
+  3,955,871,744 is 965,789 times 4,096), so the FAT is 7,546 sectors:
+  4,039,252 us over 7,546 is 535 us per sector in DMA. The boot maximum
+  (581,674; 586,825 on the repro boot) is the same scan in PIO (77 us
+  per sector, unhooked, which is why `sd_window_nonyield_max_us`
+  equals it). `MAINTAIN_FREE_CLUSTER_COUNT` is 1
+  ([`SdFatConfig.h:236`](../../firmware/vendor/SdFat/src/SdFatConfig.h)),
+  so only the first scan after a mount pays, but every mode switch,
+  re-insert and fault remount re-arms it, and it scales with FAT size
+  toward the 8 s bite. `SD.usedSize()` is the only caller of
+  `freeClusterCount()` in the image: no allocation, directory write or
+  PUT admission path scans the FAT.
+- **Repro (agent, 2026-10-16, 11:27 to 11:30Z, source off,
+  `.scratch/e173e26c-e337-49cc-b423-533c708ff340/source-off-1016/repro-4zd/`).**
+  Baseline: PIO, `mounts` 1, `longest_primitive_us` 586,825,
+  `stall_diag.events` 2. The mode POST took `mounts` to 2 within 1 s
+  with `longest` unchanged (the DMA remount itself is short). Sync 1:
+  events +1, `longest` 4,029,839; `/api/status` dark from 12.97 to
+  15.97 s, inside the `upgrade.html` PUT (12.898 to 17.134, held 4.2 s
+  for the stalled loop); `sd_flush.flushed` went 7 to 8 across the
+  stall with `dirty` 1 either side, so a flush emptied the cache
+  between the `upgrade.js` and `upgrade.html` PUTs and the scan ran
+  before the next flush; `drained` stayed 0 until 23.2 s; the later
+  `openapi.json` PUT left `longest` unchanged. Sync 2 on the same mount:
+  events delta 0, `longest` unchanged, so the cost is once per mount.
+  Two of the owner's three allowed syncs were spent here.
+- **Fix call: A, a bounded resumable scan (agent, autonomous posture),
+  with the owner's SdFat shape (below).** Each USED_SIZE primitive scans
+  32 sectors and the portable job resumes next epoch, which also bounds
+  the PIO boot scan, so the after-boot baseline criterion is meetable. Not B (a DTCM
+  multi-sector buffer so the scan reads multi-block): the cost is
+  per-sector command and hooked-wait overhead, the whole 3.86 MB FAT
+  is still about 155 ms in one primitive at 25 MB/s (over the 100 ms
+  threshold), and the buffer is DTCM static or stack against an `_ebss`
+  at its ceiling. Not C (feeding the watchdog or servicing the epoch
+  from the hook): it masks real hangs and leaves `loop()` dark for
+  seconds.
+- **SdFat shape (owner, 2026-10-16): a minimal vendor forwarder.** The
+  chunk loop lives in the aius adapter (FLASHMEM, host-testable), plus
+  one small FAT-only SdFat forwarder that stores the finished count so
+  later refreshes stay O(1), with a new `firmware/vendor/SdFat/NOTICE.md`
+  entry; the exFAT path is chunked too. ExFatPartition keeps no free
+  count, so an exFAT refresh rescans in chunks every time, through the
+  public `clusterHeapStartSector()` and `clusterCount()` that upstream's
+  own scan uses (`ExFatPartition.cpp:240-266`).
+- **Protocol (prebuild round 1, finding 5).** USED_SIZE gains its own
+  validator in place of `empty_payload` (`aius_sd_teensy.cpp:561`):
+  `offset` is the sector cursor, `length` the free clusters so far, and a
+  cursor beyond the FAT (or bitmap) is a protocol fault. A non-final
+  step answers BYTES (the chunk's free clusters); the final step answers
+  SIZE with `value` false (`aius_sd.c:2045-2046`) and `size` the used
+  bytes, computed in the adapter, which knows `bytesPerCluster()` (the
+  job does not). The action is cleared on advance, so the cursor and the
+  accumulator live in `job->transferred` and `job->captured_size`.
+  When the forwarder reports a known count at cursor 0 the step is final
+  with 0 FAT reads (finding 1).
+- **FAT cache and store guard.** `USE_SEPARATE_FAT_CACHE` is 1
+  (`SdFatConfig.h:374`): the forwarder syncs `m_fatCache` before the
+  adapter reads raw FAT sectors, as upstream's `m_fatCache.clear()` does,
+  and the reads land in the `cacheClear()` data-cache buffer (no new
+  stack buffer). The count is stored only if `adapter->mounted` still
+  holds at the final chunk; one job at a time
+  (`aius_runtime_storage.h:18-21`) means no remount can happen inside
+  the job, so that equals `mounts` unchanged since chunk 0 with no
+  snapshot field.
+- **Memory (finding 6).** No new AiusSdJob or AiusSdTeensy field: both
+  live in the DMAMEM runtime object (`aius_runtime_storage.h:64-65`,
+  `:188`), where OCRAM is at its floor. The forwarder is out of line and
+  FLASHMEM so no inline COMDAT lands in ITCM (16 B over its floor). The
+  proof is the at-or-above-floor checks, not a claimed 0 B delta.
+- **Volume hold call: stop at a chunk boundary and restart (agent,
+  finding 7).** A chunked DMA scan holds the volume for about 4 to 5 s
+  (236 chunks, one per epoch). USAGE_REFRESH is an uncancellable root
+  job today, so card routes would answer 503 for that long (the sync
+  retries for 15 s), and flushes and the reboot/OTA drain gate
+  (`optical_main.cpp:11214-11228`) would wait. The scan instead takes
+  the CACHE_FILL treatment (`:1320-1337` and the G9 cancel entry): a
+  card request, a flush start or the H9 freeze stops it at its next
+  primitive boundary, the job ends cancelled with nothing stored, and
+  `g_sd_usage_refresh_pending` is re-armed, so the scan restarts from
+  chunk 0 at the next idle probe tick. Every waiter is then bounded by
+  one chunk, not the scan. Cost: under steady card traffic the usage
+  figures stay stale until an idle window of about 5 s (DMA) or 0.6 s
+  (PIO); they are display figures, so that is accepted.
+- **Sync posture.** The owner allows up to three source-off DMA-armed
+  syncs for 4zd (2026-10-16). The repro spent two, so one remains, for
+  the post-fix device proof above. Any further sync needs the owner's
+  word: it goes to the plan's closing confirm step or the next
+  checkpoint.
 - **4e's image 2 and E7 wait on 4zd.** A 4 s main-loop stall under DMA
   would decide E7 if real, so neither runs first.
 - **Investigate, do not assume a defect:**
