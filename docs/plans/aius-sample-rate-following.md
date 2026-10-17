@@ -115,15 +115,14 @@ wholesale on the next handover.
 | (this handover) | 4zd SHIPPED with its device proof; Phase 4zg anchored; state block | device (agent, source off): ELF suites on the clean rebuild, OTA self-commit, PIO boot, one DMA sync |
 
   The pointer bump for `3c2c3df` is upstream repository `0efc46280`.
-- **Uncommitted tree.** Nothing of this session's in `git_modules/aius`
-  after the handover commit. The firmware `.pio/build/` holds the
-  clean `3c2c3df0b952` images the board runs.
-- **Board now** (last read about 20:00Z): `sd_mode` dma (the 4zd proof's
-  `POST /api/sd/mode`; not persisted, a reboot returns fifo), mounts 2,
-  `stall_diag.events` 1 (the boot's PHY stall), `longest_primitive_us`
-  27,969, `sd_used_bytes` 2,949,120, `.lottery-probe.txt` deleted,
-  `sd_diag.last_failure` the seq 3 fault 9 record (Phase 4zg). Read
-  `/api/status` before any device step.
+- **Uncommitted tree.** Clean in `git_modules/aius` (fourth run). The
+  firmware `.pio/build/` holds the clean `96d60373c6b7` images the
+  board runs; the signed container and status snapshots are in
+  `.scratch/e173e26c-e337-49cc-b423-533c708ff340/4zfh-device/`.
+- **Board now** (fourth run, after the 4zh probe): `96d60373c6b7`,
+  `sd_mode` fifo (the OTA reboot cleared the 4zd DMA arm), `root_faults`
+  0, `http_faults` 0, `open_misses` 3, `last_failure` none,
+  `tx_gate.open` 0. Read `/api/status` before any device step.
 - **Hook item.** `stop-guard.action-reverify` is item 11 of
   `src/tools/hook/docs/plans/hook-daemon-feature-backlog.md` (owner:
   plan, do not dispatch).
