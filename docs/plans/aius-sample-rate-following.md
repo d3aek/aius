@@ -84,7 +84,16 @@ wholesale on the next handover.
   Phase 4zk contracted and prebuild-reviewed (FIX folded); its step 1
   (default-off DMA-at-boot switch plus guard) shipped; step 2 waits on
   4e run 2 and E7, so no agent-runnable phase remains. The run's one
-  autonomous call (4zk's early switch) was confirmed by the owner. Phases 1 and 2 got their SHIPPED
+  autonomous call (4zk's early switch) was confirmed by the owner.
+  **Board (fifth run, supersedes the Board and Board now bullets
+  below):** `04f8b1b33b77` in slot 2 by OTA on the owner's word,
+  self-committed: `ab.active_slot` 2, sequence 43, `trial_budget` 0,
+  `rollback_observed` false; slot 1 holds `96d60373c6b7` as the
+  bootable fallback. Slot-A OCRAM free 264,736 B (floor). After boot:
+  `sd_mode` and `sd_mode_requested` fifo, `clock.master` input,
+  `root_faults` 0, `http_faults` 0, `sd_present` 1. Container sha256
+  `14b34647f825…`, evidence in
+  `.scratch/55e66dcf-3af2-4f43-a90a-fa0692f8ee34/4zk-ota/`. Phases 1 and 2 got their SHIPPED
   markers. The fourth-run bullet follows.
 - **Next action (fourth run, 2026-10-16).** 4zf to 4zj all SHIPPED;
   no agent-runnable phase remains. What is left is owner-run: Phase 4
@@ -9694,7 +9703,7 @@ live-dependency: none
 ```yaml
 phase: 4zk
 title: Image 2 boots the SD card in DMA and keeps FIFO as the field fallback
-status: in-progress # 2026-10-17: step 1 shipped (host proof green; teensy41-optical and build_ab.sh images build, slot-A OCRAM 264,736 B free (floor), ITCM 13,300 B; memory, itcm-placement, stack-bound 23,316 of 27,424 B, producer-isolation green, no recount; delivery audit PASS, hardening folded); its device GET rides the next master OTA; step 2 (the flip commit, 4e image 2) waits on 4e run 2 PASS and an E7 verdict other than B2
+status: in-progress # 2026-10-17: step 1 shipped (host proof green; teensy41-optical and build_ab.sh images build, slot-A OCRAM 264,736 B free (floor), ITCM 13,300 B; memory, itcm-placement, stack-bound 23,316 of 27,424 B, producer-isolation green, no recount; delivery audit PASS, hardening folded); device GET PASS on 04f8b1b33b77 (OTA 2026-10-17, slot 2 self-committed, sd_mode_requested fifo before any POST); step 2 (the flip commit, 4e image 2) waits on 4e run 2 PASS and an E7 verdict other than B2
 depends-on: phase-4e (run 2 PASS; E7 verdict A-DMA, with any "fixed in 4e" defect E7 names landed first); phase-4zd (shipped, the DMA-armed sync stall)
 outcome: >-
   From image 2 on, every boot mounts the card in DMA mode: on a fresh
