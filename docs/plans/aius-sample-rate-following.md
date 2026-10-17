@@ -84,7 +84,7 @@ wholesale on the next handover.
   no agent-runnable phase remains. What is left is owner-run: Phase 4
   gate 7 on the bench, 4e run 2 (then E7 and image 2, which also needs
   a "DMA at boot" spec), 4f to 4h's remaining steps, 4j, and 4k and 4l
-  via 4b; then Phase 4zz (confirm autonomous calls). The paragraph below
+  via 4b. Phase 4zz was asked and answered (4zh kept) and is deleted. The paragraph below
   is the third run's and is superseded where it disagrees.
 - **Previous next action: Phase 4zf.** Prebuild-review its contract (`reviewer`,
   opus), then dispatch one `implementer` (`model: sonnet`) owning
@@ -9597,8 +9597,8 @@ live-dependency: none
   of scope and must not move. CACHE_FILL and copy-before-write
   read-back misses still latch: a deliberate half-scope, since a cache
   fill names a file the listing said exists, so a miss there is
-  surprising. Listed in "Interrogate the user: confirm autonomous
-  calls".
+  surprising. Confirmed by the owner (2026-10-17, Phase 4zz ask:
+  keep).
 - **Found work (out of scope here, from the review):**
   `aius_http_transaction.c:434` rejects fault 19 VERIFY as malformed (it
   accepts `<= NOT_FOUND`), and the openapi fault list
@@ -9716,24 +9716,6 @@ committed (`5d7c05d`). B1's promote landed on owner approval; the diff
 carries exactly B1's lines (fill stamps, the pending pad counter, the
 three write counters, the full signing form, `python3` for the flash
 tool).
-
-### Phase 4zz Interrogate the user: confirm autonomous calls
-
-```yaml
-phase: 4zz
-title: "Interrogate the user: confirm autonomous calls"
-status: planned # executed at the end of the run or at handover
-outcome: each call below confirmed or overturned; an overturned call becomes new plan work
-seams: [this plan, the phases each call names]
-targeted-proof: no call remains listed here unanswered after the ask
-unit: parent-only
-```
-
-- **4zh: reclassify a not-found open as not a fault.** Call: a missing
-  file on a DOWNLOAD or boot CONFIG_LOAD stops latching `last_failure`
-  and bumping `http_faults` / `root_faults`; `open_misses` counts it.
-  Alternative: keep the records and only document them (4zg's body).
-  Reversal cost: one small revert of 4zh's commit and the next OTA.
 
 ## Acceptance
 
