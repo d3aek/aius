@@ -83,8 +83,8 @@ wholesale on the next handover.
 - **Next action (fifth run, 2026-10-17, autonomous posture held).**
   Phase 4zk contracted and prebuild-reviewed (FIX folded); its step 1
   (default-off DMA-at-boot switch plus guard) shipped; step 2 waits on
-  4e run 2 and E7, so no agent-runnable phase remains. Phase 4zy holds the run's
-  autonomous calls for the owner. Phases 1 and 2 got their SHIPPED
+  4e run 2 and E7, so no agent-runnable phase remains. The run's one
+  autonomous call (4zk's early switch) was confirmed by the owner. Phases 1 and 2 got their SHIPPED
   markers. The fourth-run bullet follows.
 - **Next action (fourth run, 2026-10-16).** 4zf to 4zj all SHIPPED;
   no agent-runnable phase remains. What is left is owner-run: Phase 4
@@ -9743,8 +9743,8 @@ live-dependency: step 1 none; step 2 owner (4e run 2 PASS, then the E7 verdict, 
   build flag rolls back with the image. Not contract-only-until-run-2,
   because that puts a build and review cycle on the critical path after
   an owner session; with the switch landed, image 2 is a host-proved
-  two-line flip on the day of the verdict. Listed in the closing
-  confirm step.
+  two-line flip on the day of the verdict. Owner confirmed
+  (2026-10-17).
 - **Guard against early DMA-at-boot from master.** The default is 0 in
   the header, and the optical-cutover pin fails any tree whose
   `platformio.ini` defines `AIUS_SD_BOOT_DMA` before the flip commit
@@ -9834,22 +9834,6 @@ committed (`5d7c05d`). B1's promote landed on owner approval; the diff
 carries exactly B1's lines (fill stamps, the pending pad counter, the
 three write counters, the full signing form, `python3` for the flash
 tool).
-
-### Phase 4zy Interrogate the user: confirm autonomous calls
-
-```yaml
-outcome: every autonomous call below confirmed or overturned; overturned calls become plan work
-seams: [this plan doc, the phases each call settles]
-targeted-proof: no entry remains; each answer is recorded in the phase it settles
-unit: parent-only
-```
-
-- **4zk (fifth run, 2026-10-17): the DMA-at-boot switch lands before
-  4e run 2.** Call: a default-off `AIUS_SD_BOOT_DMA` compile switch plus
-  an optical-cutover guard ship now; the flip is its own commit after
-  run 2 and E7. Alternative: write no image 2 code until E7 decides.
-  Reversal cost: delete one header define, one init call and the
-  guard; no image changes behaviour either way until the flip.
 
 ## Acceptance
 
