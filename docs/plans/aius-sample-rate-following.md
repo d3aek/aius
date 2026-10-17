@@ -80,10 +80,16 @@ wholesale on the next handover.
   the owner's: the 4e to 4h, 4k and 4l runs listed in 4b. A bench run
   is a last resort, batched, never mixed with listening (aius
   CLAUDE.md).
+- **Next action (fifth run, 2026-10-17, autonomous posture held).**
+  Phase 4zk contracted and prebuild-reviewed (FIX folded); its step 1
+  (default-off DMA-at-boot switch plus guard) is agent-runnable and in
+  flight; step 2 waits on 4e run 2 and E7. Phase 4zy holds the run's
+  autonomous calls for the owner. Phases 1 and 2 got their SHIPPED
+  markers. The fourth-run bullet follows.
 - **Next action (fourth run, 2026-10-16).** 4zf to 4zj all SHIPPED;
   no agent-runnable phase remains. What is left is owner-run: Phase 4
-  gate 7 on the bench, 4e run 2 (then E7 and image 2, which also needs
-  a "DMA at boot" spec), 4f to 4h's remaining steps, 4j, and 4k and 4l
+  gate 7 on the bench, 4e run 2 (then E7 and image 2, which is Phase
+  4zk step 2; 4zk step 1 is agent-runnable now), 4f to 4h's remaining steps, 4j, and 4k and 4l
   via 4b. Phase 4zz was asked and answered (4zh kept) and is deleted. The paragraph below
   is the third run's and is superseded where it disagrees.
 - **Previous next action: Phase 4zf.** Prebuild-review its contract (`reviewer`,
@@ -97,9 +103,8 @@ wholesale on the next handover.
   reclassifies it and runs in parallel with 4zf (disjoint paths), the
   two sharing one OTA image for their device steps. 4e's image 2 OTA
   and E7 are NOT agent-runnable: both follow run 2, an owner session
-  (AC-3 playing, `POST /api/clear`), and image 2 also needs an
-  unspecified "DMA at boot" code change (`firmware/src/aius_sd_teensy.cpp:226`
-  still sets `adapter->dma = false`). 4zd's three-sync allowance is spent; later
+  (AC-3 playing, `POST /api/clear`), and image 2 is Phase 4zk's
+  flip commit; its default-off switch lands first (4zk step 1). 4zd's three-sync allowance is spent; later
   phases' syncs fall under the posture bullet above. Open owner-run device proofs:
   Phase 4 gate 7 on the bench, 4e to 4h (their remaining steps), 4k and
   4l via 4b, and 4j (a DSP model change); 4zd's device steps are
@@ -654,7 +659,7 @@ episode-based, not per block.
 
 ## Phases
 
-### Phase 1: runtime rate, refusal and observability
+### Phase 1: runtime rate, refusal and observability ✓ SHIPPED 2026-07-29
 
 ```yaml
 phase: 1
@@ -711,7 +716,7 @@ The prebuild review attacks:
 - a lock timeout becoming an unbounded checkpoint or event storm; and
 - the 48 kHz unity path changing a sample.
 
-### Phase 2: target clock following
+### Phase 2: target clock following ✓ SHIPPED 2026-09-04
 
 ```yaml
 phase: 2
@@ -2217,7 +2222,7 @@ session. Decision to phase map:
 | OTA excluded; replay out of scope | every phase (no proof claims either) |
 
 **Images and owner time.** 4e needs two OTAs (DMA runtime-armed, then
-DMA at boot), 4f, 4g and 4h one each (4f and 4g also a card sync of
+DMA at boot, Phase 4zk), 4f, 4g and 4h one each (4f and 4g also a card sync of
 `firmware/sd/www/`). Every AC-3 run needs the owner (the source plays
 in the listening-room); 4h's card-swap check needs the owner's hands. To
 save owner sessions, 4h's AC-3 run and this phase's acceptance may run
@@ -2893,7 +2898,7 @@ clean-room, and implementation carries a delivery audit per phase.
 ```yaml
 phase: 4e
 title: Every SD-card wait and checkpoint boundary runs pending live-input production
-status: built # 2026-10-07: host proof green (22 suites), all four images build with every post-link guard, delivery audit FAIL (D-B1 boot fault) then closure PASS; device run 1 partly agent-run 2026-10-16 (body; stall witness FAIL, Phase 4zd); its card pull and clear-based deltas, run 2 and the E7 gate are the owner's; image 2 and E7 wait on 4zd
+status: built # 2026-10-07: host proof green (22 suites), all four images build with every post-link guard, delivery audit FAIL (D-B1 boot fault) then closure PASS; device run 1 partly agent-run 2026-10-16 (body; stall witness FAIL, Phase 4zd); its card pull and clear-based deltas, run 2 and the E7 gate are the owner's; 4zd shipped 2026-10-16; image 2 is Phase 4zk step 2, after run 2 and E7
 depends-on: phase-4 (device session done 2026-10-07)
 prebuild-review: ready # 2026-10-07: rounds 2 to 5, clean-room, clean-room closure, clean-room round 3 and two closures; second closure READY; CR5-S1 to S4 folded; no further clean-room: the closing reviewer was itself clean-room and implementation carries a delivery audit per phase
 outcome: >-
@@ -2911,7 +2916,8 @@ outcome: >-
   inserted; and a wedge inside a nested pass reads as AUDIO on the next
   boot. Image 1 boots FIFO with the hook only at upstream `yield()` sites
   and the ACMD41 loop (all between commands) and DMA armed at runtime,
-  so DMA meets OTA self-commit only on image 2, after both runs pass.
+  so DMA meets OTA self-commit only on image 2 (Phase 4zk), after both
+  runs pass and E7.
 unit: component-behind-interface
 seams:
   - "firmware/vendor/SdFat (new snapshot of framework SdFat 2.1.2): SdioTeensy.cpp: weak aius_sdio_wait_hook called once per yieldTimeout iteration and once per ACMD41 iteration in SdioCard::begin, never in waitTimeout, cardCommand, readData or writeData; readSector, writeSector, readSectors and writeSectors bounce every non-DTCM buffer per sector through a 512 B stack buffer, and rdWrSectors refuses a non-DTCM buffer (SD_CARD_ERROR_DMA); a busy-timeout counter (BUSY_TIMEOUT_MICROS expiries); SdioCard::clearError() (the file-static m_errorCode, SdioTeensy.cpp:202, is otherwise cleared only in begin, :647); FAT volume-serial accessor (used by 4h): FatPartition keeps no volume serial (its members, FatPartition.h:191-202), so the patch stores the boot sector's volumeSerialNumber (FsStructs.h:172 for FAT12 and FAT16, :202 for FAT32) in a new 4 B FatPartition member when init() reads the boot sector at mount, zero on a non-FAT volume, and the accessor returns the stored value with no card read (CR5-S4)"
@@ -3264,7 +3270,8 @@ contract):
 - **E3, runtime arming.** Image 1 boots FIFO; authed
   `POST /api/sd/mode` (body `{"dma": true}`, not persisted) switches at the
   next mount with no file open, else `503 sd_busy`. After both runs pass,
-  image 2 boots DMA and keeps the route as the field fallback to FIFO.
+  image 2 (Phase 4zk) boots DMA and keeps the route as the field
+  fallback to FIFO.
   Because the arming is not persisted, a watchdog reset during a run
   silently reverts to FIFO, so each run starts with `POST /api/clear`
   after arming and asserts `sd_mode` DMA at its end (S5).
@@ -3590,11 +3597,11 @@ serves producer-isolation, stack-bound and the yield-root checks 4f to
   narrower walk would pass, and the `File`-shaped case a passing case a
   stricter walk would fail (CR4-B1).
 
-**OTA and owner.** Two OTAs (image 1, then image 2 after the gate).
-Both runs are owner sessions (ruling above): run 1 source-off, ending
-with a staged OTA rehearsal in DMA mode; run 2 with AC-3 playing. After
-image 2: healthy-boot self-commit and a short repeat of run 1's content
-check.
+**OTA and owner.** Two OTAs (image 1, then image 2, Phase 4zk step 2,
+after the gate). Both runs are owner sessions (ruling above): run 1
+source-off, ending with a staged OTA rehearsal in DMA mode; run 2 with
+AC-3 playing. The checks after image 2 (healthy-boot self-commit and a
+short repeat of run 1's content check) are 4zk's device proof.
 
 **Residual risks.**
 
@@ -4095,7 +4102,8 @@ delivery audit per phase. Each item is followed by its resolution.
   `boot_generation` 26.
 - **Still the owner's:** the card pull and reinsert (physical) and
   `POST /api/clear` after arming (owner-only), so the run's deltas are
-  before/after reads, not clear-based. Image 2 and E7 wait on Phase 4zd.
+  before/after reads, not clear-based. 4zd shipped 2026-10-16; image 2
+  is Phase 4zk.
 
 ### Phase 4f HTTP is best-effort: shedding, render yields, lighter polling
 
@@ -4205,7 +4213,7 @@ commit-checkpoint:
 **Built on 4e before its device verdict (orchestrator, 2026-10-07).**
 4f starts on 4e BUILT, not on 4e's device runs, which wait for the
 owner. An E7 verdict of B2 (Phase 4b, Fallback design) re-plans 4f to
-4h before their device runs; F2's FIFO deferral already covers a board
+4h before their device runs and cancels Phase 4zk step 2; F2's FIFO deferral already covers a board
 left in FIFO mode.
 
 **Carried in from 4e's delivery audit:**
@@ -8946,7 +8954,7 @@ unit: implementer
 ```yaml
 phase: 4zd
 title: A DMA-armed card sync does not stall the main loop for 4 s
-status: shipped # 2026-10-16: device steps PASS on 3c2c3df0b952 (body, "Device proof"); host and link proof green (sd-free-scan, sd 910 trials, sd-target, sdfat-vendor, fake-fidelity, optical-app, optical-cutover, runtime, runtime-target, registry; memory, itcm-placement, stack-bound 23,316 of 27,424 B, producer-isolation); delivery audit rounds 1 to 3 folded, PASS; clean-room PASS (nits folded). Device steps outstanding. Found by the agent-run 4e run 1 (source off); blocks 4e's image 2 OTA and the E7 verdict
+status: shipped # 2026-10-16: device steps PASS on 3c2c3df0b952 (body, "Device proof"); host and link proof green (sd-free-scan, sd 910 trials, sd-target, sdfat-vendor, fake-fidelity, optical-app, optical-cutover, runtime, runtime-target, registry; memory, itcm-placement, stack-bound 23,316 of 27,424 B, producer-isolation); delivery audit rounds 1 to 3 folded, PASS; clean-room PASS (nits folded). Found by the agent-run 4e run 1 (source off); it blocked 4e's image 2 OTA and the E7 verdict
 depends-on: phase-4e (image 1, DMA runtime-armed)
 outcome: >-
   The USAGE_REFRESH used-size read is a bounded, resumable scan in either
@@ -9324,8 +9332,9 @@ prebuild-review: ready # 2026-10-16: rounds 1 to 5 HOLD folded, round 6 PASS (ni
   the post-fix device proof above. Any further sync needs the owner's
   word: it goes to the plan's closing confirm step or the next
   checkpoint.
-- **4e's image 2 and E7 wait on 4zd.** A 4 s main-loop stall under DMA
-  would decide E7 if real, so neither runs first.
+- **4e's image 2 and E7 waited on 4zd** (now shipped; image 2 is Phase
+  4zk). A 4 s main-loop stall under DMA would decide E7 if real, so
+  neither ran first.
 - **Investigate, do not assume a defect:**
   - `/api/status` shows `config_valid` 0 and `config_error` "not loaded"
     (code 10) with `sd_present` 1. **Investigated (agent, 2026-10-16,
@@ -9680,6 +9689,102 @@ live-dependency: none
   falls to `default` (`:518`). The surfaced SD counters are
   `http_faults` and `root_faults`, settled by 4zh.
 
+### Phase 4zk Image 2 boots the SD card in DMA and keeps FIFO as the field fallback
+
+```yaml
+phase: 4zk
+title: Image 2 boots the SD card in DMA and keeps FIFO as the field fallback
+status: planned # 2026-10-17: contract written (fifth run); step 1 (default-off switch) is agent-runnable now; step 2 (the flip commit, 4e image 2) waits on 4e run 2 PASS and an E7 verdict other than B2
+depends-on: phase-4e (run 2 PASS; E7 verdict A-DMA, with any "fixed in 4e" defect E7 names landed first); phase-4zd (shipped, the DMA-armed sync stall)
+outcome: >-
+  From image 2 on, every boot mounts the card in DMA mode: on a fresh
+  boot, before any POST /api/sd/mode, sd_mode_requested reads dma, and
+  sd_mode reads dma once the first mount is done. POST /api/sd/mode
+  {"dma": false} stays the unpersisted field fallback to FIFO until the
+  next boot. The boot mode is one compile-time switch,
+  AIUS_SD_BOOT_DMA, which defaults to 0 in aius_sd_teensy.h and is set
+  to 1 only in teensy41-optical's build_flags (slot-a, slot-b and fault
+  inherit it). So every image built from master before the flip commit
+  boots FIFO, and an A/B trial-boot rollback from image 2 lands on a
+  FIFO image. The flip is its own commit, made only after 4e run 2
+  passes and E7 does not send DMA to B2.
+seams:
+  - "firmware/src/aius_sd_teensy.h: #ifndef AIUS_SD_BOOT_DMA / #define AIUS_SD_BOOT_DMA 0 beside the dma member (:72-74), whose comment gains the boot value; aius_sd_teensy_init keeps adapter->dma = false (aius_sd_teensy.cpp:228), so the sd-target init pins (test_aius_sd_teensy.cpp:1351) stand"
+  - "firmware/src/aius_runtime_storage.cpp: right after aius_sd_teensy_init(&service->target) (:791), exactly aius_sd_teensy_set_mode(&service->target, AIUS_SD_BOOT_DMA != 0); at construct init has just cleared file_open and mounted, so the setter only records the mode (with 0 it returns at its equality check, aius_sd_teensy.cpp:270); no counter, no DAT3 re-mux, no 503 path (those live in app_sd_set_mode, optical_main.cpp:7538). The 'only mode setter' comment at :1207-1212 is updated to name the construct call"
+  - "build-default wording, changed in step 1 so the flip needs no doc edit: firmware/sd/www/openapi.json sd_mode_requested (:2204) and POST /api/sd/mode (:814, 'every boot starts in FIFO'), and firmware/lib/aius_http/include/aius_http.h:105 ('a reset reverts to FIFO'), each to 'not persisted; every boot starts in the image's build default (fifo unless built with AIUS_SD_BOOT_DMA=1, Phase 4zk)'"
+  - "firmware/test/optical-cutover/test_optical_cutover.py: the early-ship guard. (a) aius_sd_teensy.h defaults AIUS_SD_BOOT_DMA to 0 under #ifndef; (b) inside aius_runtime_storage_construct's body the exact text aius_sd_teensy_set_mode(&service->target, AIUS_SD_BOOT_DMA != 0); appears once and after the aius_sd_teensy_init call (init's dma = false would wipe an earlier set); (c) firmware/platformio.ini, with ; comments stripped and parsed by section, holds zero -D\\s*AIUS_SD_BOOT_DMA(=\\S*)? tokens in any section; (d) no firmware/scripts/*.py names the macro (build_metadata.py:109 appends CPPDEFINES). The step 2 commit inverts (c) to exactly one token, =1, in [env:teensy41-optical] only (slot-a and slot-b re-list its build_flags, :400-411; fault extends it, :413-421)"
+  - "firmware/platformio.ini teensy41-optical build_flags (beside -DAIUS_DTS_LOG_STDERR=0, :351): -DAIUS_SD_BOOT_DMA=1, added only by the step 2 flip commit"
+targeted-proof:
+  - "host (step 1): optical-cutover's new text checks above; sd-target green unchanged (the set_mode cases, test_aius_sd_teensy.cpp:1323-1351, cover the true path); runtime-target green, its sd_mode_requested fifo pin (test_runtime_target.cpp:4135) being the default-0 boot witness; sd-editor (openapi) green"
+  - "host (step 1, after build_ab.sh, orchestrator-run): teensy41-optical and teensy41-optical-slot-a build; memory, itcm-placement, stack-bound, producer-isolation green; a W4 count that moves is recounted from the disassembly, never loosened"
+  - "device (step 1, agent, GET only, at the next master OTA any phase deploys; no dedicated OTA): counts only once /api/status build_revision is at or after the step 1 commit; then, before any POST /api/sd/mode, sd_mode_requested fifo (a no-early-DMA witness)"
+  - "host (step 2, flip commit): the inverted optical-cutover pin green; all four optical images build (teensy41-optical, -slot-a, -slot-b, and -fault via scripts/build.sh teensy41-optical-fault <checkpoint 0..9>); memory, itcm-placement, stack-bound, producer-isolation green, any moved count recounted from the disassembly"
+  - "device (step 2, agent, source off, installed board): build_ab.sh, sign without --slot, aius_ota_flash.py --activate; trial boot, then healthy-boot self-commit (active_slot flips, trial_budget 0, rollback_observed false); before any POST, sd_mode_requested dma, and after the first mount sd_mode dma; stall_diag events since boot at most 1 (4zd's boot bound); driver_faults, protocol_faults and busy_timeouts 0; one aius-sd-sync.sh run under DMA (the card still holds step 1's pre-edit openapi.json), then run 1's content check by GET (every /sd/www file and /aius/dsp.json against the sync source); GET /sd/www/missing.js answers 404, open_misses +1, mounts unchanged"
+  - "device (step 2, agent, source off, after self-commit): fallback and boot-default round trip: POST /api/sd/mode {\"dma\": false} answers 200 fifo, sd_mode fifo after the next mount; with the mode still FIFO, stage the same image 2 container and POST /api/ota/rehearse (ota_dark rehearsal true, state COMPLETED); after the rehearsal's reset sd_mode_requested reads dma, which proves both the unpersisted revert and the boot default"
+  - "no bench run: everything here is a boot default plus source-off reads and route calls on the installed board, so no relocation can show more"
+unit: implementer # step 1; step 2 is parent-only (two-line flip plus OTA)
+live-dependency: step 1 none; step 2 owner (4e run 2 PASS, then the E7 verdict, then the source off for the agent's OTA window)
+```
+
+- **Waits on run 2 and E7 (step 2 only).** Step 1 ships now. Step 2
+  waits for 4e run 2 to PASS (owner: AC-3 playing, `POST /api/clear`
+  after arming, plus run 1's card pull and clear-based deltas) and then
+  for the E7 verdict. **E7 changes whether and when 4zk ships, not what
+  it specifies.** On B2, step 2 is cancelled, 4zk closes NOT SHIPPED,
+  and the switch stays 0 until 4b's re-plan keeps or removes it. On
+  "stays on A-DMA, fixed in 4e" (`pv=` AUDIO, a stack floor under
+  2,048 B, a timing miss), that fix lands before the flip commit, so
+  image 2 carries the fix plus the flip. Any other reset is diagnosed
+  before the flip.
+- **Decision (agent, autonomous posture, 2026-10-17): a compile-time
+  switch, default off, lands now; a separate commit flips it.** Not a
+  persisted or SD config, because that survives A/B rollback: a DMA
+  crash loop would roll back into an image still told to boot DMA. A
+  build flag rolls back with the image. Not contract-only-until-run-2,
+  because that puts a build and review cycle on the critical path after
+  an owner session; with the switch landed, image 2 is a host-proved
+  two-line flip on the day of the verdict. Listed in the closing
+  confirm step.
+- **Guard against early DMA-at-boot from master.** The default is 0 in
+  the header, and the optical-cutover pin fails any tree whose
+  `platformio.ini` defines `AIUS_SD_BOOT_DMA` before the flip commit
+  inverts that pin. Any later OTA from master boots FIFO, and step 1's
+  device GET shows it. No host build compiles the construct call with
+  the switch at 1, so the guard pins the exact call text and its order
+  after init; the true path is proven on the device in step 2. A
+  `PLATFORMIO_BUILD_FLAGS` environment variable could still inject the
+  flag; no committed script sets it.
+- **Prebuild review (reviewer, opus, 2026-10-17): FIX, 8 findings, all
+  folded.** The card sync in step 2 (step 1 edits a `sd/www` file); the
+  two further FIFO texts (`openapi.json:814`, `aius_http.h:105`); the
+  rehearsal run from FIFO; the set-after-init order check; the parsed,
+  comment-stripped ini guard; the exact call-text pin; the stale setter
+  comment; the step 1 GET's `build_revision` condition.
+- **Step 1 owned paths** (one `implementer`, sonnet):
+  `firmware/src/aius_sd_teensy.h`, `firmware/src/aius_runtime_storage.cpp`
+  (the one call and the :1207-1212 comment), `firmware/test/optical-cutover/**`,
+  `firmware/sd/www/openapi.json` (two descriptions),
+  `firmware/lib/aius_http/include/aius_http.h` (one comment), and
+  `test/sd-editor/openapi.test.js` only if it pins that text.
+  `firmware/src/aius_sd_teensy.cpp` does not change: init stays FIFO.
+- **Step 2 paths** (parent-only, after the E7 verdict):
+  `firmware/platformio.ini` and the pin inversion in
+  `firmware/test/optical-cutover/test_optical_cutover.py`.
+- **Owner device steps:** 4e run 2; the E7 verdict (the agent drafts it
+  from the run data, the owner accepts); the source off for the step 2
+  window. 4zk needs no `POST /api/clear`, no `POST /api/reboot` (the
+  rehearsal's reset proves a reboot back into DMA) and nothing with a
+  source playing.
+- **Agent device steps:** step 1's GET of `sd_mode_requested`. Step 2:
+  build, sign, stage, activate, the status GETs, one card sync (the
+  posture's one agent sync) and the content GETs, the
+  `POST /api/sd/mode` round trip, then a stage plus rehearse from FIFO
+  after self-commit, all with the source off.
+- **Rollback.** A failed trial boot rolls back to the FIFO image
+  through the chooser. Once self-committed, `POST /api/sd/mode
+  {"dma": false}` is the fallback for one boot (agent, source off), and
+  reverting the flip commit plus an OTA is the permanent one.
+
 ### Phase 4c `test.sh` runs every `--suite` given ✓ SHIPPED 2026-10-06
 
 ```yaml
@@ -9715,6 +9820,22 @@ committed (`5d7c05d`). B1's promote landed on owner approval; the diff
 carries exactly B1's lines (fill stamps, the pending pad counter, the
 three write counters, the full signing form, `python3` for the flash
 tool).
+
+### Phase 4zy Interrogate the user: confirm autonomous calls
+
+```yaml
+outcome: every autonomous call below confirmed or overturned; overturned calls become plan work
+seams: [this plan doc, the phases each call settles]
+targeted-proof: no entry remains; each answer is recorded in the phase it settles
+unit: parent-only
+```
+
+- **4zk (fifth run, 2026-10-17): the DMA-at-boot switch lands before
+  4e run 2.** Call: a default-off `AIUS_SD_BOOT_DMA` compile switch plus
+  an optical-cutover guard ship now; the flip is its own commit after
+  run 2 and E7. Alternative: write no image 2 code until E7 decides.
+  Reversal cost: delete one header define, one init call and the
+  guard; no image changes behaviour either way until the flip.
 
 ## Acceptance
 
