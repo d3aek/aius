@@ -102,7 +102,8 @@ typedef enum {
 	AIUS_HTTP_ROUTE_OTA_REHEARSE_FAULT,
 	/* POST /api/sd/mode {"dma": <bool>}: the SDIO transfer mode for the next
 	 * mount with no file open (aius-sample-rate-following.md Phase 4e, E3).
-	 * Auth-gated at dispatch; not persisted, so a reset reverts to FIFO.
+	 * Auth-gated at dispatch; not persisted; every boot starts in the image's
+	 * build default (fifo unless built with AIUS_SD_BOOT_DMA=1, Phase 4zk).
 	 * Appended last so the START..REBOOT method range keeps its ids. */
 	AIUS_HTTP_ROUTE_SD_MODE,
 	/* GET /api/status/brief: the few keys the flow-ends renderer reads

@@ -789,6 +789,7 @@ FLASHMEM void aius_runtime_storage_construct(AiusRuntimeStorage *service)
 	service->root_cancelling = false;
 	service->flags_4h = 0u;
 	aius_sd_teensy_init(&service->target);
+	aius_sd_teensy_set_mode(&service->target, AIUS_SD_BOOT_DMA != 0);
 	aius_sd_job_init(&service->job, service->sd_transfer,
 	                 sizeof(service->sd_transfer));
 	/* Order matters: init clears the registration, so the publication buffer
@@ -1206,10 +1207,12 @@ FLASHMEM bool aius_runtime_storage_diag_json(
 		aius_producer_yield_get_diag(&yield);
 		/* sd_mode is the MOUNTED volume's mode ("none" while unmounted),
 		 * sd_mode_requested the mode the next mount uses. A mounted
-		 * volume's mode equals the requested one because the only mode
-		 * setter (optical_main.cpp app_sd_set_mode) refuses with a file
-		 * open, and with none open aius_sd_teensy_set_mode drops the
-		 * mount, so a mode change always remounts before it is served. */
+		 * volume's mode equals the requested one because the only runtime
+		 * mode setter (optical_main.cpp app_sd_set_mode) refuses with a
+		 * file open, and with none open aius_sd_teensy_set_mode drops the
+		 * mount, so a mode change always remounts before it is served.
+		 * The one other caller is aius_runtime_storage_construct, which
+		 * records AIUS_SD_BOOT_DMA before any mount exists. */
 		/* PROGMEM: flash, not DTCM .rodata. On the canonical slot-a
 		 * image this string as .rodata pushed the 1 KiB-aligned
 		 * _VectorsRam past 0x20008000, costing the stack zone 1,024 B

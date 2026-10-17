@@ -14,6 +14,14 @@
 #define AIUS_SD_TEENSY_DRIVER_FAULT UINT32_C(0x53444452)
 #define AIUS_SD_TEENSY_PROTOCOL_FAULT UINT32_C(0x53445052)
 
+/* The mode every boot mounts the card in: 1 is DMA SDIO, 0 FIFO. A build
+ * switch, not a persisted setting, so an A/B rollback lands on the previous
+ * image's own boot mode (Phase 4zk). aius_sd_teensy_init still starts FIFO;
+ * aius_runtime_storage_construct applies this after init. */
+#ifndef AIUS_SD_BOOT_DMA
+#define AIUS_SD_BOOT_DMA 0
+#endif
+
 typedef struct {
 	File file;
 	bool file_open;
@@ -70,7 +78,8 @@ typedef struct {
 	 * primitive; nonzero in DMA mode is the DMA hang. */
 	uint32_t busy_timeouts;
 	/* Mount mode: true is DMA SDIO, false FIFO. Set by
-	 * aius_sd_teensy_set_mode; the next real mount uses it. */
+	 * aius_sd_teensy_set_mode; the next real mount uses it. Init clears it to
+	 * false; the boot value is AIUS_SD_BOOT_DMA, set right after init. */
 	bool dma;
 	/* Pin 46 (DAT3) is a pulled-down GPIO rather than USDHC-muxed, so
 	 * SD.cardDetected() reads the card. Set by a failed begin (the vendored

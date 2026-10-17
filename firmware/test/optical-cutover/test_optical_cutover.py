@@ -6966,6 +6966,222 @@ def run_producer_yield_self_test():
 
 
 # --------------------------------------------------------------------------
+# Phase 4zk step 1: the SD boot-mode switch stays off until the flip commit.
+# --------------------------------------------------------------------------
+
+SD_BOOT_HEADER = "src/aius_sd_teensy.h"
+SD_BOOT_STORAGE = "src/aius_runtime_storage.cpp"
+SD_BOOT_INI = "platformio.ini"
+SD_BOOT_SCRIPTS_DIR = "scripts"
+SD_BOOT_CALL = "aius_sd_teensy_set_mode(&service->target, AIUS_SD_BOOT_DMA != 0);"
+SD_BOOT_INIT_CALL = "aius_sd_teensy_init(&service->target);"
+SD_BOOT_DEFINE_TOKEN = re.compile(r"-D\s*AIUS_SD_BOOT_DMA(?![A-Za-z0-9_])(=\S*)?")
+
+
+def read_sd_boot_inputs():
+    """name -> text for the files the boot-switch guard reads; scripts are
+    keyed `scripts/<name>.py`."""
+    inputs = dict(read_producer_yield_sources())  # every src/ and lib/ file
+    inputs[SD_BOOT_INI] = (FIRMWARE_ROOT / SD_BOOT_INI).read_text()
+    for path in sorted((FIRMWARE_ROOT / SD_BOOT_SCRIPTS_DIR).rglob("*")):
+        if path.is_file() and "__pycache__" not in path.parts:
+            inputs[path.relative_to(FIRMWARE_ROOT).as_posix()] = path.read_text(
+                errors="replace"
+            )
+    for relative in ini_extra_script_paths(inputs[SD_BOOT_INI]):
+        if relative not in inputs and (FIRMWARE_ROOT / relative).is_file():
+            inputs[relative] = (FIRMWARE_ROOT / relative).read_text(errors="replace")
+    return inputs
+
+
+def ini_strip_comment(line):
+    """configparser rules: a line starting with `;` or `#` is a comment;
+    otherwise only a `;` or `#` preceded by whitespace starts one."""
+    if line.lstrip().startswith((";", "#")):
+        return ""
+    return re.split(r"\s[;#]", line, maxsplit=1)[0]
+
+
+def ini_extra_script_paths(ini_text):
+    """Every path named in any extra_scripts value (`pre:`/`post:` entries)."""
+    stripped = "\n".join(ini_strip_comment(line) for line in ini_text.splitlines())
+    return sorted(set(re.findall(r"\b(?:pre|post):(\S+)", stripped)))
+
+
+def ini_sections_without_comments(text):
+    """section name -> body, comments removed by ini_strip_comment.
+    Text before the first header sits in section ''."""
+    sections = {"": []}
+    current = ""
+    for line in text.splitlines():
+        line = ini_strip_comment(line)
+        header = re.match(r"\s*\[([^\]]+)\]", line)
+        if header:
+            current = header.group(1).strip()
+            sections.setdefault(current, [])
+            continue
+        sections[current].append(line)
+    return {name: "\n".join(lines) for name, lines in sections.items()}
+
+
+def assert_sd_boot_switch_is_off_until_the_flip(inputs):
+    # (a) the header defaults the switch to 0 under #ifndef.
+    header = without_comments_and_literals(inputs[SD_BOOT_HEADER])
+    assert re.search(
+        r"#\s*ifndef\s+AIUS_SD_BOOT_DMA\s*\n\s*#\s*define\s+AIUS_SD_BOOT_DMA\s+0\s*\n\s*#\s*endif",
+        header,
+    ), "aius_sd_teensy.h must default AIUS_SD_BOOT_DMA to 0 under #ifndef"
+
+    # (b) the call appears once in the construct body, after the init call.
+    storage = inputs[SD_BOOT_STORAGE]
+    definitions = function_definitions(storage)
+    assert "aius_runtime_storage_construct" in definitions, (
+        "aius_runtime_storage_construct definition not found"
+    )
+    body = without_comments_and_literals(
+        definitions["aius_runtime_storage_construct"]
+    )
+    assert body.count(SD_BOOT_INIT_CALL) == 1, (
+        "construct must call aius_sd_teensy_init exactly once"
+    )
+    assert body.count(SD_BOOT_CALL) == 1, (
+        f"construct must hold exactly one `{SD_BOOT_CALL}`"
+    )
+    assert body.index(SD_BOOT_INIT_CALL) < body.index(SD_BOOT_CALL), (
+        "the boot set_mode must come after aius_sd_teensy_init (init clears dma)"
+    )
+    clean_storage = without_comments_and_literals(storage)
+    assert clean_storage.count("aius_sd_teensy_set_mode") == 1, (
+        "aius_runtime_storage.cpp must hold exactly one aius_sd_teensy_set_mode call"
+    )
+    assert not re.search(r"\btarget\s*(?:\.|->)\s*dma\s*=(?!=)", clean_storage), (
+        "aius_runtime_storage.cpp must not assign target.dma directly"
+    )
+    # (a, whole tree) the macro is named only by the header's #ifndef and
+    # #define, and the one construct call.
+    expected = {SD_BOOT_HEADER: 2, SD_BOOT_STORAGE: 1}
+    for name, text in inputs.items():
+        if name.startswith(("src/", "lib/")):
+            count = without_comments_and_literals(text).count("AIUS_SD_BOOT_DMA")
+            assert count == expected.get(name, 0), (
+                f"{name} names AIUS_SD_BOOT_DMA {count} times, "
+                f"expected {expected.get(name, 0)}"
+            )
+
+    # (c) no platformio.ini section defines the macro before the flip commit.
+    for section, text in ini_sections_without_comments(inputs[SD_BOOT_INI]).items():
+        tokens = SD_BOOT_DEFINE_TOKEN.findall(text)
+        assert not tokens, (
+            f"platformio.ini [{section}] defines AIUS_SD_BOOT_DMA before the flip"
+        )
+
+    # (d) no file under scripts/ (shell included) and no extra_scripts path
+    # names the macro (build_metadata appends CPPDEFINES; an exported
+    # PLATFORMIO_BUILD_FLAGS would inject it too).
+    script_names = {
+        name for name in inputs if name.startswith(SD_BOOT_SCRIPTS_DIR + "/")
+    } | set(ini_extra_script_paths(inputs[SD_BOOT_INI]))
+    for name in sorted(script_names):
+        if name in inputs:
+            assert "AIUS_SD_BOOT_DMA" not in inputs[name], (
+                f"{name} names AIUS_SD_BOOT_DMA"
+            )
+
+
+def run_sd_boot_switch_self_test(good):
+    check = assert_sd_boot_switch_is_off_until_the_flip
+    _expect_pass(check, good, "sd-boot/good")
+
+    def mutate(path, old, new):
+        assert good[path].count(old) == 1, f"sd-boot anchor {old!r}"
+        changed = dict(good)
+        changed[path] = good[path].replace(old, new)
+        return changed
+
+    # (a)
+    _expect_fail(check, mutate(
+        SD_BOOT_HEADER, "#define AIUS_SD_BOOT_DMA 0", "#define AIUS_SD_BOOT_DMA 1",
+    ), "sd-boot/a-default-1", "default AIUS_SD_BOOT_DMA to 0")
+    _expect_fail(check, mutate(
+        SD_BOOT_HEADER, "#ifndef AIUS_SD_BOOT_DMA\n", "#if 1\n",
+    ), "sd-boot/a-no-ifndef", "default AIUS_SD_BOOT_DMA to 0")
+    # (b)
+    _expect_fail(check, mutate(
+        SD_BOOT_STORAGE, SD_BOOT_CALL + "\n", "\n",
+    ), "sd-boot/b-missing", "exactly one")
+    _expect_fail(check, mutate(
+        SD_BOOT_STORAGE, SD_BOOT_CALL, SD_BOOT_CALL + "\n\t" + SD_BOOT_CALL,
+    ), "sd-boot/b-twice", "exactly one")
+    _expect_fail(check, mutate(
+        SD_BOOT_STORAGE, SD_BOOT_CALL, "aius_sd_teensy_set_mode(&service->target, true);",
+    ), "sd-boot/b-altered", "exactly one")
+    _expect_fail(check, mutate(
+        SD_BOOT_STORAGE, SD_BOOT_CALL, "/* " + SD_BOOT_CALL + " */",
+    ), "sd-boot/b-commented", "exactly one")
+    moved = dict(good)
+    moved[SD_BOOT_STORAGE] = good[SD_BOOT_STORAGE].replace(
+        "\t" + SD_BOOT_INIT_CALL + "\n\t" + SD_BOOT_CALL + "\n",
+        "\t" + SD_BOOT_CALL + "\n\t" + SD_BOOT_INIT_CALL + "\n",
+    )
+    assert moved[SD_BOOT_STORAGE] != good[SD_BOOT_STORAGE], "sd-boot reorder anchor"
+    _expect_fail(check, moved, "sd-boot/b-before-init", "after aius_sd_teensy_init")
+    # (c)
+    ini = good[SD_BOOT_INI]
+    for label, text in (
+        ("plain", ini + "\n[env:teensy41-optical]\nbuild_flags = -DAIUS_SD_BOOT_DMA=1\n"),
+        ("bare", ini + "\n[env:x]\nbuild_flags =\n\t-DAIUS_SD_BOOT_DMA\n"),
+        ("spaced", ini + "\n[env:x]\nbuild_flags =\n\t-D AIUS_SD_BOOT_DMA=0\n"),
+        ("inline-comment", ini + "\n[env:x]\nbuild_flags = -DAIUS_SD_BOOT_DMA=1 ; flip\n"),
+    ):
+        changed = dict(good)
+        changed[SD_BOOT_INI] = text
+        _expect_fail(check, changed, f"sd-boot/c-{label}", "defines AIUS_SD_BOOT_DMA")
+    # A commented-out define is not a token (the stripping is real).
+    commented = dict(good)
+    commented[SD_BOOT_INI] = ini + "\n[env:x]\n; -DAIUS_SD_BOOT_DMA=1\nbuild_flags =\n"
+    _expect_pass(check, commented, "sd-boot/c-commented-ok")
+    # (a, whole tree)
+    _expect_fail(check, mutate(
+        SD_BOOT_HEADER, "#endif\n\ntypedef struct {",
+        "#endif\n#undef AIUS_SD_BOOT_DMA\n#define AIUS_SD_BOOT_DMA 1\n\ntypedef struct {",
+    ), "sd-boot/a-undef-redefine", "names AIUS_SD_BOOT_DMA")
+    other_header = dict(good)
+    other_header["lib/aius_other/include/aius_other.h"] = "#define AIUS_SD_BOOT_DMA 1\n"
+    _expect_fail(check, other_header, "sd-boot/a-other-header", "names AIUS_SD_BOOT_DMA")
+    # (b, whole file)
+    _expect_fail(check, mutate(
+        SD_BOOT_STORAGE, SD_BOOT_CALL,
+        SD_BOOT_CALL + "\n\taius_sd_teensy_set_mode(&service->target, true);",
+    ), "sd-boot/b-second-set-mode", "exactly one")
+    _expect_fail(check, mutate(
+        SD_BOOT_STORAGE, SD_BOOT_CALL,
+        SD_BOOT_CALL + "\n\tservice->target.dma = true;",
+    ), "sd-boot/b-direct-dma", "target.dma")
+    # (c, configparser comment rules)
+    quoted = dict(good)
+    quoted[SD_BOOT_INI] = (
+        ini + '\n[env:x]\nbuild_flags = -DX="a;b" -DAIUS_SD_BOOT_DMA=1\n'
+    )
+    _expect_fail(check, quoted, "sd-boot/c-semicolon-in-value", "defines AIUS_SD_BOOT_DMA")
+    hashed = dict(good)
+    hashed[SD_BOOT_INI] = ini + "\n[env:x]\n# -DAIUS_SD_BOOT_DMA=1\nbuild_flags =\n"
+    _expect_pass(check, hashed, "sd-boot/c-hash-comment-ok")
+    # (d)
+    for path, extra, label in (
+        (f"{SD_BOOT_SCRIPTS_DIR}/build_metadata.py",
+         '\nenv.Append(CPPDEFINES=[("AIUS_SD_BOOT_DMA", 1)])\n', "py"),
+        (f"{SD_BOOT_SCRIPTS_DIR}/build_ab.sh",
+         "\nexport PLATFORMIO_BUILD_FLAGS=-DAIUS_SD_BOOT_DMA=1\n", "shell"),
+        ("test/memory/verify_target.py",
+         '\nenv.Append(CPPDEFINES=[("AIUS_SD_BOOT_DMA", 1)])\n', "extra-script"),
+    ):
+        assert path in good, f"sd-boot (d) fixture lacks {path}"
+        scripted = dict(good)
+        scripted[path] = good[path] + extra
+        _expect_fail(check, scripted, f"sd-boot/d-{label}", "names AIUS_SD_BOOT_DMA")
+
+
+# --------------------------------------------------------------------------
 # Runner.
 # --------------------------------------------------------------------------
 
@@ -6999,6 +7215,8 @@ def main():
     run_self_test()
     run_producer_yield_self_test()
     run_admission_self_test()
+    sd_boot_inputs = read_sd_boot_inputs()
+    run_sd_boot_switch_self_test(sd_boot_inputs)
     print("optical-cutover self-test (checks discriminate against synthetic input): PASS")
 
     text = OPTICAL_MAIN.read_text()
@@ -7020,6 +7238,12 @@ def main():
         # discrimination is proved by mutating them).
         run_sd_overlay_self_test(read_producer_yield_sources())
         run_checks("sd-overlay", SD_OVERLAY_CHECKS, read_producer_yield_sources())
+        # Phase 4zk step 1: the boot-mode switch is off until the flip commit.
+        run_checks(
+            "sd-boot-switch",
+            (("sd-boot-switch-off", assert_sd_boot_switch_is_off_until_the_flip),),
+            sd_boot_inputs,
+        )
     if args.group in ("absence", "all"):
         run_checks("absence", ABSENCE_CHECKS, text)
 

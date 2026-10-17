@@ -811,7 +811,7 @@
     "/api/sd/mode": {
       "post": {
         "operationId": "setSdMode",
-        "description": "Selects the SDIO transfer mode for the next card mount: DMA (true) or FIFO (false). Takes X-Aius-SD-Auth. Not persisted: every boot starts in FIFO, so a watchdog reset during a DMA run reverts silently; read sd_diag.sd_mode from GET /api/status to confirm. Refused with 503 sd_busy while a file is open.",
+        "description": "Selects the SDIO transfer mode for the next card mount: DMA (true) or FIFO (false). Takes X-Aius-SD-Auth. Not persisted: every boot starts in the image's build default (fifo unless built with AIUS_SD_BOOT_DMA=1, Phase 4zk), so a reset reverts silently to that default; read sd_diag.sd_mode from GET /api/status to confirm. Refused with 503 sd_busy while a file is open.",
         "requestBody": {
           "required": true,
           "content": {
@@ -2201,7 +2201,7 @@
           "sd_mode_requested": {
             "type": "string",
             "enum": ["dma", "fifo"],
-            "description": "SDIO transfer mode the next mount uses (POST /api/sd/mode; not persisted, every boot starts fifo)."
+            "description": "SDIO transfer mode the next mount uses (POST /api/sd/mode; not persisted; every boot starts in the image's build default, fifo unless built with AIUS_SD_BOOT_DMA=1, Phase 4zk)."
           },
           "open_misses": {
             "type": "integer",

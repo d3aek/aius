@@ -82,8 +82,8 @@ wholesale on the next handover.
   CLAUDE.md).
 - **Next action (fifth run, 2026-10-17, autonomous posture held).**
   Phase 4zk contracted and prebuild-reviewed (FIX folded); its step 1
-  (default-off DMA-at-boot switch plus guard) is agent-runnable and in
-  flight; step 2 waits on 4e run 2 and E7. Phase 4zy holds the run's
+  (default-off DMA-at-boot switch plus guard) shipped; step 2 waits on
+  4e run 2 and E7, so no agent-runnable phase remains. Phase 4zy holds the run's
   autonomous calls for the owner. Phases 1 and 2 got their SHIPPED
   markers. The fourth-run bullet follows.
 - **Next action (fourth run, 2026-10-16).** 4zf to 4zj all SHIPPED;
@@ -9694,7 +9694,7 @@ live-dependency: none
 ```yaml
 phase: 4zk
 title: Image 2 boots the SD card in DMA and keeps FIFO as the field fallback
-status: planned # 2026-10-17: contract written (fifth run); step 1 (default-off switch) is agent-runnable now; step 2 (the flip commit, 4e image 2) waits on 4e run 2 PASS and an E7 verdict other than B2
+status: in-progress # 2026-10-17: step 1 shipped (host proof green; teensy41-optical and build_ab.sh images build, slot-A OCRAM 264,736 B free (floor), ITCM 13,300 B; memory, itcm-placement, stack-bound 23,316 of 27,424 B, producer-isolation green, no recount; delivery audit PASS, hardening folded); its device GET rides the next master OTA; step 2 (the flip commit, 4e image 2) waits on 4e run 2 PASS and an E7 verdict other than B2
 depends-on: phase-4e (run 2 PASS; E7 verdict A-DMA, with any "fixed in 4e" defect E7 names landed first); phase-4zd (shipped, the DMA-armed sync stall)
 outcome: >-
   From image 2 on, every boot mounts the card in DMA mode: on a fresh
@@ -9767,6 +9767,20 @@ live-dependency: step 1 none; step 2 owner (4e run 2 PASS, then the E7 verdict, 
   `firmware/lib/aius_http/include/aius_http.h` (one comment), and
   `test/sd-editor/openapi.test.js` only if it pins that text.
   `firmware/src/aius_sd_teensy.cpp` does not change: init stays FIFO.
+- **Step 1 delivered (2026-10-17).** The `#ifndef AIUS_SD_BOOT_DMA`
+  default sits at file scope (`firmware/src/aius_sd_teensy.h:17-23`),
+  not beside the `dma` member, whose comment points to it: a define
+  inside the struct body reads worse. Delivery audit (reviewer, opus)
+  PASS; its four hardening findings were folded into the guard: the
+  macro counted across all of `firmware/src` and `firmware/lib` (2 in
+  the header, 1 in the storage file, 0 elsewhere); every file under
+  `firmware/scripts/` plus each `extra_scripts` path scanned;
+  configparser comment rules for the ini; exactly one setter call and
+  no `target.dma =` write in the storage file. For step 2 the
+  inversion is `{section: tokens} == {"env:teensy41-optical": ["=1"]}`.
+  Fold confirmed PASS by the same reviewer. Left unguarded on purpose
+  (contrived): a define in a `firmware/vendor/` header, and a mode write
+  through a pointer alias to the target.
 - **Step 2 paths** (parent-only, after the E7 verdict):
   `firmware/platformio.ini` and the pin inversion in
   `firmware/test/optical-cutover/test_optical_cutover.py`.
