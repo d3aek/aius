@@ -67,7 +67,7 @@ Every suite is host-only and self-contained except `itcm-placement`, which
 inspects the linked objects of an optical image; without a current cross-build it
 exits 3 and prints the build command to run.
 
-The SD-hosted web pages (status, DSP editor, mixer dashboard, upgrade) are host JS
+The SD-hosted web pages (the DSP mixer, status and upgrade) are host JS
 covered by vitest in [`test/sd-editor/`](test/sd-editor/). The same suite holds
 the OpenAPI drift gate, which checks
 [`firmware/sd/www/openapi.json`](firmware/sd/www/openapi.json) against the
@@ -109,7 +109,7 @@ tomorrow. `build.sh` exits:
   serializes optical builds so two agents sharing this tree cannot clobber
   `.pio/build/<env>`)
 
-Five environments are defined in
+Seven environments are defined in
 [`firmware/platformio.ini`](firmware/platformio.ini), whose comments record why
 each flag is set; read them before changing one:
 
@@ -123,6 +123,13 @@ each flag is set; read them before changing one:
 - **`teensy41-optical-fault`**: the production image plus one injectable stall
   checkpoint. Select it as `build.sh teensy41-optical-fault <0..9>`; the script
   refuses to run if you export `AIUS_FAULT_CHECKPOINT` yourself.
+- **`teensy41-optical-slot-a`, `teensy41-optical-slot-b`**: the optical image
+  linked for an A/B flash slot. Slot A is the canonical image the slot-agnostic
+  chooser remaps into either slot, so every OTA release is this one build,
+  signed without `--slot`. Build the set (canonical image, chooser and
+  `recovery.hex`) with
+  [`firmware/scripts/build_ab.sh`](firmware/scripts/build_ab.sh); slot B is
+  built only on request (`--with-slot-b`).
 
 ### Flashing and bench work
 
@@ -131,7 +138,11 @@ each flag is set; read them before changing one:
   `firmware/.pio/build/teensy41-optical/firmware.hex`. It enters HalfKay over the
   CDC control protocol and verifies the image identity after the write.
   `--via rawhid` is the legacy handoff and **cannot verify what it wrote**. CDC is
-  the default. `--port PORT` names the serial port; `TEENSY_LOADER` points at
+  the default. On an A/B board the plain image overwrites the chooser: flash
+  `.pio/build/aius-ab/recovery.hex` (from `build_ab.sh`) for a first install or
+  recovery, and deploy everything else over OTA with
+  [`firmware/tools/ota/aius_ota_flash.py`](firmware/tools/ota/aius_ota_flash.py).
+  `--port PORT` names the serial port; `TEENSY_LOADER` points at
   `teensy_loader_cli`. When the group login is stale, wrap it:
 
   ```bash
@@ -150,8 +161,7 @@ each flag is set; read them before changing one:
   The stall gate builds and flashes fault images, so it needs the build and flash
   tools.
 - **[`firmware/tools/dsp_config/aius_dsp_set.py`](firmware/tools/dsp_config/aius_dsp_set.py)**:
-  Run from the repository root (the auth file is `.secrets/aius-sd-auth` there):
-  `python3 firmware/tools/dsp_config/aius_dsp_set.py --device http://<addr> --auth-file .secrets/aius-sd-auth --set features.limiter=true [--set PATH=JSON ...] [--dry-run] [--wait SECONDS]`.
+  `python3 firmware/tools/dsp_config/aius_dsp_set.py --device http://<addr> --auth-file <token-file> --set features.limiter=true [--set PATH=JSON ...] [--dry-run] [--wait SECONDS]`.
   GETs `/api/dsp/config`, changes only the named existing paths, and PUTs the whole
   config back carrying `base_generation`; non-2xx (409 stale, 400 invalid) exits 1
   with the body. `--dry-run` prints the diff and makes no PUT. A GET already showing
@@ -210,12 +220,14 @@ The remedy is placement:
 - **Large buffers go in `DMAMEM` (OCRAM), not DTCM.** The HTTP request/response
   buffers, the DSP models and the UDP buffers are all placed
   that way; a DTCM instance of the composed runtime would not fit.
-- **Five post-link ITCM guards run on every optical build**
-  ([`firmware/test/itcm-placement/verify_target.py`](firmware/test/itcm-placement/verify_target.py)).
-  They reject `.text` from declared-cold objects, pin the mixed ingress library
-  and `optical_main.cpp` to their named hot entry points, require any LDF library
-  emitting `.text` to be allow-listed, and refuse an environment built with
-  `-flto`. A new object under a cold engine tree fails by default, so "this is
+- **The post-link ITCM guards run on every optical build**
+  ([`firmware/test/itcm-placement/verify_target.py`](firmware/test/itcm-placement/verify_target.py);
+  [`firmware/README.md`](firmware/README.md) lists them). They reject `.text`
+  from declared-cold objects, pin the mixed ingress library, the producer-yield
+  object and `optical_main.cpp` to their named hot entry points, require any LDF
+  library emitting `.text` to be allow-listed, check the OTA dark-window, TX and
+  flash-pinned residency, and refuse an environment built with `-flto`. A new
+  object under a cold engine tree fails by default, so "this is
   legitimately hot" stays a reviewable claim. Re-run them over an existing build
   with `test.sh --environment native --suite itcm-placement`.
 

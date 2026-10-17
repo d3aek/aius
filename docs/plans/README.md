@@ -74,11 +74,6 @@ after its phase lands sends the next reader to redo finished work.
   2026-09-03.
   - board-to-U24 optical capture-and-reduce tool for rate gates
   - external-observation JSON for the sample-rate bench analyzer
-- **[Aius flight recorder: debounce and rolling multi-slot buffer](aius-recorder-rolling-buffer.md)**,
-  2026-09-03.
-  - debounced trigger that ignores the power-on transient
-  - rolling multi-slot capture bank at the same PSRAM footprint
-  - multi-slot addressing over HTTP and in the egress tool
 - **[Aius AC-3 decode support](aius-ac3-support.md)**, 2026-09-04 (decoder
   2026-07-29; live-TV and listening gates closed 2026-09-04).
   - AC-3 (Dolby Digital) decode over a liba52 fork, alongside DTS Core
@@ -133,13 +128,22 @@ after its phase lands sends the next reader to redo finished work.
   - one image and one signature for either A/B slot
   - the chooser remaps the physical slot via FlexSPI
   - a single HalfKay `recovery.hex` cutover, then OTA only
+- **[Aius flight recorder: debounce and rolling multi-slot buffer](aius-recorder-rolling-buffer.md)**,
+  last delivery 2026-10-11. Phases A to D shipped 2026-09-03; Phase E is built
+  and deployed, its source-off device proof is owed.
+  - debounced trigger that ignores the power-on transient
+  - rolling multi-slot capture bank at the same PSRAM footprint
+  - multi-slot addressing over HTTP and in the egress tool
+  - a trigger on an empty slot is dropped and counted
 - **[Aius sample-rate following](aius-sample-rate-following.md)**, last delivery
-  2026-09-04.
+  2026-10-17.
   - output clock follows a 32, 44.1 or 48 kHz optical source, with no resampler
   - PLL4 whole-rate reconfiguration plus live `CCM_ANALOG_PLL_AUDIO_NUM` trim
   - runtime rate refusal and status observability
+  - SD-card waits run the audio producer; HTTP is best-effort during playback
+  - replay retired (Phase 4i)
 - **[Aius output jitter elimination](aius-output-jitter.md)**, last delivery
-  2026-09-07. A listening pass is owed.
+  2026-10-11 (Phase L; Phase K retired with replay). A listening pass is owed.
   - loop-jitter sources removed without adding latency
   - gate-open underrun counter, deterministic ring floor and latency governor
   - glitch timestamps and the AC-3/E-AC-3 syncframe CRC check
@@ -154,10 +158,12 @@ after its phase lands sends the next reader to redo finished work.
   - footprints, placement and impedance-controlled routing
   - DRC/DFM-clean Gerber package
 - **[Aius SD mixer dashboard](aius-sd-mixer-dashboard.md)**, last delivery
-  2026-10-07. The page is committed; deploy waits on the owner's word.
+  2026-10-11. Phases 1 to 2, 4, 6 and 7 are on the card; the mixer is the
+  default `index.html`.
   - full-width dashboard skin over the unchanged DSP editor
   - fader mixer, live routing diagram, bonded EQ channel tabs
-  - next: vendored fonts, six-to-two logo refinement, board limiter enable
+  - open: six-to-two logo (deferred by the owner), board limiter enable (the
+    owner's manual step)
 
 ## Draft
 

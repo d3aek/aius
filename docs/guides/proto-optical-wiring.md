@@ -5,7 +5,7 @@ scope: component
 component: aius
 status: current
 tags: [aius, hardware, optical-spdif, toslink, bring-up]
-updated: 2026-08-04
+updated: 2026-10-17
 ---
 
 # Proto-board optical wiring — first real signal test
@@ -121,7 +121,7 @@ crashed Teensy can never emit data ([optical sheet](../../electronics/connectivi
 
 The firmware side was proven against the SD replay source (since retired) before
 the first run; this test watches `blocks` climb from a *carrier*. Board
-reachable at `http://192.0.2.66` as usual.
+reachable at its DHCP address as usual.
 
 1. **Electrical bring-up, fibre unplugged:** power on; check 3.3 V at both
    jacks' Vcc pins; ORJ-5 Vout idles at a steady logic level with no fibre.

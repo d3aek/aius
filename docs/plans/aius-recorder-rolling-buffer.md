@@ -5,7 +5,7 @@ scope: component
 component: aius
 status: in-progress
 tags: [aius, firmware, audio, recorder, psram, ota]
-updated: 2026-10-05
+updated: 2026-10-17
 ---
 
 # Aius flight recorder — debounce + rolling multi-slot buffer
@@ -924,7 +924,7 @@ agents).
 ```yaml
 phase: E
 title: A trigger on an empty slot never freezes it
-status: planned
+status: built # 2026-10-11 (ce11592): host proof green, delivery audit PASS, deployed on ce1159286fd2 (03f8c4b); the source-off device proof is outstanding
 outcome: >-
   Switching the listening-room source off no longer recycles real captures:
   a trigger whose recording slot holds zero valid frames is dropped and

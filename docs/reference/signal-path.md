@@ -5,7 +5,7 @@ scope: component
 component: aius
 status: current
 tags: [aius, firmware, teensy, audio, dsp, signal-path, dither, limiter]
-updated: 2026-08-04
+updated: 2026-10-17
 toc: true
 ---
 
@@ -854,7 +854,12 @@ change closes the pad and applies the complete plan with a 1,000 microsecond
 lock deadline. A same-structure correction queues only
 `CCM_ANALOG_PLL_AUDIO_NUM` for the next TX boundary. That trim keeps the
 carrier and ring continuous while IEC validity is invalid for the next four
-complete 128-frame periods. There is no resampler or intermediate
+complete 128-frame periods. Two writers feed that trim: the CENTRE estimate from
+the carrier measurement, and, since Phase 4 of
+[`aius-sample-rate-following.md`](../plans/aius-sample-rate-following.md), a FILL
+trim from a PI loop on the transmit-ring fill statistic that holds the ring at
+its gate-open occupancy (`clock.fill_trims` counts FILL writes,
+`clock.centre_writes` CENTRE writes). There is no resampler or intermediate
 requantisation (`lib/aius_clock/src/aius_clock.c`,
 `lib/aius_audio/src/aius_audio_clock.cpp`).
 

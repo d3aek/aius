@@ -18,11 +18,11 @@ measurements behind them, so a claim can be re-checked. Future work lives in
   that none can disturb the audio path. The companion to
   [`signal-path.md`](signal-path.md) when adding I/O or spending memory, and the
   result of [`aius-network-hardening.md`](../plans/aius-network-hardening.md).
-- **[Aius user interface](user-interface.md)**: the four SD-hosted pages (DSP
-  editor, device status, firmware upgrade), with screenshots,
+- **[Aius user interface](user-interface.md)**: the three SD-hosted pages (the DSP
+  mixer, device status, firmware upgrade), with screenshots,
   the routes each reads and writes, and how the interface is served. Screenshots
-  live in [`images/`](images/) and are live captures from the deployed board,
-  driven by a real 5.1 source.
+  live in [`images/`](images/) and render the real pages against device
+  responses captured read-only from the deployed board.
 - **[AIUS USB application control protocol](usb-control-protocol.md)**: the
   line-oriented ASCII protocol on the Teensy USB virtual serial port
   (`/dev/ttyACM*`): transport limits, requests, responses and error vocabulary,

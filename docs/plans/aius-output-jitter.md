@@ -5,7 +5,7 @@ scope: component
 component: aius
 status: in-progress
 tags: [aius, firmware, audio, latency, jitter, monitoring]
-updated: 2026-09-07
+updated: 2026-10-17
 ---
 
 # Aius output jitter elimination
@@ -847,7 +847,7 @@ the SD-refill margin that floor exists for. Not yet observed on device.
   flat, read before and after.
 - unit: parent-only
 
-### Phase K Replays survive dark-input lock blips
+### Phase K Replays survive dark-input lock blips RETIRED (not built; replay removed in 4i)
 
 **Not to be built (2026-10-11).** Replay leaves the firmware in
 [`aius-sample-rate-following.md`](aius-sample-rate-following.md) Phase 4i
@@ -888,7 +888,7 @@ stop request then overwrites the stop reason with `request`
   request with no gate re-open (`gate_open_padded_frames` steps once).
 - unit: parent-only
 
-### Phase L Instrument the dark-input receiver state
+### Phase L Instrument the dark-input receiver state BUILT (deployed 2026-10-11, flip device proof owed)
 
 Owner decision (2026-10-05): plan a firmware instrument rather than a scope
 first. The three receiver states (SIS SYMERR only; SYMERR and BITERR;
@@ -911,7 +911,7 @@ If the instrument shows the input toggling, the next step is a scope on pin
 15 (the ORJ-5 output, `docs/guides/proto-optical-wiring.md`) across a flip.
 
 - **Built host-only (2026-10-11; owner: anything that needs no U24 bench
-  session), not deployed.** `firmware/lib/aius_audio/src/aius_input_rx.h`,
+  session); deployed in the OTA of `ce1159286fd2` the same day (`03f8c4b`).** `firmware/lib/aius_audio/src/aius_input_rx.h`,
   stepped once per epoch by `input_fault_service` (one extra `SPDIF_SRPC`
   read, read-only LOCK bit, no SD or blocking work) before its no-error
   return, so a return to clean is stamped. Over one-second windows it

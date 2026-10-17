@@ -5,7 +5,7 @@ scope: component
 component: aius
 status: current
 tags: [aius, firmware, teensy, audio, memory, io]
-updated: 2026-09-07
+updated: 2026-10-17
 toc: true
 ---
 
@@ -54,9 +54,10 @@ loop and audio ISR both (`README.md:201`).
 
 **That 9,280 is a snapshot and is now the tightest of the historical values — do not
 plan against it.** `-DFNET_CFG_TLS=0` alone returned 19,136 bytes of DTCM, and the
-figure has since gone 9,280 → 17,152 → 25,376 → 43,328 → 47,552 → 36,608 → **31,040**
-(E-AC-3 phase 4, the latest committed figure, against the 24,352 B link-time floor in
-`link/aius_teensy41.ld`). Every number in the table above was correct when measured
+figure has since gone 9,280 → 17,152 → 25,376 → 43,328 → 47,552 → 36,608 → 31,040
+(E-AC-3 phase 4) → **25,696** (canonical `teensy41-optical-slot-a` image at Phase 4e
+start, the latest figure recorded in [`firmware/README.md`](../../firmware/README.md#memory-discipline);
+the link-time floor is in `link/aius_teensy41.ld`). Every number in the table above was correct when measured
 and none of them is current — the whole table also predates the E-AC-3 flash-pinning
 rebalance, the 218,688 B decoder arena, the OTA slices and the decorrelator. The
 reasoning in this document stands; only the arithmetic is stale. **Take the live
@@ -229,13 +230,18 @@ hardening plan spent its phases establishing.
   attribute silently leaves the code in ITCM
   (`src/aius_sd_teensy.cpp:11`). ITCM belongs to code that genuinely runs per audio
   block (`docs/plans/aius-network-hardening.md:41`).
-- **Large buffers live in `DMAMEM`, not in the DTCM free-for-locals zone.** OCRAM is
-  17.44 % used; the DTCM stack zone is 9,280 bytes total.
+- **Large buffers live in `DMAMEM`, not in the DTCM free-for-locals zone.** The
+  per-env OCRAM free floors are pinned in `test/memory/verify_target.py`
+  (`OCRAM_FREE_FLOORS`); the DTCM stack zone is about 25.7 kB on the canonical
+  image ([`firmware/README.md`](../../firmware/README.md#memory-discipline)).
 - **At most one SD primitive per epoch, bounded by the watchdog rather than a false
-  cooperative timeout.** The Teensy SD library is synchronous and offers no
-  cancellable call, so a checkpoint performing two primitives doubles the worst-case
-  wedge the 8 s watchdog must absorb (`src/aius_runtime_storage.h:8`). Three routes
-  break this rule today — see
+  cooperative timeout.** The SD library (vendored SdFat with DMA SDIO since Phase
+  4e) offers no cancellable call, so a checkpoint performing two primitives doubles
+  the worst-case wedge the 8 s watchdog must absorb
+  (`src/aius_runtime_storage.h:8`). A wait inside an SD call runs the audio
+  producer through the vendored SD-wait hook (`lib/aius_producer_yield`), so a
+  card stall does not starve the transmit ring. One route breaks the
+  one-primitive rule today; see
   [§Raw SD access outside the job engine](#raw-sd-access-outside-the-job-engine).
 - **The meters snapshot crosses its producer/reader boundary through a seqlock, not a
   lock.** The AUDIO writer takes no lock, tests no reader state and never retries;
@@ -868,12 +874,12 @@ offending call.
 
 ## Raw SD access outside the job engine
 
-**Three routes reach the card directly, and all three are now bounded and
-`sd_busy`-gated.** This section exists because the shipped code does not match the
-"one SD primitive per epoch, total" claim without it: an epoch whose checkpoint 5
-serves one of these spends up to 128 raw reads, not one job primitive. When this
-document first recorded them, two were ungated and one unbounded; the Phase 14d audit
-closed both gaps (open defect 6).
+**One route reaches the card directly, and it is bounded and `sd_busy`-gated.** This
+section exists because the shipped code does not match the "one SD primitive per
+epoch, total" claim without it: an epoch whose checkpoint 5 serves it spends up to
+128 raw reads, not one job primitive. When this document first recorded the direct
+routes, two were ungated and one unbounded; the Phase 14d audit closed both gaps
+(open defect 6), and Phase 4i removed the two replay routes.
 
 | Route | Call site | Bound | `sd_busy` gate |
 |---|---|---|---|
@@ -915,8 +921,8 @@ lives in the composition root (`src/optical_main.cpp:3186`).
 
 **I/O it performs, checkpoint by checkpoint.**
 
-- **Chunk staging (HTTP checkpoint → SD checkpoint).** `POST /api/ota/image` writes
-  each 4,096-byte container chunk to `/aius/ota-staged.img` through the existing
+- **Chunk staging (HTTP checkpoint → SD checkpoint).** `PUT /api/ota/image` writes
+  each container chunk (at most 4,096 bytes) to `/aius/ota-staged.img` through the existing
   bounded SD job engine, through the `APPEND_PART` upload
   (`src/optical_main.cpp:3194`). The session hashes each chunk synchronously at
   dispatch while the durable write is asynchronous; a chunk whose SD write fails
@@ -938,9 +944,10 @@ lives in the composition root (`src/optical_main.cpp:3186`).
   and only `POST /api/ota/enable-activation` flips it, so `/api/ota/activate` answers
   409 until that deliberate act (`src/optical_main.cpp:3211`).
 
-**Routes:** `GET /api/ota`, `POST /api/ota/image` / `arm` / `verify` / `abort` /
-`activate` / `enable-activation` / `self-test-flash` / `rehearse` / `rehearse-fault`
-(`lib/aius_http/src/aius_http.c:151`–`:170`), dispatched through the dispatcher's
+**Routes:** `GET /api/ota`, `PUT /api/ota/image`, and `POST /api/ota/` `arm` /
+`verify` / `abort` / `activate` / `enable-activation` / `self-test-flash` /
+`rehearse` / `rehearse-fault` / `boot-other`
+(`lib/aius_http/src/aius_http.c:146` to `:167`), dispatched through the dispatcher's
 separate OTA table (`src/aius_optical_app.cpp:1847`).
 
 **Audio-path justification.** Staging rides the same one-SD-primitive-per-epoch job
@@ -959,9 +966,10 @@ One client, one transaction, one transport primitive per epoch.
 - `http_request[13312]` and `http_response[8192]`, both inside `AiusRuntimeNetworkHttp`
   and therefore in OCRAM (`src/aius_runtime_network_http.h:54`,
   `lib/aius_http/include/aius_http.h:17`).
-- `app_body[12288]` — the application response-body buffer, sized for the largest
-  body any route serializes, `GET /api/dsp/config`'s effective model
-  (`src/aius_runtime_teensy.h:48`).
+- `app_body[16384]`: the application response-body buffer, sized for the largest
+  body any route serializes, `GET /api/status`
+  (`AIUS_RUNTIME_TEENSY_STATUS_BODY`, `src/aius_runtime_teensy.h:51`; the DSP model
+  JSON fits under it).
 - The dispatcher's `index_entries`, about 3 kB, and its three 128-byte path buffers,
   both in the same OCRAM object; the scratch lives there rather than on the stack
   precisely because the DTCM free-for-locals zone is the scarce bank
@@ -1014,6 +1022,13 @@ transport primitive or one application dispatch
 (`src/aius_runtime_network_http.h:90`). It performs no SD primitive and owns no SD
 job; an SD-backed action is handed to the root and consumed at checkpoint 8
 (`src/aius_runtime_network_http.h:27`).
+
+**Three later layers sit on this transaction**, each described in
+[`firmware/README.md`](../../firmware/README.md): HTTP is best-effort during
+playback (a costly route answers `503 audio_busy` while live input owns the ring,
+Phase 4f); the web app is served from a PSRAM cache as gzip bundles
+(`lib/aius_web_cache`, Phase 4g); and settings saves land in a PSRAM write-behind
+overlay flushed to the card later (`lib/aius_sd_overlay`, Phase 4h).
 
 **A note on what the bounded listener costs.** One client at a time means a
 connection arriving before the previous one is fully released is dropped — observed

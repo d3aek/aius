@@ -4,7 +4,7 @@ type: plans
 scope: component
 component: aius
 status: in-progress
-updated: 2026-10-07
+updated: 2026-10-17
 toc: true
 ---
 
@@ -15,7 +15,10 @@ full-viewport dashboard in the product site's bench palette (black, phosphor
 amber for the voice, signal teal for the path). It runs the unchanged
 `dsp-editor.js` and replaces the routing canvas with a fader mixer, the
 signal-flow strip with a live routing diagram, and the dense channel EQ table
-with bonded tabs. `index.html` stays as the classic editor.
+with bonded tabs. Phase 6 later renamed the page to `index.html` (the default
+editor) and moved the classic editor to `classic.html`; Phase 4r of
+[`aius-sample-rate-following.md`](aius-sample-rate-following.md) deleted
+`classic.html` on 2026-10-12.
 
 ## State: resume here
 
@@ -25,6 +28,9 @@ with bonded tabs. `index.html` stays as the classic editor.
   deferred by the owner. Phase 5 is the owner's own manual step. Phases 6
   (the mixer is `index.html`, the classic editor `classic.html`) and 7
   (every page in the bench style) shipped to the card on 2026-10-11.
+  `classic.html` was deleted in sample-rate-following Phase 4r
+  (2026-10-12, `5797713`) and `replays.html` retired in Phase 4i (`606a64b`),
+  so `index.html` is now the only DSP editor page.
 - **What landed** (all pushed):
 
   | Commit | Contents | Proof |
@@ -537,6 +543,10 @@ by 5.3 dB. `limiter.enabled` was already true at -1 dBFS, 0.5 ms attack,
 
 ### Phase 6: Deploy to the board ✓ SHIPPED 2026-10-11
 
+Historical note: the `classic.html` this phase created was deleted in
+sample-rate-following Phase 4r (`5797713`); the notes below describe the
+2026-10-11 state.
+
 Settled by the owner, 2026-10-07: deploy only "when I tell you to". The
 default-page question is decided at that time.
 
@@ -599,6 +609,10 @@ firmware/tools/aius-sd-sync.sh --device http://192.0.2.66 \
 ```
 
 ### Phase 7: The other SD pages follow the mixer style ✓ SHIPPED 2026-10-11
+
+Historical note: `classic.html` (Phase 4r, `5797713`) and `replays.html` with
+`replays.css` (Phase 4i, `606a64b`) no longer exist; the notes below describe
+the 2026-10-11 state.
 
 ```yaml
 outcome: >-

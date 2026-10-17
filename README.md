@@ -36,10 +36,11 @@ flowchart LR
 
 The whole processing chain is editable from a browser while the audio plays:
 
-![The Aius DSP editor from the EQ surface down to the spectrogram: the editable
-response curve drawn over a live spectrum, the per-channel and output EQ forms,
-the downmix routing diagram with its matrix values, limiter gain reduction,
-output levels, and the live spectrogram](docs/reference/images/dsp-editor-hero.png)
+![The Aius DSP page with an AC-3 carrier locked: the signal-flow diagram from
+six input channels through the processing core to the stereo output, the audio
+path and live input and output levels, the preset card, and the downmix matrix
+faders with their equation, centre balance and output
+levels](docs/reference/images/dsp-editor-hero.png)
 
 The [user interface reference](docs/reference/user-interface.md) covers every
 page.

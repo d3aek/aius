@@ -23,7 +23,8 @@ dependency, so the identical source runs in host tests and on the Teensy.
 | `lib/aius_dts/` | `AiusDtsDecoder` adapter over the vendored DTS Core + the arena alloc shim. |
 | `lib/aius_a52/` | `AiusA52Decoder` adapter over the hardened liba52 fork, with six-step AC-3 AU decode. |
 | `lib/aius_clock/` | Portable supported-rate tracker and pure S/PDIF PLL4 planner. |
-| `lib/aius_pipeline/` | PCM/DTS/AC-3 classifier + parser→decoder end-to-end chaining. |
+| `lib/aius_eac3/` | `AiusEac3Decoder` adapter over the vendored FFmpeg E-AC-3 fork (`vendor/ffmpeg-eac3/`). |
+| `lib/aius_pipeline/` | PCM/DTS/AC-3/E-AC-3 classifier + parser→decoder end-to-end chaining. |
 | `lib/aius_dsp/` | 5.1→stereo downmix + biquad EQ output DSP. |
 | `lib/aius_dsp_runtime_config/` | Shared production-model resolver for firmware and native renderers: feature bypass, coefficient design, state reset and meter cadence. |
 | `lib/aius_capability/` | USB capability wire protocol + arena-driven device handler. |
@@ -33,12 +34,20 @@ dependency, so the identical source runs in host tests and on the Teensy.
 | `lib/aius_net/` | UDP frame codec + the network generation supervisor. |
 | `lib/aius_http/` | HTTP request parser + the one bounded server transaction. |
 | `lib/aius_sd/` | Bounded SD job machine (probe, config load, upload, download, delete). |
+| `lib/aius_sd_overlay/` | PSRAM write-behind overlay for the settings files (Phase 4h). |
+| `lib/aius_web_cache/` | PSRAM cache the web app is served from, as gzip bundles (Phase 4g). |
+| `lib/aius_producer_yield/` | The audio producer pass that SD waits and checkpoint yield points run (Phase 4e). |
+| `lib/aius_audio_ingress/`, `lib/aius_audio_service/` | The S/PDIF ingress ring and the deferred audio service quotas. |
+| `lib/aius_recorder/` | PSRAM flight recorder core: freeze state machine, triggers, staging, chunking. |
+| `lib/aius_json/` | The one bounded JSON read cursor shared by the config parsers. |
+| `lib/aius_ab/` | A/B boot state: flash map, boot record and trial ledger, slot pick. The first-stage chooser in `chooser/` is built on it. |
 | `lib/aius_usb_control/` | USB control command parser + runtime transaction. |
 | `lib/aius_config/`, `lib/aius_dsp_config/` | Feature-flag config + DSP model JSON validators. |
 | `lib/aius_auth/` | Physical-access token derived from the fused MAC words. |
 | `lib/aius_audio/` | Subset build of the PJRC S/PDIF3 input/output units + the audio clock, from the retained source snapshots (the framework `Audio` library is `lib_ignore`d). |
 | `vendor/dcadec-core/` | Minimal `dcadec` fixed-point DTS Core (LGPL 2.1, verbatim; see its `NOTICE.md`). |
 | `vendor/NativeEthernet/` | Pinned Ethernet stack; the framework copy is `lib_ignore`d and the pin is proved post-link. |
+| `vendor/SdFat/`, `vendor/SD/` | Vendored SdFat (DMA SDIO, with an SD-wait hook for the producer) and the SD wrapper over it; the framework copies are not used. |
 | `vendor/tweetnacl/` | TweetNaCl 20140427 verbatim (public domain; see its `NOTICE.md`): `crypto_sign_open` only, behind the OTA Ed25519 adapter. |
 | `src/` | Teensy entry points (`main.cpp`, `capability_main.cpp`, `optical_main.cpp`) + the Teensy adapters. |
 | `tools/device/` | Simulated device + host runner, including the P6 hidraw transport. |
@@ -48,10 +57,13 @@ dependency, so the identical source runs in host tests and on the Teensy.
 | `tools/dcadec_ref/` | dcadec-reference generator for the LFE bit-exactness suite. |
 | `tools/measure_vectors/` | Committed PCM stimulus vectors for the measurement loopback + their generator/validator (preamble-free and loop-coherence obligations asserted at generation, revalidated by the `measure` suite). |
 | `tools/memory/` | Linker-map → per-bank memory report. |
+| `tools/aius-sd-sync.sh`, `tools/www_bundle.py` | Upload `sd/www/` to the card, and build the inlined gzip page bundles the PSRAM web cache serves. |
+| `tools/aius-recorder-pull.py` | Pull a frozen flight-recorder capture over HTTP (`--auth-file`). |
 | `tools/ota/` | Host OTA image signer: Ed25519 keygen, container signing and verification through the firmware's own state machine. Compiles its two native helpers on demand from `lib/aius_ota` + `vendor/tweetnacl`; `--help` prints the operator key-generation command. |
 | `test/` | Host test suites (one directory per suite). |
 | `scripts/test.sh` | Native (host, gcc) test runner — the firmware's test entry point. |
 | `scripts/build.sh` | Teensy 4.1 cross-build (`pio run`) + per-bank memory report. |
+| `scripts/build_ab.sh` | The A/B release set: canonical image (`teensy41-optical-slot-a`), first-stage chooser and merged `recovery.hex`. |
 | `scripts/run_hid.sh` | Host P6 proof over Teensy RawHID (`/dev/hidrawN`). |
 | `scripts/flash_and_run.sh` | Bounded flash, re-enumeration wait, and P6 proof. |
 | `scripts/flash_optical.sh` | Optical-image flash wrapper; waits for HalfKay and reports completion. |
@@ -186,7 +198,10 @@ false). The `test/ota/test-only-signing-key.{pub,sec}` pair is the host suite's
 fixture only: a container it signs is refused by the device at verify with
 `409 ota_signature`. The fingerprint is the first 8 bytes of `SHA-256(key)` in
 hex. Verify runs the Ed25519 check over the header's authentication digest
-against that key.
+against that key. The deployed board runs behind the slot-agnostic A/B chooser
+(`lib/aius_ab`, `chooser/`): one container signed without `--slot` activates into
+whichever physical slot is idle, and the `ab` object on `GET /api/status` names
+the posture (`ab: null` is a plain single-image build).
 
 **Durable staging.** `PUT /api/ota/image` drives `aius_ota_absorb` (incremental
 SHA-256, which is what `verify` checks) AND writes each container chunk to
@@ -490,11 +505,14 @@ to run when no image is present, and reads
 
 Cross-build for the Teensy with `scripts/build.sh` (needs PlatformIO; see its
 header for the pinned-venv recipe). Both optical images must build with every
-bank fitting and every post-link check passing:
+bank fitting and every post-link check passing. The deployed image is the
+canonical A/B image, built with `build_ab.sh` (it also writes the chooser and
+`recovery.hex`):
 
 ```bash
 scripts/build.sh teensy41-optical
 scripts/build.sh teensy41-optical-fault 0
+scripts/build_ab.sh
 ```
 
 ### Optical flashing session rule
@@ -579,15 +597,6 @@ Sample-rate following remains the technical prerequisite for the four-hour TV
 and by-ear mission gates. The owner has deliberately scheduled those gates
 after the OTA investigation verdict as well; the bounded runs do not waive
 them.
-
-Three HTTP interop defects are open, all found by pointing a non-browser client
-at the board and all making the control surface work only for the exact byte
-shapes the bundled browser surface happens to emit: request header names are
-matched case-sensitively against `X-Aius-SD-Auth`, a request whose body arrives
-in a second TCP segment gets no response at all, and the `/api/measure` body parser
-rejects the insignificant JSON whitespace `json.dumps` emits by default. Until
-they land, drive the board with compact JSON in a single write and exact header
-case.
 
 `tools/net/aius_http_runner.py` and `tools/net/aius_net_runner.py` exercise a
 running board over HTTP and UDP. The HTTP soak drives only routes the firmware
