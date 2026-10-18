@@ -172,9 +172,10 @@ Each is a proposal, none agreed.
   PUT DSP model and has never loaded one off the card. Pre-existing, unrelated
   to this thread, not investigated. Proposed: investigate separately.
 - **`allow_dark_tx_underrun` in
-  `firmware/tools/net/aius_rate_bench.py` is dead** under gate-open-only
-  counting. Carried over from the jitter plan, still not agreed. Proposed:
-  remove on next touch.
+  `firmware/tools/net/aius_rate_bench.py` is live, not dead**: removing it
+  failed 9 `rate-runner` and `rate-gate-capture` cases on 2026-10-18, whose
+  transition fixtures advance gate-open `tx_underrun_frames`. It stays
+  ([`aius-output-jitter.md`](aius-output-jitter.md) §State traps).
 
 ### Pending decisions
 

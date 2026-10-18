@@ -46,9 +46,11 @@ editor) and moved the classic editor to `classic.html`; Phase 4r of
   folders sit on the the host application preview mount, gitignored by design
   (`src/apps/preview/README.md`). The next agent can build on both:
   - `src/apps/preview/content/aius-mixer/`: the preview bundle, served at
-    `https://apps.example.net/apps/preview/aius-mixer/mixer.html`. Its
+    `https://apps.example.net/apps/preview/aius-mixer/index.html`. Its
     `_tools/` folder holds `build_preview.py`, `preview-shim.js`, the probe
-    scenarios, and `fixtures/` captured read-only from the board.
+    scenarios, the doc-capture scenarios `shot-*.json`, and two fixture sets
+    captured read-only from the board: `fixtures/` (2026-10-07) and
+    `fixtures-2026-10-17/` (see Traps).
   - `src/apps/preview/content/aius-logos/`: eight raster explorations, the
     gallery `index.html` and `_tools/generate_logos.py`; the round 1 and 2
     SVGs in `svg/`, and the review pages `round-1.html` and `round-2.html`.
@@ -380,7 +382,10 @@ Settled by the owner, 2026-10-07: yes, vendor them.
   shows no request leaving the page's origin. `build_preview.py` copies a
   fixed file list, so add `fonts/` to it.
 
-### Phase 3: Six-to-two logo, refinement rounds BLOCKED
+### Phase 3: Six-to-two logo, refinement rounds DEFERRED
+
+Deferred by the owner, not blocked on anything external (owner, 2026-10-18,
+confirming the marker).
 
 Settled by the owner, 2026-10-07: direction 1 (six-to-two) only, refined over
 several rounds with the user's review between each.
@@ -691,6 +696,18 @@ unit: implementer
   /other/upstream repository src/apps/preview/content/aius-mixer/_tools/fixtures
   2026-10-07T08:20Z`. Its fixtures are the board's state at 08:20 UTC on
   2026-10-07, and its meters loop 5 s of real readings.
+- **The docs screenshots come from the preview, not the board.**
+  `docs/reference/user-interface.md` was re-shot on 2026-10-17 from
+  `_tools/fixtures-2026-10-17/`: today's status, config, presets and OTA,
+  with the carrier, clock, gate and decoder fields of `status.json` and the
+  meter loop taken from the 2026-10-07 carrier capture, and `ip` set to
+  `192.0.2.66` (the export scrubs text, not pixels). Build with that
+  directory, then run each `_tools/shot-*.json` through
+  `the repo tooling tool playwright-inspect "<preview>/<page>?shot" <log> --script
+  <scenario> --dpr 2 --shot-dir <dir>`; `?shot` drops the preview ribbon. The
+  hero is cropped with `ffmpeg -vf crop=` between the rects
+  `shot-measure.json` logs (no Pillow on this host). The shim answers
+  `/api/status/brief` and `/api/ota` from the fixtures when present.
 - **`dsp-editor.css` scopes canvas sizing under `.visual`.** This page does
   not use that class, so `mixer.css` sizes `canvas.curve` and
   `canvas.gr__history` itself.

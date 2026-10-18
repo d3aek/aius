@@ -5,7 +5,7 @@ scope: component
 component: aius
 status: in-progress
 tags: [aius, firmware, audio, latency, jitter, monitoring]
-updated: 2026-10-17
+updated: 2026-10-18
 ---
 
 # Aius output jitter elimination
@@ -17,179 +17,39 @@ must not grow; the fix is to remove the loop-jitter sources, not to widen the
 transmit cushion. (13 ms is the MEDIAN residence the DSP page reports, not the
 ring floor: the floor is 128 frames on PCM and AC-3 alike — Phase G.)
 
-## State — resume here
+## State: resume here
 
-**Status:** Phases A, B, C, D SHIPPED and RUNNING ON THE DEVICE
-(`d5dab0618f4c+teensy41-optical`, flashed 2026-08-16 via HalfKay after the
-OTA dark-window brick — see
-[`aius-ota-resilience.md`](aius-ota-resilience.md) for that incident and its
-plan). The device has since migrated to the A/B layout and runs slot A of
-`1dc7cbb80397` (resilience plan, all shipped). Phase E is decomposed and its
-governor is BUILT (2026-08-16, host-proven); live verify on the deployed
-image is the one owed step. The acceptance run (one 5.1 evening, dashboard
-open, gate-open underrun delta 0) has NOT happened yet. The Phase C
-lit-carrier SD-bring-up defect is FIXED (resilience Phase 4c) and
-field-confirmed.
+**Status:** IN PROGRESS. Phases A to G, I, J SHIPPED; Phase H deployed, listening pass owed; Phase K RETIRED; Phase L BUILT and deployed, flip device proof owed. Nothing is BLOCKED.
 
-| Commit | Contents | Proof |
-|---|---|---|
-| `b4a3914ce` | A (meters window drop) + C (probe gating incl. `pllLocked()` edge fix) + D (gate-open underrun counter) + this plan | native dsp/recorder/tx-gate/audio-service/pipeline; vitest dsp-editor 238 + swagger 11; optical build; adversarial delivery audit to exhaustion |
-| `f7e770cf0` | B (second AUDIO pass per epoch) | native runtime oracle re-pinned (24-event traces); same audit |
-| `d5dab0618` | E finding: 512 PCM quantum is retype containment; frame-budget test row | pipeline suite green at 512 |
-| `2c67244b0` | register: OTA brick incident + Phase C bring-up gap | docs only |
-| `6d6962c1b` | `aius-ota-resilience.md` scoped (A/B slots, forensics, staging off pad-2) | docs only |
+| Phase | Commit | Contents | Proof recorded in the phase |
+|---|---|---|---|
+| A, C, D | `d8e2a2d`, `725e280` | Meters analysis window dropped; SD probe gated; gate-open-only `tx_underrun_frames` | Native suites, vitest dsp-editor and swagger, optical build, delivery audit; on device since 2026-08-16 |
+| B | `9748752` | Second audio-service pass per epoch | Runtime oracle re-pinned (24-event traces) |
+| E | `fecd2e6`, `a6f7e07` | PCM decomposition; 512 PCM quantum kept as retype containment; governor built, then retired (D9) | Pipeline suite at 512; live verify void after Phase G |
+| F | `018c000` | Deterministic transmit-ring floor at the gate-open edge | Validated on device 2026-09-02; rate-gate gate 2 passes |
+| G | `8612520` | Governor enabled (D9 reversed); AC-3 residence decomposed | Image `861252098a01` deployed over OTA 2026-09-06; capture table in the phase |
+| H | `abc59a9` | Glitch timestamps, validity polarity fix, missed-fill witness | Host suites `tx-fill-witness` 7, `underrun-episodes` 11, others green; deployed 2026-09-07 13:22 UTC, `spdif_scr 0x00070737`; listening pass owed |
+| I | `cd7ad19` | AC-3 / E-AC-3 syncframe CRC gate with silent substitution | `test_ac3_crc.c` 8 cases, pipeline green; deployed 2026-09-07 16:10 UTC (`cd7ad191ac77`), `crc_rejects 0` on first read |
+| J | `0af7a82` | Governor target follows the replay floor | `tx-governor` host cases; three 10 s replays on `0af7a8244081`, 60 samples, `governor_trims` 0, `tx_underrun_frames` 0; owner accepted 2026-10-05 |
+| K | none | RETIRED, never built; replay removed in [`aius-sample-rate-following.md`](aius-sample-rate-following.md) Phase 4i (`606a64b`); the lock-blip remainder moved to Phase L | None owed |
+| L | `ce11592`, `03f8c4b` | `input_diag` `rx_state`, `rx_state_ms`, `lock_pm` (`aius_input_rx.h`) | Host classifier cases; delivery audit FAIL fixed, closure PASS; deployed in OTA `ce1159286fd2` 2026-10-11; flip device proof owed |
 
-**On-device state (post-flash checks, all passed):** generation-1 boot,
-zero early resets, `relocks` 0, SD mounted, `/api/meters` 470 B with no
-`analysis_window`, `tx_underrun_frames` 0 (fresh gate-open-only baseline),
-flight recorder armed. The pulled dropout capture from the earlier
-programme (21.8 s, loud program to the cut) lives in session scratch only
-(7-day GC) — its numbers are in this plan's Evidence section.
+The Phase A to D acceptance evening and the pop verdict are closed (owner, 2026-09-04): organic in-situ use satisfies them, and any future glitch is reported as experienced.
 
-**Uncommitted tree state:** nothing owned by this thread. Dirty
-`electronics/*` and `compose.yaml` belong to the H3a
-electronics session — foreign, untouched.
+**Next action:** close the two owed proofs. The aius `CLAUDE.md` makes a bench run a batched, owner-scheduled last resort, so an installed-board proof is a passive read or waits for the owner's slot.
 
-**Next action:** the instrumented image (governor compiled but HELD —
-`AIUS_TX_GOVERNOR_ENABLED=0`) is LIVE on slot B as `fd9d35fd3f95`
-(healthy-committed seq 9, 2026-08-16 evening — after a first activation
-attempt that signed the Intel-hex TEXT as the payload; the chooser's
-IVT-sanity refusal saved the slot and the signer now flattens hex input).
-Wait for the next pop and read `input_diag` to attribute it: one
-`production_gap_over_count` increment pairs with either a same-window SIS
-error (input-side) or an ISR-cadence spike (firmware-side). That verdict
-decides the governor's target policy; only then is the governor enabled
-and Phase E's live verify run. The next image also carries `prev_boot` +
-`fault_record` (the core's retained crash record over HTTP), already
-built and committed.
-
-**Update 2026-08-19 — the pop verdict is still owed, and two things above
-are stale.** An owner-reported dropout was investigated live and turned out
-NOT to be the awaited pop: the 36 min 18 s dark window (device uptime
-174,682,408 → 176,859,984 ms) was a deliberate operator pause. Over the
-whole boot the box showed 283 ms of lifetime `tx_underrun_frames` and 1.35 s
-of lifetime `squelched_frames`, so no aius mechanism had accumulated enough
-to produce a multi-second drop; the decoded 5.1 read −105 dBFS on all six
-channels at the resume, meaning the AC-3 payload itself carried silence.
-`production_gap_over_count` did not move and could not have: the watermark
-resets its sentinel whenever the transmit gate is closed
-(`firmware/src/optical_main.cpp:1751`), so **the attribution recipe above
-only works for a pop that happens with the gate OPEN.** A locked-but-dark
-interval is invisible to it, and that failure class now has its own plan,
-[`aius-input-recovery.md`](aius-input-recovery.md).
-**Closed 2026-09-04: the listening soak is considered complete against the last
-pre-bench build. The pop verdict is satisfied by organic in-situ use — no buzz
-or stall reported — with any future glitch reported as experienced rather than
-run as a documented soak (owner).**
-
-Also stale: the running image is `ceffc20dae6c+teensy41-optical-slot-a`
-(built 2026-08-16T19:31:13Z, `ab.sequence` 11, boot generation 4), not the
-`fd9d35fd3f95` this section names. And the flight recorder was found FROZEN
-from boot bring-up (trigger `underrun` at `at_ms` 2942), so it had captured
-nothing for the whole boot; it has been thawed and is recording. Its
-`carrier_loss` trigger is still armed, which means the next deliberate pause
-will burn the one-shot freeze — an open question in the input-recovery plan's
-§Pending decisions.
-
-**Update 2026-09-02 — Phase F opened.** The rate-gate capture tool's gate-2
-run root-caused a 128-frame dropout to the post-relock transmit-ring floor
-being phase luck (the gate-open target only trims down; nothing pads up).
-Phase F below makes the floor deterministic at the gate-open edge; built
-and flashed the same day (`3570a216216d+teensy41-optical`, plain
-single-image posture, no A/B — the "slot B" statements above are
-historical), with gate 2 passing for the first time on it.
-
-**Update 2026-09-06 — Phase G: the governor is ENABLED, reversing D9.** The
-DSP page's ~25-30 ms over a glitch-free AC-3 session was decomposed by device
-measurement into AC-3's inherent ~16 ms median (the 1536-frame access-unit
-sawtooth over a 128-frame floor) plus a stall-driven ratchet of the floor. Two
-same-carrier reset designs built that session (underrun-gated per-block trim;
-one-shot trim at a codec transition) were both killed by adversarial review and
-discarded unmerged; the measured floor showed the existing window-minimum
-governor is the correct regulator and cannot fire on healthy AC-3. Enabled via
-`-DAIUS_TX_GOVERNOR_ENABLED=1` in `platformio.ini` for the optical env and
-deployed over OTA as `861252098a01+teensy41-optical-slot-a`; Phase G below
-carries the capture table and the argument.
-
-**Update 2026-09-07 — Phases H and I: the loop's blind spots, timestamped and
-fixed.** One brief stutter on stable AC-3 playback had no timed record. A
-read-only audit of the audio loop found two wire-level faults the counters could
-not see: the S/PDIF validity bit was inverted (V=1 transmitted permanently since
-the first rate apply, with a 10.67 ms V=0 window per clock trim) and a transmit
-interrupt more than one period late let the circular DMA repeat a stale half
-with no counter moving. Both fixed, with timestamps and durations added for
-every splice class (Phase H, `abc59a96f2bb`, deployed 13:22 UTC), then the one
-remaining invisible — a corrupt-but-complete AC-3/E-AC-3 frame decoding as
-garbage — closed by a syncframe CRC gate with silent substitution (Phase I,
-`cd7ad191ac77`, deployed 16:10 UTC). Deployed image: `cd7ad191ac77` on slot 2;
-`spdif_scr 0x00070737` (bit 5 set = V=0 on the wire). Owner rulings: dark
-intervals are intentional pauses and never the fault; glitches are sub-second on
-stable playback; records need timestamps and durations; known gaps are fixed in
-firmware regardless of which DAC is downstream (the listening-room DAC is a Topping
-D50 III, ES9039Q2M, which ignores V for muting). Owed: the listening pass.
-
-**Decisions taken this session (owner, in chat):**
-- Jitter is fixed by removing sources, never by widening the transmit
-  cushion: added latency is unacceptable; 13 ms is below the perception
-  floor and stays.
-- The analysis window is dropped entirely (not decimated, not opt-in);
-  meter bars and GR stay; EQ curve is client-side and free.
-- PCM 512→128 was approved "with live check first"; the attempt exposed the
-  retype-containment coupling and was reverted (my call, recorded in the
-  Phase E section) — the live decomposition now gates any quantum change.
-- "Flash it": the OTA activation bricked the board (dark-window failure,
-  NOT the image); recovered via Program button + HalfKay. Remote activation
-  is now interim-ruled in the resilience plan.
+1. **Phase H listening pass**, which also carries Phase I's `pipeline_diag.crc_rejects` static across a clean session. Passive: the owner listens in situ; read the `/api/status` `clock.*` stamps (`trim_last_at_ms`, `underrun_episodes[]`, `tx_missed_fill_*`) and `invalid_windows` against the second the owner reports a glitch.
+2. **Phase L flip device proof.** Flip the receiver state with U24 de-auth toggles (`firmware/tools/rate_gate_capture/u24_carrier.py`, no replay) and show the `rx_state_ms` stamp within one epoch of the counter onset. A de-auth removes the carrier from the installed board, so it needs an owner-scheduled slot, batched with any other pending bench item.
 
 **Traps:**
-- The deployed image's `gate_open_target_frames` is 128 from a
-  `platformio.ini` override; the source default reads 256. Do not "fix"
-  either to match the other.
-- `tx_underrun_frames` is now gate-open-only: any tool comparing lifetime
-  counts across images sees a semantic step; the rate-bench
-  `allow_dark_tx_underrun` waiver is vestigial (harmless).
-- A FROZEN recorder counts nothing, `suppressed_triggers` included — do not
-  read zeros on a frozen boot as "no dropouts".
-- The dsp suite still carries "meter analysis window JSON fits the body"
-  rows: they pin lib-level arithmetic for a surface the route no longer
-  serves (deliberate: capture core retained).
-- The device SD auth token is deliberately NOT in the repo; ask the owner
-  (derivation: `firmware/tools/aius_token.py` from fused MAC words).
 
-### Findings and loose ends
-
-- `firmware/tools/net/aius_rate_bench.py`
-  `allow_dark_tx_underrun` waiver is dead under gate-open-only counting —
-  proposed: remove on next touch (not agreed).
-- The meters route stays outside the swagger format-string extractor gate
-  (its two array loops need extractor shapes it lacks) — recorded in Phase
-  A's targeted-proof; proposed: extend the extractor someday (not agreed).
-- `test_dsp.c` analysis-window rows pin an unserved surface — proposed:
-  keep (they guard the retained capture core) (not agreed).
-- The OTA health record's pre-window mark may have survived the incident
-  and could name the failed phase — one bench read before resilience
-  Phase 1 locks (recorded there too).
-
-### Pending decisions
-
-- **A/B flash map** (resilience Phase 3): "Approve the two-slot flash
-  layout direction — never-erased first-stage chooser at the boot address,
-  dual-linked images per release, trial-boot commit — before 3a lands?"
-  Options: approve (Phase 3 can start after 1–2) / modify / reject (stays
-  on the interim physical-access rule). Recommendation: approve — it is
-  the only shape that removes the physical-access failure mode this cycle
-  demonstrated. Blocked until answered: Phase 3 only.
-- **Acceptance evening scheduling**: "Run the jitter acceptance (one 5.1
-  evening, dashboard open, counter delta 0) on the current image before
-  the Phase C bring-up fix flashes, or fold both into one image first?"
-  Recommendation: run acceptance now — the bring-up bug only bites boots
-  under a lit carrier and does not touch the counters being proven.
-  **Closed 2026-09-04: the listening soak is considered complete against the
-  last pre-bench build; the acceptance evening is satisfied by organic in-situ
-  use, glitches reported as experienced rather than run as a documented soak
-  (owner).**
-- **PCM decomposition** needs ~2 min of genuine PCM playing (owner
-  action); the poll itself is scripted in this plan's Phase E.
+- The deployed image's `gate_open_target_frames` is 128 from a `platformio.ini` override (line 325); the source default in `firmware/src/optical_main.cpp` reads 256. Do not "fix" either to match the other.
+- `tx_underrun_frames` is gate-open-only: a tool comparing lifetime counts across images sees a semantic step. The rate-bench `allow_dark_tx_underrun` waiver is live, not vestigial: transition and negative scenarios still advance gate-open `tx_underrun_frames` (the `rate-runner` and `rate-gate-capture` fixtures do, by 256), and removing it failed 9 cases on 2026-10-18, so it stays.
+- A frozen recorder counts nothing, `suppressed_triggers` included. Do not read zeros on a frozen boot as "no dropouts".
+- The attribution recipe for a pop (`production_gap_over_count`) only works with the transmit gate OPEN: the watermark resets while the gate is closed. A locked-but-dark interval belongs to [`aius-input-recovery.md`](aius-input-recovery.md).
+- Dark intervals are the owner's pauses, never the fault (design decision, 2026-09-07).
+- `firmware/test/dsp/test_dsp.c` still carries "meter analysis window JSON fits the body" rows for a surface the route no longer serves. Owner, 2026-10-18: delete them the next time `test_dsp.c` is touched.
+- Read `ab` and `build_revision` from `/api/status` for the deployed image; this plan does not name it.
 
 ## Evidence (2026-08-16 session)
 
@@ -961,3 +821,7 @@ any dropout freezes a capture.
   shorten the audio service itself. If the acceptance run still counts
   underruns, the next lever is bounding the meter-publish and DSP work per
   pass, not the cushion.
+- `/api/meters` stays outside the OpenAPI format-string extractor gate: its
+  two array loops need extractor shapes it lacks (Phase A's targeted-proof).
+  Accepted (owner, 2026-10-18): the meters shape is stable and vitest covers
+  its consumers.

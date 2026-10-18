@@ -5,25 +5,28 @@ scope: component
 component: aius
 status: current
 tags: [aius, measurement, provenance]
-updated: 2026-09-04
+updated: 2026-10-18
 toc: true
 ---
 
 # Aius project scale
 
 This records the measured size of the Aius subtree and the method behind each
-figure. Everything below is measured as of 2026-09-04 against HEAD `da68887`,
-over the Aius submodule and its full history. The subtree began as the upstream repository
-path `src/hardware/aius` and was later extracted into this standalone submodule;
-the history was preserved across the move, so every figure spans the first
-commit to now in one line — not a snapshot plus a delta. The repository is live:
-re-running any command later returns different numbers.
+figure. Everything below is measured as of 2026-10-18 against HEAD `7b3d1d1`,
+over the Aius submodule and its full history, except the [agent
+cost](#agent-cost) figures, which are kept as of 2026-09-04 and not
+re-measured. The subtree began as the upstream repository path `src/hardware/aius` and was
+later extracted into this standalone submodule; the history was preserved
+across the move, so every figure spans the first commit to now in one line, not
+a snapshot plus a delta. The repository is live: re-running any command later
+returns different numbers.
 
 ## Measurement basis
 
 - **Path** — every figure is scoped to the Aius submodule (`git_modules/aius`
   from the repository root), full working tree and full history.
-- **Commit pin** — HEAD `da68887`, 2026-09-04.
+- **Commit pin**: HEAD `7b3d1d1`, 2026-10-18 (last commit 2026-10-17). The
+  agent-cost figures stay pinned to `da68887`, 2026-09-04.
 - **Line counts** — physical lines, including blanks and comments, no SLOC
   normalisation. Counted with `git grep -c` against the commit, which reads
   ~0.1% above a `wc -l` count (it counts a final newline-less line) but is
@@ -40,12 +43,12 @@ two days (see [agent cost](#agent-cost)).
 
 | Measure | Value |
 |---|---|
-| Commits | 857 |
-| Span, first to last commit | 51 days |
-| Calendar days with a commit | 34 |
-| Longest gap between consecutive commits | 223.3 h |
-| Commit body text | 132,401 words |
-| Mean commit body | 154 words |
+| Commits | 1,066 |
+| Span, first to last commit | 94 days |
+| Calendar days with a commit | 55 |
+| Longest gap between consecutive commits | 286.7 h |
+| Commit body text | 150,687 words |
+| Mean commit body | 141 words |
 
 Commits per day (bar = commit count), with that day's authored line churn
 (insertions + deletions, excluding vendored code and machine-generated
@@ -74,7 +77,7 @@ date          commits                                authored lines
 2026-08-03   28  #########                               1915
 2026-08-04   14  ####                                    3604
 2026-08-05   21  #######                                 3503
-                 — 223 h gap, 2026-08-06 to 2026-08-13, no commits —
+                 (223 h gap, 2026-08-06 to 2026-08-13, no commits)
 2026-08-14    6  ##                                       234
 2026-08-15    9  ###                                      439
 2026-08-16   26  ########                                8108
@@ -87,12 +90,37 @@ date          commits                                authored lines
 2026-09-01   18  ######                                  3080
 2026-09-02   30  ##########                             10436
 2026-09-03   41  ##############                         10888
-2026-09-04    8  ##                                      2606
+2026-09-04   11  ###                                     3716
+2026-09-06    4  #                                        540
+2026-09-07    7  ##                                      3731
+2026-09-09    2  #                                        289
+2026-09-10    2  #                                        108
+2026-09-11    5  #                                        294
+2026-09-12   11  ###                                      317
+                 (286 h gap, 2026-09-13 to 2026-09-23, no commits)
+2026-09-24    1  #                                         24
+                 (201 h gap, 2026-09-25 to 2026-10-02, no commits)
+2026-10-03    4  #                                       6828
+2026-10-04    7  ##                                       917
+2026-10-05   10  ###                                     3207
+2026-10-06   15  #####                                   7534
+2026-10-07   37  ############                           22626
+2026-10-09    1  #                                         54
+2026-10-10    8  ##                                      9882
+2026-10-11   20  ######                                 23411
+2026-10-12   20  ######                                 14037
+2026-10-13   15  #####                                   4611
+2026-10-14    3  #                                        138
+2026-10-15    2  #                                        264
+2026-10-16   24  ########                                6232
+2026-10-17    8  ##                                      1183
 ```
 
 Activity is dense through late July (busiest day 2026-07-16, 99 commits),
 pauses for the 223 h gap around the upstream repository-to-submodule move, then resumes at
-a lower rate into September.
+a lower rate into September. September thins out to a handful of commits a day
+with two further gaps (286 h and 201 h). October opens a second burst, 2026-10-03
+to 2026-10-17, of 174 commits (busiest day 2026-10-07, 37 commits).
 
 ```bash
 git log --date=short --format='%ad' | awk '{c[$0]++} END{for(x in c) print x,c[x]}' | sort
@@ -101,23 +129,23 @@ git log --numstat --format='' | awk 'NF>=3 && $1 ~ /^[0-9]+$/ {i+=$1;d+=$2} END{
 
 ## Code
 
-First-party firmware C and C++ is 120,475 lines across 222 files.
+First-party firmware C and C++ is 153,150 lines across 250 files.
 
 | Area | Lines | Files |
 |---|---|---|
-| `firmware/test` | 61,666 | 67 |
-| `firmware/lib` | 32,293 | 101 |
-| `firmware/src` | 19,264 | 26 |
+| `firmware/test` | 80,995 | 84 |
+| `firmware/lib` | 39,200 | 110 |
+| `firmware/src` | 25,703 | 28 |
 | `firmware/tools` | 3,435 | 14 |
 | `firmware/chooser` | 217 | 1 |
 | `evidence/**` | 3,600 | 13 |
-| Total | 120,475 | 222 |
+| Total | 153,150 | 250 |
 
 Other first-party languages:
 
-- **Python** — 38,079 lines across 80 files.
-- **JavaScript** — 12,928 lines across 10 files.
-- **Shell** — 2,959 lines across 21 files.
+- **Python**: 56,287 lines across 116 files.
+- **JavaScript**: 16,333 lines across 12 files.
+- **Shell**: 3,961 lines across 24 files.
 
 ```bash
 git grep -cE '$' HEAD -- 'firmware/src/*.c' 'firmware/src/*.cpp' 'firmware/src/*.h' | awk -F: '{s+=$NF} END{print s, NR}'
@@ -128,22 +156,24 @@ shell.
 
 ### Vendored code
 
-A further 53,121 lines of C and C++ across 136 files sit under
+A further 81,633 lines of C and C++ across 255 files sit under
 `firmware/vendor`. **This is third-party code, not first-party authorship.** It
 is excluded from every figure above and from the churn rows below that say
 "excluding vendored".
 
 | Vendored component | Lines |
 |---|---|
-| `ffmpeg-eac3` | 31,853 |
+| `ffmpeg-eac3` | 31,871 |
+| `SdFat` | 27,963 |
 | `dcadec-core` | 17,432 |
 | `NativeEthernet` | 2,755 |
 | `tweetnacl` | 1,081 |
-| Total | 53,121 |
+| `SD` | 531 |
+| Total | 81,633 |
 
 ## Documentation
 
-294,432 words across 64 markdown files (excluding vendored).
+429,559 words across 71 markdown files (excluding vendored).
 
 ```bash
 git grep -h '$' HEAD -- '*.md' ':(exclude)firmware/vendor/*' | wc -w
@@ -151,16 +181,16 @@ git grep -h '$' HEAD -- '*.md' ':(exclude)firmware/vendor/*' | wc -w
 
 ## Tests
 
-1,400 test cases, counted by pattern match against the source rather than by
+1,975 test cases, counted by pattern match against the source rather than by
 running the suites.
 
 | Language | Cases | Pattern |
 |---|---|---|
-| C/C++ | 566 | `^\s*(static\s+)?void\s+test_\w+\s*\(` |
-| Python | 523 | `^\s*def\s+test_\w+\s*\(` |
-| JavaScript | 311 | vitest `it(` / `test(` |
+| C/C++ | 751 | `^\s*(static\s+)?void\s+test_\w+\s*\(` |
+| Python | 847 | `^\s*def\s+test_\w+\s*\(` |
+| JavaScript | 377 | vitest `^\s*(it\|test)\(` |
 
-**1,400 is a floor.** Fixture and vector corpora that hold no case functions
+**1,975 is a floor.** Fixture and vector corpora that hold no case functions
 return zero under these patterns.
 
 ```bash
@@ -169,17 +199,17 @@ git grep -cP '^\s*(static\s+)?void\s+test_\w+\s*\(' HEAD -- 'firmware/test/*' | 
 
 ## Churn
 
-Totals over the whole submodule history: 636,512 insertions, 200,225 deletions,
-5,213 file-changes, touching 1,736 distinct files.
+Totals over the whole submodule history: 898,244 insertions, 302,580 deletions,
+6,552 file-changes, touching 2,015 distinct files.
 
 | Basis | Insertions | Deletions |
 |---|---|---|
-| All paths | 636,512 | 200,225 |
-| Excluding vendored | 581,111 | 199,276 |
-| Excluding vendored and `electronics/` | 403,184 | 167,110 |
+| All paths | 898,244 | 302,580 |
+| Excluding vendored | 813,985 | 301,627 |
+| Excluding vendored and `electronics/` | 490,698 | 186,933 |
 
 The `electronics/` insertions are dominated by machine-generated KiCad
-S-expressions — the schematic sheets and the `aius-carrier.kicad_pcb` layout,
+S-expressions (the schematic sheets and the `aius-carrier.kicad_pcb` layout),
 real committed output but not hand-authored. The third row removes them along
 with vendored code.
 
@@ -202,7 +232,8 @@ closure wording — not read from a status field.
 
 ## Bench operations
 
-The device's retained `boot_generation` counter reads 23 on the deployed board;
+The device's retained `boot_generation` counter reads 29 on the deployed board
+(read from `GET /api/status` on 2026-10-18);
 the highest the register recorded is 346. It is a lower bound on boots since the
 retained slot was last initialised, and undercounts across power loss and slot
 reinitialisation.
@@ -212,10 +243,10 @@ is no cumulative count of runs — only a rolling recent window is ever retained
 
 ### Evidence and electronics
 
-- **Evidence** — 45 Git LFS artifacts across 33 subdirectories, plus 20
-  reviewable source snapshots across 9.
-- **Electronics** — 5 KiCad schematic sheets and 5 connectivity JSON specs
-  declaring 76 nets and 65 components, plus the `aius-carrier.kicad_pcb` layout.
+- **Evidence**: 58 Git LFS artifacts across 39 subdirectories, plus 22
+  reviewable source snapshots across 10.
+- **Electronics**: 5 KiCad schematic sheets and 5 connectivity JSON specs
+  declaring 67 nets and 64 components, plus the `aius-carrier.kicad_pcb` layout.
 
 ```bash
 git -C git_modules/aius lfs ls-files | grep -c docs/reference/datasheets.md
@@ -230,7 +261,13 @@ a session counts if its transcript names the subtree. Because the subtree moved
 from `src/hardware/aius` to the submodule mid-history, that rule matches either
 `hardware/aius` or `git_modules/aius`.
 
-These figures are the sum of two measurement passes taken the same way — one
+**Every figure in this section is as of 2026-09-04, not re-measured at the
+2026-10-18 pin.** The session transcripts were not readable in the
+re-measurement, and the per-figure counting commands (fork-lineage dedup, active
+hour union) are not recorded here, so nothing could be reproduced. Activity
+after 2026-09-04 is absent from them.
+
+These figures are the sum of two measurement passes taken the same way: one
 covering activity through 2026-08-05, one from 2026-08-05 to 2026-09-04. The
 2026-08-05 boundary day sits in both, a negligible double-count.
 
@@ -323,7 +360,8 @@ under 600 s).
    when a passing mention pulls in an unrelated session and under-counts when
    subtree work never wrote either string.
 10. **Test counts undercount.** Fixture-only suite directories return zero under
-    the stated patterns, so 1,400 is a floor.
+    the stated patterns, so 1,975 is a floor.
 11. **Defect closure is inferred from markup**, not read from a status field.
-12. **Both datasets are live.** Figures are pinned to HEAD `da68887` as of
-    2026-09-04; re-running any command later returns different numbers.
+12. **Both datasets are live.** Repository figures are pinned to HEAD `7b3d1d1`
+    as of 2026-10-18 and agent-cost figures to `da68887` as of 2026-09-04;
+    re-running any command later returns different numbers.
