@@ -135,8 +135,8 @@
 
     <div class="ticker" aria-hidden="true">
       <div class="ticker__track">
-        <span>TOSLINK in</span><span>5.1 → 2.0</span><span>Teensy 4.1 · 600&nbsp;MHz Cortex-M7</span><span>Ethernet + web UI</span><span>Parametric EQ</span><span>Dialogue lift</span><span>Night mode</span><span>Open firmware</span>
-        <span>TOSLINK in</span><span>5.1 → 2.0</span><span>Teensy 4.1 · 600&nbsp;MHz Cortex-M7</span><span>Ethernet + web UI</span><span>Parametric EQ</span><span>Dialogue lift</span><span>Night mode</span><span>Open firmware</span>
+        <span>TOSLINK in</span><span>5.1 → 2.0</span><span>Teensy 4.1 · 600&nbsp;MHz Cortex-M7</span><span>Ethernet + web UI</span><span>Parametric EQ</span><span>Dialogue lift</span><span>Open firmware</span>
+        <span>TOSLINK in</span><span>5.1 → 2.0</span><span>Teensy 4.1 · 600&nbsp;MHz Cortex-M7</span><span>Ethernet + web UI</span><span>Parametric EQ</span><span>Dialogue lift</span><span>Open firmware</span>
       </div>
     </div>
   </section>
@@ -196,7 +196,7 @@
             <div class="stack__bar stack__bar--voice" style="--w:92%"><span>Dialogue</span></div>
           </div>
         </div>
-        <p class="note mono">Illustrative relative levels. Measured data to follow.</p>
+        <p class="note mono">Illustrative relative levels. <a href="docs/reference/signal-path.html">Measured data to follow</a>.</p>
       </div>
     </div>
   </section>
@@ -331,7 +331,7 @@
         <p class="kicker mono">04 / Network attached</p>
         <h2>Tune it from the couch.</h2>
         <p class="section__lede">aius sits on your LAN over the Teensy 4.1's native Ethernet. Open its web UI from any
-          phone, or script it: switch to night mode at 10pm, or load a per-show preset from your home automation.</p>
+          phone, or script it: push a new DSP configuration from a script or your home automation.</p>
         <ul class="ticks">
           <li>Built-in web UI, no app, no account</li>
           <li>Local HTTP API for automation</li>
@@ -341,21 +341,14 @@
       </div>
 
       <div class="term" role="figure" aria-label="Example API calls">
-        <div class="term__bar"><i></i><i></i><i></i><span class="mono">aius.local</span></div>
+        <div class="term__bar"><i></i><i></i><i></i><span class="mono">192.0.2.66</span></div>
 <pre class="term__body mono"><span class="c"># see what's playing</span>
-<span class="p">$</span> curl aius.local/api/status
-{
-  <span class="k">"input"</span>:  <span class="s">"5.1"</span>,
-  <span class="k">"preset"</span>: <span class="s">"dialogue"</span>,
-  <span class="k">"center"</span>: <span class="n">1.00</span>,
-  <span class="k">"eq"</span>:     { <span class="k">"presence_db"</span>: <span class="n">6.0</span> }
-}
+<span class="p">$</span> curl http://192.0.2.66/api/status
 
-<span class="c"># it's late</span>
-<span class="p">$</span> curl -X POST aius.local/api/preset \
-    -d <span class="s">'{"name":"night"}'</span>
-{ <span class="k">"ok"</span>: <span class="n">true</span> }<span class="cursor"></span></pre>
-        <p class="term__note mono">Draft API: endpoints will change before v1.</p>
+<span class="c"># push a new DSP configuration</span>
+<span class="p">$</span> curl -X PUT http://192.0.2.66/api/dsp/config \
+    -d <span class="s">@config.json</span><span class="cursor"></span></pre>
+        <p class="term__note mono">Example address. Routes as in the device's OpenAPI document (<a href="https://github.com/d3aek/aius/blob/master/firmware/sd/www/openapi.json"><code>openapi.json</code></a>); response bodies omitted.</p>
       </div>
     </div>
   </section>
@@ -366,7 +359,7 @@
       <header class="section__head">
         <p class="kicker mono">05 / Specifications</p>
         <h2>The datasheet.</h2>
-        <p class="section__lede">Prototype numbers. Anything marked <span class="tag mono tbd">TBD</span> is being measured or decided.</p>
+        <p class="section__lede">Prototype numbers. Anything not yet measured says so.</p>
       </header>
 
       <div class="specs">
@@ -382,19 +375,19 @@
           <div class="spec"><dt>Input formats</dt><dd>Stereo PCM · DTS Core, AC-3 and E-AC-3 over IEC 61937</dd></div>
           <div class="spec"><dt>Output</dt><dd>Stereo PCM over optical TOSLINK (S/PDIF), reset-safe gated</dd></div>
           <div class="spec"><dt>Sample rate</dt><dd>Follows the source: 32, 44.1 or 48&nbsp;kHz</dd></div>
-          <div class="spec"><dt>Added latency</dt><dd>17.4&nbsp;ms board share, PCM, measured · coded formats <span class="tag mono tbd">TBD</span></dd></div>
+          <div class="spec"><dt>Added latency</dt><dd>Input to first output, median: AC-3 17.438&nbsp;ms, PCM 17.740&nbsp;ms, both measured (<a href="https://github.com/d3aek/aius/blob/master/docs/plans/aius-e2e-latency.md#L103"><code>aius-e2e-latency.md:103</code></a>) · DTS and E-AC-3 not yet measured</dd></div>
         </dl>
         <dl class="spec-group">
           <dt class="spec-group__title mono">DSP</dt>
           <div class="spec"><dt>Downmix</dt><dd>User-defined 6 × 2 coefficient matrix, live-editable</dd></div>
-          <div class="spec"><dt>EQ</dt><dd>Biquad cascade on each input channel and the output, <span class="tag mono tbd">N</span> bands per channel</dd></div>
+          <div class="spec"><dt>EQ</dt><dd>Biquad cascade on each input channel and the output, up to 2 bands per channel (<a href="https://github.com/d3aek/aius/blob/master/firmware/lib/aius_dsp/include/aius_dsp.h#L708"><code>aius_dsp.h:708</code></a>)</dd></div>
           <div class="spec"><dt>Dynamics</dt><dd>True-peak output limiter · LFE fold with crossover · surround decorrelation delay</dd></div>
           <div class="spec"><dt>Presets</dt><dd>Up to 16, saved on the SD card from the web editor</dd></div>
         </dl>
         <dl class="spec-group">
           <dt class="spec-group__title mono">Connectivity &amp; physical</dt>
           <div class="spec"><dt>Network</dt><dd>10/100 Ethernet (Teensy 4.1 native PHY + MagJack)</dd></div>
-          <div class="spec"><dt>Control</dt><dd>Web UI · HTTP API (OpenAPI) · USB control protocol · <span class="tag mono tbd">IR TBD</span></dd></div>
+          <div class="spec"><dt>Control</dt><dd>Web UI · HTTP API (OpenAPI) · USB control protocol</dd></div>
           <div class="spec"><dt>Power</dt><dd>5&nbsp;V from a single rear USB-C input</dd></div>
           <div class="spec"><dt>Enclosure</dt><dd>Stock Hammond 1455N1201BK extruded case · board ≤ 100 × 100&nbsp;mm</dd></div>
         </dl>
@@ -446,12 +439,18 @@
         </div>
       </div>
 
-      <ol class="steps">
-        <li><span class="mono">01</span> Order the parts from the BOM</li>
-        <li><span class="mono">02</span> Assemble the carrier board</li>
-        <li><span class="mono">03</span> Flash firmware over USB</li>
-        <li><span class="mono">04</span> Plug in optical + Ethernet</li>
-        <li><span class="mono">05</span> Open <code>aius.local</code> and tune</li>
+      <h3 class="timeline__title">Milestones toward a buildable board</h3>
+      <p class="note mono">Gates from <a href="https://github.com/d3aek/aius/blob/master/CLAUDE.md#L50"><code>CLAUDE.md:50</code></a> §Hardware release gates; status from the <a href="docs/plans/aius-hardware-spec.html">hardware spec</a> and <a href="https://github.com/d3aek/aius/blob/master/docs/plans/aius-h2-h3-manufacturing.md"><code>aius-h2-h3-manufacturing.md</code></a>, <a href="https://github.com/d3aek/aius/blob/master/docs/plans/aius-open-work-register.md"><code>aius-open-work-register.md</code></a>.</p>
+      <ol class="timeline">
+        <li class="timeline__item timeline__item--done"><span class="timeline__state mono">Done</span><h4>Teensy capability proof</h4><p>Parses IEC 61937 and decodes DTS Core within budget; on-device validation 2026-07-21 (<a href="docs/plans/aius-hardware-spec.html"><code>aius-hardware-spec.md:139</code></a>).</p></li>
+        <li class="timeline__item timeline__item--done"><span class="timeline__state mono">Done</span><h4>Manufacturing schematic</h4><p>Four-sheet KiCad project, whole-project ERC 0/0, 2026-07-19 (<a href="docs/plans/aius-hardware-spec.html"><code>aius-hardware-spec.md:144</code></a>).</p></li>
+        <li class="timeline__item timeline__item--done"><span class="timeline__state mono">Done</span><h4>Electrical and failure-mode review</h4><p>Power-path and fault-safe review recorded with the schematic (<a href="docs/plans/aius-hardware-spec.html"><code>aius-hardware-spec.md:147</code></a>).</p></li>
+        <li class="timeline__item timeline__item--done"><span class="timeline__state mono">Done</span><h4>Signal-integrity feasibility</h4><p>Impedance, return-path and mechanical feasibility shipped 2026-08-15; the verdict is a four-layer board (<a href="https://github.com/d3aek/aius/blob/master/docs/plans/aius-h2-h3-manufacturing.md#L107"><code>aius-h2-h3-manufacturing.md:107</code></a>, <a href="https://github.com/d3aek/aius/blob/master/docs/plans/aius-h2-h3-manufacturing.md#L154"><code>aius-h2-h3-manufacturing.md:154</code></a>, <a href="https://github.com/d3aek/aius/blob/master/docs/plans/aius-h2-h3-manufacturing.md#L236"><code>aius-h2-h3-manufacturing.md:236</code></a>).</p></li>
+        <li class="timeline__item timeline__item--done"><span class="timeline__state mono">Done</span><h4>Layout and impedance-controlled routing</h4><p>Placement and routing shipped 2026-09-12; layout complete under the design decisions (<a href="https://github.com/d3aek/aius/blob/master/docs/plans/aius-h2-h3-manufacturing.md#L318"><code>aius-h2-h3-manufacturing.md:318</code></a>, <a href="https://github.com/d3aek/aius/blob/master/docs/plans/aius-h2-h3-manufacturing.md#L374"><code>aius-h2-h3-manufacturing.md:374</code></a>; <a href="https://github.com/d3aek/aius/blob/master/docs/plans/aius-open-work-register.md#L2195"><code>aius-open-work-register.md:2195</code></a>).</p></li>
+        <li class="timeline__item timeline__item--done"><span class="timeline__state mono">Done</span><h4>ERC, DRC and DFM clean</h4><p>DRC/DFM-clean manufacturing package shipped 2026-09-12 (<a href="https://github.com/d3aek/aius/blob/master/docs/plans/aius-h2-h3-manufacturing.md#L494"><code>aius-h2-h3-manufacturing.md:494</code></a>).</p></li>
+        <li class="timeline__item timeline__item--open"><span class="timeline__state mono">Open</span><h4>Mechanical fit and footprint gate</h4><p>The RS PRO footprint gate and the bench XY fit (M4) are still open (<a href="https://github.com/d3aek/aius/blob/master/docs/plans/aius-open-work-register.md#L2190"><code>aius-open-work-register.md:2190</code></a>).</p></li>
+        <li class="timeline__item timeline__item--open"><span class="timeline__state mono">Open</span><h4>Independent design review</h4><p>The H3e review has not passed; its recorded passes found the board not order-ready (<a href="https://github.com/d3aek/aius/blob/master/docs/plans/aius-h2-h3-manufacturing.md#L588"><code>aius-h2-h3-manufacturing.md:588</code></a>, <a href="https://github.com/d3aek/aius/blob/master/docs/plans/aius-h2-h3-manufacturing.md#L715"><code>aius-h2-h3-manufacturing.md:715</code></a>).</p></li>
+        <li class="timeline__item timeline__item--open"><span class="timeline__state mono">Open</span><h4>Prototype order</h4><p>No order is authorised; it waits on the gates above and a quotes and cost-model refresh (<a href="https://github.com/d3aek/aius/blob/master/docs/plans/aius-open-work-register.md#L2196"><code>aius-open-work-register.md:2196</code></a>).</p></li>
       </ol>
     </div>
   </section>
@@ -489,7 +488,7 @@
 <footer class="foot">
   <div class="wrap foot__inner">
     <span class="logo logo--sm"><span class="logo__dots" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></span><span class="logo__word">aius</span></span>
-    <p class="mono">Open hardware audio · working name · not affiliated with PJRC or Dolby.</p>
+    <p class="mono">Open hardware audio · working name · not affiliated with PJRC, Dolby or DTS.</p>
   </div>
 </footer>
 
