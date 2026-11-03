@@ -45,13 +45,21 @@ responses captured read-only from the deployed board; see
   and `mixer.css`; `upgrade.html` adds `upgrade.css`. The pages carry no visible
   page heading: each has a visually hidden `<h1>`, and panels are numbered
   kickers (`01 / Configuration`).
+- The firmware serves `/sd/www` from a PSRAM gzip web cache with `ETag` and
+  `If-None-Match` answering `304` (`firmware/src/aius_optical_app.cpp:1016`), falling
+  back to the card on a miss.
 - The assets themselves are replaced over `PUT /sd/www/{path}` and removed with
   `DELETE /sd/www/{path}`, so the interface is updated without reflashing.
 - **Reads are public; control routes are auth-gated.** Every mutating request
   carries `X-Aius-SD-Auth`, the 16 hexadecimal characters printed by the
   physical USB command `AIUS AUTH`. That covers `PUT /api/dsp/config`, the OTA
   upload, the OTA verify/arm/abort/activate/boot-other verbs, the SD asset
-  writes, and `POST /api/start|stop|clear|reboot|measure/start`. Polling routes
+  writes, `POST /api/start|stop|clear|reboot|measure/start`, `POST /api/sd/mode`,
+  and the `/api/recorder*` routes, whose GETs are token-gated
+  too (`firmware/src/aius_optical_app.cpp:3074` lists the six control routes).
+  `PUT /api/config/public` is the one ungated mutating route, by design: it
+  accepts only the three public feature flags (`firmware/src/aius_optical_app.cpp:1589`,
+  `docs/plans/aius-sd-config-web.md:544`, `firmware/src/http_home_page.cpp:32`). Polling routes
   (`/api/status`, `/api/status/brief`, `/api/meters`, `/api/ota`) carry nothing,
   and the pages never attach the header to a `GET`. The token is a
   physical-access bootstrap credential, not an authorization boundary; for
@@ -150,9 +158,16 @@ Non-obvious:
 - **The action bar is the only writer.** A fader, a curve drag or a keystroke
   stages a change on the page; nothing reaches the device until Apply. Loading a
   preset fills the form the same way and Apply still sends it.
-- A `200` on the config PUT means the model is durable in `/aius/dsp.json` and
-  *staged*, not live: the apply and the `config_generation` increment happen at
-  the next audio block boundary. The page then polls `GET /api/dsp/config` every
+- A `200` on the config PUT has two branches (`app_store_dsp_config`,
+  `firmware/src/optical_main.cpp:7207-7232`). With the PSRAM write overlay present
+  (`sd_overlay_present()`), the model is accepted into the overlay and *staged*, not durable on
+  the card and not live: the apply and the `config_generation` increment happen at
+  the next audio block boundary. Without it, the PUT is held until its SD write
+  commits: the `200` is released at that commit and only the staged generation
+  (`g_staged_generation`) advances there (`:7225-7231`, `sd_settle_http_write()`); a
+  write that faults discards the staging. In both branches `config_generation`
+  still advances at the next block boundary, in the apply path (`:2387`, `:2890`), so
+  nothing is live at the `200`. The page then polls `GET /api/dsp/config` every
   500 ms, up to 40 times (about 20 s), until the generation changes and reports
   *Applied at generation N*; if it never moves it raises an error asking for a
   re-read.

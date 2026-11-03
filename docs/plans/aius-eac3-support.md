@@ -154,8 +154,10 @@ evidence) is blocked on a real DD+ source on the bench; Phases 1–4 are done.**
    flash-boot evidence), meeting the 2026-08-01 condition that boots be
    deterministically healthy. **Build-side landed 2026-08-02** (parts
    1–3): the funded route CHANGED from the recorded OCRAM-relocation
-   sketch — the memory gate pins OCRAM free at its 131,328 B baseline
-   (only 256 B above the defect-26 heap-floor ASSERT), so nothing
+   sketch — the memory gate pinned OCRAM free at its 131,328 B baseline
+   (only 256 B above the defect-26 heap-floor ASSERT; figure as of the
+   2026-08-02 phase 4 build, `b8c2a74`; later links differ, see
+   [`signal-path.md`](../reference/signal-path.md#memory-by-bank)), so nothing
    meaningful can move there. The route actually taken funds the arena
    from DTCM-internal swaps: the framework ldscript copies ALL .rodata
    into DTCM, and a new `.text.aius_flashro` claim pins the vendored
@@ -172,7 +174,9 @@ evidence) is blocked on a real DD+ source on the bench; Phases 1–4 are done.**
    TU set, per-source include scoping via `scripts/fork_eac3_flags.py`
    so liba52's and the fork's `config.h` can never cross-resolve); the
    fork's text+rodata are ldscript-pinned to flash (anchor-checked
-   post-link), the adapter is FLASHMEM + COLD_OBJECTS. Post-build:
+   post-link), the adapter is FLASHMEM + COLD_OBJECTS. Post-build
+   (figures as of `405ce97`, 2026-08-02, not current; aius `2823549ad9bb`
+   measured DTCM free-for-locals 27,456 B and ITCM 13,300 B free):
    DTCM free-for-locals 31,040 B (floor 24,352), ITCM +624 B for the
    dispatch (1,364 free), OCRAM untouched, all gates green; pipeline
    suite reworked (slot-swap now 3 families, 66 pushes / 45 swaps

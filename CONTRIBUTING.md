@@ -184,7 +184,7 @@ framework script plus a carve-out and a block of `ASSERT`s. Each one exists
 because the failure it prevents already happened once, and each failure message
 names the constraint. The three that constrain everyday work:
 
-- **The OCRAM heap floor: 128 KiB.** NativeEthernet mallocs roughly 96 KiB at
+- **The OCRAM heap floor: 131,040 B (`0x1FFE0`, `firmware/link/aius_teensy41.ld:272`).** NativeEthernet mallocs roughly 96 KiB at
   network bring-up (a 64 KiB FNET stack heap plus eight 4 KiB socket buffers). A
   heap squeezed below that made the allocation fail, which left the network
   service aborting every epoch unfed and the watchdog dropping the board into

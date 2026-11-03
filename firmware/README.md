@@ -365,9 +365,11 @@ straight out of the audio path's headroom. Three rules, all enforced:
   source defines a no-op fallback so the host suites still compile Arduino-free.
 - **Large buffers in `DMAMEM`** (OCRAM). The composed runtime is roughly 35 kB,
   dominated by the HTTP request/response buffers and the model-sized application
-  body buffer, against a DTCM free-for-locals zone of **25,696 bytes**
-  (`_estack - _ebss` on the canonical `teensy41-optical-slot-a` image at
-  aius-sample-rate-following Phase 4e start; 25,728 B on the plain image; it
+  body buffer, against a DTCM free-for-locals zone of **27,456 bytes**
+  (aius `2823549ad9bb`, gcc 15.2.1, PlatformIO 6.1.16, `build_ab.sh`: DTCM used
+  300,224 B = `.data` 31,424 + `NonCacheable` 9,756 + `.bss` 259,044; the plain
+  `teensy41-optical` image read 25,728 B at the aius-sample-rate-following Phase 4e
+  start, commit `21c8f52`; it
   moves with every static addition, so read it from the build); a DTCM
   instance could not fit. The
   active and pending DSP models and the three UDP buffers are
