@@ -19,6 +19,9 @@ concurrency:
 
 jobs:
   build:
+    # The anonymised mirror repository has Actions enabled and no other workflow
+    # folder, so its host reads this file too; build only on GitHub.
+    if: ${{ github.server_url == 'https://github.com' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
