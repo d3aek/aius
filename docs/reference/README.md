@@ -52,11 +52,6 @@ Edit the script, not the SVG.
 
 ## Bench and measurement
 
-- **[CM6206 playback corruption characterization](cm6206-playback-corruption.md)**:
-  the verified byte-lane corruption model for the CM6206 loop adapter, its
-  evidence table, what it excludes, and the quarantine fingerprint. Consult it
-  when a capture shows isolated one-frame impulses, or when judging whether a
-  measurement adapter is trustworthy.
 - **[Aius project scale](project-scale.md)**: the measured size of the Aius
   subtree as one current snapshot (code, docs, tests, churn, defects, per-day
   commit history and agent cost), with the exact command behind each figure,

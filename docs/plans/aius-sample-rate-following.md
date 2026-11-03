@@ -10115,7 +10115,7 @@ live optical transmit or channel status is fixed at 48 kHz.
   (residual — the deferred non-Icron test still discriminates, with
   reproduction predicted). Full characterization, evidence table, quarantine
   fingerprint and single-unit-versus-systemic assessment:
-  [CM6206 playback corruption characterization](../reference/cm6206-playback-corruption.md).
+  the CM6206 playback-corruption characterization (retired rig; removed 2026-11-03, see git history).
 
 Raw artifacts remain under
 `.scratch/019fad89-9c0a-7b51-9c04-c11431d981d1/`, especially:
@@ -10235,7 +10235,7 @@ counters. A known isolated one-frame PCM source impulse may be counted and
 quarantined only when recorder evidence shows no gap, counter delta, lock/rate
 transition or multi-frame corruption, and the corrupt sample fits the
 byte-lane fingerprint in
-[the CM6206 characterization](../reference/cm6206-playback-corruption.md). Encoded and exact-waveform gates remain
+the CM6206 characterization (retired rig; removed 2026-11-03, see git history). Encoded and exact-waveform gates remain
 pending when source corruption cannot be correlated at the raw input plane.
 
 1. Confirm the Renesas controller remains exclusively passed through, the
@@ -10649,7 +10649,7 @@ required component-wide disposition is recorded manually:
 
 - [Aius firmware I/O reference](../reference/firmware-io.md)
 - [Aius signal path](../reference/signal-path.md)
-- [CM6206 playback corruption characterization](../reference/cm6206-playback-corruption.md)
+- CM6206 playback corruption characterization (retired rig; removed 2026-11-03, see git history)
 - [Aius AC-3 support](aius-ac3-support.md)
 - [Aius OTA firmware upgrade](aius-ota-upgrade.md)
 - [Aius hardware specification](aius-hardware-spec.md)

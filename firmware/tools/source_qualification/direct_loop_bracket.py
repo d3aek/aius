@@ -4,8 +4,8 @@
 Plays a validation tone out of a USB audio interface whose optical output
 is looped by fibre into its own optical input, captures the return, and
 reports isolated impulses, dropouts, clipping and crossing cadence. This
-is the CM6206 direct-loop discriminator bracket (see
-docs/reference/cm6206-playback-corruption.md) made reusable for
+is the CM6206 direct-loop discriminator bracket (retired rig; its
+characterization doc was removed 2026-11-03, see git history) made reusable for
 qualifying any candidate source; pair it with loop_refine.py for the
 stereo-identity, cadence and bit-exact checks.
 """

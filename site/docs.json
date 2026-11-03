@@ -32,7 +32,6 @@
     {
       "title": "Evidence",
       "docs": [
-        { "path": "docs/reference/cm6206-playback-corruption.md", "title": "CM6206 playback corruption" },
         { "path": "docs/reference/project-scale.md", "title": "Project scale" }
       ]
     }

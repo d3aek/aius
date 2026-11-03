@@ -2,7 +2,7 @@
 
 Host-side discriminator bracket for qualifying a candidate S/PDIF source
 against the CM6206 corruption classes
-([characterization](../../../docs/reference/cm6206-playback-corruption.md)):
+(characterization retired with the rig, removed 2026-11-03, see git history):
 play a 997 Hz ±410 tone out of a USB interface whose optical output is
 fibre-looped into its own optical input, capture the return, and check for
 isolated impulses, dropouts, stereo word-phase slips, cadence anomalies and

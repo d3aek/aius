@@ -172,7 +172,7 @@ The 39-frame difference between their fixed offsets is not attributed to codec
 cost because the runs began at different transmit-queue phases.
 
 The later
-[CM6206 playback-corruption characterization](../reference/cm6206-playback-corruption.md)
+CM6206 playback-corruption characterization (retired rig; removed 2026-11-03, see git history)
 localizes the known impulses and L/R word-phase slips to the adapter playback
 path, upstream of S/PDIF serialization. That mechanism does not explain a
 repeatable 800–900-frame offset, but it can contaminate individual waveform

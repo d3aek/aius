@@ -150,9 +150,8 @@ reachable at its DHCP address as usual.
 
 **Retired from the bench 2026-08-02.** The qualified clean source is now the
 ESI U24 XL (bit-exact self-loop at 44.1/48 kHz; qualification in the
-[open-work register](../plans/aius-open-work-register.md)); the CM6206's
-playback-corruption fingerprint is recorded in
-[`cm6206-playback-corruption.md`](../reference/cm6206-playback-corruption.md).
+[open-work register](../plans/aius-open-work-register.md)); the CM6206
+corrupted playback samples, which is why it was retired.
 The notes and measurements below stand as the record of the CM6206 era.
 
 The StarTech ICUSBAUDIO7D bench adapter uses a C-Media CM6206. Linux may label

@@ -2216,7 +2216,7 @@ where the only prior record was a plan aside.
   requirement itself — waveform-critical gates use a source the
   discriminator has shown clean — is satisfied by the U24 XL
   qualification. The
-  [CM6206 characterization](../reference/cm6206-playback-corruption.md)
+  CM6206 characterization (retired rig; removed 2026-11-03, see git history)
   stays current as the fingerprint record for any future CM-sourced
   capture.
 - ~~**Flight-recorder download header pins 48 kHz.**~~ **FIXED 2026-07-31**
