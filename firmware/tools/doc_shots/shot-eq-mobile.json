@@ -1,0 +1,18 @@
+{
+  "_": "Doc capture: EQ editor (Centre tab selected) at phone width (390 CSS px), full page, carrier-locked fixtures. Run against the fixture preview only (docs/plans/aius-sd-mixer-dashboard.md Traps): playwright-inspect '<preview>/index.html?shot' <log> --script firmware/tools/doc_shots/shot-eq-mobile.json --dpr 2 --shot-dir <dir>. Crop afterwards with ffmpeg: crop=780:1104:0:5320 (the 03 / EQ card from its top edge to just below the status line) and save as docs/reference/images/dsp-eq-mobile.png.",
+  "steps": [
+    { "resize": [390, 844] },
+    {
+      "waitFor": "() => { const s = document.getElementById('input-source'); return s && /optical/.test(s.textContent); }",
+      "timeoutMs": 15000
+    },
+    { "wait": 3000 },
+    {
+      "eval": "Array.from(document.querySelectorAll('#eq-tablist [role=tab]'))[1].dispatchEvent(new MouseEvent('click', { bubbles: true })); 'centre'"
+    },
+    { "wait": 800 },
+    { "eval": "window.scrollTo(0, 0); 'top'" },
+    { "wait": 500 },
+    { "screenshot": "dsp-eq-mobile-full.png" }
+  ]
+}

@@ -545,7 +545,7 @@ code { font-family: var(--f-mono); font-size: .9em; color: var(--teal); }
   display: block;
   width: 100%;
   height: auto;
-  aspect-ratio: 780 / 1120;
+  aspect-ratio: 780 / 1104;
   object-fit: cover;
   object-position: top;
 }
