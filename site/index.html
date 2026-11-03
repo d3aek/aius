@@ -26,7 +26,6 @@
     </a>
     <nav class="nav__links" aria-label="Primary">
       <a href="#problem">Problem</a>
-      <a href="#matrix">Matrix</a>
       <a href="#pipeline">How it works</a>
       <a href="#specs">Specs</a>
       <a href="#build">Build</a>
@@ -201,15 +200,51 @@
     </div>
   </section>
 
-  <!-- ============ MATRIX ============ -->
-  <section class="section section--panel" id="matrix">
+  <!-- ============ HOW IT WORKS (pipeline + matrix) ============ -->
+  <section class="section section--panel" id="pipeline">
     <div class="wrap">
       <header class="section__head">
-        <p class="kicker mono">02 / The matrix</p>
+        <p class="kicker mono">02 / How it works</p>
         <h2>Six channels in,<br>two out.</h2>
-        <p class="section__lede">Every stereo output sample is a weighted sum of the six inputs. aius lets you choose
-          the weights. Drag the faders and watch the equations (and the dialogue-to-effects balance) change.</p>
+        <p class="section__lede">A small box between your TV's optical output and your speakers, amp or soundbar.
+          Everything happens on a single microcontroller with no OS, no cloud, and no added lip-sync drama.</p>
       </header>
+
+      <ol class="pipeline">
+        <li class="stage">
+          <span class="stage__n mono">01</span>
+          <h3>Receive</h3>
+          <p>TOSLINK optical S/PDIF from the TV, stick or console. Set the source to output surround.</p>
+          <span class="tag mono">S/PDIF</span>
+        </li>
+        <li class="stage">
+          <span class="stage__n mono">02</span>
+          <h3>Decode</h3>
+          <p>Each IEC 61937 burst is classified and the 5.1 bitstream unpacked into six discrete channels on the Teensy's Cortex-M7. Stereo PCM passes straight through.</p>
+          <span class="tag mono">DTS Core · AC-3 · E-AC-3</span>
+        </li>
+        <li class="stage stage--hot">
+          <span class="stage__n mono">03</span>
+          <h3>Matrix</h3>
+          <p>Your coefficients fold six channels into two, with dialogue given room instead of an afterthought.</p>
+          <span class="tag mono">6 × 2</span>
+        </li>
+        <li class="stage">
+          <span class="stage__n mono">04</span>
+          <h3>Shape</h3>
+          <p>Per-channel and output EQ, an LFE fold with its own crossover, and a true-peak limiter on the output.</p>
+          <span class="tag mono">EQ · Limiter</span>
+        </li>
+        <li class="stage">
+          <span class="stage__n mono">05</span>
+          <h3>Deliver</h3>
+          <p>Stereo back out over optical through a reset-safe gate, to the DAC, amp or soundbar you already own.</p>
+          <span class="tag mono">TOSLINK out</span>
+        </li>
+      </ol>
+
+      <p class="section__lede" id="matrix">Every stereo output sample is a weighted sum of the six inputs. aius lets you choose
+        the weights. Drag the faders and watch the equations (and the dialogue-to-effects balance) change.</p>
 
       <div class="mixer">
         <div class="mixer__presets" role="group" aria-label="Presets">
@@ -278,56 +313,11 @@
     </div>
   </section>
 
-  <!-- ============ PIPELINE ============ -->
-  <section class="section" id="pipeline">
-    <div class="wrap">
-      <header class="section__head">
-        <p class="kicker mono">03 / How it works</p>
-        <h2>Light in. Clarity out.</h2>
-        <p class="section__lede">A small box between your TV's optical output and your speakers, amp or soundbar.
-          Everything happens on a single microcontroller with no OS, no cloud, and no added lip-sync drama.</p>
-      </header>
-
-      <ol class="pipeline">
-        <li class="stage">
-          <span class="stage__n mono">01</span>
-          <h3>Receive</h3>
-          <p>TOSLINK optical S/PDIF from the TV, stick or console. Set the source to output surround.</p>
-          <span class="tag mono">S/PDIF</span>
-        </li>
-        <li class="stage">
-          <span class="stage__n mono">02</span>
-          <h3>Decode</h3>
-          <p>Each IEC 61937 burst is classified and the 5.1 bitstream unpacked into six discrete channels on the Teensy's Cortex-M7. Stereo PCM passes straight through.</p>
-          <span class="tag mono">DTS Core · AC-3 · E-AC-3</span>
-        </li>
-        <li class="stage stage--hot">
-          <span class="stage__n mono">03</span>
-          <h3>Matrix</h3>
-          <p>Your coefficients fold six channels into two, with dialogue given room instead of an afterthought.</p>
-          <span class="tag mono">6 × 2</span>
-        </li>
-        <li class="stage">
-          <span class="stage__n mono">04</span>
-          <h3>Shape</h3>
-          <p>Per-channel and output EQ, an LFE fold with its own crossover, and a true-peak limiter on the output.</p>
-          <span class="tag mono">EQ · Limiter</span>
-        </li>
-        <li class="stage">
-          <span class="stage__n mono">05</span>
-          <h3>Deliver</h3>
-          <p>Stereo back out over optical through a reset-safe gate, to the DAC, amp or soundbar you already own.</p>
-          <span class="tag mono">TOSLINK out</span>
-        </li>
-      </ol>
-    </div>
-  </section>
-
   <!-- ============ NETWORK ============ -->
-  <section class="section section--panel" id="network">
+  <section class="section" id="network">
     <div class="wrap split">
       <div>
-        <p class="kicker mono">04 / Web UI</p>
+        <p class="kicker mono">03 / Web UI</p>
         <h2>Tune it from the couch.</h2>
         <p class="section__lede">aius sits on your LAN over the Teensy 4.1's native Ethernet and serves its own web
           UI. Open it in any phone or laptop browser to change the matrix, EQ and presets while you listen.</p>
@@ -352,10 +342,10 @@
   </section>
 
   <!-- ============ SPECS ============ -->
-  <section class="section" id="specs">
+  <section class="section section--panel" id="specs">
     <div class="wrap">
       <header class="section__head">
-        <p class="kicker mono">05 / Specifications</p>
+        <p class="kicker mono">04 / Specifications</p>
         <h2>The datasheet.</h2>
         <p class="section__lede">Prototype numbers. Anything not yet measured says so.</p>
       </header>
@@ -394,10 +384,10 @@
   </section>
 
   <!-- ============ BUILD ============ -->
-  <section class="section section--panel" id="build">
+  <section class="section" id="build">
     <div class="wrap">
       <header class="section__head">
-        <p class="kicker mono">06 / Build it</p>
+        <p class="kicker mono">05 / Build it</p>
         <h2>Solder it. Flash it.<br>Hear the difference.</h2>
         <p class="section__lede">aius is a DIY build first. Today it runs on a hand-wired bench build: a Teensy 4.1, two
           TOSLINK modules and an Ethernet magjack. The carrier board's KiCad sources, BOM and manufacturing package are in
@@ -454,10 +444,10 @@
   </section>
 
   <!-- ============ DOCS ============ -->
-  <section class="section" id="docs">
+  <section class="section section--panel" id="docs">
     <div class="wrap">
       <header class="section__head">
-        <p class="kicker mono">07 / Documentation</p>
+        <p class="kicker mono">06 / Documentation</p>
         <h2>Docs, in progress.</h2>
       </header>
       <div class="docs">
