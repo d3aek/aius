@@ -1,0 +1,17 @@
+{
+  "_": "Doc capture: DSP page at phone width (390 CSS px), full page, carrier-locked fixtures. Run against the fixture preview only (docs/plans/aius-sd-mixer-dashboard.md Traps): playwright-inspect '<preview>/index.html?shot' <log> --script firmware/tools/doc_shots/shot-mobile.json --dpr 2 --shot-dir <dir>. Crop the top screens afterwards with ffmpeg crop.",
+  "steps": [
+    { "resize": [390, 844] },
+    {
+      "waitFor": "() => { const s = document.getElementById('input-source'); return s && /optical/.test(s.textContent); }",
+      "timeoutMs": 15000
+    },
+    { "wait": 3000 },
+    { "eval": "window.scrollTo(0, 0); 'top'" },
+    { "wait": 500 },
+    {
+      "eval": "JSON.stringify({ pageW: document.documentElement.scrollWidth, pageH: document.documentElement.scrollHeight })"
+    },
+    { "screenshot": "dsp-editor-mobile-full.png" }
+  ]
+}

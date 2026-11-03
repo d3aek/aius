@@ -206,6 +206,13 @@ export function buildSite({ root, manifest, out, log = console.log }) {
     }),
   );
 
+  // Images the landing page references from the docs tree (src="docs/...") ship from there, never duplicated under site/.
+  const landing = fs.readFileSync(path.join(SITE_DIR, 'index.html'), 'utf8');
+  for (const m of landing.matchAll(/<img\b[^>]*\ssrc="(docs\/[^"#?]+)"/g)) {
+    if (!stat(m[1])) throw new Error(`index.html references a missing image: ${m[1]}`);
+    assets.add(m[1]);
+  }
+
   for (const asset of assets) {
     const src = path.join(root, asset);
     const head = fs.readFileSync(src).subarray(0, LFS_POINTER.length).toString('utf8');

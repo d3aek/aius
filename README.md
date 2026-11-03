@@ -36,11 +36,10 @@ flowchart LR
 
 The whole processing chain is editable from a browser while the audio plays:
 
-![The Aius DSP page with an AC-3 carrier locked: the signal-flow diagram from
-six input channels through the processing core to the stereo output, the audio
-path and live input and output levels, the preset card, and the downmix matrix
-faders with their equation, centre balance and output
-levels](docs/reference/images/dsp-editor-hero.png)
+<img src="docs/reference/images/dsp-editor-mobile.png" width="320"
+alt="The Aius DSP page on a phone with an AC-3 carrier locked: the signal-flow diagram from six input channels through the processing core to the stereo output, then the audio path cards and live input and output levels, stacked in one column.">
+
+The page is a single column on a phone, where the device's web UI is usually opened.
 
 The [user interface reference](docs/reference/user-interface.md) covers every
 page.

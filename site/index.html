@@ -330,26 +330,25 @@
       <div>
         <p class="kicker mono">04 / Network attached</p>
         <h2>Tune it from the couch.</h2>
-        <p class="section__lede">aius sits on your LAN over the Teensy 4.1's native Ethernet. Open its web UI from any
-          phone, or script it: push a new DSP configuration from a script or your home automation.</p>
+        <p class="section__lede">aius sits on your LAN over the Teensy 4.1's native Ethernet and serves its own web
+          UI. Open it in any phone or laptop browser to change the matrix, EQ and presets while you listen.</p>
         <ul class="ticks">
           <li>Built-in web UI, no app, no account</li>
-          <li>Local HTTP API for automation</li>
+          <li>Live signal flow and level meters</li>
           <li>Presets stored on-device</li>
           <li>No cloud. Nothing phones home.</li>
         </ul>
+        <p class="shot__note">Prefer to script it? The device also exposes a local HTTP API, documented in its
+          <a href="https://github.com/d3aek/aius/blob/master/firmware/sd/www/openapi.json"><code>openapi.json</code></a>.</p>
       </div>
 
-      <div class="term" role="figure" aria-label="Example API calls">
-        <div class="term__bar"><i></i><i></i><i></i><span class="mono">192.0.2.66</span></div>
-<pre class="term__body mono"><span class="c"># see what's playing</span>
-<span class="p">$</span> curl http://192.0.2.66/api/status
-
-<span class="c"># push a new DSP configuration</span>
-<span class="p">$</span> curl -X PUT http://192.0.2.66/api/dsp/config \
-    -d <span class="s">@config.json</span><span class="cursor"></span></pre>
-        <p class="term__note mono">Example address. Routes as in the device's OpenAPI document (<a href="https://github.com/d3aek/aius/blob/master/firmware/sd/www/openapi.json"><code>openapi.json</code></a>); response bodies omitted.</p>
-      </div>
+      <figure class="shot">
+        <a href="docs/reference/user-interface.html">
+          <img src="docs/reference/images/dsp-editor-mobile.png" width="780" height="2600" loading="lazy"
+            alt="The aius web UI's DSP page on a phone: the signal-flow diagram from six input channels to stereo output, the audio path status cards and live input and output level meters, stacked in one column.">
+        </a>
+        <figcaption class="shot__caption shot__note mono">The device's own web UI (DSP page). <a href="docs/reference/user-interface.html">User interface guide</a></figcaption>
+      </figure>
     </div>
   </section>
 
