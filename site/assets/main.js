@@ -35,7 +35,6 @@
     itu:   { c: 71,  f: 100, s: 71,  lfe: 0,  eq: 0 },
     tv:    { c: 71,  f: 100, s: 100, lfe: 50, eq: 0 },
     aius:  { c: 100, f: 80,  s: 45,  lfe: 30, eq: 60 },
-    night: { c: 120, f: 60,  s: 30,  lfe: 10, eq: 40 },
   };
 
   const inputs = {};
