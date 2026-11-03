@@ -538,7 +538,17 @@ code { font-family: var(--f-mono); font-size: .9em; color: var(--teal); }
   margin-inline: auto;
 }
 .shot a { display: block; }
-.shot img { display: block; width: 100%; height: auto; }
+/* The phone capture is 780x2600: show its first screen (header to the signal
+   diagram) at its own proportions, and centre the frame against the copy. */
+.shot { align-self: center; justify-self: center; }
+.shot img {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 780 / 1120;
+  object-fit: cover;
+  object-position: top;
+}
 .shot__note { font-size: 12px; color: var(--muted); }
 .shot__caption { padding: 12px 18px; border-top: 1px solid var(--line); background: var(--panel); }
 
