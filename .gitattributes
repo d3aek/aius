@@ -6,6 +6,8 @@
 *.a binary filter=lfs diff=lfs merge=lfs -text
 *.jsonl.gz binary filter=lfs diff=lfs merge=lfs -text
 *.ota binary filter=lfs diff=lfs merge=lfs -text
+# Raw test vectors are plain blobs, not LFS objects (later line overrides the *.bin glob).
+firmware/test/capability/vectors/*.bin binary !filter
 evidence/artifacts/** filter=lfs diff=lfs merge=lfs -text
 docs/reference/images/*.png filter=lfs diff=lfs merge=lfs -text
 docs/reference/images/*.jpg filter=lfs diff=lfs merge=lfs -text
