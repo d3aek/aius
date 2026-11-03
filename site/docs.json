@@ -1,0 +1,40 @@
+{
+  "repoUrl": "https://github.com/d3aek/aius",
+  "branch": "master",
+  "groups": [
+    {
+      "title": "Start",
+      "docs": [
+        { "path": "README.md", "title": "Overview", "page": "docs/overview.html" },
+        { "path": "docs/guides/proto-optical-wiring.md", "title": "Bench wiring" },
+        { "path": "CONTRIBUTING.md", "title": "Build, test and flash", "page": "docs/contributing.html" }
+      ]
+    },
+    {
+      "title": "Firmware",
+      "docs": [
+        { "path": "docs/reference/signal-path.md", "title": "Audio signal path" },
+        { "path": "docs/reference/firmware-io.md", "title": "Firmware I/O" },
+        { "path": "docs/reference/user-interface.md", "title": "User interface" },
+        { "path": "docs/reference/usb-control-protocol.md", "title": "USB control protocol" }
+      ]
+    },
+    {
+      "title": "Hardware",
+      "docs": [
+        { "path": "docs/plans/aius-hardware-spec.md", "title": "Hardware spec" },
+        { "path": "docs/reference/functional-topology.md", "title": "Functional topology" },
+        { "path": "docs/reference/interfaces-and-states.md", "title": "Interfaces and states" },
+        { "path": "docs/reference/board-floorplan.md", "title": "Board floorplan" },
+        { "path": "docs/reference/datasheets.md", "title": "Datasheet sources", "optional": true }
+      ]
+    },
+    {
+      "title": "Evidence",
+      "docs": [
+        { "path": "docs/reference/cm6206-playback-corruption.md", "title": "CM6206 playback corruption" },
+        { "path": "docs/reference/project-scale.md", "title": "Project scale" }
+      ]
+    }
+  ]
+}

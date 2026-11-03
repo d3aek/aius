@@ -1,0 +1,498 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>aius · hear the dialogue again</title>
+  <meta name="description" content="aius is an open, Teensy 4.1 based, network-attached optical 5.1-to-stereo downmixer and EQ that fixes the muddy, dialogue-burying fold-down on modern TVs and streaming sticks.">
+  <meta name="theme-color" content="#0a0c0b">
+  <meta property="og:title" content="aius · hear the dialogue again">
+  <meta property="og:description" content="Open-hardware 5.1 → stereo downmixer and EQ. Optical in. Network tuned. Built on Teensy 4.1.">
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..900&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="nav">
+  <div class="wrap nav__inner">
+    <a class="logo" href="#top" aria-label="aius home">
+      <span class="logo__dots" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></span>
+      <span class="logo__word">aius</span>
+    </a>
+    <nav class="nav__links" aria-label="Primary">
+      <a href="#problem">Problem</a>
+      <a href="#matrix">Matrix</a>
+      <a href="#pipeline">How it works</a>
+      <a href="#specs">Specs</a>
+      <a href="#build">Build</a>
+      <a href="#docs">Docs</a>
+    </nav>
+    <a class="btn btn--ghost btn--sm" href="https://github.com/d3aek/aius">
+      <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+      <span>Source</span>
+    </a>
+  </div>
+</header>
+
+<main id="main">
+
+  <!-- ============ HERO ============ -->
+  <section class="hero" id="top">
+    <div class="wrap hero__grid">
+      <div class="hero__copy">
+        <p class="eyebrow"><span class="led"></span> Open hardware · DIY build · rev 0 prototype</p>
+        <h1 class="hero__title">Your TV is<br>mixing away<br><em>the words.</em></h1>
+        <p class="hero__lede">
+          <strong>aius</strong> is a network-attached box that takes the 5.1 optical feed from your TV or streaming stick
+          and folds it down to stereo <em>properly</em>: dialogue forward, effects in their place, EQ you control from your phone.
+        </p>
+        <div class="hero__cta">
+          <a class="btn btn--primary" href="#build">Build one <span aria-hidden="true">→</span></a>
+          <a class="btn btn--ghost" href="#matrix">Play with the matrix</a>
+        </div>
+      </div>
+
+      <figure class="flow" aria-label="Signal flow: six surround channels enter aius and leave as a clear stereo pair">
+        <svg class="flow__svg" viewBox="0 0 520 420" role="img">
+          <defs>
+            <linearGradient id="g-core" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stop-color="#1b221e"/>
+              <stop offset="1" stop-color="#0f1311"/>
+            </linearGradient>
+            <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+              <feGaussianBlur stdDeviation="3" result="b"/>
+              <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+            </filter>
+          </defs>
+
+          <!-- inputs -->
+          <g class="flow__in" font-family="IBM Plex Mono, monospace" font-size="13">
+            <g transform="translate(10,40)"><rect width="64" height="34" rx="6"/><text x="32" y="22">FL</text></g>
+            <g transform="translate(10,96)" class="is-c"><rect width="64" height="34" rx="6"/><text x="32" y="22">C</text></g>
+            <g transform="translate(10,152)"><rect width="64" height="34" rx="6"/><text x="32" y="22">FR</text></g>
+            <g transform="translate(10,234)"><rect width="64" height="34" rx="6"/><text x="32" y="22">SL</text></g>
+            <g transform="translate(10,290)"><rect width="64" height="34" rx="6"/><text x="32" y="22">SR</text></g>
+            <g transform="translate(10,346)"><rect width="64" height="34" rx="6"/><text x="32" y="22">LFE</text></g>
+          </g>
+
+          <!-- wires in -->
+          <g class="flow__wires" fill="none">
+            <path d="M74 57 C 140 57, 140 150, 200 170"/>
+            <path class="is-c" d="M74 113 C 140 113, 140 190, 200 190"/>
+            <path d="M74 169 C 140 169, 150 205, 200 205"/>
+            <path d="M74 251 C 140 251, 150 220, 200 220"/>
+            <path d="M74 307 C 140 307, 140 235, 200 235"/>
+            <path d="M74 363 C 140 363, 140 250, 200 250"/>
+          </g>
+
+          <!-- core -->
+          <g transform="translate(200,130)">
+            <rect class="flow__core" width="170" height="160" rx="14" fill="url(#g-core)"/>
+            <g class="flow__pins">
+              <rect x="-6" y="18" width="6" height="4"/><rect x="-6" y="38" width="6" height="4"/><rect x="-6" y="58" width="6" height="4"/>
+              <rect x="-6" y="78" width="6" height="4"/><rect x="-6" y="98" width="6" height="4"/><rect x="-6" y="118" width="6" height="4"/><rect x="-6" y="138" width="6" height="4"/>
+              <rect x="170" y="18" width="6" height="4"/><rect x="170" y="38" width="6" height="4"/><rect x="170" y="58" width="6" height="4"/>
+              <rect x="170" y="78" width="6" height="4"/><rect x="170" y="98" width="6" height="4"/><rect x="170" y="118" width="6" height="4"/><rect x="170" y="138" width="6" height="4"/>
+            </g>
+            <text x="85" y="58" class="flow__brand">aius</text>
+            <text x="85" y="84" class="flow__sub">matrix · eq · limit</text>
+            <g class="flow__bars" transform="translate(37,100)">
+              <rect x="0"  width="10" height="36" style="--d:0s"/>
+              <rect x="16" width="10" height="36" style="--d:.15s"/>
+              <rect x="32" width="10" height="36" style="--d:.3s"/>
+              <rect x="48" width="10" height="36" style="--d:.45s"/>
+              <rect x="64" width="10" height="36" style="--d:.6s"/>
+              <rect x="80" width="10" height="36" style="--d:.75s"/>
+            </g>
+          </g>
+
+          <!-- wires out -->
+          <g class="flow__wires flow__wires--out" fill="none">
+            <path d="M376 180 C 420 180, 420 150, 446 150"/>
+            <path d="M376 240 C 420 240, 420 270, 446 270"/>
+          </g>
+
+          <!-- outputs -->
+          <g class="flow__out" font-family="IBM Plex Mono, monospace" font-size="14">
+            <g transform="translate(446,130)"><rect width="64" height="40" rx="8"/><text x="32" y="25">L</text></g>
+            <g transform="translate(446,250)"><rect width="64" height="40" rx="8"/><text x="32" y="25">R</text></g>
+          </g>
+
+          <!-- ethernet -->
+          <g class="flow__net" transform="translate(285,290)">
+            <path d="M0 0 V 70" fill="none"/>
+            <g transform="translate(-44,70)"><rect width="88" height="30" rx="6"/><text x="44" y="20">RJ45 · API</text></g>
+          </g>
+        </svg>
+        <figcaption class="flow__cap mono">6 in → 2 out · dialogue-aware fold-down</figcaption>
+      </figure>
+    </div>
+
+    <div class="ticker" aria-hidden="true">
+      <div class="ticker__track">
+        <span>TOSLINK in</span><span>5.1 → 2.0</span><span>Teensy 4.1 · 600&nbsp;MHz Cortex-M7</span><span>Ethernet + web UI</span><span>Parametric EQ</span><span>Dialogue lift</span><span>Night mode</span><span>Open firmware</span>
+        <span>TOSLINK in</span><span>5.1 → 2.0</span><span>Teensy 4.1 · 600&nbsp;MHz Cortex-M7</span><span>Ethernet + web UI</span><span>Parametric EQ</span><span>Dialogue lift</span><span>Night mode</span><span>Open firmware</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ PROBLEM ============ -->
+  <section class="section" id="problem">
+    <div class="wrap">
+      <header class="section__head">
+        <p class="kicker mono">01 / The problem</p>
+        <h2>Six channels walk into<br>a pair of speakers.</h2>
+        <p class="section__lede">Films are mixed for a room full of speakers, with dialogue living almost entirely in the
+          center channel. When a TV or streaming stick folds that down to stereo, the center is usually attenuated and
+          smeared under everything else. You reach for the remote, the explosions get louder, the whispers stay lost.</p>
+      </header>
+
+      <div class="cards">
+        <article class="card">
+          <div class="card__icon" aria-hidden="true">
+            <svg viewBox="0 0 48 48"><path d="M6 30h6l8 8V10l-8 8H6z"/><path d="M30 18c3 3 3 9 0 12M36 13c6 6 6 16 0 22" class="dim"/></svg>
+          </div>
+          <h3>Center gets buried</h3>
+          <p>Fixed fold-down coefficients drop the dialogue channel by ~3&nbsp;dB, then pile full-level fronts and
+            surrounds on top of it. Voices lose the fight before EQ even happens.</p>
+        </article>
+        <article class="card">
+          <div class="card__icon" aria-hidden="true">
+            <svg viewBox="0 0 48 48"><path d="M4 24c4-10 8-10 12 0s8 10 12 0 8-10 12 0" /><path d="M8 24c4 10 8 10 12 0s8-10 12 0 8 10 12 0" class="dim"/></svg>
+          </div>
+          <h3>Surrounds smear</h3>
+          <p>Ambience and music beds from the rear channels get summed straight into the front pair, masking the
+            2–4&nbsp;kHz band where consonants (and intelligibility) live.</p>
+        </article>
+        <article class="card">
+          <div class="card__icon" aria-hidden="true">
+            <svg viewBox="0 0 48 48"><rect x="8" y="10" width="32" height="22" rx="3"/><path d="M18 38h12M24 32v6"/><path d="M14 22h4M22 18v8M30 20v4" class="dim"/></svg>
+          </div>
+          <h3>Black-box settings</h3>
+          <p>“Clear voice” toggles are opaque, inconsistent between devices, and often just a treble boost plus
+            heavy compression. You can't see it, tune it, or carry it to your next TV.</p>
+        </article>
+      </div>
+
+      <div class="compare">
+        <div class="compare__col">
+          <p class="mono compare__label compare__label--bad">Typical TV fold-down</p>
+          <div class="stack">
+            <div class="stack__bar" style="--w:100%"><span>Effects &amp; music</span></div>
+            <div class="stack__bar" style="--w:82%"><span>Surround bed</span></div>
+            <div class="stack__bar stack__bar--voice" style="--w:46%"><span>Dialogue</span></div>
+          </div>
+        </div>
+        <div class="compare__col">
+          <p class="mono compare__label compare__label--good">aius fold-down</p>
+          <div class="stack">
+            <div class="stack__bar" style="--w:72%"><span>Effects &amp; music</span></div>
+            <div class="stack__bar" style="--w:48%"><span>Surround bed</span></div>
+            <div class="stack__bar stack__bar--voice" style="--w:92%"><span>Dialogue</span></div>
+          </div>
+        </div>
+        <p class="note mono">Illustrative relative levels. Measured data to follow.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ MATRIX ============ -->
+  <section class="section section--panel" id="matrix">
+    <div class="wrap">
+      <header class="section__head">
+        <p class="kicker mono">02 / The matrix</p>
+        <h2>Downmixing is just math.<br>So let's show the math.</h2>
+        <p class="section__lede">Every stereo output sample is a weighted sum of the six inputs. aius lets you choose
+          the weights. Drag the faders and watch the equations (and the dialogue-to-effects balance) change.</p>
+      </header>
+
+      <div class="mixer">
+        <div class="mixer__presets" role="group" aria-label="Presets">
+          <button class="chip" data-preset="itu">ITU Lo/Ro</button>
+          <button class="chip" data-preset="tv">Typical TV</button>
+          <button class="chip is-active" data-preset="aius">aius Dialogue</button>
+          <button class="chip" data-preset="night">Night</button>
+        </div>
+
+        <div class="mixer__body">
+          <div class="faders">
+            <label class="fader">
+              <span class="fader__name mono">C</span>
+              <input type="range" min="0" max="150" value="100" data-k="c" aria-label="Center channel gain">
+              <output class="fader__val mono" data-out="c">1.00</output>
+              <span class="fader__hint">dialogue</span>
+            </label>
+            <label class="fader">
+              <span class="fader__name mono">F</span>
+              <input type="range" min="0" max="150" value="80" data-k="f" aria-label="Front left/right gain">
+              <output class="fader__val mono" data-out="f">0.80</output>
+              <span class="fader__hint">fronts</span>
+            </label>
+            <label class="fader">
+              <span class="fader__name mono">S</span>
+              <input type="range" min="0" max="150" value="45" data-k="s" aria-label="Surround gain">
+              <output class="fader__val mono" data-out="s">0.45</output>
+              <span class="fader__hint">surrounds</span>
+            </label>
+            <label class="fader">
+              <span class="fader__name mono">LFE</span>
+              <input type="range" min="0" max="150" value="30" data-k="lfe" aria-label="LFE gain">
+              <output class="fader__val mono" data-out="lfe">0.30</output>
+              <span class="fader__hint">sub</span>
+            </label>
+            <label class="fader">
+              <span class="fader__name mono">EQ</span>
+              <input type="range" min="0" max="120" value="60" data-k="eq" aria-label="Presence boost, tenths of a dB">
+              <output class="fader__val mono" data-out="eq">+6.0</output>
+              <span class="fader__hint">presence dB</span>
+            </label>
+          </div>
+
+          <div class="readout">
+            <pre class="eqn mono" aria-live="polite"><span class="eqn__lhs">L</span> = <b data-eq="f">0.80</b>·FL + <b class="v" data-eq="c">1.00</b>·C + <b data-eq="s">0.45</b>·SL + <b data-eq="lfe">0.30</b>·LFE
+<span class="eqn__lhs">R</span> = <b data-eq="f">0.80</b>·FR + <b class="v" data-eq="c">1.00</b>·C + <b data-eq="s">0.45</b>·SR + <b data-eq="lfe">0.30</b>·LFE</pre>
+
+            <div class="dial">
+              <div class="dial__row">
+                <span class="mono">Dialogue vs. effects</span>
+                <span class="mono dial__num" data-ratio>+4.1 dB</span>
+              </div>
+              <div class="dial__track"><div class="dial__fill" data-fill></div><div class="dial__mid"></div></div>
+              <div class="dial__row dial__row--ends mono"><span>buried</span><span>balanced</span><span>forward</span></div>
+            </div>
+
+            <div class="meters" aria-hidden="true">
+              <div class="meter"><span class="mono">L</span><div class="meter__bar"><i data-meter="l"></i></div></div>
+              <div class="meter"><span class="mono">R</span><div class="meter__bar"><i data-meter="r"></i></div></div>
+            </div>
+
+            <p class="verdict" data-verdict>Words sit clearly on top of the mix.</p>
+          </div>
+        </div>
+        <p class="note mono">Illustrative model, not the shipping DSP. The real chain, its coefficients, headroom and limiter are documented in the <a href="docs/reference/signal-path.html">signal path</a>.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ PIPELINE ============ -->
+  <section class="section" id="pipeline">
+    <div class="wrap">
+      <header class="section__head">
+        <p class="kicker mono">03 / How it works</p>
+        <h2>Light in. Clarity out.</h2>
+        <p class="section__lede">A small box between your TV's optical output and your speakers, amp or soundbar.
+          Everything happens on a single microcontroller with no OS, no cloud, and no added lip-sync drama.</p>
+      </header>
+
+      <ol class="pipeline">
+        <li class="stage">
+          <span class="stage__n mono">01</span>
+          <h3>Receive</h3>
+          <p>TOSLINK optical S/PDIF from the TV, stick or console. Set the source to output surround.</p>
+          <span class="tag mono">S/PDIF</span>
+        </li>
+        <li class="stage">
+          <span class="stage__n mono">02</span>
+          <h3>Decode</h3>
+          <p>Each IEC 61937 burst is classified and the 5.1 bitstream unpacked into six discrete channels on the Teensy's Cortex-M7. Stereo PCM passes straight through.</p>
+          <span class="tag mono">DTS Core · AC-3 · E-AC-3</span>
+        </li>
+        <li class="stage stage--hot">
+          <span class="stage__n mono">03</span>
+          <h3>Matrix</h3>
+          <p>Your coefficients fold six channels into two, with dialogue given room instead of an afterthought.</p>
+          <span class="tag mono">6 × 2</span>
+        </li>
+        <li class="stage">
+          <span class="stage__n mono">04</span>
+          <h3>Shape</h3>
+          <p>Per-channel and output EQ, an LFE fold with its own crossover, and a true-peak limiter on the output.</p>
+          <span class="tag mono">EQ · Limiter</span>
+        </li>
+        <li class="stage">
+          <span class="stage__n mono">05</span>
+          <h3>Deliver</h3>
+          <p>Stereo back out over optical through a reset-safe gate, to the DAC, amp or soundbar you already own.</p>
+          <span class="tag mono">TOSLINK out</span>
+        </li>
+      </ol>
+    </div>
+  </section>
+
+  <!-- ============ NETWORK ============ -->
+  <section class="section section--panel" id="network">
+    <div class="wrap split">
+      <div>
+        <p class="kicker mono">04 / Network attached</p>
+        <h2>Tune it from the couch.</h2>
+        <p class="section__lede">aius sits on your LAN over the Teensy 4.1's native Ethernet. Open its web UI from any
+          phone, or script it: switch to night mode at 10pm, or load a per-show preset from your home automation.</p>
+        <ul class="ticks">
+          <li>Built-in web UI, no app, no account</li>
+          <li>Local HTTP API for automation</li>
+          <li>Presets stored on-device</li>
+          <li>No cloud. Nothing phones home.</li>
+        </ul>
+      </div>
+
+      <div class="term" role="figure" aria-label="Example API calls">
+        <div class="term__bar"><i></i><i></i><i></i><span class="mono">aius.local</span></div>
+<pre class="term__body mono"><span class="c"># see what's playing</span>
+<span class="p">$</span> curl aius.local/api/status
+{
+  <span class="k">"input"</span>:  <span class="s">"5.1"</span>,
+  <span class="k">"preset"</span>: <span class="s">"dialogue"</span>,
+  <span class="k">"center"</span>: <span class="n">1.00</span>,
+  <span class="k">"eq"</span>:     { <span class="k">"presence_db"</span>: <span class="n">6.0</span> }
+}
+
+<span class="c"># it's late</span>
+<span class="p">$</span> curl -X POST aius.local/api/preset \
+    -d <span class="s">'{"name":"night"}'</span>
+{ <span class="k">"ok"</span>: <span class="n">true</span> }<span class="cursor"></span></pre>
+        <p class="term__note mono">Draft API: endpoints will change before v1.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ SPECS ============ -->
+  <section class="section" id="specs">
+    <div class="wrap">
+      <header class="section__head">
+        <p class="kicker mono">05 / Specifications</p>
+        <h2>The datasheet.</h2>
+        <p class="section__lede">Prototype numbers. Anything marked <span class="tag mono tbd">TBD</span> is being measured or decided.</p>
+      </header>
+
+      <div class="specs">
+        <dl class="spec-group">
+          <dt class="spec-group__title mono">Core</dt>
+          <div class="spec"><dt>Processor</dt><dd>PJRC Teensy 4.1 · NXP i.MX RT1062, Arm Cortex-M7 @ 600&nbsp;MHz</dd></div>
+          <div class="spec"><dt>Memory</dt><dd>1&nbsp;MB RAM · 8&nbsp;MB flash · optional PSRAM (flight recorder)</dd></div>
+          <div class="spec"><dt>Firmware</dt><dd>Open source, GPL-3.0-or-later · signed, Ed25519-verified OTA upgrades</dd></div>
+        </dl>
+        <dl class="spec-group">
+          <dt class="spec-group__title mono">Audio</dt>
+          <div class="spec"><dt>Input</dt><dd>Optical TOSLINK (S/PDIF)</dd></div>
+          <div class="spec"><dt>Input formats</dt><dd>Stereo PCM · DTS Core, AC-3 and E-AC-3 over IEC 61937</dd></div>
+          <div class="spec"><dt>Output</dt><dd>Stereo PCM over optical TOSLINK (S/PDIF), reset-safe gated</dd></div>
+          <div class="spec"><dt>Sample rate</dt><dd>Follows the source: 32, 44.1 or 48&nbsp;kHz</dd></div>
+          <div class="spec"><dt>Added latency</dt><dd>17.4&nbsp;ms board share, PCM, measured · coded formats <span class="tag mono tbd">TBD</span></dd></div>
+        </dl>
+        <dl class="spec-group">
+          <dt class="spec-group__title mono">DSP</dt>
+          <div class="spec"><dt>Downmix</dt><dd>User-defined 6 × 2 coefficient matrix, live-editable</dd></div>
+          <div class="spec"><dt>EQ</dt><dd>Biquad cascade on each input channel and the output, <span class="tag mono tbd">N</span> bands per channel</dd></div>
+          <div class="spec"><dt>Dynamics</dt><dd>True-peak output limiter · LFE fold with crossover · surround decorrelation delay</dd></div>
+          <div class="spec"><dt>Presets</dt><dd>Up to 16, saved on the SD card from the web editor</dd></div>
+        </dl>
+        <dl class="spec-group">
+          <dt class="spec-group__title mono">Connectivity &amp; physical</dt>
+          <div class="spec"><dt>Network</dt><dd>10/100 Ethernet (Teensy 4.1 native PHY + MagJack)</dd></div>
+          <div class="spec"><dt>Control</dt><dd>Web UI · HTTP API (OpenAPI) · USB control protocol · <span class="tag mono tbd">IR TBD</span></dd></div>
+          <div class="spec"><dt>Power</dt><dd>5&nbsp;V from a single rear USB-C input</dd></div>
+          <div class="spec"><dt>Enclosure</dt><dd>Stock Hammond 1455N1201BK extruded case · board ≤ 100 × 100&nbsp;mm</dd></div>
+        </dl>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ BUILD ============ -->
+  <section class="section section--panel" id="build">
+    <div class="wrap">
+      <header class="section__head">
+        <p class="kicker mono">06 / Build it</p>
+        <h2>Solder it. Flash it.<br>Hear the difference.</h2>
+        <p class="section__lede">aius is a DIY build first. Today it runs on a hand-wired bench build: a Teensy 4.1, two
+          TOSLINK modules and an Ethernet magjack. The carrier board's KiCad sources, BOM and manufacturing package are in
+          the repo; no board order is authorised yet.</p>
+      </header>
+
+      <div class="bom">
+        <div class="part">
+          <div class="part__chip mono">U1</div>
+          <h3>Teensy 4.1</h3>
+          <p>The brains. 600&nbsp;MHz M7 with floating-point DSP headroom to spare.</p>
+        </div>
+        <div class="part">
+          <div class="part__chip mono">J1</div>
+          <h3>Ethernet kit</h3>
+          <p>MagJack + header for the Teensy's built-in Ethernet PHY.</p>
+        </div>
+        <div class="part">
+          <div class="part__chip mono">U2</div>
+          <h3>TOSLINK receiver</h3>
+          <p>Optical-to-electrical module feeding S/PDIF into the Teensy.</p>
+        </div>
+        <div class="part">
+          <div class="part__chip mono">U3</div>
+          <h3>Output stage</h3>
+          <p>TOSLINK transmitter behind a reset-safe gate that holds it silent until the firmware is healthy.</p>
+        </div>
+        <div class="part">
+          <div class="part__chip mono">PCB</div>
+          <h3>Carrier board</h3>
+          <p>Four-layer board tying it together; two layers proved infeasible for USB and Ethernet. KiCad sources included.</p>
+        </div>
+        <div class="part">
+          <div class="part__chip mono">ENC</div>
+          <h3>Enclosure</h3>
+          <p>Stock Hammond extruded case; the rear panel is machined by hand or CNC.</p>
+        </div>
+      </div>
+
+      <ol class="steps">
+        <li><span class="mono">01</span> Order the parts from the BOM</li>
+        <li><span class="mono">02</span> Assemble the carrier board</li>
+        <li><span class="mono">03</span> Flash firmware over USB</li>
+        <li><span class="mono">04</span> Plug in optical + Ethernet</li>
+        <li><span class="mono">05</span> Open <code>aius.local</code> and tune</li>
+      </ol>
+    </div>
+  </section>
+
+  <!-- ============ DOCS ============ -->
+  <section class="section" id="docs">
+    <div class="wrap">
+      <header class="section__head">
+        <p class="kicker mono">07 / Documentation</p>
+        <h2>Docs, in progress.</h2>
+      </header>
+      <div class="docs">
+        <a class="doc" href="docs/overview.html"><span class="mono">Start</span><h3>Overview</h3><p>What aius does, how it is built, and where to start.</p></a>
+        <a class="doc" href="docs/guides/proto-optical-wiring.html"><span class="mono">HW</span><h3>Bench wiring</h3><p>Wiring the optical modules and Ethernet for a first signal test.</p></a>
+        <a class="doc" href="docs/plans/aius-hardware-spec.html"><span class="mono">PCB</span><h3>Hardware spec</h3><p>Carrier board architecture, parts and build gates.</p></a>
+        <a class="doc" href="docs/reference/signal-path.html"><span class="mono">DSP</span><h3>Signal path</h3><p>Every stage from optical in to optical out, with budgets and latency.</p></a>
+        <a class="doc" href="docs/reference/user-interface.html"><span class="mono">UI</span><h3>User interface</h3><p>The DSP editor, status and upgrade pages the device serves.</p></a>
+        <a class="doc" href="docs/contributing.html"><span class="mono">FW</span><h3>Build and flash</h3><p>Checking out, building, testing and flashing the firmware.</p></a>
+      </div>
+      <p class="docs__more"><a class="btn btn--ghost btn--sm" href="docs/index.html">All documentation <span aria-hidden="true">→</span></a></p>
+    </div>
+  </section>
+
+  <!-- ============ CTA ============ -->
+  <section class="cta">
+    <div class="wrap cta__inner">
+      <h2>Stop riding the volume.</h2>
+      <p>Follow the build, file issues, and send in your TV's fold-down horror stories.</p>
+      <a class="btn btn--primary" href="https://github.com/d3aek/aius">Watch on GitHub <span aria-hidden="true">→</span></a>
+    </div>
+  </section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap foot__inner">
+    <span class="logo logo--sm"><span class="logo__dots" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></span><span class="logo__word">aius</span></span>
+    <p class="mono">Open hardware audio · working name · not affiliated with PJRC or Dolby.</p>
+  </div>
+</footer>
+
+<script src="assets/main.js" defer></script>
+</body>
+</html>
