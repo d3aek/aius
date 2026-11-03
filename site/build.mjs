@@ -17,6 +17,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { escapeHtml, renderMarkdown, splitFrontMatter } from './lib/markdown.mjs';
 import { createLinkRewriter, relativeHref } from './lib/links.mjs';
+import { buildToc } from './lib/toc.mjs';
 
 const SITE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const SHELL_FILES = ['index.html', 'assets'];
@@ -46,7 +47,7 @@ export function pageFor(doc) {
   return doc.page ?? doc.path.replace(/\.md$/i, '.html');
 }
 
-function shell({ rel, title, description, nav, body, mermaid, repoUrl }) {
+function shell({ rel, title, description, nav, body, mermaid, repoUrl, toc = { rail: '', details: '' } }) {
   const mermaidScript = mermaid
     ? `\n<script type="module">\n  import mermaid from "${MERMAID_URL}";\n  mermaid.initialize({ startOnLoad: true, theme: "dark", securityLevel: "strict" });\n</script>`
     : '';
@@ -87,12 +88,12 @@ function shell({ rel, title, description, nav, body, mermaid, repoUrl }) {
 </header>
 
 <main id="main" class="docpage">
-  <div class="wrap docpage__grid">
+  <div class="wrap docpage__grid${toc.rail ? ' docpage__grid--toc' : ''}">
 ${nav}
     <article class="prose">
-${body}
+${toc.details ? toc.details + '\n' : ''}${body}
     </article>
-  </div>
+${toc.rail ? toc.rail + '\n' : ''}  </div>
 </main>
 
 <footer class="foot">
@@ -175,6 +176,7 @@ export function buildSite({ root, manifest, out, log = console.log }) {
       description: `${title}: Aius documentation.`,
       nav: docNav(groups, page),
       body: lead + rendered.html,
+      toc: buildToc(rendered.headings),
       mermaid: rendered.hasMermaid,
       repoUrl: spec.repoUrl,
     });
