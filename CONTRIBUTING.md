@@ -7,8 +7,7 @@ in [`CLAUDE.md`](CLAUDE.md).
 
 ## Prerequisites and checkout
 
-**Run every command in this file from this repository's root** (``
-when it is checked out as the upstream submodule). The Aius scripts resolve their
+**Run every command in this file from this repository's root.** The Aius scripts resolve their
 own roots from their own paths, so they work from any working directory, but the
 paths quoted here are relative to this repository.
 
